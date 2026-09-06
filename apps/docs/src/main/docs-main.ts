@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import {
   BrowserWindow,
   Menu,
@@ -38,6 +38,7 @@ import {
   windowMenuTemplate,
 } from '@genoffice/electron-utils'
 import { configureMetricsCache, familyVerticalMetrics } from '@genoffice/font-metrics'
+import { installHttpIpcBridge } from '@genoffice/ipc-bridge'
 import { createI18n, getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
 import { ProjectStore } from '@genoffice/project-store'
 import type {
@@ -3067,6 +3068,11 @@ export function registerDocsIpc(): void {
   })
 
   ipcMain.handle('docs:open-path', (event, filePath: string) => loadDocx(filePath, event.sender.id))
+  ipcMain.handle('docs:read-path', async (_event, filePath: string) => {
+    if (typeof filePath !== 'string' || !/\.docx$/i.test(filePath)) return null
+    const bytes = await readFile(filePath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  })
 
   // Review > Protect > Encrypt with Password: set/clear the open password.
   // Takes effect on the next save (docs:save / save-as / save-new all consult the store).
@@ -4294,6 +4300,31 @@ export function startDocsStandalone(): void {
     openExternalDocx(findDocxPath(argv))
     mainWindow?.show()
     mainWindow?.focus()
+  })
+
+  // Web dual-protocol: intercepts every registration below, so it must come
+  // first; loopback-only and disabled silently when the port is taken.
+  installHttpIpcBridge({
+    ipcMain,
+    port: Number(process.env.DOCS_IPC_PORT) || 5273,
+    staticDir: resolve(__dirname, '../renderer'),
+    // Every channel below now has a browser equivalent in the app's
+    // renderer web-bridge (file pickers, downloads, print, clipboard, fonts,
+    // fullscreen, tabs), so nothing is blocked over HTTP anymore.
+    nativeOnlyChannels: [
+      'docs:open',
+      'docs:pick-image',
+      'docs:save-as',
+      'docs:print',
+      'docs:print-pdf-buffer',
+      'docs:export-pdf',
+      'docs:copy-image-to-clipboard',
+      'docs:font-metrics',
+      'files:pick',
+      'win:new',
+      'win:list',
+      'win:focus',
+    ],
   })
 
   registerAiIpc()

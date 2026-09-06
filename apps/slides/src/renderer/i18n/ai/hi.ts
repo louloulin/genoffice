@@ -65,6 +65,7 @@ export const hi = {
   aiChipShorten: 'छोटा करें',
   aiChipExpand: 'विस्तार करें',
   aiChipVerify: 'तथ्य जाँचें',
+  aiChipTranslate: 'अनुवाद',
   aiChipReplaceImage: 'चित्र बदलें',
   aiChipRemoveBg: 'पृष्ठभूमि हटाएँ',
   aiChipRecolor: 'रंग समायोजित करें',

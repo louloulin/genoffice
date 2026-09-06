@@ -66,6 +66,7 @@ export const es = {
   aiChipShorten: 'Acortar',
   aiChipExpand: 'Ampliar',
   aiChipVerify: 'Verificar datos',
+  aiChipTranslate: 'Traducir',
   aiChipReplaceImage: 'Cambiar la imagen',
   aiChipRemoveBg: 'Quitar el fondo',
   aiChipRecolor: 'Ajustar los colores',

@@ -27,6 +27,10 @@ const workspaceAlias = {
   '@genoffice/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
   // Metafile (EMF/WMF) rasterizer shared with the docs engine (renderer-only: needs canvas)
   '@genoffice/docx-engine/metafile': resolve(here, '../../packages/docx-engine/src/metafile.ts'),
+  // HTTP IPC bridge (web dual-protocol server)
+  '@genoffice/ipc-bridge/client': resolve(here, '../../packages/ipc-bridge/src/client.ts'),
+  '@genoffice/ipc-bridge/web-native': resolve(here, '../../packages/ipc-bridge/src/web-native.ts'),
+  '@genoffice/ipc-bridge': resolve(here, '../../packages/ipc-bridge/src/index.ts'),
 }
 
 export default defineConfig({
@@ -44,6 +48,7 @@ export default defineConfig({
           '@genoffice/ai-search',
           '@genoffice/file-parse',
           '@genoffice/electron-utils',
+          '@genoffice/ipc-bridge',
           'opentype.js',
         ],
       }),
@@ -51,7 +56,7 @@ export default defineConfig({
   },
   preload: {
     // electron-utils ships raw TS source — must be bundled, not left external
-    plugins: [externalizeDepsPlugin({ exclude: ['@genoffice/electron-utils'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@genoffice/electron-utils', '@genoffice/ipc-bridge'] })],
   },
   renderer: {
     resolve: { alias: workspaceAlias },
@@ -59,6 +64,14 @@ export default defineConfig({
     server: {
       port: Number(process.env.SLIDES_DEV_PORT) || 5175,
       strictPort: Boolean(process.env.SLIDES_DEV_PORT),
+      // web version: same-origin proxy to the HTTP IPC bridge inside the
+      // running Electron main process (keeps the page CSP's connect-src 'self')
+      proxy: {
+        '/api': {
+          target: `http://127.0.0.1:${Number(process.env.SLIDES_IPC_PORT) || 5275}`,
+          changeOrigin: true,
+        },
+      },
     },
   },
 })
