@@ -1,0 +1,22 @@
+{
+  "name": "@genoffice/docx-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node-safe DOCX file service for the standalone Web server",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@genoffice/docx-engine": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

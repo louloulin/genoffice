@@ -32,7 +32,9 @@ if (!isElectronRuntime()) {
       return null
     },
     openPptx: async (fitWidthPx) => {
-      const picked = await pickFileBytes('.pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation')
+      const picked = await pickFileBytes(
+        '.pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      )
       if (!picked) return null
       const { name, bytes } = picked[0]
       const path = await files.writeTempFile(name, bytes)
@@ -80,7 +82,7 @@ if (!isElectronRuntime()) {
         name,
       })
     },
-    insertModel3d: async (slideIndex, fitWidthPx) => {
+    insertModel3d: async (slideIndex, _fitWidthPx) => {
       const picked = await pickFileBytes('.glb,.gltf')
       if (!picked) return null
       const { name, bytes } = picked[0]
@@ -164,8 +166,9 @@ if (!isElectronRuntime()) {
 }
 
 async function deckSizePx(): Promise<{ cx: number; cy: number } | null> {
-  const size = await (window as unknown as { slidesApi?: { getSlideSize?: () => Promise<unknown> } })
-    .slidesApi?.getSlideSize?.()
+  const size = await (
+    window as unknown as { slidesApi?: { getSlideSize?: () => Promise<unknown> } }
+  ).slidesApi?.getSlideSize?.()
   if (size && typeof size === 'object') {
     const record = size as { cx?: unknown; cy?: unknown }
     if (typeof record.cx === 'number' && typeof record.cy === 'number') {

@@ -37,9 +37,9 @@ layer.
 - **macOS, Windows, Linux.**
 - **Free & open-source (Apache-2.0).**
 
-GenOffice also runs the same renderer build in a browser against a local
-Electron main process: IPC for the desktop app and loopback HTTP/SSE for the
-web version. See [docs/web-electron.md](docs/web-electron.md).
+GenOffice also has a standalone Web server foundation: the normal browser
+renderer can use HTTP/SSE without starting Electron. Existing Electron builds
+remain supported through a compatibility adapter. See [docs/web-electron.md](docs/web-electron.md).
 
 ## Download
 
