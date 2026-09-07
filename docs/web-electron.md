@@ -46,6 +46,15 @@ The standalone server exposes:
 - `GET /api/ipc/events?session=<id>` for SSE pushes.
 - `GET /api/ipc/health` for readiness and channel counts.
 
+Static hosting serves the built renderer from `staticDir`, and navigation GETs
+without a file extension fall back to `index.html`, so a browser reload on a
+client-side route ("/doc/123") still boots the renderer. `/api/*` paths and
+paths with an extension never fall back, and traversal attempts stay `404`.
+
+When `authToken` is set, every route requires `Authorization: Bearer <token>`
+and the comparison is constant-time. A non-loopback bind without `authToken` is
+rejected at startup.
+
 The default bind address is `127.0.0.1`. Remote deployment requires explicit authentication and reverse-proxy controls. HTTP errors preserve structured `IPC_NO_HANDLER` and `WEB_UNSUPPORTED` codes. Binary values use tagged base64 encoding for `ArrayBuffer` and typed arrays. The server can serve a built renderer from `staticDir`, allowing the Web application and API to use one origin.
 
 ## Browser-owned capabilities
@@ -60,9 +69,28 @@ These remain browser APIs and do not require Electron:
 - Screen capture: `getDisplayMedia`.
 - Windows/tabs: `window.open`.
 
+## Running the Web server
+
+```bash
+npm run web        # tsx apps/web-server/src/main.ts
+# env: HOST, PORT (5273), GENOFFICE_DATA_DIR, XLSX_SIDECAR_PATH
+```
+
 ## Runtime and verification status
 
 The standalone registry/server is implemented and covered by package integration tests. `@genoffice/ipc-bridge` typecheck passes and the bridge test suite passes, including standalone server startup without `ipcMain` or Electron.
+
+Verified against a really running server (`npm run web`, no Electron in the
+process): `GET /api/ipc/health` reports 26 registered channels;
+`project:create` / `project:list` / `markdown:write-file` / `markdown:read-file`
+round-trip; `pdf:create-blank` and `slides:create-blank` return tagged-base64
+bytes; a read outside the configured data root is rejected; an unknown channel
+returns `404 IPC_NO_HANDLER`; `GET /api/ipc/events` opens an SSE stream; with
+`authToken` set, a missing or same-length-wrong bearer returns `401` while the
+exact token passes; `staticDir` serves `index.html` and assets, falls back to
+`index.html` for `/doc/123`, and still returns `404` for a missing asset and for
+traversal. Workbook channels return the structured
+"build xlsx-sidecar" error until the Rust sidecar is built.
 
 The full business-handler migration is intentionally not complete yet. Current app main modules still own many Electron-specific handlers; those modules must not be imported by the standalone server until their dependencies are extracted.
 

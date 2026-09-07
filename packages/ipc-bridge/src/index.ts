@@ -32,6 +32,7 @@ import {
 } from 'node:fs'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
+import { timingSafeEqual } from 'node:crypto'
 import { decodeTransportValue, encodeTransportValue } from './codec'
 
 export { decodeTransportValue, encodeTransportValue } from './codec'
@@ -417,6 +418,19 @@ const STATIC_MIME_TYPES: Record<string, string> = {
   '.map': 'application/json',
 }
 
+/**
+ * Constant-time bearer comparison. A plain `!==` on the token leaks its prefix
+ * through response timing, which matters as soon as the server is exposed
+ * beyond loopback (where `authToken` becomes mandatory).
+ */
+function bearerMatches(header: string | undefined, token: string): boolean {
+  if (typeof header !== 'string') return false
+  const expected = Buffer.from(`Bearer ${token}`)
+  const actual = Buffer.from(header)
+  if (expected.length !== actual.length) return false
+  return timingSafeEqual(expected, actual)
+}
+
 export function createBridgeServer(options: BridgeServerOptions): Promise<BridgeServer> {
   const log = options.log ?? (() => {})
   const bodyLimitBytes = options.bodyLimitBytes ?? DEFAULT_BODY_LIMIT_BYTES
@@ -436,8 +450,10 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
 
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-    if (options.authToken && request.headers.authorization !== `Bearer ${options.authToken}`) {
-      sendJson(response, 401, { error: { code: 'UNAUTHORIZED', message: 'Authorization required' } })
+    if (options.authToken && !bearerMatches(request.headers.authorization, options.authToken)) {
+      sendJson(response, 401, {
+        error: { code: 'UNAUTHORIZED', message: 'Authorization required' },
+      })
       return
     }
 
@@ -544,11 +560,35 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
 
     if (staticRoot) {
       if (serveStatic(url.pathname, staticRoot, response)) return
+      // Client-side routes ("/doc/123") have no file on disk. A browser reload
+      // on such a route must still boot the renderer, so fall back to
+      // index.html for navigation GETs that are not API calls or asset paths.
+      if (
+        request.method === 'GET' &&
+        !url.pathname.startsWith('/api/') &&
+        !extname(url.pathname) &&
+        resolvesInsideRoot(url.pathname, staticRoot) &&
+        serveStatic('/index.html', staticRoot, response)
+      ) {
+        return
+      }
     }
 
     sendJson(response, 404, {
       error: { message: `No bridge route for ${request.method} ${url.pathname}` },
     })
+  }
+
+  /** Traversal attempts must stay 404 instead of silently getting the SPA shell. */
+  function resolvesInsideRoot(pathname: string, root: string): boolean {
+    let decoded: string
+    try {
+      decoded = decodeURIComponent(pathname)
+    } catch {
+      return false
+    }
+    const candidate = resolve(root, decoded.replace(/^\/+/, ''))
+    return candidate === root || candidate.startsWith(root + sep)
   }
 
   function serveStatic(pathname: string, root: string, response: ServerResponse): boolean {
