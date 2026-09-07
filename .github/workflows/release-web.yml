@@ -1,0 +1,268 @@
+name: Release Web Server
+
+# Release pipeline for `apps/web-server` (the standalone Node HTTP server, no
+# Electron required). The whole point is to publish Docker images + GitHub
+# release artifacts when the web-server package, its release script, or this
+# workflow file changes — and to run a fast typecheck/build/smoke gate on every
+# PR that touches the same surface, so a broken web-server cannot land.
+#
+# Triggers:
+#   • push to main / dev_* / release_* when `apps/web-server/**`,
+#     `scripts/release-web.mjs`, or this file changes
+#   • pull_request to main on the same paths
+#   • push of a tag matching `web-server/v*` (formal release entry point)
+#   • workflow_dispatch for manual runs (with optional Docker push)
+#
+# Jobs:
+#   • `verify`        — typecheck + build + smoke-test the running server,
+#                       upload `web-server-dist` artifact for the release job
+#   • `docker`        — build (no push) the image via the existing
+#                       `apps/web-server/Dockerfile` to prove the container
+#                       contract; runs on every qualifying event
+#   • `release`       — only on `web-server/v*` tags or a manual dispatch
+#                       with `push_image=true`. Re-uses the verify artifact
+#                       to bundle a tar.gz + zip + SHA256SUMS, pushes the
+#                       multi-tag Docker image to GHCR, and creates the
+#                       GitHub release. Mirrors what `scripts/release-web.mjs`
+#                       does on the script side, without re-implementing the
+#                       tag-and-push logic (that's still a human/cron job).
+
+on:
+  push:
+    branches: [main, 'dev_*', 'release_*']
+    tags:
+      - 'web-server/v*'
+    paths:
+      - 'apps/web-server/**'
+      - 'scripts/release-web.mjs'
+      - '.github/workflows/release-web.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/web-server/**'
+      - 'scripts/release-web.mjs'
+      - '.github/workflows/release-web.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version suffix (e.g. 0.9.0). Used as Docker/release tag when not triggered by a tag.'
+        required: true
+        default: '0.8.0'
+      push_image:
+        description: 'Push Docker image to GHCR on a manual run (skipped for PRs regardless).'
+        required: false
+        default: 'false'
+
+concurrency:
+  # Cancel superseded in-flight runs on the same ref for branch/PR pushes so
+  # developers don't queue stale runs, but never cancel a tag-triggered release
+  # in progress (the ref_type is `tag` for `refs/tags/web-server/v*`).
+  group: release-web-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, build & smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Typecheck is the source-of-truth gate: `apps/web-server` ships its own
+      # tsconfig and a `tsc --noEmit` pass catches breakage without producing
+      # artefacts. If this fails, the release artifacts would be unusable, so
+      # we abort before any build/test work.
+      - name: Typecheck (apps/web-server)
+        run: npx --no-install tsc -p apps/web-server/tsconfig.json --noEmit
+
+      - name: Build web-server
+        run: npm run build -w @genoffice/web-server
+
+      # Smoke test: boot the built server and hit /health. Web-server exposes
+      # the readiness probe at /health (see apps/web-server/src/index.ts and
+      # the Dockerfile HEALTHCHECK); a 200 here means the bundle is wired up
+      # and the http transport is alive.
+      - name: Smoke test (/health)
+        env:
+          PORT: '8080'
+          HOST: '127.0.0.1'
+        run: |
+          set -euo pipefail
+          node apps/web-server/dist/index.js &
+          SERVER_PID=$!
+          cleanup() { kill "$SERVER_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:8080/health; then
+              echo "::notice::web-server health check OK on attempt ${attempt}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::web-server failed to respond on /health after 10s"
+          exit 1
+
+      - name: Stage release artifacts
+        run: |
+          set -euo pipefail
+          rm -rf release-staging
+          mkdir -p release-staging
+          cp -r apps/web-server/dist release-staging/dist
+          cp apps/web-server/package.json release-staging/
+          cp apps/web-server/Dockerfile release-staging/
+          cp apps/web-server/docker-compose.yml release-staging/
+          cp apps/web-server/README.md release-staging/
+          ls -la release-staging
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-server-dist
+          path: release-staging
+          retention-days: 14
+          if-no-files-found: error
+
+  docker:
+    name: Docker image (verify)
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      # Build the multi-stage Dockerfile at apps/web-server/Dockerfile. We
+      # intentionally do NOT push on every run (PR builds must stay hermetic
+      # and not consume GHCR quota). The `release` job pushes the same image
+      # once a `web-server/v*` tag lands.
+      - name: Build Docker image
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: .
+          file: apps/web-server/Dockerfile
+          push: false
+          tags: genoffice-web-server:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Publish Docker image & GitHub release
+    # Tag push (formal release) OR a manual dispatch that opted into pushing.
+    # PRs can never reach this job (no event_name == 'pull_request' branch).
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/web-server/v')) || (github.event_name == 'workflow_dispatch' && inputs.push_image == 'true')
+    runs-on: ubuntu-latest
+    needs: [verify, docker]
+    timeout-minutes: 30
+    permissions:
+      contents: write   # create GitHub release + upload assets
+      packages: write   # push to GHCR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve release version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            # refs/tags/web-server/v0.9.0 -> 0.9.0
+            VERSION="${GITHUB_REF#refs/tags/web-server/v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          # Strip a leading 'v' if the user typed it manually, so we don't end
+          # up with tags like `genoffice-web-server-v0.9.0`.
+          VERSION="${VERSION#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "::notice::resolved version=${VERSION} (ref=${GITHUB_REF})"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: .
+          file: apps/web-server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/genoffice-web-server:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ github.repository_owner }}/genoffice-web-server:latest
+          labels: |
+            org.opencontainers.image.title=genoffice-web-server
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: web-server-dist
+          path: artifacts
+
+      - name: Bundle release artifacts
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          STAGE="genoffice-web-server-${VERSION}"
+          cd artifacts
+          mkdir -p "${STAGE}"
+          cp -r dist "${STAGE}/"
+          cp package.json "${STAGE}/"
+          cp Dockerfile "${STAGE}/"
+          cp docker-compose.yml "${STAGE}/"
+          cp README.md "${STAGE}/"
+          tar czf "${STAGE}.tar.gz" "${STAGE}"
+          (cd "${STAGE}" && zip -qr "../${STAGE}.zip" .)
+          mv "${STAGE}.tar.gz" "${STAGE}.zip" ..
+          cd ..
+          ls -la "${STAGE}.tar.gz" "${STAGE}.zip"
+
+      - name: Generate SHA256SUMS
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          STAGE="genoffice-web-server-${VERSION}"
+          sha256sum "${STAGE}.tar.gz" "${STAGE}.zip" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@d5382d3e6f2fa7bd53cb749d33091853d4985daf # v2.3.0
+        with:
+          name: GenOffice Web Server ${{ steps.version.outputs.VERSION }}
+          generate_release_notes: true
+          files: |
+            genoffice-web-server-${{ steps.version.outputs.VERSION }}.tar.gz
+            genoffice-web-server-${{ steps.version.outputs.VERSION }}.zip
+            SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
