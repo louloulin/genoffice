@@ -1,4 +1,7 @@
 import { writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import JSZip from 'jszip'
 
 export async function createBlankXlsx(path: string): Promise<void> {
@@ -24,4 +27,19 @@ export async function createBlankXlsx(path: string): Promise<void> {
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>real</t></is></c></row></sheetData></worksheet>',
   )
   await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
+/** Absolute path of the optional Rust xlsx sidecar binary built by `cargo build --release`. */
+export function xlsxSidecarPath(): string {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const name = process.platform === 'win32' ? 'xlsx-sidecar.exe' : 'xlsx-sidecar'
+  return resolve(here, '../../../apps/sheets/native/xlsx-engine/target/release', name)
+}
+
+/**
+ * Real-sidecar tests require a native toolchain, so they are opt-in by artifact
+ * presence: skipped when the binary has not been built, executed when it has.
+ */
+export function hasXlsxSidecar(): boolean {
+  return existsSync(xlsxSidecarPath())
 }

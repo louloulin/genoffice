@@ -1,10 +1,9 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
-import { mkdir } from 'node:fs/promises'
 
 export interface MarkdownFileServiceOptions {
   /** Optional allow-list root. Omit for a trusted local server. */
-  rootDir?: string
+  rootDir?: string | undefined
 }
 
 export interface MarkdownProjectHandlers {
@@ -44,7 +43,7 @@ export function registerMarkdownProjectHandlers(
 
 /** Node-only Markdown file operations used by the standalone Web composition root. */
 export class MarkdownFileService {
-  private readonly rootDir?: string
+  private readonly rootDir: string | undefined
 
   constructor(options: MarkdownFileServiceOptions = {}) {
     this.rootDir = options.rootDir ? resolve(options.rootDir) : undefined
