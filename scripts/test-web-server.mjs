@@ -353,6 +353,7 @@ const results = {
 async function testChannel(channel) {
   // 根据通道类型构造参数
   let body = { args: [] }
+  let customAssertion = null
   if (channel === 'project:create') {
     body = { args: [{ name: 'Test Project' }] }
   } else if (channel === 'project:files' || channel === 'project:rename' || channel === 'project:delete' || channel === 'project:timeline' || channel === 'project:moveFile') {
@@ -360,7 +361,31 @@ async function testChannel(channel) {
   } else if (channel === 'docs:font-metrics') {
     body = { args: ['sans-serif'] }
   } else if (channel === 'ai:chat') {
+    // Phase 1.3 (LUM-555): ai:chat must not silently fall back to canned
+    // template text. With no MINIMAX_API_KEY configured (the default
+    // smoke-test environment), the handler should reply with a structured
+    // error object carrying `error.code === 'AI_PROVIDER_KEY_MISSING'`.
     body = { args: [{ message: 'Hello' }] }
+    customAssertion = (data) => {
+      const result = data && typeof data === 'object' && 'result' in data ? data.result : data
+      if (!result || typeof result !== 'object') {
+        return { ok: false, reason: 'ai:chat did not return a structured object' }
+      }
+      if (result.ok !== false) {
+        return {
+          ok: false,
+          reason: `ai:chat must report ok:false when API key is missing (got ok=${result.ok})`,
+        }
+      }
+      const errCode = result.error && typeof result.error === 'object' ? result.error.code : undefined
+      if (errCode !== 'AI_PROVIDER_KEY_MISSING') {
+        return {
+          ok: false,
+          reason: `ai:chat must carry error.code === 'AI_PROVIDER_KEY_MISSING' (got '${errCode}')`,
+        }
+      }
+      return { ok: true }
+    }
   } else if (channel === 'ai:stream') {
     body = { args: [{ message: 'Hello', sessionId: `test-${Date.now()}` }] }
   } else if (channel === 'files:add') {
@@ -396,7 +421,13 @@ async function testChannel(channel) {
     })
     
     if (response.ok) {
-      return { status: 'passed', data: await response.json() }
+      const data = await response.json()
+      if (customAssertion) {
+        const verdict = customAssertion(data)
+        if (verdict.ok) return { status: 'passed', data }
+        return { status: 'failed', error: verdict.reason }
+      }
+      return { status: 'passed', data }
     } else if (response.status === 404) {
       return { status: 'unimplemented' }
     } else {

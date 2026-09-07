@@ -1,9 +1,10 @@
 /**
  * ai/* — Public entry for AI capability channels.
  *
- * Sub-modules: settings (singleton state), chat (real client),
- * search (placeholder), content (generic helpers), skills-{doc,sheet,slide}
- * (per-app skills), minimax (legacy client kept verbatim for LUM-555).
+ * Sub-modules: settings (multi-provider AiSettings state), chat
+ * (real client backed by @genoffice/ai-provider), provider (structured
+ * AiProviderError codes), search (placeholder), content (generic helpers),
+ * skills-{doc,sheet,slide} (per-app skills).
  */
 
 import { registerAiChatHandlers } from './chat.js'

@@ -1,14 +1,20 @@
 /**
  * ai/chat — ai:chat, ai:stream, ai:stream-cancel handlers.
  *
- * These are the only AI channels that touch the MiniMax API directly. The
- * placeholder `ai:stream` implementation chunks canned messages; the real
- * streaming wire-up lands with LUM-555.
+ * Phase 1.3 (LUM-555): `ai:chat` routes through @genoffice/ai-provider.
+ * When the API key is missing or the upstream call fails, the handler
+ * returns a structured `AiProviderError` instead of the old canned
+ * `generateAIResponse` template. The renderer can detect `code` on
+ * `error.code` and surface a localized message.
+ *
+ * `ai:stream` and `ai:stream-cancel` are still placeholders — real
+ * streaming lands in a follow-up; their canned chunks are explicitly
+ * marked as placeholder output, not as fallback content.
  */
 
 import { registerHandle } from '../common/registry.js'
 import { aiSettings } from './settings.js'
-import { callMiniMax, generateAIResponse } from './minimax.js'
+import { AiProviderError, callAiProvider } from './provider.js'
 
 const AI_STREAMS = new Map<string, { chunks: string[]; abort: AbortController }>()
 
@@ -17,51 +23,42 @@ export function registerAiChatHandlers(): void {
     const req = request as { message?: string; system?: string; sessionId?: string; context?: unknown }
     const message = req.message || ''
     const context = req.context
-
-    const minimaxKey = process.env.MINIMAX_API_KEY
     const systemPrompt = req.system || '你是一个专业的办公助手，帮助用户处理文档、表格和幻灯片。'
 
     try {
-      if (minimaxKey) {
-        const result = await callMiniMax(
-          minimaxKey,
-          [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: message },
-          ],
-          aiSettings.model || 'MiniMax-M3',
-        )
+      const result = await callAiProvider(aiSettings.settings, systemPrompt, message)
+      const content = context
+        ? `基于您提供的文档内容，我来帮您分析：\n\n${result.content}\n\n如需进一步帮助，请告诉我具体问题。`
+        : result.content
 
+      return {
+        id: `chat-${Date.now()}`,
+        role: 'assistant',
+        content,
+        createdAt: Date.now(),
+        metadata: {
+          model: aiSettings.settings.providers?.[aiSettings.settings.provider]?.model || 'unknown',
+          provider: aiSettings.settings.provider,
+        },
+      }
+    } catch (err) {
+      // structured error: callers inspect error.code; the renderer matches
+      // on code to render localized messages instead of seeing fake AI text
+      if (err instanceof AiProviderError) {
         return {
-          id: result.id,
+          id: `chat-${Date.now()}`,
           role: 'assistant',
-          content: result.content,
+          content: '',
           createdAt: Date.now(),
+          ok: false,
+          error: { code: err.code, message: err.message, provider: err.provider },
           metadata: {
-            model: aiSettings.model || 'MiniMax-M3',
-            provider: 'minimax',
-            usage: result.usage,
+            model: aiSettings.settings.providers?.[aiSettings.settings.provider]?.model || 'unknown',
+            provider: aiSettings.settings.provider,
           },
         }
       }
-    } catch (error) {
-      console.error('MiniMax API error, falling back to mock:', error)
-    }
-
-    let content = generateAIResponse(message)
-    if (context) {
-      content = `基于您提供的文档内容，我来帮您分析：\n\n${content}\n\n如需进一步帮助，请告诉我具体问题。`
-    }
-
-    return {
-      id: `chat-${Date.now()}`,
-      role: 'assistant',
-      content,
-      createdAt: Date.now(),
-      metadata: {
-        model: aiSettings.model || 'mock',
-        provider: minimaxKey ? 'minimax' : 'mock',
-      },
+      throw err
     }
   })
 
