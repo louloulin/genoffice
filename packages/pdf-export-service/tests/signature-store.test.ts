@@ -10,8 +10,8 @@ import {
   removeSignature,
   sanitizeSignatures,
   saveSignatures,
-} from '../src/main/signature-store'
-import type { SavedSignature, SignatureData } from '../src/shared/ipc'
+} from '../src/signature-store.js'
+import type { SavedSignature, SignatureData } from '../src/signature-types.js'
 
 const strokes = (paths: number[][] = [[0, 0, 10, 10]]): SignatureData => ({
   kind: 'strokes',

@@ -179,6 +179,48 @@ try {
   const covers = await invoke('pdf:font-covers-text', [{ __ipcBytes: 'u8', b64: '' }, '\r\n'])
   check('pdf:font-covers-text answers over HTTP', covers.body.result, true)
 
+  // Saved signatures: desktop userData state, server data root on the Web
+  const emptySignatures = await invoke('pdf:list-signatures', [])
+  check('pdf:list-signatures starts empty', emptySignatures.body.result, [])
+  const addedSignature = await invoke('pdf:add-signature', [
+    { kind: 'image', image: 'aGk=', width: 40, height: 20 },
+  ])
+  checkThat(
+    'pdf:add-signature returns the stored list',
+    addedSignature.body.result?.length === 1 &&
+      typeof addedSignature.body.result[0].id === 'string',
+    JSON.stringify(addedSignature.body),
+  )
+  const removedSignature = await invoke('pdf:remove-signature', [addedSignature.body.result[0].id])
+  check('pdf:remove-signature empties the list', removedSignature.body.result, [])
+  check(
+    'invalid signature payload is rejected',
+    (await invoke('pdf:add-signature', [{ kind: 'image', image: '', width: 0, height: 0 }])).status,
+    500,
+  )
+
+  const generated = await invoke('pdf:generated-output-path', ['a/b:c*.pdf'])
+  checkThat(
+    'pdf:generated-output-path sanitizes and stays in the data root',
+    String(generated.body.result).startsWith(dataDir) &&
+      !String(generated.body.result).includes(':'),
+    JSON.stringify(generated.body),
+  )
+
+  // Media normalizers the browser cannot do itself
+  const audio = await invoke('slides:audio-support', [
+    { __ipcBytes: 'u8', b64: Buffer.from([0, 1, 2, 3]).toString('base64') },
+  ])
+  checkThat(
+    'slides:audio-support answers over HTTP',
+    Array.isArray(audio.body.result?.formats) && audio.body.result.unplayable === null,
+    JSON.stringify(audio.body),
+  )
+  const notTiff = await invoke('slides:tiff-to-png', [
+    { __ipcBytes: 'u8', b64: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64') },
+  ])
+  check('slides:tiff-to-png reports non-TIFF as null', notTiff.body.result, null)
+
   // Protocol contract
   const missing = await invoke('nope:channel', [])
   check('unknown channel status', missing.status, 404)

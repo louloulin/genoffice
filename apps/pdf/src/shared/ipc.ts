@@ -48,30 +48,16 @@ export const PDF_CHANNELS = {
 
 export const VISUAL_SIGNATURE_CONTENT_PREFIX = 'GenOffice visual signature field: '
 
-/** Signature strokes: pad pixel coords, scaled proportionally and y-flipped when placed on the page */
-export interface SignatureStrokes {
-  paths: number[][]
-  width: number
-  height: number
-}
+/**
+ * Signature strokes (pad pixel coords, scaled proportionally and y-flipped when
+ * placed on the page), the confirmed signature awaiting placement, and its
+ * persisted form. The canonical declarations live with the service that
+ * validates them (@genoffice/pdf-export-service) so the Electron main process
+ * and the standalone Web server can never drift apart on these shapes.
+ */
+import type { SavedSignature, SignatureData, SignatureStrokes } from '@genoffice/pdf-export-service'
 
-/** Confirmed signature awaiting placement: hand strokes (Ink) or a bitmap (Stamp) */
-export type SignatureData =
-  | ({ kind: 'strokes' } & SignatureStrokes)
-  | {
-      kind: 'image'
-      /** base64 PNG, without the data: prefix */
-      image: string
-      width: number
-      height: number
-    }
-
-/** A reusable signature persisted in userData (shared across documents, WPS-style) */
-export interface SavedSignature {
-  id: string
-  createdAt: number
-  data: SignatureData
-}
+export type { SavedSignature, SignatureData, SignatureStrokes }
 
 export type PdfConvertFormat = 'docx' | 'xlsx' | 'pptx'
 

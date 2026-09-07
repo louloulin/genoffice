@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import UTIF from 'utif2'
 import { PNG } from 'pngjs'
-import { tiffToPng } from '../src/main/tiff-decode'
+import { tiffToPng } from '../src/tiff-decode.js'
 
 function makeTiff(width: number, height: number): Uint8Array {
   const rgba = new Uint8Array(width * height * 4)

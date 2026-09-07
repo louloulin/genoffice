@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { uniqueGeneratedPdfPath } from '../src/main/generated-output'
+import { uniqueGeneratedPdfPath } from '../src/generated-output.js'
 
 describe('uniqueGeneratedPdfPath', () => {
   it('keeps generated PDFs inside the configured directory', () => {

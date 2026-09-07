@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { audioSampleFormats, unplayableAudioCodec } from '../src/main/mp4-audio-sniff'
+import { audioSampleFormats, unplayableAudioCodec } from '../src/mp4-audio-sniff.js'
 
 // ── Tiny ISO-BMFF builders ──────────────────────────────────────────────
 

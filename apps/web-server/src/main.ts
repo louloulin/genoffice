@@ -4,8 +4,22 @@ import { dirname, join, resolve } from 'node:path'
 import { createStandaloneWebServer, type IpcHandlerRegistry } from '@genoffice/ipc-bridge'
 import { DocxFileService } from '@genoffice/docx-service'
 import { PdfFileService, SlidesFileService } from '@genoffice/office-file-service'
-import { fontCoversText, subsetTtf } from '@genoffice/pdf-export-service'
-import { cfbKind, displayMime, FONT_CATALOG } from '@genoffice/slides-render-service'
+import {
+  fontCoversText,
+  isSignatureData,
+  SignatureService,
+  subsetTtf,
+  uniqueGeneratedPdfPath,
+} from '@genoffice/pdf-export-service'
+import {
+  audioSampleFormats,
+  cfbKind,
+  displayMime,
+  FONT_CATALOG,
+  neutralizeJpegOrientation,
+  tiffToPng,
+  unplayableAudioCodec,
+} from '@genoffice/slides-render-service'
 import {
   UnavailableWorkbookBackend,
   WorkbookFileService,
@@ -77,10 +91,15 @@ export async function createWebComposition(options: WebCompositionOptions = {}) 
   })
   registerDocxHandlers(registry, docx)
   registerOfficeHandlers(registry, office, workbook)
-  registerPdfExportHandlers(registry)
+  const signatures = new SignatureService(dataDir)
+  registerPdfExportHandlers(registry, signatures, dataDir)
   registerSlidesRenderHandlers(registry)
   registerAiHandlers(registry, options.aiService ?? createAiService())
-  return { server, registry, services: { markdown, projects, docx, ...office, workbook } }
+  return {
+    server,
+    registry,
+    services: { markdown, projects, docx, ...office, workbook, signatures },
+  }
 }
 
 function asBytes(value: unknown): Uint8Array | null {
@@ -149,7 +168,11 @@ function registerOfficeHandlers(
  * PDF export/print capabilities that need no Electron: font coverage probing
  * and subsetting, both driven by the renderer before an export.
  */
-function registerPdfExportHandlers(registry: IpcHandlerRegistry): void {
+function registerPdfExportHandlers(
+  registry: IpcHandlerRegistry,
+  signatures: SignatureService,
+  dataDir: string,
+): void {
   registry.registerHandle('pdf:font-covers-text', (_event, font: unknown, text: unknown) => {
     const bytes = asBytes(font)
     if (!bytes || typeof text !== 'string') {
@@ -163,6 +186,27 @@ function registerPdfExportHandlers(registry: IpcHandlerRegistry): void {
       throw new Error('pdf:subset-font expects font bytes and text')
     }
     return new Uint8Array(await subsetTtf(Buffer.from(bytes), text))
+  })
+  // Saved signatures are desktop userData state; on the Web they belong to the
+  // server's data root so a browser tab keeps them across reloads.
+  registry.registerHandle('pdf:list-signatures', () => signatures.list())
+  registry.registerHandle('pdf:add-signature', (_event, data: unknown) => {
+    if (!isSignatureData(data)) throw new Error('pdf:add-signature expects signature data')
+    return signatures.add(data)
+  })
+  registry.registerHandle('pdf:remove-signature', (_event, id: unknown) => {
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new Error('pdf:remove-signature expects an id')
+    }
+    return signatures.remove(id)
+  })
+  // Export naming: the renderer needs the non-colliding target before it streams
+  // the bytes back for download.
+  registry.registerHandle('pdf:generated-output-path', (_event, name: unknown) => {
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new Error('pdf:generated-output-path expects a source name')
+    }
+    return uniqueGeneratedPdfPath(dataDir, name)
   })
 }
 
@@ -183,6 +227,26 @@ function registerSlidesRenderHandlers(registry: IpcHandlerRegistry): void {
     const value = asBytes(bytes)
     if (!value) throw new Error('slides:container-kind expects bytes')
     return cfbKind(Buffer.from(value))
+  })
+  // Browsers cannot display TIFF, so the server transcodes it the same way the
+  // desktop renderer does.
+  registry.registerHandle('slides:tiff-to-png', (_event, bytes: unknown) => {
+    const value = asBytes(bytes)
+    if (!value) throw new Error('slides:tiff-to-png expects bytes')
+    const decoded = tiffToPng(value)
+    if (!decoded) return null
+    return { ...decoded, png: new Uint8Array(decoded.png) }
+  })
+  // EXIF-rotated JPEGs are baked upright once, so every consumer sees one orientation.
+  registry.registerHandle('slides:normalize-jpeg', (_event, bytes: unknown) => {
+    const value = asBytes(bytes)
+    if (!value) throw new Error('slides:normalize-jpeg expects bytes')
+    return neutralizeJpegOrientation(value)
+  })
+  registry.registerHandle('slides:audio-support', (_event, bytes: unknown) => {
+    const value = asBytes(bytes)
+    if (!value) throw new Error('slides:audio-support expects bytes')
+    return { formats: audioSampleFormats(value), unplayable: unplayableAudioCodec(value) }
   })
 }
 

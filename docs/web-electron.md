@@ -84,6 +84,13 @@ Electron main process keeps working unchanged:
 | `@genoffice/slides-render-service` | `apps/slides/src/main/font-catalog.ts`, `media-mime.ts`, `cfb-sniff.ts` | `slides:font-catalog`, `slides:media-mime`, `slides:container-kind` |
 | `@genoffice/project-store`         | shared                                                                  | `markdown:*`, `project:*`                                           |
 
+`SavedSignature` / `SignatureData` / `SignatureStrokes` are declared in
+`@genoffice/pdf-export-service` and re-exported from `apps/pdf/src/shared/ipc.ts`,
+so the desktop main process and the Web server validate the same shapes. Saved
+signatures are desktop `userData` state; the standalone server keeps them under
+its own data root (`pdf-signatures.json`) with the same serialized
+read-modify-write, so several browser tabs cannot clobber each other.
+
 Still Electron-owned and not yet extractable: `pdf-main.ts`, `image-edit.ts`,
 `slides-main.ts`, `font-store.ts`, `presenter-show.ts`, `session-state.ts`,
 `ai-ipc.ts`, `attachments-ipc.ts` — they depend on `BrowserWindow`, `dialog`,
@@ -102,14 +109,15 @@ The standalone registry/server is implemented and covered by package integration
 
 `npm run test:e2e:web` (`e2e/web-server-verify.mjs`) is the automated form of
 that verification: it boots the real composition root in a child process exactly
-like `npm run web`, then asserts 22 checks over HTTP — auth, project/markdown
-round-trip, data-root containment, PDF/slides bytes, the extracted font and
-sniffing channels, `IPC_NO_HANDLER`, SSE, static hosting, SPA fallback, missing
-asset and traversal. It needs no browser and no Electron, and runs as its own
+like `npm run web`, then asserts 29 checks over HTTP — auth, project/markdown
+round-trip, data-root containment, PDF/slides bytes, the extracted font,
+sniffing, signature, export-naming and media-normalizer channels,
+`IPC_NO_HANDLER`, SSE, static hosting, SPA fallback, missing asset and
+traversal. It needs no browser and no Electron, and runs as its own
 `web-server-e2e` CI job plus the first step of `npm run test:e2e`.
 
 Verified against a really running server (`npm run web`, no Electron in the
-process): `GET /api/ipc/health` reports 26 registered channels;
+process): `GET /api/ipc/health` reports 38 registered channels;
 `project:create` / `project:list` / `markdown:write-file` / `markdown:read-file`
 round-trip; `pdf:create-blank` and `slides:create-blank` return tagged-base64
 bytes; a read outside the configured data root is rejected; an unknown channel

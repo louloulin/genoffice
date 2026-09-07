@@ -15,5 +15,9 @@
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0",
+    "utif2": "^4.1.0"
   }
 }
