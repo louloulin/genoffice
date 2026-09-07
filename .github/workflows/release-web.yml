@@ -1,0 +1,161 @@
+name: Release Web Server
+
+# CI gate + release pipeline for the standalone web server (apps/web-server).
+#
+# Trigger semantics:
+#   - pull_request / push on main that touches apps/web-server/**, scripts/**,
+#     or this workflow file → run the full gate (typecheck, build, smoke test,
+#     and Docker image build). This prevents drift between the web-server
+#     implementation and its release artefact without rebuilding every PR.
+#   - push of a `web-server/v*` tag → cut a GitHub Release with the
+#     pre-built artefact + a Docker image tagged with the release version.
+#   - workflow_dispatch → manual run (used for dry-run / one-off releases).
+#
+# This workflow intentionally reuses `apps/web-server/Dockerfile` and
+# `scripts/release-web.mjs` rather than redefining scripts inline, per the
+# LUM-552 acceptance criteria.
+
+on:
+  push:
+    branches: [main]
+    tags: ['web-server/v*']
+    paths:
+      - 'apps/web-server/**'
+      - 'scripts/release-web.mjs'
+      - 'package-lock.json'
+      - '.github/workflows/release-web.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/web-server/**'
+      - 'scripts/release-web.mjs'
+      - 'package-lock.json'
+      - '.github/workflows/release-web.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (used for tag + Docker tag when not on a tag push)'
+        required: false
+        default: '0.8.0'
+
+concurrency:
+  group: release-web-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build & gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Gate: typecheck across all workspaces (catches regressions in shared
+      # packages that the web-server depends on, not just within apps/web-server).
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Gate: web-server build (tsc → dist/). Acts as a compile-only smoke
+      # test before we hand off to the artifact / Docker jobs below.
+      - name: Build Web Server
+        run: npm run build -w @genoffice/web-server
+
+      # Smoke test against the running server. Uses the script referenced in
+      # the LUM-552 acceptance criteria; no behavioural assertions were added
+      # because the script is owned by another change request (Phase 1.1
+      # confirmed behaviour parity there).
+      - name: Smoke test
+        env:
+          WEB_SERVER_URL: http://127.0.0.1:8080
+        run: |
+          cd apps/web-server
+          PORT=8080 HOST=127.0.0.1 node dist/index.js &
+          SERVER_PID=$!
+          for i in {1..15}; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          WEB_SERVER_URL=http://127.0.0.1:8080 node scripts/test-web-server.mjs
+          kill $SERVER_PID || true
+          wait $SERVER_PID || true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: genoffice-web-dist
+          path: |
+            apps/web-server/dist/**
+            apps/web-server/README.md
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web-server/Dockerfile
+          push: false
+          load: true
+          tags: genoffice-web:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Cut release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/web-server/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: genoffice-web-dist
+          path: apps/web-server/dist
+
+      - name: Determine version
+        id: version
+        run: |
+          VERSION=${GITHUB_REF_NAME#web-server/v}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: GenOffice Web ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            apps/web-server/dist/**
+            apps/web-server/README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web-server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/genoffice-web:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/genoffice-web:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
