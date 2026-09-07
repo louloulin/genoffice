@@ -18,7 +18,9 @@
     "@genoffice/ipc-bridge": "*",
     "@genoffice/office-file-service": "*",
     "@genoffice/project-store": "*",
-    "@genoffice/workbook-service": "*"
+    "@genoffice/workbook-service": "*",
+    "@genoffice/pdf-export-service": "*",
+    "@genoffice/slides-render-service": "*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

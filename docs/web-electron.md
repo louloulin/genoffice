@@ -69,6 +69,26 @@ These remain browser APIs and do not require Electron:
 - Screen capture: `getDisplayMedia`.
 - Windows/tabs: `window.open`.
 
+## Node-safe service packages
+
+Capabilities are extracted out of `apps/*/src/main` into packages the standalone
+server can import, and the old app path stays as a one-line re-export shim so the
+Electron main process keeps working unchanged:
+
+| Package                            | Extracted from                                                          | Web channels                                                        |
+| ---------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `@genoffice/docx-service`          | docs main                                                               | `docs:*`                                                            |
+| `@genoffice/office-file-service`   | pdf/slides main                                                         | `pdf:*`, `slides:*` file IO                                         |
+| `@genoffice/workbook-service`      | sheets main                                                             | `workbook:*`                                                        |
+| `@genoffice/pdf-export-service`    | `apps/pdf/src/main/font-cmap.ts`, `font-subset.ts`                      | `pdf:font-covers-text`, `pdf:subset-font`                           |
+| `@genoffice/slides-render-service` | `apps/slides/src/main/font-catalog.ts`, `media-mime.ts`, `cfb-sniff.ts` | `slides:font-catalog`, `slides:media-mime`, `slides:container-kind` |
+| `@genoffice/project-store`         | shared                                                                  | `markdown:*`, `project:*`                                           |
+
+Still Electron-owned and not yet extractable: `pdf-main.ts`, `image-edit.ts`,
+`slides-main.ts`, `font-store.ts`, `presenter-show.ts`, `session-state.ts`,
+`ai-ipc.ts`, `attachments-ipc.ts` — they depend on `BrowserWindow`, `dialog`,
+`app.getPath`, native fonts, or Electron printing.
+
 ## Running the Web server
 
 ```bash
@@ -79,6 +99,14 @@ npm run web        # tsx apps/web-server/src/main.ts
 ## Runtime and verification status
 
 The standalone registry/server is implemented and covered by package integration tests. `@genoffice/ipc-bridge` typecheck passes and the bridge test suite passes, including standalone server startup without `ipcMain` or Electron.
+
+`npm run test:e2e:web` (`e2e/web-server-verify.mjs`) is the automated form of
+that verification: it boots the real composition root in a child process exactly
+like `npm run web`, then asserts 22 checks over HTTP — auth, project/markdown
+round-trip, data-root containment, PDF/slides bytes, the extracted font and
+sniffing channels, `IPC_NO_HANDLER`, SSE, static hosting, SPA fallback, missing
+asset and traversal. It needs no browser and no Electron, and runs as its own
+`web-server-e2e` CI job plus the first step of `npm run test:e2e`.
 
 Verified against a really running server (`npm run web`, no Electron in the
 process): `GET /api/ipc/health` reports 26 registered channels;

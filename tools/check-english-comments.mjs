@@ -5,8 +5,9 @@
 //
 // Functional CJK string literals are fine (i18n resources, test fixture
 // text, zh-UI matchers), as are the AI prompt guides (runtime resources that
-// legitimately show CJK examples).
-import { readFileSync } from 'node:fs'
+// legitimately show CJK examples) and the docs/comet change journal (internal
+// per-change working notes, not contributor-facing documentation).
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
@@ -22,9 +23,14 @@ const root = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf
 const violations = []
 for (const file of git.stdout.trim().split('\n')) {
   const isCode = /\.(ts|tsx|mjs|cjs|js)$/.test(file)
-  const isDoc = /\.(md|html?)$/.test(file) && !file.includes('/ai/prompts/')
+  const isDoc =
+    /\.(md|html?)$/.test(file) && !file.includes('/ai/prompts/') && !file.startsWith('docs/comet/')
   if (!isCode && !isDoc) continue
-  const lines = readFileSync(join(root, file), 'utf8').split('\n')
+  const absolute = join(root, file)
+  // A tracked file can be missing from the working tree mid-change (staged
+  // rename or delete); nothing to inspect and not a violation.
+  if (!existsSync(absolute)) continue
+  const lines = readFileSync(absolute, 'utf8').split('\n')
   lines.forEach((line, index) => {
     const text = isDoc
       ? line

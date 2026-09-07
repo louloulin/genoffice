@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { fontCoversText } from '../src/main/font-cmap'
+import { fontCoversText } from '../src/font-cmap.js'
 
 /** Same candidates as EDIT_FONT_PATHS.arial; the test runs wherever one exists */
 const SANS_PATHS = [

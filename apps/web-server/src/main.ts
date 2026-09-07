@@ -4,6 +4,8 @@ import { dirname, join, resolve } from 'node:path'
 import { createStandaloneWebServer, type IpcHandlerRegistry } from '@genoffice/ipc-bridge'
 import { DocxFileService } from '@genoffice/docx-service'
 import { PdfFileService, SlidesFileService } from '@genoffice/office-file-service'
+import { fontCoversText, subsetTtf } from '@genoffice/pdf-export-service'
+import { cfbKind, displayMime, FONT_CATALOG } from '@genoffice/slides-render-service'
 import {
   UnavailableWorkbookBackend,
   WorkbookFileService,
@@ -75,6 +77,8 @@ export async function createWebComposition(options: WebCompositionOptions = {}) 
   })
   registerDocxHandlers(registry, docx)
   registerOfficeHandlers(registry, office, workbook)
+  registerPdfExportHandlers(registry)
+  registerSlidesRenderHandlers(registry)
   registerAiHandlers(registry, options.aiService ?? createAiService())
   return { server, registry, services: { markdown, projects, docx, ...office, workbook } }
 }
@@ -138,6 +142,47 @@ function registerOfficeHandlers(
   registry.registerHandle('workbook:close', (_event, sessionId: unknown) => {
     if (typeof sessionId !== 'string') throw new Error('workbook:close expects sessionId')
     return workbook.close(sessionId)
+  })
+}
+
+/**
+ * PDF export/print capabilities that need no Electron: font coverage probing
+ * and subsetting, both driven by the renderer before an export.
+ */
+function registerPdfExportHandlers(registry: IpcHandlerRegistry): void {
+  registry.registerHandle('pdf:font-covers-text', (_event, font: unknown, text: unknown) => {
+    const bytes = asBytes(font)
+    if (!bytes || typeof text !== 'string') {
+      throw new Error('pdf:font-covers-text expects font bytes and text')
+    }
+    return fontCoversText(Buffer.from(bytes), text)
+  })
+  registry.registerHandle('pdf:subset-font', async (_event, font: unknown, text: unknown) => {
+    const bytes = asBytes(font)
+    if (!bytes || typeof text !== 'string') {
+      throw new Error('pdf:subset-font expects font bytes and text')
+    }
+    return new Uint8Array(await subsetTtf(Buffer.from(bytes), text))
+  })
+}
+
+/**
+ * Slides rendering/font capabilities that need no Electron: the bundled font
+ * catalog and the sniffers that decide how an archive part renders.
+ */
+function registerSlidesRenderHandlers(registry: IpcHandlerRegistry): void {
+  registry.registerHandle('slides:font-catalog', () => FONT_CATALOG)
+  registry.registerHandle('slides:media-mime', (_event, mediaRef: unknown, bytes: unknown) => {
+    const value = asBytes(bytes)
+    if (typeof mediaRef !== 'string' || !value) {
+      throw new Error('slides:media-mime expects a media reference and bytes')
+    }
+    return displayMime(mediaRef, value)
+  })
+  registry.registerHandle('slides:container-kind', (_event, bytes: unknown) => {
+    const value = asBytes(bytes)
+    if (!value) throw new Error('slides:container-kind expects bytes')
+    return cfbKind(Buffer.from(value))
   })
 }
 
