@@ -305,6 +305,30 @@ describe('attachIpcMain wraps an electron-shaped ipcMain', () => {
   })
 })
 
+describe('standalone Web server', () => {
+  it('serves a registry without an ipcMain or Electron dependency', async () => {
+    const { server, registry } = await import('../src/index').then(
+      ({ createStandaloneWebServer }) => createStandaloneWebServer({ port: 0 }),
+    )
+    registry.registerHandle('web:echo', (_event, value: unknown) => value)
+    const response = await fetch(invokeUrl(server.port, 'web:echo'), {
+      method: 'POST',
+      body: JSON.stringify({ args: ['standalone'] }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, result: 'standalone' })
+    await server.close()
+  })
+
+  it('supports an explicit non-loopback host for controlled deployments', async () => {
+    const { server } = await import('../src/index').then(({ createStandaloneWebServer }) =>
+      createStandaloneWebServer({ host: '127.0.0.1', port: 0 }),
+    )
+    expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+    await server.close()
+  })
+})
+
 describe('installHttpIpcBridge (the app one-liner)', () => {
   it('captures registrations made through the wrapped ipcMain and serves them over HTTP', async () => {
     const ipcMain = new FakeIpcMain()
@@ -366,5 +390,59 @@ describe('static hosting (production web form)', () => {
       signal: AbortSignal.timeout(5_000),
     })
     expect(response.status).toBe(404)
+  })
+
+  it('falls back to index.html for client-side routes', async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/doc/123`, {
+      signal: AbortSignal.timeout(5_000),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('web-docs')
+  })
+
+  it('does not fall back for API or asset paths', async () => {
+    const api = await fetch(`http://127.0.0.1:${server.port}/api/ipc/missing:channel`, {
+      method: 'POST',
+      body: JSON.stringify({ args: [] }),
+      signal: AbortSignal.timeout(5_000),
+    })
+    expect(api.status).toBe(404)
+    const asset = await fetch(`http://127.0.0.1:${server.port}/assets/missing.js`, {
+      signal: AbortSignal.timeout(5_000),
+    })
+    expect(asset.status).toBe(404)
+  })
+})
+
+describe('bearer authentication', () => {
+  let server: BridgeServer
+
+  beforeAll(async () => {
+    server = await createBridgeServer({
+      registry: new IpcHandlerRegistry(),
+      port: 0,
+      authToken: 'secret-token',
+    })
+  })
+
+  afterAll(async () => {
+    await server.close()
+  })
+
+  it('accepts the exact bearer token', async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/ipc/health`, {
+      headers: { authorization: 'Bearer secret-token' },
+    })
+    expect(response.status).toBe(200)
+  })
+
+  it('rejects a missing, wrong, or same-length-wrong token', async () => {
+    expect((await fetch(`http://127.0.0.1:${server.port}/api/ipc/health`)).status).toBe(401)
+    for (const token of ['nope', 'secret-tokes', 'Secret-Token']) {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/ipc/health`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      expect(response.status).toBe(401)
+    }
   })
 })

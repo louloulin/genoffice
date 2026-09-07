@@ -21,5 +21,11 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     environment: 'jsdom',
     testTimeout: 20000,
+    // This suite is the heaviest in the repo (jsdom + the docx engine per file).
+    // Parallel workers exhaust memory on small runners and containers, which
+    // surfaces as "Worker exited unexpectedly" on random files instead of a real
+    // assertion failure. Vitest 4 replaced poolOptions.forks.singleFork with
+    // fileParallelism: one worker, files run in sequence, deterministic run.
+    fileParallelism: false,
   },
 })

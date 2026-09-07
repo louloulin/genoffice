@@ -1,0 +1,31 @@
+{
+  "name": "@genoffice/web-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone Node Web composition root for GenOffice",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@genoffice/docx-service": "*",
+    "@genoffice/ai-provider": "*",
+    "@genoffice/ai-search": "*",
+    "@genoffice/docx-engine": "*",
+    "@genoffice/ipc-bridge": "*",
+    "@genoffice/office-file-service": "*",
+    "@genoffice/project-store": "*",
+    "@genoffice/workbook-service": "*",
+    "@genoffice/pdf-export-service": "*",
+    "@genoffice/slides-render-service": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

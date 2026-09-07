@@ -21,10 +21,21 @@
 /// so the wrapper sees every registration.
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
+import { timingSafeEqual } from 'node:crypto'
 import { decodeTransportValue, encodeTransportValue } from './codec'
+
+export { decodeTransportValue, encodeTransportValue } from './codec'
 import { WEB_UNSUPPORTED } from './client'
 import { WEB_FILE_CHANNELS } from './web-native'
 
@@ -72,9 +83,14 @@ function installWebFileChannels(registry: IpcHandlerRegistry): void {
       throw new Error('web:read-file-bytes only reads files written by the web bridge')
     }
     const bytes = readFileSync(path)
-    return { name: basename(path), bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }
+    return {
+      name: basename(path),
+      bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    }
   })
-  registry.registerHandle(WEB_FILE_CHANNELS.makeTempDir, () => mkdtempSync(join(WEB_TEMP_ROOT, 'dir-')))
+  registry.registerHandle(WEB_FILE_CHANNELS.makeTempDir, () =>
+    mkdtempSync(join(WEB_TEMP_ROOT, 'dir-')),
+  )
 }
 
 function mkdirSyncSafe(dir: string): void {
@@ -312,6 +328,10 @@ class SessionHub {
 
 export interface BridgeServerOptions {
   registry: IpcHandlerRegistry
+  /** Bind address. Defaults to loopback for local Web mode. */
+  host?: string
+  /** Required for non-loopback listeners. */
+  authToken?: string
   port: number
   /** Serve the built renderer for the production web form (out/renderer). */
   staticDir?: string
@@ -398,6 +418,19 @@ const STATIC_MIME_TYPES: Record<string, string> = {
   '.map': 'application/json',
 }
 
+/**
+ * Constant-time bearer comparison. A plain `!==` on the token leaks its prefix
+ * through response timing, which matters as soon as the server is exposed
+ * beyond loopback (where `authToken` becomes mandatory).
+ */
+function bearerMatches(header: string | undefined, token: string): boolean {
+  if (typeof header !== 'string') return false
+  const expected = Buffer.from(`Bearer ${token}`)
+  const actual = Buffer.from(header)
+  if (expected.length !== actual.length) return false
+  return timingSafeEqual(expected, actual)
+}
+
 export function createBridgeServer(options: BridgeServerOptions): Promise<BridgeServer> {
   const log = options.log ?? (() => {})
   const bodyLimitBytes = options.bodyLimitBytes ?? DEFAULT_BODY_LIMIT_BYTES
@@ -417,6 +450,12 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
 
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    if (options.authToken && !bearerMatches(request.headers.authorization, options.authToken)) {
+      sendJson(response, 401, {
+        error: { code: 'UNAUTHORIZED', message: 'Authorization required' },
+      })
+      return
+    }
 
     if (url.pathname === '/api/ipc/health' && request.method === 'GET') {
       sendJson(response, 200, {
@@ -521,11 +560,35 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
 
     if (staticRoot) {
       if (serveStatic(url.pathname, staticRoot, response)) return
+      // Client-side routes ("/doc/123") have no file on disk. A browser reload
+      // on such a route must still boot the renderer, so fall back to
+      // index.html for navigation GETs that are not API calls or asset paths.
+      if (
+        request.method === 'GET' &&
+        !url.pathname.startsWith('/api/') &&
+        !extname(url.pathname) &&
+        resolvesInsideRoot(url.pathname, staticRoot) &&
+        serveStatic('/index.html', staticRoot, response)
+      ) {
+        return
+      }
     }
 
     sendJson(response, 404, {
       error: { message: `No bridge route for ${request.method} ${url.pathname}` },
     })
+  }
+
+  /** Traversal attempts must stay 404 instead of silently getting the SPA shell. */
+  function resolvesInsideRoot(pathname: string, root: string): boolean {
+    let decoded: string
+    try {
+      decoded = decodeURIComponent(pathname)
+    } catch {
+      return false
+    }
+    const candidate = resolve(root, decoded.replace(/^\/+/, ''))
+    return candidate === root || candidate.startsWith(root + sep)
   }
 
   function serveStatic(pathname: string, root: string, response: ServerResponse): boolean {
@@ -541,15 +604,20 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
     return true
   }
 
+  const host = options.host ?? '127.0.0.1'
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1' && !options.authToken) {
+    throw new Error('authToken is required for non-loopback Web listeners')
+  }
   return new Promise((resolvePromise, rejectPromise) => {
     server.once('error', rejectPromise)
-    server.listen(options.port, '127.0.0.1', () => {
+    server.listen(options.port, host, () => {
       const address = server.address()
       const port = typeof address === 'object' && address ? address.port : options.port
-      log(`[ipc-bridge] HTTP IPC bridge on http://127.0.0.1:${port}/api/ipc/* (web dual protocol)`)
+      const displayHost = host.includes(':') ? `[${host}]` : host
+      log(`[ipc-bridge] standalone HTTP server on http://${displayHost}:${port}`)
       resolvePromise({
         port,
-        url: `http://127.0.0.1:${port}`,
+        url: `http://${displayHost}:${port}`,
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
             server.close((cause) => (cause ? closeReject(cause) : closeResolve()))
@@ -562,6 +630,9 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
 export interface HttpIpcBridgeOptions {
   ipcMain: IpcMainLike
   /** Loopback port for the HTTP form; per-app default, env-overridable at the call site. */
+  host?: string
+  /** Required for non-loopback listeners. */
+  authToken?: string
   port: number
   staticDir?: string
   nativeOnlyChannels?: Array<string | RegExp>
@@ -607,4 +678,27 @@ export async function installHttpIpcBridge(
   }
   installedBridges.set(options.ipcMain, bridge)
   return bridge
+}
+
+/**
+ * Start the standalone Web server without Electron. Application code registers
+ * transport-agnostic handlers directly on the returned registry. This is the
+ * Web-mode entry point; `installHttpIpcBridge` below remains only an optional
+ * Electron compatibility adapter.
+ */
+export async function createStandaloneWebServer(options: {
+  host?: string
+  /** Required for non-loopback listeners. */
+  authToken?: string
+  port: number
+  staticDir?: string
+  nativeOnlyChannels?: Array<string | RegExp>
+  bodyLimitBytes?: number
+  log?: (message: string) => void
+  registry?: IpcHandlerRegistry
+}): Promise<{ server: BridgeServer; registry: IpcHandlerRegistry }> {
+  const registry = options.registry ?? new IpcHandlerRegistry()
+  installWebFileChannels(registry)
+  const server = await createBridgeServer({ ...options, registry })
+  return { server, registry }
 }
