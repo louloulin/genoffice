@@ -11,7 +11,7 @@ import sendStop from '../assets/send-stop.png'
 import { clearAiHighlights } from '../editor/aiHighlight'
 import { createMarkdownSkill } from './markdown-skill'
 import { createSearchSkill } from './search-skill'
-import { createElectronTransport } from './transport'
+import { createAiTransport } from './transports'
 import { EditQueueCard } from './EditQueueCard'
 import {
   buildQueueInstruction,
@@ -211,7 +211,7 @@ export function AiPanel({
   const loopRef = useRef<AgentLoop<DocSnapshot> | null>(null)
   if (!loopRef.current) {
     loopRef.current = new AgentLoop<DocSnapshot>({
-      transport: createElectronTransport(() => settingsRef.current!),
+      transport: createAiTransport(() => settingsRef.current!),
       skill: composeSkills('markdown+search', '', [
         createMarkdownSkill(() => depsRef.current.getEditor(), {
           read: () => depsRef.current.getFrontmatter(),
