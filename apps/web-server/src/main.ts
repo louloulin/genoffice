@@ -5,9 +5,19 @@ import { createStandaloneWebServer, type IpcHandlerRegistry } from '@genoffice/i
 import { DocxFileService } from '@genoffice/docx-service'
 import { PdfFileService, SlidesFileService } from '@genoffice/office-file-service'
 import {
+  cropPagesBytes,
+  extractPagesBytes,
   fontCoversText,
+  insertBlankPageBytes,
+  insertPdfBytes,
   isSignatureData,
+  mergePagesBytes,
+  mergePdfBytes,
+  replacePagesBytes,
+  setPageSizeBytes,
   SignatureService,
+  splitPagesBytes,
+  splitPdfBytes,
   subsetTtf,
   uniqueGeneratedPdfPath,
 } from '@genoffice/pdf-export-service'
@@ -93,6 +103,7 @@ export async function createWebComposition(options: WebCompositionOptions = {}) 
   registerOfficeHandlers(registry, office, workbook)
   const signatures = new SignatureService(dataDir)
   registerPdfExportHandlers(registry, signatures, dataDir)
+  registerPdfPageHandlers(registry)
   registerSlidesRenderHandlers(registry)
   registerAiHandlers(registry, options.aiService ?? createAiService())
   return {
@@ -207,6 +218,128 @@ function registerPdfExportHandlers(
       throw new Error('pdf:generated-output-path expects a source name')
     }
     return uniqueGeneratedPdfPath(dataDir, name)
+  })
+}
+
+/** Every page operation is bytes in, bytes out, so the shape check is shared. */
+function requireBytes(value: unknown, channel: string): Uint8Array {
+  const bytes = asBytes(value)
+  if (!bytes) throw new Error(`${channel} expects PDF bytes`)
+  return bytes
+}
+
+function requirePageList(value: unknown, channel: string): number[] {
+  if (!Array.isArray(value) || value.some((page) => !Number.isInteger(page))) {
+    throw new Error(`${channel} expects an array of page indices`)
+  }
+  return value as number[]
+}
+
+/**
+ * Page operations (extract, insert, merge, split, crop, resize). These are the
+ * capabilities the Web form was missing outright: pdf-lib only, no Electron, so
+ * they run unchanged in the standalone server.
+ */
+function registerPdfPageHandlers(registry: IpcHandlerRegistry): void {
+  registry.registerHandle('pdf:extract-pages', async (_event, bytes: unknown, pages: unknown) =>
+    extractPagesBytes(
+      requireBytes(bytes, 'pdf:extract-pages'),
+      requirePageList(pages, 'pdf:extract-pages'),
+    ),
+  )
+  registry.registerHandle(
+    'pdf:insert-pdf',
+    async (_event, bytes: unknown, other: unknown, afterPageIndex: unknown) => {
+      if (!Number.isInteger(afterPageIndex)) {
+        throw new Error('pdf:insert-pdf expects an integer afterPageIndex')
+      }
+      return insertPdfBytes(
+        requireBytes(bytes, 'pdf:insert-pdf'),
+        requireBytes(other, 'pdf:insert-pdf'),
+        afterPageIndex as number,
+      )
+    },
+  )
+  registry.registerHandle(
+    'pdf:insert-blank-page',
+    async (_event, bytes: unknown, afterPageIndex: unknown) => {
+      if (!Number.isInteger(afterPageIndex)) {
+        throw new Error('pdf:insert-blank-page expects an integer afterPageIndex')
+      }
+      return insertBlankPageBytes(
+        requireBytes(bytes, 'pdf:insert-blank-page'),
+        afterPageIndex as number,
+      )
+    },
+  )
+  registry.registerHandle('pdf:split-pdf', async (_event, bytes: unknown, chunkSize: unknown) => {
+    if (!Number.isInteger(chunkSize) || (chunkSize as number) < 1) {
+      throw new Error('pdf:split-pdf expects a positive integer chunkSize')
+    }
+    return splitPdfBytes(requireBytes(bytes, 'pdf:split-pdf'), chunkSize as number)
+  })
+  registry.registerHandle('pdf:merge-pages', async (_event, bytes: unknown, options: unknown) => {
+    if (typeof options !== 'object' || options === null) {
+      throw new Error('pdf:merge-pages expects { perSheet, direction, separator }')
+    }
+    const input = options as { perSheet?: unknown; direction?: unknown; separator?: unknown }
+    if (!Number.isInteger(input.perSheet)) {
+      throw new Error('pdf:merge-pages expects an integer perSheet')
+    }
+    return mergePagesBytes(requireBytes(bytes, 'pdf:merge-pages'), {
+      perSheet: input.perSheet as number,
+      direction: input.direction === 'vertical' ? 'vertical' : 'horizontal',
+      separator: input.separator === true,
+    })
+  })
+  registry.registerHandle(
+    'pdf:replace-pages',
+    async (_event, bytes: unknown, other: unknown, pages: unknown) =>
+      replacePagesBytes(
+        requireBytes(bytes, 'pdf:replace-pages'),
+        requireBytes(other, 'pdf:replace-pages'),
+        requirePageList(pages, 'pdf:replace-pages'),
+      ),
+  )
+  registry.registerHandle(
+    'pdf:set-page-size',
+    async (_event, bytes: unknown, width: unknown, height: unknown) => {
+      if (typeof width !== 'number' || typeof height !== 'number' || width <= 0 || height <= 0) {
+        throw new Error('pdf:set-page-size expects positive width and height in points')
+      }
+      return setPageSizeBytes(requireBytes(bytes, 'pdf:set-page-size'), width, height)
+    },
+  )
+  registry.registerHandle('pdf:split-pages', async (_event, bytes: unknown, perPage: unknown) => {
+    if (perPage !== 2 && perPage !== 4 && perPage !== 9) {
+      throw new Error('pdf:split-pages expects perPage of 2, 4 or 9')
+    }
+    return splitPagesBytes(requireBytes(bytes, 'pdf:split-pages'), perPage)
+  })
+  registry.registerHandle(
+    'pdf:crop-pages',
+    async (_event, bytes: unknown, pages: unknown, frac: unknown) => {
+      const rect = frac as { l?: unknown; t?: unknown; r?: unknown; b?: unknown } | null
+      if (
+        typeof rect !== 'object' ||
+        rect === null ||
+        [rect.l, rect.t, rect.r, rect.b].some((value) => typeof value !== 'number')
+      ) {
+        throw new Error('pdf:crop-pages expects { l, t, r, b } fractions')
+      }
+      return cropPagesBytes(
+        requireBytes(bytes, 'pdf:crop-pages'),
+        requirePageList(pages, 'pdf:crop-pages'),
+        rect as { l: number; t: number; r: number; b: number },
+      )
+    },
+  )
+  registry.registerHandle('pdf:merge-pdfs', async (_event, first: unknown, others: unknown) => {
+    if (!Array.isArray(others)) throw new Error('pdf:merge-pdfs expects an array of PDF byte lists')
+    return mergePdfBytes(
+      requireBytes(first, 'pdf:merge-pdfs'),
+      others.map((entry) => requireBytes(entry, 'pdf:merge-pdfs')),
+    )
   })
 }
 

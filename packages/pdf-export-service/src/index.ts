@@ -8,6 +8,21 @@ export { identityCffCharset, subsetTtf } from './font-subset.js'
 export { hbSubsetWasmPath } from './wasm-path.js'
 export { uniqueGeneratedPdfPath } from './generated-output.js'
 export {
+  cropPagesBytes,
+  extractPagesBytes,
+  insertBlankPageBytes,
+  insertPdfBytes,
+  mergeGrid,
+  mergePagesBytes,
+  mergePdfBytes,
+  replacePagesBytes,
+  setPageSizeBytes,
+  splitPagesBytes,
+  splitPdfBytes,
+  type CropFractionsRect,
+  type MergePagesOptions,
+} from './page-operations.js'
+export {
   addSignature,
   isSignatureData,
   loadSignatures,

@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PDFDocument } from 'pdf-lib'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.WEB_VERIFY_PORT ?? 5399)
@@ -82,6 +83,24 @@ async function waitForReady(child, timeoutMs = 60_000) {
 }
 
 // Own process group: `npx` forks tsx, and only a group signal reaps both.
+// A stale server left on this port would answer every request below and make the
+// run test the WRONG build, so refuse to start instead of silently passing.
+try {
+  const stale = await fetch(`${BASE}/api/ipc/health`, {
+    headers: auth,
+    signal: AbortSignal.timeout(2_000),
+  })
+  throw new Error(
+    `port ${PORT} is already serving (HTTP ${stale.status}); stop it or set WEB_VERIFY_PORT`,
+  )
+} catch (cause) {
+  if (String(cause.message).includes('already serving')) {
+    rmSync(dataDir, { recursive: true, force: true })
+    rmSync(staticDir, { recursive: true, force: true })
+    throw cause
+  }
+}
+
 const child = spawn('npx', ['tsx', bootstrap], {
   cwd: repoRoot,
   stdio: ['ignore', 'inherit', 'inherit'],
@@ -220,6 +239,53 @@ try {
     { __ipcBytes: 'u8', b64: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64') },
   ])
   check('slides:tiff-to-png reports non-TIFF as null', notTiff.body.result, null)
+
+  // Page operations: build a real 4-page PDF, drive the server, re-parse the result
+  const sourcePdf = await (async () => {
+    const doc = await PDFDocument.create()
+    for (let index = 0; index < 4; index += 1) doc.addPage([200 + index * 10, 300])
+    return doc.save({ useObjectStreams: false })
+  })()
+  const asBytes = (value) => ({ __ipcBytes: 'u8', b64: Buffer.from(value).toString('base64') })
+  const decode = (value) => new Uint8Array(Buffer.from(value.b64, 'base64'))
+  const countPages = async (value) =>
+    (await PDFDocument.load(decode(value), { updateMetadata: false })).getPageCount()
+
+  const extracted = await invoke('pdf:extract-pages', [asBytes(sourcePdf), [0, 2]])
+  check('pdf:extract-pages keeps two pages', await countPages(extracted.body.result), 2)
+
+  const inserted = await invoke('pdf:insert-blank-page', [asBytes(sourcePdf), -1])
+  check('pdf:insert-blank-page adds one page', await countPages(inserted.body.result), 5)
+
+  const chunks = await invoke('pdf:split-pdf', [asBytes(sourcePdf), 2])
+  checkThat(
+    'pdf:split-pdf returns two chunks of two pages',
+    chunks.body.result?.length === 2 && (await countPages(chunks.body.result[0])) === 2,
+    JSON.stringify(chunks.status),
+  )
+
+  const nUp = await invoke('pdf:merge-pages', [
+    asBytes(sourcePdf),
+    { perSheet: 2, direction: 'horizontal', separator: true },
+  ])
+  check('pdf:merge-pages imposes two sheets', await countPages(nUp.body.result), 2)
+
+  const combined = await invoke('pdf:merge-pdfs', [asBytes(sourcePdf), [asBytes(sourcePdf)]])
+  checkThat(
+    'pdf:merge-pdfs appends every page',
+    combined.body.result?.appended === 4 && (await countPages(combined.body.result.merged)) === 8,
+    JSON.stringify(combined.status),
+  )
+
+  const resized = await invoke('pdf:set-page-size', [asBytes(sourcePdf), 595.28, 841.89])
+  const resizedDoc = await PDFDocument.load(decode(resized.body.result), { updateMetadata: false })
+  check('pdf:set-page-size applies A4', Math.round(resizedDoc.getPage(0).getWidth()), 595)
+
+  check(
+    'malformed page operation input is rejected',
+    (await invoke('pdf:extract-pages', [asBytes(sourcePdf), 'nope'])).status,
+    500,
+  )
 
   // Protocol contract
   const missing = await invoke('nope:channel', [])

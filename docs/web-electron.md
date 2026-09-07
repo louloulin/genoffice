@@ -109,15 +109,19 @@ The standalone registry/server is implemented and covered by package integration
 
 `npm run test:e2e:web` (`e2e/web-server-verify.mjs`) is the automated form of
 that verification: it boots the real composition root in a child process exactly
-like `npm run web`, then asserts 29 checks over HTTP — auth, project/markdown
+like `npm run web`, then asserts 36 checks over HTTP — auth, project/markdown
 round-trip, data-root containment, PDF/slides bytes, the extracted font,
-sniffing, signature, export-naming and media-normalizer channels,
+sniffing, signature, export-naming, media-normalizer and page-operation
+channels,
 `IPC_NO_HANDLER`, SSE, static hosting, SPA fallback, missing asset and
 traversal. It needs no browser and no Electron, and runs as its own
 `web-server-e2e` CI job plus the first step of `npm run test:e2e`.
 
+The verify script refuses to start when its port is already serving, so a stale
+server from an earlier run cannot silently make the suite test the wrong build.
+
 Verified against a really running server (`npm run web`, no Electron in the
-process): `GET /api/ipc/health` reports 38 registered channels;
+process): `GET /api/ipc/health` reports 48 registered channels;
 `project:create` / `project:list` / `markdown:write-file` / `markdown:read-file`
 round-trip; `pdf:create-blank` and `slides:create-blank` return tagged-base64
 bytes; a read outside the configured data root is rejected; an unknown channel
@@ -127,6 +131,14 @@ exact token passes; `staticDir` serves `index.html` and assets, falls back to
 `index.html` for `/doc/123`, and still returns `404` for a missing asset and for
 traversal. Workbook channels return the structured
 "build xlsx-sidecar" error until the Rust sidecar is built.
+
+Page operations were driven against the same live server and re-parsed with
+pdf-lib: extract 4 -> 2 pages, blank insert 4 -> 5, document insert count 4 and
+8 pages, split into 2 chunks of 2, 2-up imposition to 2 sheets of width 300,
+split-pages 4 -> 16, replace 2 removed and 4 inserted, A4 resize to 595x842 with
+the /Rotate 90 page correctly swapped to 842x595, crop to a 100x150 CropBox, and
+a multi-file merge appending 4 pages. Malformed input returns 500 with a
+structured message.
 
 The full business-handler migration is intentionally not complete yet. Current app main modules still own many Electron-specific handlers; those modules must not be imported by the standalone server until their dependencies are extracted.
 
