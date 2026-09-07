@@ -28,3 +28,5 @@ export type {
 } from './loop'
 export { createIpcTransport, IPC_STREAM_SILENCE_TIMEOUT_MS } from './electron-transport'
 export type { IpcStreamChunk, IpcStreamStart, IpcTransportOptions } from './electron-transport'
+export { createHttpTransport, httpRequest } from './http-transport'
+export type { HttpStreamChunk, HttpTransportOptions } from './http-transport'
