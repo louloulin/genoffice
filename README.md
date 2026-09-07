@@ -214,6 +214,34 @@ See [SECURITY.md](SECURITY.md) for the process security posture (renderer
 sandboxing, IPC validation, external-link gating) and the threat models for
 AI-generated content.
 
+## Development resources
+
+Additional design and protocol docs that are useful when working on the web
++ electron dual-protocol surface:
+
+- [docs/web-electron.md](docs/web-electron.md) — the public dual-protocol doc:
+  architecture, startup commands, real-launch verification, the capability
+  matrix that maps desktop-only channels to their browser equivalents, and
+  how `nativeOnlyChannels` differs between each app and the unified shell.
+- [docs/comet/specs/dual-transport/spec.md](docs/comet/specs/dual-transport/spec.md) —
+  spec source for the IPC + HTTP/SSE dual transport in `@genoffice/ipc-bridge`
+  (server-side bridge contract, HTTP endpoints, pseudo-`IpcMainInvokeEvent`,
+  security/network rules, production web hosting).
+- [docs/comet/specs/web-launch/spec.md](docs/comet/specs/web-launch/spec.md) —
+  spec source for the real-browser verification flow (`npm run dev` +
+  Playwright over HTTP): startup, core flows (markdown edit/save/reopen,
+  docs create/edit/save/reopen), and the `WEB_UNSUPPORTED` fallback for
+  desktop-only channels.
+- [docs/comet/specs/](docs/comet/specs/) — every spec under this folder is the
+  source of truth that the `docs/comet/changes/<change>/` change-tracking
+  entries ship against; new capability work should land a spec here first.
+- [docs/web-implementation-guide.md](docs/web-implementation-guide.md) — the
+  early evaluation notes for web-version pieces (file picker APIs, AI
+  streaming, collab, offline, printing). The third-party dependency entries
+  (`file-saver` / `yjs` / `y-webrtc` / `print-js` / `workbox-precaching`)
+  are research candidates, **not** current GenOffice dependencies — every
+  section there is explicitly marked `调研中（未引入仓库）`.
+
 ## Acknowledgements
 
 GenOffice would not be possible without these open-source projects:

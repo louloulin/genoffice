@@ -83,10 +83,19 @@ calls to native-dialog channels).
 Smoke checks for the running bridge:
 
 ```sh
-curl http://127.0.0.1:5273/api/ipc/health   # {"ok":true,"channels":54}
+# health.channels = invokeChannelCount + listenChannelCount; the bridge also
+# registers 3 generic web-file channels (web:write-temp-file, web:read-file-bytes,
+# web:make-temp-dir) — the exact number grows as each app registers more channels
+curl http://127.0.0.1:5273/api/ipc/health   # {"ok":true,"channels":60}   (docs app — 54 user handles + 3 user listeners + 3 web-file)
 curl -X POST http://127.0.0.1:5273/api/ipc/app:get-language \
   -H 'content-type: application/json' -d '{"args":[]}'  # {"ok":true,"result":"zh"}
 ```
+
+Treat any `channels` value above as a snapshot: the real number is whatever the
+running app has registered via `ipcMain.handle` / `ipcMain.on` at startup, plus
+the 3 web-file channels the bridge installs itself. Run `curl ... /api/ipc/health`
+to see the live value; do not hard-code it in tests beyond a sanity floor
+(e.g. `toBeGreaterThan(50)` — the existing e2e suite asserts this for the shell).
 
 ## Protocol
 
@@ -110,7 +119,9 @@ keeping API calls same-origin. Build first, then launch the desktop process.
 Web calls run in the local desktop main process, so file storage and local
 compute remain available. Interactive native OS UI and desktop-only resources
 get browser equivalents in each app's web bridge (the same transport-agnostic
-API factories the preload exposes, bound to HTTP/SSE instead of `ipcRenderer`):
+API factories the preload exposes, bound to HTTP/SSE instead of `ipcRenderer`).
+The shared helpers live in [`packages/ipc-bridge/src/web-native.ts`](../packages/ipc-bridge/src/web-native.ts);
+per-app bridges call into them and add their own app-specific overrides.
 
 | Capability                                          | Web behavior                                                       |
 | --------------------------------------------------- | ------------------------------------------------------------------ |
@@ -118,13 +129,13 @@ API factories the preload exposes, bound to HTTP/SSE instead of `ipcRenderer`):
 | Local project/chat storage and file persistence     | Available — main process has the same filesystem access.           |
 | AI requests, search, and stream chunks              | Available — main process performs requests; chunks arrive over SSE.|
 | Open / file selection                               | Browser `<input type=file>` → `web:write-temp-file` → main process opens the temp path. |
-| Save / export                                       | Main process returns bytes → browser Blob download.                |
+| Save / export                                       | Main process returns bytes → browser Blob download (`downloadBytes`). |
 | Print / PDF export                                  | `window.print()` (save-as-PDF) or PDF bytes downloaded.            |
-| Screen capture                                      | `getDisplayMedia` → canvas frame.                                  |
-| Window / tab management                             | `window.open` browser tabs; shell tabs resolve to no-ops.          |
-| Clipboard                                           | `navigator.clipboard` (async Clipboard API).                      |
-| Font metrics / font install                         | Canvas `measureText`; `FontFace` where applicable.                |
-| Fullscreen                                          | `requestFullscreen`.                                               |
+| Screen capture                                      | `navigator.mediaDevices.getDisplayMedia` → canvas frame (sheets-specific bridge). |
+| Window / tab management                             | `window.open` browser tabs (`webOpenTab`); shell tab channels resolve to no-ops in the shell web-bridge. |
+| Clipboard (image)                                   | `navigator.clipboard.write([new ClipboardItem(...)])` (`webCopyImage`). |
+| Font metrics                                        | Canvas `measureText` (`webFontMetrics`) — only ascent/descent from text extents; `FontFace` install is NOT implemented in `web-native.ts`. |
+| Fullscreen                                          | `document.documentElement.requestFullscreen()` (`webFullscreen`).   |
 | Drag-and-drop path resolution and `md-asset://`     | Unsupported — requires Electron protocol/native file binding.      |
 
 Direct HTTP calls to channels that would open a native dialog (for example
@@ -134,3 +145,17 @@ that path because the web bridge overrides them with the browser equivalents
 above. Electron behavior is unchanged: preload exposes transport-agnostic API
 factories bound to `ipcRenderer`, while browser bootstraps expose the same
 factories bound to HTTP/SSE.
+
+### `nativeOnlyChannels` — single app vs shell
+
+Each app's main entry calls `installHttpIpcBridge({ ..., nativeOnlyChannels: [...] })`
+to block HTTP calls to channels that need real OS resources (dialogs, print
+spooler, webContents registries, …). The shell re-registers the union of the
+editor modules' channels plus its own shell-only ones, so direct HTTP callers
+on `npm run dev -w @genoffice/shell` are stopped at the bridge boundary before
+any handler runs. **The single-app lists are the source of truth** — `apps/<app>/src/main/<app>-main.ts` defines them; the shell's list in
+`apps/shell/src/main/index.ts` is intentionally a superset, but it may omit
+newly-added single-app channels between releases until the next shell sync, so
+do not edit one without checking the others. Use the per-app lists when
+debugging a "this channel should be blocked" question; use the shell list when
+auditing what the unified shell actually refuses.
