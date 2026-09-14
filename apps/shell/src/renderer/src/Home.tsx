@@ -11,6 +11,8 @@ import type {
   CloudProjectKind,
   CloudProjectsSnapshot,
   HomeApi,
+  ModuleEntry,
+  ModuleKind,
   ProjectHomeApi,
   ProjectSummaryEntry,
   RecentEntry,
@@ -54,7 +56,8 @@ const FILE_ICONS: Record<string, string> = {
 /* Formats the open-local card advertises. Too long for the card at any window
    width, so it ellipsizes and a hover ScreenTip carries the full list. Keep in
    sync with the main-process open-dialog filter (OPEN_DIALOG_EXTENSIONS). */
-const OPEN_LOCAL_EXTENSIONS = '.docx / .xlsx / .xlsm / .xls / .csv / .pptx / .pdf / .md'
+const OPEN_LOCAL_EXTENSIONS =
+  '.docx / .xlsx / .xlsm / .xls / .csv / .pptx / .pdf / .md / .html / .htm'
 
 function FileBadge({ ext, size }: { ext: string; size: number }) {
   const icon = FILE_ICONS[ext]
@@ -118,14 +121,28 @@ function hasProjectApi(): boolean {
   return typeof window.aiOfficeProject !== 'undefined'
 }
 
-const FILTERS: { key: string; label: StringKey }[] = [
-  { key: 'all', label: 'filterAll' },
-  { key: 'docx', label: 'filterDocs' },
-  { key: 'xlsx', label: 'filterSheets' },
-  { key: 'pptx', label: 'filterSlides' },
-  { key: 'pdf', label: 'filterPdf' },
-  { key: 'md', label: 'filterMd' },
-]
+/** Filter keys that are derived from the module manager (one per enabled module).
+ * 'all' stays first as a hard-coded universal option; everything else follows the configured
+ * module order so the filter row matches the Quick Start cards above it. The label is the
+ * i18n key the module's NEW_ITEMS card already uses, which keeps the localisable strings
+ * shared (filterDocs / filterSheets / …) and means the filter row stays in sync automatically
+ * once the module manager supports a new kind. */
+const FILTER_LABELS: Record<string, StringKey> = {
+  docx: 'filterDocs',
+  xlsx: 'filterSheets',
+  pptx: 'filterSlides',
+  pdf: 'filterPdf',
+  md: 'filterMd',
+  html: 'filterHtml',
+}
+function buildFilters(moduleIds: string[]): { key: string; label: StringKey }[] {
+  const out: { key: string; label: StringKey }[] = [{ key: 'all', label: 'filterAll' }]
+  for (const id of moduleIds) {
+    const label = FILTER_LABELS[id]
+    if (label) out.push({ key: id, label })
+  }
+  return out
+}
 
 /** Check glyph marking the selected sort option; invisible on the others so labels stay aligned */
 function SortCheck({ visible }: { visible: boolean }): ReactElement {
@@ -1571,13 +1588,63 @@ export function Home() {
     void window.aiOffice.newPdf(selectedProjectId ? { projectId: selectedProjectId } : undefined)
   }
 
-  const NEW_ITEMS = [
-    { ext: 'docx', title: t('newDoc'), sub: '.docx', action: handleNewDoc },
-    { ext: 'xlsx', title: t('newSheet'), sub: '.xlsx', action: handleNewSheet },
-    { ext: 'pptx', title: t('newSlide'), sub: '.pptx', action: handleNewSlide },
-    { ext: 'md', title: t('newMarkdown'), sub: '.md', action: handleNewMarkdown },
-    { ext: 'pdf', title: t('newPdf'), sub: '.pdf', action: handleNewPdf },
-  ]
+  const handleNewHtml = () => {
+    void window.aiOffice.newHtml(selectedProjectId ? { projectId: selectedProjectId } : undefined)
+  }
+
+  const [moduleOrder, setModuleOrder] = useState<
+    {
+      id: ModuleKind
+      ext: string
+      title: string
+      sub: string
+      action: () => void
+    }[]
+  >([])
+
+  useEffect(() => {
+    let alive = true
+    const apply = (mods: unknown) => {
+      if (!alive || !Array.isArray(mods)) return
+      const typedMods = mods as ModuleEntry[]
+      const actions: Record<string, () => void> = {
+        docx: handleNewDoc,
+        xlsx: handleNewSheet,
+        pptx: handleNewSlide,
+        md: handleNewMarkdown,
+        pdf: handleNewPdf,
+        html: handleNewHtml,
+      }
+      const titles: Record<string, string> = {
+        docx: t('newDoc'),
+        xlsx: t('newSheet'),
+        pptx: t('newSlide'),
+        md: t('newMarkdown'),
+        pdf: t('newPdf'),
+        html: t('newHtml'),
+      }
+      setModuleOrder(
+        typedMods
+          .filter((m) => m.enabled)
+          .map((m) => ({
+            id: m.id,
+            ext: m.ext,
+            title: titles[m.id] ?? m.ext,
+            sub: `.${m.ext}`,
+            action: actions[m.id] ?? (() => {}),
+          })),
+      )
+    }
+    void window.aiOffice.listModules?.().then(apply)
+    const onChanged = (e: Event) => apply((e as CustomEvent).detail)
+    window.addEventListener('genoffice:modules-changed', onChanged)
+    return () => {
+      alive = false
+      window.removeEventListener('genoffice:modules-changed', onChanged)
+    }
+  }, [])
+
+  const NEW_ITEMS = moduleOrder
 
   function renderQuickCards() {
     return (
@@ -2019,7 +2086,7 @@ export function Home() {
               </div>
             ) : (
               <div className="filter-pills" role="tablist" aria-label={t('filterAria')}>
-                {FILTERS.map((f) => (
+                {buildFilters(moduleOrder.map((m) => m.id)).map((f) => (
                   <button
                     key={f.key}
                     className={`filter-pill${filter === f.key ? ' active' : ''}`}

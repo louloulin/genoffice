@@ -1,0 +1,26 @@
+{
+  "name": "@genoffice/html",
+  "productName": "GenOffice HTML",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "description": "HTML editor module: minimal HTML viewer/editor with live preview",
+  "scripts": {
+    "dev": "vite --config vite.config.ts",
+    "build": "vite build --config vite.config.ts",
+    "build:renderer": "vite build --config vite.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@genoffice/i18n": "*",
+    "@genoffice/ipc-bridge": "*",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.0"
+  }
+}

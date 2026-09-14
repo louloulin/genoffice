@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Dropdown } from '@genoffice/ui'
 import {
@@ -10,7 +10,13 @@ import {
 import type { AiSettings } from '@genoffice/ai-provider'
 import { useI18n } from './locale'
 import type { StringKey, TFunc } from './locale'
-import type { AccountStatus, AiCatalogEntry, UiTheme } from '../../shared/home-api'
+import type {
+  AccountStatus,
+  AiCatalogEntry,
+  ModuleEntry,
+  ModuleKind,
+  UiTheme,
+} from '../../shared/home-api'
 import { ProviderLogo } from './provider-logos'
 import './settings.css'
 
@@ -62,12 +68,13 @@ function formatStars(n: number): string {
   return `${k >= 100 ? Math.round(k) : (Math.round(k * 10) / 10).toString().replace(/\.0$/, '')}k`
 }
 
-type SectionId = 'account' | 'aiModel' | 'general' | 'about'
+type SectionId = 'account' | 'aiModel' | 'general' | 'modules' | 'about'
 
 const SECTIONS: readonly { id: SectionId; labelKey: StringKey }[] = [
   { id: 'account', labelKey: 'setSecAccount' },
   { id: 'aiModel', labelKey: 'setSecAiModel' },
   { id: 'general', labelKey: 'setSecGeneral' },
+  { id: 'modules', labelKey: 'setSecModules' },
   { id: 'about', labelKey: 'setSecAbout' },
 ]
 
@@ -114,6 +121,48 @@ function SectionIcon({ id }: { id: SectionId }) {
         />
         <circle cx="11.5" cy="5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
         <circle cx="4.5" cy="11" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+      </svg>
+    )
+  }
+  if (id === 'modules') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect
+          x="1.8"
+          y="1.8"
+          width="5.4"
+          height="5.4"
+          rx="1"
+          stroke="currentColor"
+          strokeWidth="1.3"
+        />
+        <rect
+          x="8.8"
+          y="1.8"
+          width="5.4"
+          height="5.4"
+          rx="1"
+          stroke="currentColor"
+          strokeWidth="1.3"
+        />
+        <rect
+          x="1.8"
+          y="8.8"
+          width="5.4"
+          height="5.4"
+          rx="1"
+          stroke="currentColor"
+          strokeWidth="1.3"
+        />
+        <rect
+          x="8.8"
+          y="8.8"
+          width="5.4"
+          height="5.4"
+          rx="1"
+          stroke="currentColor"
+          strokeWidth="1.3"
+        />
       </svg>
     )
   }
@@ -474,6 +523,117 @@ export interface SettingsModalProps {
   onLogout: () => void
 }
 
+/** Module-manager pane: toggle + drag-to-reorder the home-page Quick Start cards. */
+function ModulesPane({ t }: { t: TFunc }) {
+  const [modules, setModules] = useState<ModuleEntry[]>([])
+  const [loading, setLoading] = useState(true)
+  const dragIndexRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void window.aiOffice.listModules?.().then((m) => {
+      if (!alive) return
+      setModules(m)
+      setLoading(false)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  if (loading) return null
+
+  const toggle = async (id: string, enabled: boolean) => {
+    const next = await window.aiOffice.setModuleEnabled?.(id as ModuleKind, enabled)
+    if (Array.isArray(next)) {
+      setModules(next)
+      window.dispatchEvent(new CustomEvent('genoffice:modules-changed', { detail: next }))
+    }
+  }
+
+  const move = async (from: number, to: number) => {
+    if (from === to) return
+    const next = modules.slice()
+    const [item] = next.splice(from, 1)
+    next.splice(to, 0, item)
+    setModules(next)
+    await window.aiOffice.reorderModules?.(next.map((m) => m.id))
+    window.dispatchEvent(new CustomEvent('genoffice:modules-changed', { detail: next }))
+  }
+
+  const reset = async () => {
+    const next = await window.aiOffice.resetModules?.()
+    if (Array.isArray(next)) {
+      setModules(next)
+      window.dispatchEvent(new CustomEvent('genoffice:modules-changed', { detail: next }))
+    }
+  }
+
+  const onDragStart = (index: number) => (e: React.DragEvent) => {
+    dragIndexRef.current = index
+    e.dataTransfer.effectAllowed = 'move'
+  }
+  const onDragOver = (index: number) => (e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+  }
+  const onDrop = (index: number) => (e: React.DragEvent) => {
+    e.preventDefault()
+    const from = dragIndexRef.current
+    dragIndexRef.current = null
+    if (from === null) return
+    void move(from, index)
+  }
+
+  return (
+    <>
+      <h3 className="set-pane-title">{t('setSecModules')}</h3>
+      <div className="set-field-stack" style={{ marginBottom: 14 }}>
+        <div className="set-field-label">{t('modulesTitle')}</div>
+        <div className="set-field-desc">{t('modulesDesc')}</div>
+      </div>
+      <ul className="set-module-list" role="list">
+        {modules.map((m, idx) => (
+          <li
+            key={m.id}
+            className="set-module-row"
+            draggable
+            onDragStart={onDragStart(idx)}
+            onDragOver={onDragOver(idx)}
+            onDrop={onDrop(idx)}
+          >
+            <span className="set-module-handle" aria-hidden="true">
+              <svg width="10" height="14" viewBox="0 0 10 14" fill="none">
+                <circle cx="3" cy="3" r="1" fill="currentColor" />
+                <circle cx="3" cy="7" r="1" fill="currentColor" />
+                <circle cx="3" cy="11" r="1" fill="currentColor" />
+                <circle cx="7" cy="3" r="1" fill="currentColor" />
+                <circle cx="7" cy="7" r="1" fill="currentColor" />
+                <circle cx="7" cy="11" r="1" fill="currentColor" />
+              </svg>
+            </span>
+            <span className="set-module-label">{t(m.labelKey as StringKey)}</span>
+            <span className="set-module-ext">.{m.ext}</span>
+            <button
+              className="set-switch"
+              role="switch"
+              aria-checked={m.enabled}
+              aria-label={t(m.labelKey as StringKey)}
+              onClick={() => void toggle(m.id, !m.enabled)}
+            />
+          </li>
+        ))}
+      </ul>
+      <div className="set-field" style={{ marginTop: 12 }}>
+        <div className="set-field-text" />
+        <button className="set-btn" data-tip={t('modulesResetTip')} onClick={() => void reset()}>
+          {t('modulesReset')}
+        </button>
+      </div>
+    </>
+  )
+}
+
 export function SettingsModal({
   status,
   loggingOut,
@@ -630,6 +790,7 @@ export function SettingsModal({
               </>
             )}
             {section === 'aiModel' && <AiModelPane t={t} />}
+            {section === 'modules' && <ModulesPane t={t} />}
             {section === 'general' && (
               <>
                 <h3 className="set-pane-title">{t('setSecGeneral')}</h3>
