@@ -17,6 +17,7 @@
     "./markdown.css": "./src/markdown.css",
     "./ai-panel-prefs.css": "./src/ai-panel-prefs.css",
     "./ai-scope-quote.css": "./src/ai-scope-quote.css",
+    "./ai-composer.css": "./src/ai-composer.css",
     "./image-dialogs.css": "./src/image-dialogs.css",
     "./fonts/*": "./src/fonts/*",
     "./ai-runtime.css": "./src/ai-runtime.css",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
+    "jsdom": "^28.0.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },

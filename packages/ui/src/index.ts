@@ -1,4 +1,38 @@
-export { AiComposer } from './AiComposer'
+export {
+  AiComposer,
+  type ComposerCommandPick,
+  type ComposerModeOption,
+} from './AiComposer'
+export { AiComposerMenu, type AiComposerMenuProps } from './AiComposerMenu'
+// Chat composer primitives: the slash-command model and the Ask/Craft/Plan
+// mode directives. Pure logic, so apps can also unit-test their command tables.
+export {
+  activeSlashQuery,
+  applyComposerCommand,
+  filterComposerCommands,
+  firstEnabledIndex,
+  flattenComposerGroups,
+  groupComposerCommands,
+  nextEnabledIndex,
+  type ComposerCommand,
+  type ComposerCommandGroup,
+  type ComposerCommandKind,
+  type SlashQuery,
+} from './chat/composer-commands'
+export {
+  CHAT_MODES,
+  CHAT_MODE_SPECS,
+  DEFAULT_CHAT_MODE,
+  chatModeDirective,
+  chatModeSpec,
+  composeSystemSuffix,
+  isChatMode,
+  isReadOnlyMode,
+  normalizeChatMode,
+  skillDirective,
+  type ChatMode,
+  type ChatModeSpec,
+} from './chat/modes'
 export { AiScopeQuote, type AiScopeQuoteData } from './AiScopeQuote'
 export {
   AI_CUSTOM_FONT_MAX_PX,

@@ -166,6 +166,12 @@ export function applyComposerCommand(
   return { value: next, caret: before.length + text.length }
 }
 
+/** One rendered section of the menu. */
+export interface ComposerCommandGroup {
+  readonly group: string
+  readonly commands: ComposerCommand[]
+}
+
 /**
  * Group commands for rendering, preserving the order groups first appear in
  * the (already ranked) list. Commands without a group land under `fallback`.
@@ -173,8 +179,8 @@ export function applyComposerCommand(
 export function groupComposerCommands(
   commands: readonly ComposerCommand[],
   fallback = '',
-): Array<{ group: string; commands: ComposerCommand[] }> {
-  const out: Array<{ group: string; commands: ComposerCommand[] }> = []
+): ComposerCommandGroup[] {
+  const out: ComposerCommandGroup[] = []
   const byName = new Map<string, ComposerCommand[]>()
   for (const cmd of commands) {
     const name = cmd.group ?? fallback
@@ -187,6 +193,16 @@ export function groupComposerCommands(
     bucket.push(cmd)
   }
   return out
+}
+
+/**
+ * The order the menu actually renders rows in. Grouping clusters by section,
+ * which can differ from the ranked order when two sections interleave — the
+ * keyboard must follow what the user sees, not the ranking, so the composer
+ * derives its index space from this list.
+ */
+export function flattenComposerGroups(groups: readonly ComposerCommandGroup[]): ComposerCommand[] {
+  return groups.flatMap((g) => g.commands)
 }
 
 /**
