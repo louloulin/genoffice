@@ -9,8 +9,28 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const DATA_DIR =
-  process.env.DATA_DIR || process.env.GENOFFICE_DATA_DIR || '/tmp/genoffice-data'
+function resolveDataDir(): string {
+  const fromEnv =
+    process.env.DATA_DIR ||
+    process.env.GENOFFICE_DATA_DIR ||
+    process.env.GENOFFICE_WEB_DATA_DIR
+  if (fromEnv && fromEnv.length > 0) return fromEnv
+  return '/tmp/genoffice-data'
+}
+
+/**
+ * Resolved on first import. We also write the value back into `process.env`
+ * so in-process extensions (notably `@genoffice/agent-skills`'s
+ * `translate-skill`, which reads `process.env.DATA_DIR` to locate
+ * `ai-settings.json`) and any spawned child processes share the same
+ * data directory the host uses. Without this back-write, the skill falls
+ * back to `~/.genoffice/ai-settings.json` and silently uses the wrong
+ * provider (genoffice#W37 regression we keep hitting).
+ */
+export const DATA_DIR = resolveDataDir()
+if (!process.env.DATA_DIR) process.env.DATA_DIR = DATA_DIR
+if (!process.env.GENOFFICE_DATA_DIR) process.env.GENOFFICE_DATA_DIR = DATA_DIR
+if (!process.env.GENOFFICE_WEB_DATA_DIR) process.env.GENOFFICE_WEB_DATA_DIR = DATA_DIR
 mkdirSync(DATA_DIR, { recursive: true })
 
 export const FILES_DIR = join(DATA_DIR, 'files')
