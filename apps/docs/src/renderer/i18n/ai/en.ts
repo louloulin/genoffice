@@ -103,6 +103,7 @@ export const en = {
   aiHintBusy: 'Esc to stop',
   aiHintIdleTitle: 'Enter to send · Shift+Enter for a new line',
   aiSend: 'Send',
+  aiVoiceInput: 'Voice input',
   aiStop: 'Stop',
   aiContinue: 'Continue',
   aiAttachTitle: 'Attach local files (or drag them onto the panel)',

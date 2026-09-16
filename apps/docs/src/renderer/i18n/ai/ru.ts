@@ -104,6 +104,7 @@ export const ru = {
   aiHintBusy: 'Esc — остановить',
   aiHintIdleTitle: 'Enter — отправить · Shift+Enter — новая строка',
   aiSend: 'Отправить',
+  aiVoiceInput: 'Голосовой ввод',
   aiStop: 'Остановить',
   aiContinue: 'Продолжить',
   aiAttachTitle: 'Прикрепить локальные файлы (или перетащите их на панель)',

@@ -104,6 +104,7 @@ export const pl = {
   aiHintBusy: 'Esc — zatrzymaj',
   aiHintIdleTitle: 'Enter — wyślij · Shift+Enter — nowy wiersz',
   aiSend: 'Wyślij',
+  aiVoiceInput: 'Wprowadzanie głosowe',
   aiStop: 'Zatrzymaj',
   aiContinue: 'Kontynuuj',
   aiAttachTitle: 'Załącz pliki lokalne (lub przeciągnij je na panel)',

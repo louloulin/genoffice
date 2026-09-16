@@ -102,6 +102,7 @@ export const th = {
   aiHintBusy: 'Esc เพื่อหยุด',
   aiHintIdleTitle: 'Enter เพื่อส่ง · Shift+Enter เพื่อขึ้นบรรทัดใหม่',
   aiSend: 'ส่ง',
+  aiVoiceInput: 'ป้อนด้วยเสียง',
   aiStop: 'หยุด',
   aiContinue: 'ดำเนินการต่อ',
   aiAttachTitle: 'แนบไฟล์ในเครื่อง (หรือลากมาวางบนแผงก็ได้)',

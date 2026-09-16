@@ -143,3 +143,36 @@ describe('AiComposer mode switch', () => {
     expect(html).not.toContain('ai-mode-switch')
   })
 })
+
+describe('AiComposer voice button', () => {
+  const voice = {
+    available: true,
+    active: false,
+    label: 'Voice',
+    onStart: () => undefined,
+    onStop: () => undefined,
+  }
+
+  it('renders the mic when available=true', () => {
+    const html = render({ voice })
+    expect(html).toContain('ai-voice-btn')
+    expect(html).toContain('aria-label="Voice"')
+    expect(html).toContain('aria-pressed="false"')
+  })
+
+  it('reflects the active state via class + aria-pressed', () => {
+    const html = render({ voice: { ...voice, active: true } })
+    expect(html).toContain('ai-voice-btn active')
+    expect(html).toContain('aria-pressed="true"')
+  })
+
+  it('omits the button entirely when available=false', () => {
+    const html = render({ voice: { ...voice, available: false } })
+    expect(html).not.toContain('ai-voice-btn')
+  })
+
+  it('omits the button when the voice prop is absent (backwards compat)', () => {
+    const html = render({})
+    expect(html).not.toContain('ai-voice-btn')
+  })
+})

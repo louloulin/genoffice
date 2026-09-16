@@ -103,6 +103,7 @@ export const ko = {
   aiHintBusy: 'Esc로 중지',
   aiHintIdleTitle: 'Enter로 보내기 · Shift+Enter로 줄 바꿈',
   aiSend: '보내기',
+  aiVoiceInput: '음성 입력',
   aiStop: '중지',
   aiContinue: '계속',
   aiAttachTitle: '로컬 파일을 첨부 (패널로 끌어다 놓아도 됩니다)',

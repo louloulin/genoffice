@@ -1,3 +1,16 @@
+/* Local minimal Web Speech API shape — covers what we use; full DOM lib types
+ * are heavier than this single file needs. */
+interface SpeechRecognitionLike {
+  lang: string
+  interimResults: boolean
+  continuous: boolean
+  onresult: ((ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null  /* event type simplified */
+  onerror: (() => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
@@ -368,6 +381,63 @@ export function AiPanel({
   // Composer working mode (Ask / Craft / Plan) and the skill picked through
   // the `/` palette. Both reach the model through the loop's system suffix.
   const [mode, setMode] = useState<ChatMode>(DEFAULT_CHAT_MODE)
+  /** Web Speech API bridge — only present in Chromium/Safari with a secure
+   *  context. The hook owns the recognizer; AiPanel just hands the active
+   *  state to AiComposer as the `voice` prop. Interim transcripts flow
+   *  through `setPrompt` so the user sees words land as they speak. */
+  const [voiceActive, setVoiceActive] = useState(false)
+  const voiceBaseRef = useRef('')
+  const voiceRef = useRef<{ recog: unknown; base: string } | null>(null)
+  const voiceAvailable =
+    typeof window !== 'undefined' &&
+    Boolean((window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition)
+  const startVoice = useCallback(() => {
+    if (voiceRef.current) return
+    const w = window as unknown as {
+      SpeechRecognition?: new () => SpeechRecognitionLike
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike
+    }
+    const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition
+    if (!Ctor) return
+    const recog = new Ctor()
+    recog.lang = (typeof navigator !== 'undefined' && navigator.language) || 'zh-CN'
+    recog.interimResults = true
+    recog.continuous = true
+    const base = voiceBaseRef.current
+    recog.onresult = (ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => {
+      let interim = ''
+      let finalText = ''
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r = ev.results[i] as { isFinal: boolean; 0: { transcript: string } }
+        const txt = r[0].transcript
+        if (r.isFinal) finalText += txt
+        else interim += txt
+      }
+      const merged = base + (finalText || interim)
+      voiceBaseRef.current = merged
+      setInput(merged)
+      if (finalText) voiceRef.current && (voiceRef.current.base = base + finalText)
+    }
+    recog.onerror = () => setVoiceActive(false)
+    recog.onend = () => setVoiceActive(false)
+    recog.start()
+    voiceRef.current = { recog, base }
+    setVoiceActive(true)
+  }, [])
+  const stopVoice = useCallback(() => {
+    const v = voiceRef.current
+    if (!v) return
+    try { (v.recog as { stop?: () => void }).stop?.() } catch { /* ignore */ }
+    voiceRef.current = null
+    setVoiceActive(false)
+  }, [])
+  const voice = useMemo(
+    () => (voiceAvailable
+      ? { available: true as const, active: voiceActive, label: t('aiVoiceInput'), onStart: startVoice, onStop: stopVoice }
+      : undefined),
+    [voiceAvailable, voiceActive, t, startVoice, stopVoice],
+  )
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null)
   /** Wall-clock start of the current run, drives the elapsed badge */
   const runStartedAtRef = useRef(0)
@@ -2270,6 +2340,7 @@ export function AiPanel({
           mode={mode}
           onModeChange={setMode}
           modeSwitchLabel={t('aiModeSwitchTitle')}
+          voice={voice}
           leading={
             activeSkill !== null && (
               <div className="ai-skill-row">

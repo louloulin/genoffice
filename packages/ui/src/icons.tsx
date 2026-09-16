@@ -125,3 +125,13 @@ export function IconSparkle(props: IconProps) {
     </Svg>
   )
 }
+
+export function IconMic(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="6" y="2" width="4" height="8" rx="2" />
+      <path d="M4 9.5a4 4 0 0 0 8 0" strokeLinejoin="round" />
+      <path d="M8 13.5v2.5M6 16h4" strokeLinecap="round" />
+    </Svg>
+  )
+}

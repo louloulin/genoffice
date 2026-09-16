@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { IconEnter, IconSend, IconStop } from './icons'
+import { IconEnter, IconMic, IconSend, IconStop } from './icons'
 import { useAiPanelPrefs } from './ai-panel-prefs-store'
 import { AiComposerMenu } from './AiComposerMenu'
 import {
@@ -93,6 +93,7 @@ export function AiComposer({
   modeSwitchLabel,
   toolbar,
   leading,
+  voice,
 }: {
   readonly value: string
   readonly busy: boolean
@@ -142,6 +143,16 @@ export function AiComposer({
   readonly onModeChange?: ((mode: ChatMode) => void) | undefined
   /** accessible name for the mode radiogroup */
   readonly modeSwitchLabel?: string | undefined
+  /** Voice input. The composer only renders the mic; the host owns the
+   *  Web Speech API (or native bridge) and pushes interim transcripts through
+   *  `onChange`. `available=false` hides the button entirely. */
+  readonly voice?: {
+    readonly available: boolean | undefined
+    readonly active: boolean | undefined
+    readonly label: string
+    readonly onStart: () => void
+    readonly onStop: () => void
+  } | undefined
   /** right-hand footer slot, before the send button (model picker, counters, …) */
   readonly toolbar?: React.ReactNode
   /** left-hand slot inside the box, above the textarea, aligned with `header` */
@@ -367,6 +378,19 @@ export function AiComposer({
           </span>
         )}
         {toolbar}
+        {voice && voice.available && (
+          <button
+            type="button"
+            className={`ai-voice-btn${voice.active ? ' active' : ''}`}
+            onClick={voice.active ? voice.onStop : voice.onStart}
+            title={voice.label}
+            aria-label={voice.label}
+            aria-pressed={voice.active}
+          >
+            <IconMic size={16} />
+            {!iconOnly && voice.label}
+          </button>
+        )}
         {busy ? (
           <button
             className="ai-send-btn ai-stop-btn"

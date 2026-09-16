@@ -105,6 +105,7 @@ export const pt = {
   aiHintBusy: 'Esc para parar',
   aiHintIdleTitle: 'Enter para enviar · Shift+Enter para nova linha',
   aiSend: 'Enviar',
+  aiVoiceInput: 'Entrada por voz',
   aiStop: 'Parar',
   aiContinue: 'Continuar',
   aiAttachTitle: 'Anexar arquivos locais (ou arraste-os para o painel)',

@@ -105,6 +105,7 @@ export const cs = {
   aiHintBusy: 'Esc zastaví',
   aiHintIdleTitle: 'Enter odešle · Shift+Enter nový řádek',
   aiSend: 'Odeslat',
+  aiVoiceInput: 'Hlasový vstup',
   aiStop: 'Zastavit',
   aiContinue: 'Pokračovat',
   aiAttachTitle: 'Připojit místní soubory (nebo je přetáhněte na panel)',

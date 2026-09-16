@@ -106,6 +106,7 @@ export const it = {
   aiHintBusy: 'Esc per interrompere',
   aiHintIdleTitle: 'Invio per inviare · Maiusc+Invio per andare a capo',
   aiSend: 'Invia',
+  aiVoiceInput: 'Input vocale',
   aiStop: 'Interrompi',
   aiContinue: 'Continua',
   aiAttachTitle: 'Allega file locali (o trascinali sul pannello)',

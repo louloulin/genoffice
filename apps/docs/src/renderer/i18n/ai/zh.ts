@@ -101,6 +101,7 @@ export const zh = {
   aiHintBusy: 'Esc 停止',
   aiHintIdleTitle: 'Enter 发送 · Shift+Enter 换行',
   aiSend: '发送',
+  aiVoiceInput: '语音输入',
   aiStop: '停止',
   aiContinue: '继续',
   aiAttachTitle: '添加本地文件作为附件(也可拖拽到面板)',

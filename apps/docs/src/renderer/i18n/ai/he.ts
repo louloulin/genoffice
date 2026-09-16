@@ -102,6 +102,7 @@ export const he = {
   aiHintBusy: 'Esc לעצירה',
   aiHintIdleTitle: 'Enter לשליחה · Shift+Enter לשורה חדשה',
   aiSend: 'שליחה',
+  aiVoiceInput: 'קלט קולי',
   aiStop: 'עצירה',
   aiContinue: 'המשך',
   aiAttachTitle: 'צירוף קבצים מקומיים (אפשר גם לגרור אל החלונית)',

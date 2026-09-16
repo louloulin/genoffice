@@ -102,6 +102,7 @@ export const zhTW = {
   aiHintBusy: 'Esc 停止',
   aiHintIdleTitle: 'Enter 傳送 · Shift+Enter 換行',
   aiSend: '傳送',
+  aiVoiceInput: '語音輸入',
   aiStop: '停止',
   aiContinue: '繼續',
   aiAttachTitle: '新增本機檔案作為附件(也可拖曳到面板)',

@@ -106,6 +106,7 @@ export const fr = {
   aiHintBusy: 'Échap pour arrêter',
   aiHintIdleTitle: 'Entrée pour envoyer · Maj+Entrée pour un saut de ligne',
   aiSend: 'Envoyer',
+  aiVoiceInput: 'Saisie vocale',
   aiStop: 'Arrêter',
   aiContinue: 'Continuer',
   aiAttachTitle: 'Joindre des fichiers locaux (ou faites-les glisser sur le panneau)',

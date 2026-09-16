@@ -106,6 +106,7 @@ export const de = {
   aiHintBusy: 'Esc zum Stoppen',
   aiHintIdleTitle: 'Eingabetaste zum Senden · Umschalt+Eingabetaste für neue Zeile',
   aiSend: 'Senden',
+  aiVoiceInput: 'Spracheingabe',
   aiStop: 'Stopp',
   aiContinue: 'Fortfahren',
   aiAttachTitle: 'Lokale Dateien anhängen (oder auf den Bereich ziehen)',

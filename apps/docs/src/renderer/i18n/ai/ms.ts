@@ -104,6 +104,7 @@ export const ms = {
   aiHintBusy: 'Esc untuk berhenti',
   aiHintIdleTitle: 'Enter untuk hantar · Shift+Enter untuk baris baharu',
   aiSend: 'Hantar',
+  aiVoiceInput: 'Input suara',
   aiStop: 'Berhenti',
   aiContinue: 'Teruskan',
   aiAttachTitle: 'Lampirkan fail setempat (atau seret ke panel)',

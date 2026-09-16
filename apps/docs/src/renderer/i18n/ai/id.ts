@@ -104,6 +104,7 @@ export const id = {
   aiHintBusy: 'Esc untuk berhenti',
   aiHintIdleTitle: 'Enter untuk kirim · Shift+Enter untuk baris baru',
   aiSend: 'Kirim',
+  aiVoiceInput: 'Input suara',
   aiStop: 'Berhenti',
   aiContinue: 'Lanjutkan',
   aiAttachTitle: 'Lampirkan file lokal (atau seret ke panel)',

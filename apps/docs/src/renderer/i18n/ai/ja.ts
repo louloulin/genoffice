@@ -103,6 +103,7 @@ export const ja = {
   aiHintBusy: 'Esc で停止',
   aiHintIdleTitle: 'Enter で送信 · Shift+Enter で改行',
   aiSend: '送信',
+  aiVoiceInput: '音声入力',
   aiStop: '停止',
   aiContinue: '続ける',
   aiAttachTitle: 'ローカルファイルを添付(パネルへのドラッグ&ドロップも可)',

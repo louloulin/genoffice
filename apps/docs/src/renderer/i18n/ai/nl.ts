@@ -105,6 +105,7 @@ export const nl = {
   aiHintBusy: 'Esc om te stoppen',
   aiHintIdleTitle: 'Enter om te verzenden · Shift+Enter voor een nieuwe regel',
   aiSend: 'Verzenden',
+  aiVoiceInput: 'Spraakinvoer',
   aiStop: 'Stoppen',
   aiContinue: 'Doorgaan',
   aiAttachTitle: 'Lokale bestanden bijvoegen (of sleep ze naar het paneel)',

@@ -105,6 +105,7 @@ export const es = {
   aiHintBusy: 'Esc para detener',
   aiHintIdleTitle: 'Entrar para enviar · Mayús+Entrar para nueva línea',
   aiSend: 'Enviar',
+  aiVoiceInput: 'Entrada de voz',
   aiStop: 'Detener',
   aiContinue: 'Continuar',
   aiAttachTitle: 'Adjuntar archivos locales (o arrástralos al panel)',

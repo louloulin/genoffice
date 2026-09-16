@@ -104,6 +104,7 @@ export const hi = {
   aiHintBusy: 'रोकने के लिए Esc',
   aiHintIdleTitle: 'भेजने के लिए Enter · नई पंक्ति के लिए Shift+Enter',
   aiSend: 'भेजें',
+  aiVoiceInput: 'वॉइस इनपुट',
   aiStop: 'रोकें',
   aiContinue: 'जारी रखें',
   aiAttachTitle: 'स्थानीय फ़ाइलें संलग्न करें (या उन्हें पैनल पर खींचें)',

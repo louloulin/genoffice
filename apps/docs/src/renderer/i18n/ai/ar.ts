@@ -102,6 +102,7 @@ export const ar = {
   aiHintBusy: 'Esc للإيقاف',
   aiHintIdleTitle: 'Enter للإرسال · Shift+Enter لسطر جديد',
   aiSend: 'إرسال',
+  aiVoiceInput: 'إدخال صوتي',
   aiStop: 'إيقاف',
   aiContinue: 'متابعة',
   aiAttachTitle: 'إرفاق ملفات محلية (أو اسحبها إلى اللوحة)',
