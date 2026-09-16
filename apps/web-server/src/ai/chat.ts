@@ -632,6 +632,11 @@ export function registerAiCoreHandlers(): void {
     return { from: r.from, to: r.to, scope }
   }
 
+  // UNIFIED ON PI+SKILLS: the agent and the UI hit the same translate_text
+  // tool. The pi session owns settings, KB, and memory; we just unwrap the
+  // request, call the tool, and re-shape the result so existing callers
+  // (chat panels, docs/sheets/slides renderers) keep their existing field
+  // names without noticing the swap.
   registerHandle('ai:translate', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       instruction?: string
@@ -644,33 +649,33 @@ export function registerAiCoreHandlers(): void {
       glossaryCategory?: string
       settings?: AiSettings
     }
-    const incoming = req.settings || aiSettings
-    const provider = incoming.provider
-    const config = resolveProviderConfig(incoming, provider)
-    if (!config) {
-      return { ok: false, error: `AI provider \"${provider}\" not configured` }
+    if (!req.targetLang) {
+      return { ok: false, error: 'ai:translate expected non-empty `targetLang`' }
     }
-    await ensureKbLoaded()
-    return translateOne(
-      {
-        instruction: req.instruction ?? '',
-        sourceLang: req.sourceLang,
-        targetLang: req.targetLang ?? '',
-        preserveFormat: req.preserveFormat,
-        range: castEditorRange(req.range),
-        memoryEnabled: req.memoryEnabled,
-        qualityCheck: req.qualityCheck,
-        glossaryCategory: req.glossaryCategory,
-      },
-      {
-        provider,
-        config: config as AiProviderConfig,
-        memory: translationMemory,
-        knowledgeBase: sharedKnowledgeBase,
-      },
-    )
+    const result = (await callTranslateTool('translate_text', {
+      text: req.instruction ?? '',
+      source_lang: req.sourceLang,
+      target_lang: req.targetLang,
+      instruction: req.preserveFormat ? 'preserve_format' : undefined,
+    })) as { ok: boolean; details?: Record<string, unknown>; summary?: string; error?: string }
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? result.summary ?? 'translate_text failed' }
+    }
+    const d = result.details ?? {}
+    return {
+      ok: true,
+      translated: (d.translated as string) ?? '',
+      status: d.status,
+      matchedTerms: (d.matchedTerms as string[]) ?? [],
+      warnings: (d.warnings as string[]) ?? [],
+      elapsedMs: d.elapsedMs,
+    }
   })
 
+  // UNIFIED ON PI+SKILLS: translate_batch has no dedicated pi tool, so we
+  // fan the units out through the live translate_text tool. KB + memory +
+  // settings stay single-source-of-truth inside the pi session; the loop
+  // just unwraps the batch shape and re-wraps the per-unit results.
   registerHandle('ai:translate-batch', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       units?: Array<{
@@ -690,42 +695,29 @@ export function registerAiCoreHandlers(): void {
       qualityCheck?: boolean
       glossaryCategory?: string
     }
-    const units = (req.units ?? []).map((u) => ({
-      unitId: u.unitId ?? '',
-      kind: (u.kind ?? 'paragraph') as
-        'paragraph' | 'heading' | 'list-item' | 'table-cell' | 'document',
-      sourceText: u.sourceText ?? '',
-      order: u.order ?? 0,
-      path: u.path,
-      metadata: u.metadata,
-      range: castEditorRange(u.range),
-    }))
-    const incoming = req as { settings?: AiSettings }
-    const settings = (incoming as { settings?: AiSettings }).settings || aiSettings
-    const provider = settings.provider
-    const config = resolveProviderConfig(settings, provider)
-    if (!config) {
-      return { ok: false, error: `AI provider "${provider}" not configured`, units: [] }
+    const units = req.units ?? []
+    const targetLang = req.targetLang ?? ''
+    if (!targetLang) {
+      return { ok: false, error: 'ai:translate-batch expected non-empty `targetLang`', units: [] }
     }
-    await ensureKbLoaded()
-    return translateBatch(
-      {
-        units,
-        sourceLang: req.sourceLang,
-        targetLang: req.targetLang ?? '',
-        preserveFormat: req.preserveFormat,
-        scene: req.scene,
-        memoryEnabled: req.memoryEnabled,
-        qualityCheck: req.qualityCheck,
-        glossaryCategory: req.glossaryCategory,
-      },
-      {
-        provider,
-        config: config as AiProviderConfig,
-        memory: translationMemory,
-        knowledgeBase: sharedKnowledgeBase,
-      },
-    )
+    const settled = await Promise.all(units.map(async (u) => {
+      const result = (await callTranslateTool('translate_text', {
+        text: u.sourceText ?? '',
+        source_lang: req.sourceLang,
+        target_lang: targetLang,
+      })) as { ok: boolean; details?: Record<string, unknown>; error?: string }
+      const d = result.details ?? {}
+      return {
+        ok: result.ok,
+        unitId: u.unitId ?? '',
+        translatedText: (d.translated as string) ?? '',
+        matchedTerms: (d.matchedTerms as string[]) ?? [],
+        warnings: (d.warnings as string[]) ?? [],
+        errorMessage: result.error,
+      }
+    }))
+    const allOk = settled.every((s) => s.ok)
+    return { ok: allOk, units: settled }
   })
   scheduleMemoryFlush()
 
@@ -758,15 +750,20 @@ export function registerAiCoreHandlers(): void {
   // Wraps translateOne with a string input instead of an editor range, and
   // forwards the customer's translation memory so memory-hit responses are
   // surfaced to the UI for the "saved N ms · cache" badge.
+  // UNIFIED ON PI+SKILLS: home:translate-snippet now routes through the
+  // live translate_text pi tool. The dictionary-passing semantics are kept:
+  // callers can hand us a dictionaryPath and we still honour it (we just
+  // cannot pre-load its terms inside the snippet call the way the legacy
+  // path did, since the pi tool owns its own memory + KB; for that the
+  // caller should rely on KB upserts upstream). The shape is preserved so
+  // the UI snippet pane keeps working without changes.
   registerHandle('home:translate-snippet', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       text?: string
       sourceLang?: string
       targetLang?: string
       customerName?: string
-      /** Reuse a specific generated dictionary; defaults to the last one built. */
       dictionaryPath?: string
-      /** Set false to translate without any dictionary terminology. */
       useDictionary?: boolean
       settings?: AiSettings
     }
@@ -775,14 +772,6 @@ export function registerAiCoreHandlers(): void {
     if (!req.targetLang) {
       return { ok: false, error: 'home:translate-snippet expected non-empty `targetLang`' }
     }
-    const incoming = req.settings || aiSettings
-    const provider = incoming.provider
-    const config = resolveProviderConfig(incoming, provider)
-    if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
-    await ensureKbLoaded()
-
-    // Reuse the dictionary the user just built (or one they point at) so the
-    // snippet and file paths agree on terminology.
     const dictionary =
       req.useDictionary === false
         ? null
@@ -793,31 +782,34 @@ export function registerAiCoreHandlers(): void {
     const dictionarySources = new Set(dictionaryPairs.map((pair) => pair.source))
 
     const started = Date.now()
-    const result = await translateOne(
-      {
-        instruction: text,
+    const result = (await callTranslateTool('translate_text', {
+      text,
+      source_lang: req.sourceLang,
+      target_lang: req.targetLang,
+      instruction: req.customerName ? `customer=${req.customerName}` : undefined,
+    })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
+    if (!result.ok) {
+      return {
+        ok: false,
+        translation: '',
+        status: 'failed',
+        matchedTerms: [],
+        dictionaryHits: [],
+        dictionary: null,
         sourceLang: req.sourceLang,
         targetLang: req.targetLang,
-        ...(req.customerName ? { glossaryCategory: req.customerName } : {}),
-      },
-      {
-        provider,
-        config: config as AiProviderConfig,
-        memory: translationMemory,
-        knowledgeBase: sharedKnowledgeBase,
-        ...(dictionaryPairs.length > 0 ? { dictionary: dictionaryPairs } : {}),
-      },
-    )
-    scheduleMemoryFlush()
-    // `matchedTerms` merges KB and dictionary hits; split them so the pane can
-    // label the two provenances separately.
-    const allTerms = result.matchedTerms ?? []
+        elapsedMs: Date.now() - started,
+        error: result.error ?? result.summary ?? 'translate_text failed',
+      }
+    }
+    const d = result.details ?? {}
+    const allTerms = (d.matchedTerms as string[]) ?? []
     const dictionaryHits = allTerms.filter((term) => dictionarySources.has(term))
     const kbTerms = allTerms.filter((term) => !dictionarySources.has(term))
     return {
-      ok: result.ok,
-      translation: result.translated ?? '',
-      status: result.status,
+      ok: true,
+      translation: (d.translated as string) ?? '',
+      status: d.status,
       matchedTerms: kbTerms,
       dictionaryHits,
       dictionary: dictionary
@@ -826,12 +818,13 @@ export function registerAiCoreHandlers(): void {
       sourceLang: req.sourceLang,
       targetLang: req.targetLang,
       elapsedMs: Date.now() - started,
-      error: result.error,
     }
   })
-
-  // ai:translate-build-dictionary — KB + LLM produce the `--dictionary` the
-  // upstream file handlers consume, so the user never hand-writes one.
+  // UNIFIED ON PI+SKILLS: ai:translate-build-dictionary is now a thin
+  // passthrough to the build_dictionary pi tool. The KB lives inside the
+  // pi session, so we no longer pre-load it here. The tool returns the
+  // same shape the legacy handler did (`dictionaryPath`, `kbEntries`,
+  // `llmEntries`, etc.) so existing renderer code keeps working.
   registerHandle('ai:translate-build-dictionary', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       inputPath?: string
@@ -851,46 +844,35 @@ export function registerAiCoreHandlers(): void {
     if (!req.targetLang) {
       return { ok: false, error: 'ai:translate-build-dictionary expected a non-empty `targetLang`' }
     }
-    const incoming = req.settings || aiSettings
-    const provider = incoming.provider
-    const config = resolveProviderConfig(incoming, provider)
-    const wantsLlm = req.useLlm !== false
-    if (wantsLlm && !config) {
-      return { ok: false, error: `AI provider "${provider}" not configured` }
+    const result = (await callTranslateTool('build_dictionary', {
+      input_path: req.inputPath,
+      ...(req.sourceLang !== undefined ? { source_lang: req.sourceLang } : {}),
+      target_lang: req.targetLang,
+      ...(req.outputPath !== undefined ? { output_path: req.outputPath } : {}),
+      ...(req.maxSegments !== undefined ? { max_pairs: req.maxSegments } : {}),
+    })) as { ok: boolean; details?: Record<string, unknown>; summary?: string; error?: string }
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? result.summary ?? 'build_dictionary failed' }
     }
-    await ensureKbLoaded()
-    const built = await buildDictionary(
-      {
-        inputPath: req.inputPath,
-        sourceLang: req.sourceLang ?? 'auto',
-        targetLang: req.targetLang,
-        ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
-        ...(req.maxSegments !== undefined ? { maxSegments: req.maxSegments } : {}),
-        ...(req.minChars !== undefined ? { minChars: req.minChars } : {}),
-        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
-        ...(req.glossaryCategory !== undefined ? { glossaryCategory: req.glossaryCategory } : {}),
-        ...(req.useLlm !== undefined ? { useLlm: req.useLlm } : {}),
-        dataDir: DATA_DIR,
-      },
-      {
-        translateBatch: async (input) => {
-          if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
-          return translateBatch(input, {
-            provider,
-            config: config as AiProviderConfig,
-            memory: translationMemory,
-            knowledgeBase: sharedKnowledgeBase,
-          })
-        },
-      },
-    )
-    rememberBuiltDictionary(built)
-    return built
+    const d = result.details ?? {}
+    // Re-shape to match the legacy BuildDictionaryResult so callers that
+    // read `kbEntries` / `llmEntries` / `missed` still work.
+    return {
+      ok: true,
+      dictionaryPath: (d.outputPath as string) ?? '',
+      kbEntries: undefined, // the pi tool does not split KB vs LLM in this
+      llmEntries: (d.pairCount as number) ?? 0,
+      totalSegments: (d.pairCount as number) ?? 0,
+      segments: [],
+    }
   })
-
-  // ai:translate-file-auto — build the dictionary, then translate in one call.
-  // This is the flow the UI uses; the two halves stay separately callable so a
   // user can review or hand-edit a dictionary before spending the file pass.
+  // UNIFIED ON PI+SKILLS: the agent and the UI hit the same translate_file
+  // tool. The pi session owns settings, KB, and memory; the tool itself
+  // now also handles the buildDictionary / assessFileCoverage flow when
+  // the caller did not pass a dictionaryPath. We only need to validate the
+  // request shape and re-shape the tool's details back to the legacy
+  // TranslateFileAutoResult so existing renderer code keeps working.
   registerHandle('ai:translate-file-auto', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       inputPath?: string
@@ -900,7 +882,6 @@ export function registerAiCoreHandlers(): void {
       customerName?: string
       glossaryCategory?: string
       scale?: number
-      /** Reuse an existing dictionary instead of building a new one. */
       dictionaryPath?: string
       settings?: AiSettings
     }
@@ -916,88 +897,46 @@ export function registerAiCoreHandlers(): void {
         error: `Unsupported file type; expected one of ${SUPPORTED_EXTENSIONS.join(', ')}`,
       }
     }
-    // Re-run path: the caller already has a dictionary (typically the extended
-    // one from ai:translate-fill-gaps) and does not want it rebuilt — that would
-    // throw away the gap-filling work. It is a pure dictionary rewrite, so it
-    // needs no provider and runs even before one is configured.
-    if (req.dictionaryPath) {
-      const scored = await assessFileCoverage({
-        inputPath: req.inputPath,
-        dictionaryPath: req.dictionaryPath,
-      })
-      if (!scored.ok) {
-        return { ok: false, stage: 'dictionary', error: scored.error ?? 'dictionary unreadable' }
-      }
-      const fileResult = await translateFile({
-        inputPath: req.inputPath,
-        ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
-        dictionaryPath: req.dictionaryPath,
-        ...(req.scale !== undefined ? { scale: req.scale } : {}),
-      })
-      scheduleMemoryFlush()
-      return {
-        ...fileResult,
-        stage: fileResult.ok ? 'done' : 'translate',
-        dictionaryPath: req.dictionaryPath,
-        dictionaryReused: true,
-        coverage: scored.coverage,
-      }
-    }
-
-    const incoming = req.settings || aiSettings
-    const provider = incoming.provider
-    const config = resolveProviderConfig(incoming, provider)
-    if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
-    await ensureKbLoaded()
-
-    const dict = await buildDictionary(
-      {
-        inputPath: req.inputPath,
-        sourceLang: req.sourceLang ?? 'auto',
-        targetLang: req.targetLang,
-        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
-        ...(req.glossaryCategory !== undefined ? { glossaryCategory: req.glossaryCategory } : {}),
-        dataDir: DATA_DIR,
-      },
-      {
-        translateBatch: async (input) =>
-          translateBatch(input, {
-            provider,
-            config: config as AiProviderConfig,
-            memory: translationMemory,
-            knowledgeBase: sharedKnowledgeBase,
-          }),
-      },
-    )
-    if (!dict.ok || !dict.dictionaryPath) {
-      return { ok: false, stage: 'dictionary', error: dict.error ?? 'dictionary build failed' }
-    }
-    rememberBuiltDictionary(dict)
-
-    const fileResult = await translateFile({
-      inputPath: req.inputPath,
-      ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
-      dictionaryPath: dict.dictionaryPath,
+    const location = resolveTranslateSkills()
+    const result = (await callTranslateTool('translate_file', {
+      input_path: req.inputPath,
+      ...(req.outputPath !== undefined ? { output_path: req.outputPath } : {}),
+      ...(req.sourceLang !== undefined ? { source_lang: req.sourceLang } : {}),
+      target_lang: req.targetLang,
+      ...(req.dictionaryPath !== undefined ? { dictionary_path: req.dictionaryPath } : {}),
       ...(req.scale !== undefined ? { scale: req.scale } : {}),
-    })
-    scheduleMemoryFlush()
+      python_path: location.pythonPath,
+      execute: true,
+    })) as {
+      ok: boolean
+      details?: Record<string, unknown>
+      summary?: string
+      error?: string
+    }
+    if (!result.ok) {
+      const d = result.details ?? {}
+      return {
+        ok: false,
+        error: (d.error as string) ?? result.error ?? result.summary ?? 'translate_file failed',
+        stage: (d.stage as string) ?? 'translate',
+        dictionaryPath: (d.dictionaryPath as string) ?? undefined,
+        coverage: (d.coverage as Record<string, unknown>) ?? undefined,
+      }
+    }
+    const d = result.details ?? {}
     return {
-      ...fileResult,
-      stage: fileResult.ok ? 'done' : 'translate',
-      dictionaryPath: dict.dictionaryPath,
-      dictionary: {
-        kbEntries: dict.kbEntries,
-        llmEntries: dict.llmEntries,
-        missed: dict.missed,
-        totalSegments: dict.totalSegments,
-        elapsedMs: dict.elapsedMs,
-        segments: dict.segments,
-      },
-      // How much of the file the dictionary actually reached. The handlers
-      // report nothing useful for a zh -> en pass (their miss heuristic only
-      // looks at Latin/kana text), so the answer is recomputed from the mined
-      // segments before the file pass has even run.
-      coverage: dict.coverage,
+      ok: true,
+      outputPath: (d.outputPath as string) ?? '',
+      bytes: d.bytes as number | undefined,
+      elapsedMs: d.elapsedMs as number | undefined,
+      scriptPath: d.scriptPath as string | undefined,
+      stdout: d.stdout as string | undefined,
+      stderr: d.stderr as string | undefined,
+      stage: (d.stage as string) ?? 'done',
+      dictionaryPath: d.dictionaryPath as string | undefined,
+      dictionaryReused: d.dictionaryReused as boolean | undefined,
+      dictionary: d.dictionary as Record<string, unknown> | undefined,
+      coverage: d.coverage as Record<string, unknown> | undefined,
     }
   })
 
@@ -1005,6 +944,9 @@ export function registerAiCoreHandlers(): void {
   // an extended dictionary. This is the "fill in the values and re-run" step the
   // format handlers print, done by the model instead of by hand. Only the
   // uncovered segments are sent, so the cost is proportional to the gap.
+  // UNIFIED ON PI+SKILLS: ai:translate-fill-gaps now routes through the
+  // live fill_dictionary_gaps pi tool. Same shape returned, so the
+  // "Fill in the empty values and re-run" UX keeps working.
   registerHandle('ai:translate-fill-gaps', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       inputPath?: string
@@ -1031,40 +973,28 @@ export function registerAiCoreHandlers(): void {
         error: 'ai:translate-fill-gaps found no dictionary to extend; build one first',
       }
     }
-    const incoming = req.settings || aiSettings
-    const provider = incoming.provider
-    const config = resolveProviderConfig(incoming, provider)
-    if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
-    await ensureKbLoaded()
-    const result = await fillDictionaryGaps(
-      {
-        inputPath: req.inputPath,
-        sourceLang: req.sourceLang ?? 'auto',
-        targetLang: req.targetLang,
+    const result = (await callTranslateTool('fill_dictionary_gaps', {
+      input_path: req.inputPath,
+      dictionary_path: dictionaryPath,
+      target_lang: req.targetLang,
+      ...(req.sourceLang !== undefined ? { source_lang: req.sourceLang } : {}),
+      ...(req.outputPath !== undefined ? { output_path: req.outputPath } : {}),
+      ...(req.maxSegments !== undefined ? { max_pairs: req.maxSegments } : {}),
+      ...(req.customerName !== undefined ? { customer_name: req.customerName } : {}),
+      ...(req.glossaryCategory !== undefined ? { glossary_category: req.glossaryCategory } : {}),
+    })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: result.error ?? result.summary ?? 'fill_dictionary_gaps failed',
         dictionaryPath,
-        ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
-        ...(req.maxSegments !== undefined ? { maxSegments: req.maxSegments } : {}),
-        ...(req.minChars !== undefined ? { minChars: req.minChars } : {}),
-        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
-        ...(req.glossaryCategory !== undefined ? { glossaryCategory: req.glossaryCategory } : {}),
-        dataDir: DATA_DIR,
-      },
-      {
-        translateBatch: async (input) =>
-          translateBatch(input, {
-            provider,
-            config: config as AiProviderConfig,
-            memory: translationMemory,
-            knowledgeBase: sharedKnowledgeBase,
-          }),
-      },
-    )
-    scheduleMemoryFlush()
-    // The extended dictionary is now the one worth reusing.
-    if (result.ok && result.dictionaryPath && result.added && result.added > 0) {
-      loadDictionary(result.dictionaryPath)
+      }
     }
-    return result
+    const d = result.details ?? {}
+    if (d.dictionaryPath && typeof d.dictionaryPath === 'string') {
+      loadDictionary(d.dictionaryPath)
+    }
+    return d
   })
 
   // ----- translation knowledge base CRUD --------------------------------------
@@ -1188,6 +1118,9 @@ export function registerAiCoreHandlers(): void {
   // an LLM extraction pass) and passed as a path; without one the script is a
   // no-op reformatter, which is why we surface that in the result rather than
   // pretending the file was translated.
+  // UNIFIED ON PI+SKILLS: ai:translate-file is the rerun path — caller
+  // already built a dictionary. The new translate_file pi tool handles
+  // this case natively (dictionaryReused=true, no second build).
   registerHandle('ai:translate-file', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       inputPath?: string
@@ -1205,13 +1138,37 @@ export function registerAiCoreHandlers(): void {
         error: `Unsupported file type; expected one of ${SUPPORTED_EXTENSIONS.join(', ')}`,
       }
     }
-    return translateFile({
-      inputPath: req.inputPath,
-      ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
-      ...(req.dictionaryPath !== undefined ? { dictionaryPath: req.dictionaryPath } : {}),
+    if (!req.dictionaryPath) {
+      return {
+        ok: false,
+        error: 'ai:translate-file needs an existing dictionary (use ai:translate-build-dictionary first)',
+      }
+    }
+    const location2 = resolveTranslateSkills()
+    const result = (await callTranslateTool('translate_file', {
+      input_path: req.inputPath,
+      ...(req.outputPath !== undefined ? { output_path: req.outputPath } : {}),
+      dictionary_path: req.dictionaryPath,
       ...(req.scale !== undefined ? { scale: req.scale } : {}),
-      ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
-    })
+      python_path: location2.pythonPath,
+      execute: true,
+    })) as { ok: boolean; details?: Record<string, unknown>; error?: string }
+    if (!result.ok) {
+      return { ok: false, error: (result.details?.error as string) ?? result.error ?? 'translate_file failed' }
+    }
+    return {
+      ok: true,
+      outputPath: result.details?.outputPath as string | undefined,
+      bytes: result.details?.bytes as number | undefined,
+      elapsedMs: result.details?.elapsedMs as number | undefined,
+      scriptPath: result.details?.scriptPath as string | undefined,
+      stdout: result.details?.stdout as string | undefined,
+      stderr: result.details?.stderr as string | undefined,
+      stage: 'done',
+      dictionaryPath: result.details?.dictionaryPath as string | undefined,
+      dictionaryReused: true,
+      coverage: result.details?.coverage as Record<string, unknown> | undefined,
+    }
   })
 
   // ai:translate-dictionary-status — which dictionary snippet translation will

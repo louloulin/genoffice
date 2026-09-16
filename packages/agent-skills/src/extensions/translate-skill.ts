@@ -37,10 +37,24 @@ import { homedir } from "node:os"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 
 import {
-  translateOne,
+  assessFileCoverage,
+  buildDictionary,
+  buildTranslationPrompt,
+  buildTranslateSystemPrompt,
+  defaultOutputPath,
+  extractTranslationText,
+  fillDictionaryGaps,
+  isSupportedExtension,
   KnowledgeBase,
   sharedMemory,
-  extractTranslationText,
+  translateBatch,
+  translateFile,
+  translateOne,
+  type BuildDictionaryRequest,
+  type BuildDictionaryResult,
+  type CoverageReport,
+  type FillGapsRequest,
+  type FillGapsResult,
   type TranslateRequest,
   type TranslateResponse,
 } from "@genoffice/translation-core"
@@ -377,6 +391,26 @@ interface TranslateFileResult {
   outputPath?: string
   handler?: 'lumos-pdf' | 'lumos-docx' | 'lumos-xls' | 'lumos-ppt' | 'ts-fallback'
   bashCommand?: string
+  bytes?: number
+  scriptPath?: string
+  stdout?: string
+  stderr?: string
+  exitCode?: number
+  /** 'dictionary' = builder failed; 'translate' = python failed; 'done' = ok */
+  stage?: 'dictionary' | 'translate' | 'done'
+  dictionaryPath?: string
+  /** True when the caller supplied a pre-built dictionary and we reused it */
+  dictionaryReused?: boolean
+  /** Rich dictionary + coverage payload, same shape as chat.ts ai:translate-file-auto. */
+  dictionary?: {
+    kbEntries?: number
+    llmEntries?: number
+    missed?: string[]
+    totalSegments?: number
+    elapsedMs?: number
+    segments?: BuildDictionaryResult["segments"]
+  }
+  coverage?: CoverageReport
   elapsedMs?: number
   error?: string
 }
@@ -386,20 +420,75 @@ interface TranslateFileResult {
  * the caller (UI) does not have the agent loop's `bash` tool available.
  * Mirrors the command shape the agent loop runs.
  */
-import { spawn as nodeSpawn } from "node:child_process"
+import { spawn as nodeSpawn, execFileSync } from "node:child_process"
+
+/**
+ * Locate a Python interpreter capable of running the upstream LumosAI
+ * translator. The scripts depend on PyMuPDF / pypdfium2 / python-docx /
+ * python-pptx / openpyxl, which the stock macOS `/usr/bin/python3` does
+ * NOT ship with. The Homebrew install at `/opt/homebrew/bin/python3.14`
+ * has all of these on developer macs.
+ *
+ * Resolution order:
+ *   1. Explicit caller override (translate_file.python_path)
+ *   2. `GENOFFICE_PYTHON` env var
+ *   3. Homebrew python3.14 / 3.13 / 3.12 / 3.11 — only accepted if a
+ *      probe import of pypdfium2 + fitz + docx + pptx + openpyxl succeeds
+ *   4. `python3` from PATH (last-resort fallback)
+ */
+function resolvePython(explicit?: string): string {
+  const tryProbe = (bin: string): string | null => {
+    try {
+      execFileSync(bin, ["-c", "import pypdfium2,fitz,docx,pptx,openpyxl"], {
+        stdio: "ignore",
+        timeout: 3000,
+      })
+      return bin
+    } catch {
+      return null
+    }
+  }
+  const tryExists = (bin: string): boolean => {
+    try {
+      execFileSync("/usr/bin/test", ["-x", bin], { stdio: "ignore" })
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (explicit) return explicit
+  const env = process.env.GENOFFICE_PYTHON
+  if (env) return env
+  const candidates = [
+    "/opt/homebrew/bin/python3.14",
+    "/opt/homebrew/bin/python3.13",
+    "/opt/homebrew/bin/python3.12",
+    "/opt/homebrew/bin/python3.11",
+    "/opt/homebrew/bin/python3",
+    "python3",
+  ]
+  for (const c of candidates) {
+    if (c.startsWith("/") && !tryExists(c)) continue
+    const probed = tryProbe(c)
+    if (probed) return probed
+  }
+  return "python3"
+}
+
 async function executeFileTranslation(args: {
   script: string
   inputPath: string
   outputPath: string
   dictionaryPath?: string
   pythonPath?: string
-}): Promise<{ ok: boolean; stdout: string; stderr: string; code: number; elapsedMs: number; error?: string }> {
+}): Promise<{ ok: boolean; stdout: string; stderr: string; code: number; elapsedMs: number; bytes?: number; error?: string }> {
   const start = Date.now()
+  const pythonBin = resolvePython(args.pythonPath)
   const dict = args.dictionaryPath ? ` --dictionary "${args.dictionaryPath}"` : ""
-  const cmd = `${args.pythonPath ?? "python3"} "${args.script}" "${args.inputPath}" "${args.outputPath}"${dict}`
+  const cmd = `${pythonBin} "${args.script}" "${args.inputPath}" "${args.outputPath}"${dict}`
   return await new Promise((resolve) => {
     try {
-      const proc = nodeSpawn(args.pythonPath ?? "python3", [
+      const proc = nodeSpawn(pythonBin, [
         args.script,
         args.inputPath,
         args.outputPath,
@@ -413,12 +502,23 @@ async function executeFileTranslation(args: {
         resolve({ ok: false, stdout, stderr: stderr + "\n" + err.message, code: -1, elapsedMs: Date.now() - start, error: err.message })
       })
       proc.on("close", (code) => {
+        // Best-effort: stat the output file for `bytes`. A real Python
+        // translator always writes here on success, but we never want this
+        // helper to throw — a stat failure is fine.
+        let bytes: number | undefined
+        try {
+          const { statSync } = require("node:fs")
+          bytes = statSync(args.outputPath).size
+        } catch {
+          bytes = undefined
+        }
         resolve({
           ok: code === 0,
           stdout,
           stderr,
           code: code ?? -1,
           elapsedMs: Date.now() - start,
+          bytes,
           ...(code !== 0 ? { error: stderr.split("\n").filter(Boolean).pop() || `exit ${code}` } : {}),
         })
       })
@@ -456,16 +556,126 @@ function createTranslateFileTool() {
           const dict = params.dictionary_path ? ` --dictionary ${params.dictionary_path}` : ""
           const cmd = `${params.python_path ?? "python3"} ${lumos.script} "${params.input_path}" "${out}"${dict}`
           if (params.execute) {
-            // UI / IPC path: actually run the translator. The agent loop
-            // leaves execute unset and gets back the bash command it can
-            // audit through its own bash tool.
+            // UI / IPC path: actually run the translator end-to-end. The agent
+            // loop leaves execute unset and gets back the bash command it can
+            // audit through its own bash tool. Mirrors chat.ts ai:translate-file-auto:
+            //   1. (rerun only) assess coverage of the supplied dictionary
+            //   2. (default) build a KB+LLM dictionary if the caller did not
+            //      hand us one
+            //   3. spawn the LumosAI Python translator with --dictionary
+            //   4. assess coverage so the UI can show the same stats it had
+            //      on the legacy path
+            let dictionaryPath = params.dictionary_path
+            let dictInfo: TranslateFileResult["dictionary"]
+            let coverage: CoverageReport | undefined
+            let dictionaryReused = false
+
+            if (dictionaryPath) {
+              // Re-run path: the caller already paid the dictionary build.
+              const scored = await assessFileCoverage({
+                inputPath: params.input_path,
+                dictionaryPath,
+              })
+              if (!scored.ok) {
+                return {
+                  content: [{ type: "text" as const, text: `translate_file(${ext}) failed at dictionary: ${scored.error ?? "unreadable"}` }],
+                  details: {
+                    ok: false,
+                    stage: "dictionary" as const,
+                    handler: lumos.handler,
+                    bashCommand: cmd,
+                    elapsedMs: Date.now() - start,
+                    error: scored.error ?? "dictionary unreadable",
+                    coverage: scored.coverage,
+                  },
+                }
+              }
+              coverage = scored.coverage
+              dictionaryReused = true
+            } else {
+              // Build the dictionary via translation-core. The same call the
+              // chat.ts ai:translate-build-dictionary handler makes, just
+              // routed through the pi session so KB + memory + settings stay
+              // single-source-of-truth.
+              const settings = await readSettings()
+              const { provider, config: providerConfig } = asProvider(settings)
+              if (!providerConfig) {
+                return {
+                  content: [{ type: "text" as const, text: `translate_file(${ext}) failed: AI provider "${provider}" not configured` }],
+                  details: {
+                    ok: false,
+                    stage: "dictionary" as const,
+                    handler: lumos.handler,
+                    bashCommand: cmd,
+                    elapsedMs: Date.now() - start,
+                    error: `AI provider "${provider}" not configured`,
+                  },
+                }
+              }
+              const kb = await getKb()
+              const dataDir = process.env.DATA_DIR ?? process.env.GENOFFICE_WEB_DATA_DIR ?? process.cwd()
+              const built = await buildDictionary(
+                {
+                  inputPath: params.input_path,
+                  sourceLang: params.source_lang ?? "auto",
+                  targetLang: params.target_lang,
+                  dataDir,
+                },
+                {
+                  translateBatch: async (input) =>
+                    translateBatch(input, {
+                      provider,
+                      config: providerConfig,
+                      memory: sharedMemory,
+                      knowledgeBase: kb,
+                    }),
+                },
+              )
+              if (!built.ok || !built.dictionaryPath) {
+                return {
+                  content: [{ type: "text" as const, text: `translate_file(${ext}) failed at dictionary: ${built.error ?? "build failed"}` }],
+                  details: {
+                    ok: false,
+                    stage: "dictionary" as const,
+                    handler: lumos.handler,
+                    bashCommand: cmd,
+                    elapsedMs: Date.now() - start,
+                    error: built.error ?? "dictionary build failed",
+                  },
+                }
+              }
+              dictionaryPath = built.dictionaryPath
+              dictInfo = {
+                kbEntries: built.kbEntries,
+                llmEntries: built.llmEntries,
+                missed: built.missed,
+                totalSegments: built.totalSegments,
+                elapsedMs: built.elapsedMs,
+                segments: built.segments,
+              }
+              coverage = built.coverage
+            }
+
+            // Now spawn the Python translator with the dictionary we just
+            // (re)built or accepted.
             const run = await executeFileTranslation({
               script: lumos.script,
               inputPath: params.input_path,
               outputPath: out,
-              ...(params.dictionary_path ? { dictionaryPath: params.dictionary_path } : {}),
+              ...(dictionaryPath ? { dictionaryPath } : {}),
               ...(params.python_path ? { pythonPath: params.python_path } : {}),
             })
+
+            // Refresh coverage from the just-written dictionary if we did
+            // not already compute one in the rerun path.
+            if (!coverage && dictionaryPath) {
+              const scored = await assessFileCoverage({
+                inputPath: params.input_path,
+                dictionaryPath,
+              })
+              if (scored.ok) coverage = scored.coverage
+            }
+
             const tail = run.ok
               ? run.stdout.split("\n").filter(Boolean).slice(-6).join(" | ")
               : run.error ?? `exit ${run.code}`
@@ -476,9 +686,16 @@ function createTranslateFileTool() {
                 outputPath: run.ok ? out : undefined,
                 handler: lumos.handler,
                 bashCommand: cmd,
+                bytes: run.bytes,
+                scriptPath: lumos.script,
                 stdout: run.stdout,
                 stderr: run.stderr,
                 exitCode: run.code,
+                stage: run.ok ? "done" : "translate",
+                dictionaryPath,
+                dictionaryReused,
+                dictionary: dictInfo,
+                coverage,
                 elapsedMs: Date.now() - start,
                 ...(run.error ? { error: run.error } : {}),
               },
@@ -906,6 +1123,92 @@ function createKbListTool() {
 }
 
 // ============================================================================
+// fill_dictionary_gaps
+// ============================================================================
+
+const FillDictParams = Type.Object({
+  input_path: Type.String({ maxLength: 4096, description: "Document whose dictionary needs extending." }),
+  dictionary_path: Type.String({ maxLength: 4096, description: "Path to the existing JSON dictionary to extend." }),
+  target_lang: Type.String(),
+  source_lang: Type.Optional(Type.String()),
+  output_path: Type.Optional(Type.String({ maxLength: 4096 })),
+  max_pairs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000, default: 200 })),
+  customer_name: Type.Optional(Type.String()),
+  glossary_category: Type.Optional(Type.String()),
+})
+
+type FillDictArgs = {
+  input_path: string
+  dictionary_path: string
+  target_lang: string
+  source_lang?: string
+  output_path?: string
+  max_pairs?: number
+  customer_name?: string
+  glossary_category?: string
+}
+
+function createFillDictionaryGapsTool() {
+  return defineTool<typeof FillDictParams, FillGapsResult>({
+    name: "fill_dictionary_gaps",
+    label: "Fill Dictionary Gaps",
+    description:
+      "Re-read an existing dictionary, ask the LLM to translate every " +
+      "segment it missed, and write an extended JSON dictionary the user " +
+      "can hand-edit and re-pass to translate_file. Mirrors the " +
+      "ai:translate-fill-gaps chat.ts handler — same dataDir resolution, " +
+      "same KB+LLM flow, but executed through the pi session so the agent " +
+      "and the UI hit one source of truth.",
+    parameters: FillDictParams,
+    async execute(_id, params: FillDictArgs, _signal) {
+      const out = params.output_path ?? `${params.dictionary_path}.filled.json`
+      await mkdir(join(out, ".."), { recursive: true }).catch(() => undefined)
+      try {
+        const settings = await readSettings()
+        const { provider, config: providerConfig } = asProvider(settings)
+        if (!providerConfig) {
+          return {
+            content: [{ type: "text" as const, text: `fill_dictionary_gaps: provider "${provider}" not configured` }],
+            details: { ok: false, error: `AI provider "${provider}" not configured` },
+          }
+        }
+        const dataDir = process.env.DATA_DIR ?? process.env.GENOFFICE_WEB_DATA_DIR ?? process.cwd()
+        const req: FillGapsRequest = {
+          inputPath: params.input_path,
+          sourceLang: params.source_lang ?? "auto",
+          dictionaryPath: params.dictionary_path,
+          targetLang: params.target_lang,
+          dataDir,
+          ...(params.output_path !== undefined ? { outputPath: params.output_path } : {}),
+          ...(params.customer_name !== undefined ? { customerName: params.customer_name } : {}),
+          ...(params.glossary_category !== undefined ? { glossaryCategory: params.glossary_category } : {}),
+        }
+        const kb = await getKb()
+        const result = await fillDictionaryGaps(req, {
+          translateBatch: async (input) =>
+            translateBatch(input, {
+              provider,
+              config: providerConfig,
+              memory: sharedMemory,
+              knowledgeBase: kb,
+            }),
+        })
+        return {
+          content: [{ type: "text" as const, text: `fill_dictionary_gaps → ok=${result.ok}, added=${result.added ?? 0}, dictionaryPath=${result.dictionaryPath ?? "(none)"}` }],
+          details: result as unknown as FillGapsResult,
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: "text" as const, text: `fill_dictionary_gaps error: ${msg}` }],
+          details: { ok: false, error: msg },
+        }
+      }
+    },
+  })
+}
+
+// ============================================================================
 // Extension factory
 // ============================================================================
 
@@ -918,6 +1221,7 @@ export const ALL_TRANSLATE_TOOL_NAMES = [
   "translate_text",
   "translate_file",
   "build_dictionary",
+  "fill_dictionary_gaps",
   "kb_list",
   "kb_search",
   "kb_upsert",
@@ -936,6 +1240,7 @@ export function createTranslateSkillExtension(
     pi.registerTool(createTranslateTextTool())
     pi.registerTool(createTranslateFileTool())
     pi.registerTool(createBuildDictionaryTool())
+    pi.registerTool(createFillDictionaryGapsTool())
     pi.registerTool(createKbUpsertTool())
     pi.registerTool(createKbRemoveTool())
     pi.registerTool(createKbSearchTool())
