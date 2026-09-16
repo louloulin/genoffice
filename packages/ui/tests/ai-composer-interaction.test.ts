@@ -66,6 +66,7 @@ interface Harness {
   modeChanges: ChatMode[]
   stops: number
   sends: number
+  editLasts: number
 }
 
 let container: HTMLDivElement
@@ -79,6 +80,7 @@ function mount(opts: { busy?: boolean } = {}): Harness {
     modeChanges: [],
     stops: 0,
     sends: 0,
+    editLasts: 0,
   }
   function Host(): React.JSX.Element {
     const [value, setValue] = useState('')
@@ -108,6 +110,9 @@ function mount(opts: { busy?: boolean } = {}): Harness {
       },
       onStop: () => {
         harness.stops += 1
+      },
+      onEditLast: () => {
+        harness.editLasts += 1
       },
     })
   }
@@ -333,3 +338,32 @@ describe('plain typing', () => {
 
 // keep `vi` referenced so the import list stays honest if a stub is added
 void vi
+
+
+describe('edit-last-message shortcut', () => {
+  it('fires onEditLast when ArrowUp is pressed on an empty textarea', () => {
+    const h = mount()
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement
+    ta.focus()
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    expect(h.editLasts).toBe(1)
+  })
+
+  it('does NOT fire when the textarea already has text', () => {
+    const h = mount()
+    act(() => { h.setValue('in progress') })
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement
+    ta.focus()
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    expect(h.editLasts).toBe(0)
+  })
+
+  it('does NOT fire when the slash palette is open (Up must move highlight)', () => {
+    const h = mount()
+    act(() => { h.setValue('/') })
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement
+    ta.focus()
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    expect(h.editLasts).toBe(0)
+  })
+})

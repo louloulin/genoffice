@@ -94,6 +94,7 @@ export function AiComposer({
   toolbar,
   leading,
   voice,
+  onEditLast,
 }: {
   readonly value: string
   readonly busy: boolean
@@ -153,6 +154,14 @@ export function AiComposer({
     readonly onStart: () => void
     readonly onStop: () => void
   } | undefined
+  /**
+   * Fired when the user presses ArrowUp while the textarea is empty
+   * (chat-style "edit your last message" shortcut). The host owns the
+   * history list and decides which draft to load — the composer only
+   * signals intent. The shortcut is suppressed while the slash palette
+   * is open so Up still moves the highlight there.
+   */
+  readonly onEditLast?: (() => void) | undefined
   /** right-hand footer slot, before the send button (model picker, counters, …) */
   readonly toolbar?: React.ReactNode
   /** left-hand slot inside the box, above the textarea, aligned with `header` */
@@ -272,6 +281,15 @@ export function AiComposer({
         // reach the "stop the run" branch below
         e.preventDefault()
         setDismissed(slash?.query ?? '')
+        return
+      }
+    }
+    if (e.key === 'ArrowUp' && !e.shiftKey && value === '') {
+      // chat-style "edit last" — only when the textarea is empty so the user
+      // does not lose what they typed; the host wires the history loader.
+      if (onEditLast) {
+        e.preventDefault()
+        onEditLast()
         return
       }
     }
