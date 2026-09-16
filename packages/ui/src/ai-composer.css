@@ -241,3 +241,165 @@
   0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft, rgba(0, 120, 215, 0.4)); }
   50%      { box-shadow: 0 0 0 6px transparent; }
 }
+
+/* ---------------------------------------------------------------- mention */
+
+/* The mention palette reuses `.ai-cmd-menu` for layout and just adds a
+ * leading glyph per row. The at-sign in the query bar swaps in for the
+ * slash so the user can tell which palette is open at a glance. */
+.ai-mention-menu .ai-cmd-slash {
+  color: var(--accent);
+}
+
+.ai-mention-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.ai-mention-menu .ai-cmd-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: start;
+}
+
+.ai-mention-menu .ai-cmd-row.active .ai-mention-kind {
+  color: var(--accent);
+}
+
+/* ----------------------------------------------------------- token counter */
+
+.ai-token-counter {
+  font-size: var(--text-caption, 11px);
+  color: var(--text-tertiary);
+  margin-left: auto;
+  margin-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.ai-token-counter.warn {
+  color: var(--color-warning, #d2932b);
+}
+
+.ai-token-counter.danger {
+  color: var(--color-danger, #d04747);
+  font-weight: 600;
+}
+
+.ai-token-bar {
+  width: 36px;
+  height: 3px;
+  border-radius: var(--radius-3, 3px);
+  background: var(--surface-subtle);
+  position: relative;
+  overflow: hidden;
+}
+
+.ai-token-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease);
+}
+
+.ai-token-counter.warn .ai-token-bar > span { background: var(--color-warning, #d2932b); }
+.ai-token-counter.danger .ai-token-bar > span { background: var(--color-danger, #d04747); }
+
+/* ---------------------------------------------------------- slash trigger */
+
+/* The little `/` chip shown at the leading edge of the textarea when the
+ * composer has commands and the field is empty. Workbuddy / Cursor pattern:
+ * the affordance teaches the user the palette exists without forcing them
+ * to type. Clicking it opens the palette (empty query, first row active). */
+.ai-slash-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-6);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border, transparent);
+  cursor: pointer;
+  transition: background var(--transition-fast, 120ms ease), color var(--transition-fast, 120ms ease);
+}
+
+.ai-slash-trigger:hover {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.ai-slash-trigger.open {
+  background: var(--accent);
+  color: var(--surface);
+  border-color: var(--accent);
+}
+
+/* --------------------------------------------------------- suggestion chips */
+
+/* Follow-up chips shown under an assistant message. Workbuddy / Linear AI
+ * pattern: a horizontally-scrollable row of one-click follow-ups so the
+ * user doesn't have to type the next prompt from scratch. Static set, but
+ * each app supplies the list (context-aware entries are an app concern). */
+.ai-suggestion-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding: 4px 0 8px;
+  margin: 0;
+  scrollbar-width: thin;
+}
+
+.ai-suggestion-chips::-webkit-scrollbar { height: 4px; }
+.ai-suggestion-chips::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.ai-suggestion-chip {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius-6);
+  padding: 4px 10px;
+  font-size: var(--text-caption, 12px);
+  cursor: pointer;
+  transition: background var(--transition-fast, 120ms ease), border-color var(--transition-fast, 120ms ease);
+}
+
+.ai-suggestion-chip:hover {
+  background: var(--surface-subtle);
+  border-color: var(--accent);
+}
+
+.ai-suggestion-chip:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------------------------------------------------------- skill pill row */
+
+/* Wrap for the active skill chip(s). Kept as its own selector so apps that
+ * want to add a second chip (e.g. active scope + active skill) can stack
+ * without each app writing its own grid. */
+.ai-skill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 0;
+}

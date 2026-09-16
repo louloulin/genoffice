@@ -183,3 +183,43 @@ export {
   IconTool,
   IconWarning,
 } from './icons'
+
+// ── @-mention picker (Cursor-style) ──────────────────────────────────────
+export {
+  AiMentionMenu,
+  type AiMentionMenuProps,
+} from './AiMentionMenu'
+export {
+  activeMentionQuery,
+  applyMentionPick,
+  filterMentionEntries,
+  flattenMentionGroups,
+  indexOfMention,
+  isVoiceInputAvailable,
+  mentionInsertText,
+  nextEnabledMentionIndex,
+  parseMentionTokens,
+  useEditLast,
+  useVoiceInput,
+  findLastUserText,
+  computeTokenCounter,
+  estimateTokens,
+  type MentionEntry,
+  type MentionFilterResult,
+  type MentionGroup,
+  type MentionKind,
+  type MentionPick,
+  type MentionQuery,
+  type MentionToken,
+  type CounterTone,
+  type TokenCounter,
+  type TokenCounterOptions,
+  type UseVoiceInputOptions,
+  type UseVoiceInputReturn,
+  type UseEditLastOptions,
+  type UseEditLastReturn,
+  type EditLastEntry,
+} from './chat/index'
+
+// ── Follow-up suggestion chips (under assistant message) ────────────────
+export { SuggestionChips, type Suggestion, type SuggestionChipsProps } from './SuggestionChips'

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IconEnter, IconMic, IconSend, IconStop } from './icons'
 import { useAiPanelPrefs } from './ai-panel-prefs-store'
 import { AiComposerMenu } from './AiComposerMenu'
+import { AiMentionMenu } from './AiMentionMenu'
 import {
   activeSlashQuery,
   applyComposerCommand,
@@ -12,6 +13,17 @@ import {
   nextEnabledIndex,
 } from './chat/composer-commands'
 import type { ComposerCommand, SlashQuery } from './chat/composer-commands'
+import {
+  activeMentionQuery,
+  applyMentionPick,
+  filterMentionEntries,
+  flattenMentionGroups,
+  nextEnabledMentionIndex,
+  type MentionEntry,
+  type MentionPick,
+  type MentionQuery,
+} from './chat/mentions'
+import { computeTokenCounter, type TokenCounter } from './chat/token-counter'
 import type { ChatMode } from './chat/modes'
 
 // Keep in sync with the CSS `max-height` on `.ai-input-box textarea` (7 lines à 24px)
@@ -40,25 +52,35 @@ export interface ComposerCommandPick {
   readonly query: string
 }
 
+/** Voice input descriptor — kept inline so each app can plug its own recogniser. */
+export interface ComposerVoice {
+  readonly available: boolean | undefined
+  readonly active: boolean | undefined
+  readonly label: string
+  readonly onStart: () => void
+  readonly onStop: () => void
+}
+
 /**
  * The AI panel input box shared by every app: auto-growing textarea
  * (Enter sends, Shift+Enter newline, Esc stops) plus a footer with optional
  * app-specific controls, a shortcut hint, and the send/stop button.
  * Renders the `.ai-input-box` class family; each app themes it in its own CSS.
  *
- * Three optional extras turn it into a ChatComposer, and all of them are
- * additive — with none of them passed the markup is unchanged:
+ * Optional extras are additive — with none of them passed the markup is
+ * unchanged:
  *
- *  - `commands` / `onCommandPick`: typing `/` at the start of the text (or
- *    after whitespace) opens a grouped palette of app-supplied actions,
- *    skills and templates. The composer only knows the `ComposerCommand`
- *    shape, never what a "skill" is, so each app decides its own table.
- *  - `modes` / `mode` / `onModeChange`: an Ask / Craft / Plan switch above
- *    the textarea. The *behaviour* lives in `chat/modes.ts` — the app appends
- *    that directive to its system prompt; the composer only reflects the
- *    current choice.
- *  - `toolbar` / `leading`: slots for app chrome (model picker, counters) on
- *    either side of the footer.
+ *  - `commands` / `onCommandPick`: typing `/` opens a grouped palette of
+ *    app-supplied actions, skills and templates.
+ *  - `mentions` / `onMentionPick`: typing `@` opens a Cursor-style picker
+ *    of files / blocks / skills / agents.
+ *  - `modes` / `mode` / `onModeChange`: Ask / Craft / Plan switch.
+ *  - `toolbar` / `leading`: slots for app chrome.
+ *  - `voice`: Web Speech API mic button.
+ *  - `onEditLast`: ArrowUp-on-empty restores the previous user turn.
+ *  - `tokenBudget`: render a Cursor-style "1.2k / 8k" counter + bar in the footer.
+ *  - `slashTriggerLabel` / `slashTriggerTitle`: visible `/` chip shown when
+ *    the field is empty, teaching the palette exists without forcing typing.
  */
 export function AiComposer({
   value,
@@ -87,6 +109,11 @@ export function AiComposer({
   commandMenuLabel = 'Commands',
   commandMenuEmptyLabel = 'No matching command',
   commandMenuFootHint,
+  mentions,
+  onMentionPick,
+  mentionMenuLabel = 'Mentions',
+  mentionMenuEmptyLabel = 'No matching reference',
+  mentionMenuFootHint,
   modes,
   mode,
   onModeChange,
@@ -95,6 +122,9 @@ export function AiComposer({
   leading,
   voice,
   onEditLast,
+  tokenBudget,
+  slashTriggerLabel = '/',
+  slashTriggerTitle,
 }: {
   readonly value: string
   readonly busy: boolean
@@ -111,72 +141,66 @@ export function AiComposer({
   readonly footerStart?: React.ReactNode
   /** compact variant: no hint text, icon-only enter/stop button (Genspark composer style) */
   readonly iconOnly?: boolean | undefined
-  /** custom art for the icon-only send button (e.g. brand-supplied PNGs); falls back to IconEnter */
   readonly sendIconEnabled?: React.ReactNode
   readonly sendIconDisabled?: React.ReactNode
-  /** custom art for the icon-only stop button while busy; falls back to IconStop */
   readonly stopIcon?: React.ReactNode
-  /** pass a ref to focus the textarea from outside */
   readonly textareaRef?: React.RefObject<HTMLTextAreaElement | null> | undefined
   readonly onChange: (next: string) => void
   readonly onSend: () => void
   readonly onStop: () => void
-  /** clipboard files pasted into the textarea (screenshots, copied files); text paste stays native */
   readonly onPasteFiles?: ((files: File[]) => void) | undefined
-  /** first look at pasted text; return true to consume it (e.g. a base64 image turned into an attachment) */
   readonly onPasteText?: ((text: string) => boolean) | undefined
-  /** slash-command table; omit (or pass an empty array) to disable the palette */
   readonly commands?: readonly ComposerCommand[] | undefined
-  /**
-   * Picked a command. `value` is the composer's text after the `/query` was
-   * consumed — apply it to your state, then run whatever the command means
-   * (`kind: 'run'` acts here; `kind: 'insert'` only needs the text to land).
-   */
   readonly onCommandPick?: ((pick: ComposerCommandPick) => void) | undefined
-  /** accessible name for the palette listbox */
   readonly commandMenuLabel?: string | undefined
   readonly commandMenuEmptyLabel?: string | undefined
-  /** key legend under the palette rows */
   readonly commandMenuFootHint?: string | undefined
-  /** modes this panel offers; omit to hide the switch entirely */
+  /** @-mention table; omit to disable the picker */
+  readonly mentions?: readonly MentionEntry[] | undefined
+  readonly onMentionPick?: ((pick: MentionPick) => void) | undefined
+  readonly mentionMenuLabel?: string | undefined
+  readonly mentionMenuEmptyLabel?: string | undefined
+  readonly mentionMenuFootHint?: string | undefined
   readonly modes?: readonly ComposerModeOption[] | undefined
   readonly mode?: ChatMode | undefined
   readonly onModeChange?: ((mode: ChatMode) => void) | undefined
-  /** accessible name for the mode radiogroup */
   readonly modeSwitchLabel?: string | undefined
-  /** Voice input. The composer only renders the mic; the host owns the
-   *  Web Speech API (or native bridge) and pushes interim transcripts through
-   *  `onChange`. `available=false` hides the button entirely. */
-  readonly voice?: {
-    readonly available: boolean | undefined
-    readonly active: boolean | undefined
-    readonly label: string
-    readonly onStart: () => void
-    readonly onStop: () => void
-  } | undefined
-  /**
-   * Fired when the user presses ArrowUp while the textarea is empty
-   * (chat-style "edit your last message" shortcut). The host owns the
-   * history list and decides which draft to load — the composer only
-   * signals intent. The shortcut is suppressed while the slash palette
-   * is open so Up still moves the highlight there.
-   */
+  /** Voice input — the host owns the recogniser, the composer only renders the mic. */
+  readonly voice?: ComposerVoice | undefined
   readonly onEditLast?: (() => void) | undefined
-  /** right-hand footer slot, before the send button (model picker, counters, …) */
   readonly toolbar?: React.ReactNode
-  /** left-hand slot inside the box, above the textarea, aligned with `header` */
   readonly leading?: React.ReactNode
+  /**
+   * Optional token-budget badge shown in the footer. When provided, the
+   * composer renders the counter + progress bar after `toolbar`.
+   */
+  readonly tokenBudget?: number | undefined
+  /** Visible label on the slash trigger chip. Default `/`. */
+  readonly slashTriggerLabel?: string | undefined
+  /** Hover text for the slash trigger chip. */
+  readonly slashTriggerTitle?: string | undefined
 }): React.JSX.Element {
   const innerRef = useRef<HTMLTextAreaElement | null>(null)
   const ref = textareaRef ?? innerRef
   const canSend = value.trim().length > 0 && !busy
   const { spellcheck } = useAiPanelPrefs()
 
+  // ─────────────── slash palette state ───────────────
   const [slash, setSlash] = useState<SlashQuery | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   // Esc hides the palette for the *current* `/query` only: editing the query
   // clears this, so Esc never feels sticky.
   const [dismissed, setDismissed] = useState<string | null>(null)
+
+  // ─────────────── mention palette state ───────────────
+  const [mention, setMention] = useState<MentionQuery | null>(null)
+  const [mentionDismissed, setMentionDismissed] = useState<string | null>(null)
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0)
+
+  // The slash trigger chip forces the palette open even with an empty field
+  // (Cursor / workbuddy pattern). Tracked separately so the empty-query
+  // dismiss rule doesn't kick in.
+  const [slashTriggerOpen, setSlashTriggerOpen] = useState(false)
 
   const menuId = React.useId()
 
@@ -187,15 +211,22 @@ export function AiComposer({
         : [],
     [slash, commands],
   )
-  // Rows render grouped; the keyboard walks the same flattened order so the
-  // highlight can never sit on a different row than the one Enter would take.
   const groups = useMemo(() => groupComposerCommands(ranked, ''), [ranked])
   const rows = useMemo(() => flattenComposerGroups(groups), [groups])
 
-  // The palette opens for *any* valid `/query`, including one with no match:
-  // silently swallowing the keystrokes would leave the user with no feedback
-  // about why nothing happened.
+  const rankedMentions = useMemo(
+    () =>
+      mention !== null && mentions && mentions.length > 0
+        ? filterMentionEntries(mentions, mention.query)
+        : { query: '', groups: [], firstEnabledIndex: 0 },
+    [mention, mentions],
+  )
+  const mentionRows = useMemo(() => flattenMentionGroups(rankedMentions.groups), [rankedMentions])
+
+  // Slash palette opens for any valid `/query`; trigger chip keeps it open
+  // for an empty query as well.
   const open = slash !== null && dismissed !== slash.query
+  const mentionOpen = mention !== null && mentionDismissed !== mention.query
 
   // Keep the highlight on a pickable row and reset it whenever the query
   // changes, without a second render pass (derived state, not an effect).
@@ -206,6 +237,17 @@ export function AiComposer({
     setActiveIndex(firstEnabledIndex(rows))
   } else if (rows.length > 0 && (activeIndex < 0 || rows[activeIndex]?.disabled === true)) {
     setActiveIndex(firstEnabledIndex(rows))
+  }
+  const mentionKey = mention === null ? null : mention.query
+  const [lastMentionKey, setLastMentionKey] = useState<string | null>(null)
+  if (lastMentionKey !== mentionKey) {
+    setLastMentionKey(mentionKey)
+    setMentionActiveIndex(rankedMentions.firstEnabledIndex ?? 0)
+  } else if (
+    mentionRows.length > 0 &&
+    (mentionActiveIndex < 0 || mentionRows[mentionActiveIndex]?.disabled === true)
+  ) {
+    setMentionActiveIndex(rankedMentions.firstEnabledIndex ?? 0)
   }
 
   // auto-grow up to ~6 lines; empty clears the inline height outright so the
@@ -221,19 +263,56 @@ export function AiComposer({
     ta.style.height = `${Math.min(ta.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`
   }, [value, ref])
 
-  const syncSlash = useCallback((next: string, caret: number) => {
-    const found = activeSlashQuery(next, caret)
-    setSlash(found)
-    // a different query means the user is looking again — un-dismiss
-    setDismissed((d) => (found !== null && d !== null && d !== found.query ? null : d))
-  }, [])
+  // ─────────────── token counter (derived, no state) ───────────────
+  const counter: TokenCounter | null = useMemo(() => {
+    if (tokenBudget === undefined || tokenBudget === null) return null
+    return computeTokenCounter(value, { budget: tokenBudget })
+  }, [value, tokenBudget])
 
-  const pick = useCallback(
+  // Click the slash trigger chip → focus textarea, open palette, keep field empty.
+  const openSlashFromTrigger = useCallback(() => {
+    const ta = ref.current
+    if (!ta) return
+    ta.focus()
+    // Synthesise a one-character `/query` so the palette state machine
+    // opens with the empty-query state. Inserting the slash into the value
+    // is the host's choice — they may want a leading slash with text, or
+    // a pure palette open.
+    const next = `${value}${value.endsWith(' ') || value === '' ? '' : ' '}/`
+    onChange(next)
+    setSlashTriggerOpen(true)
+    requestAnimationFrame(() => {
+      const caret = next.length
+      setSlash(activeSlashQuery(next, caret))
+      setDismissed(null)
+      ta.setSelectionRange(caret, caret)
+    })
+  }, [value, onChange, ref])
+
+  const syncPalettes = useCallback((next: string, caret: number) => {
+    const foundSlash = activeSlashQuery(next, caret)
+    setSlash(foundSlash)
+    setDismissed((d) => (foundSlash !== null && d !== null && d !== foundSlash.query ? null : d))
+    const foundMention = activeMentionQuery(next, caret)
+    setMention(foundMention)
+    setMentionDismissed((d) =>
+      foundMention !== null && d !== null && d !== foundMention.query ? null : d,
+    )
+    // The slash-trigger chip forces an empty palette only while the field
+    // is exactly `/`; once the user types more characters it becomes a
+    // normal slash query.
+    if (slashTriggerOpen) {
+      if (foundSlash === null || foundSlash.query !== '') setSlashTriggerOpen(false)
+    }
+  }, [slashTriggerOpen])
+
+  const pickCommand = useCallback(
     (cmd: ComposerCommand) => {
       if (cmd.disabled || slash === null) return
       const applied = applyComposerCommand(value, slash, cmd)
       setSlash(null)
       setDismissed(null)
+      setSlashTriggerOpen(false)
       setActiveIndex(0)
       onChange(applied.value)
       onCommandPick?.({
@@ -242,7 +321,6 @@ export function AiComposer({
         caret: applied.caret,
         query: slash.query,
       })
-      // the caret must be restored after React commits the new value
       requestAnimationFrame(() => {
         const ta = ref.current
         if (!ta) return
@@ -253,8 +331,60 @@ export function AiComposer({
     [slash, value, onChange, onCommandPick, ref],
   )
 
+  const pickMention = useCallback(
+    (entry: MentionEntry) => {
+      if (entry.disabled || mention === null) return
+      const applied = applyMentionPick(value, mention, entry)
+      setMention(null)
+      setMentionDismissed(null)
+      setMentionActiveIndex(0)
+      onChange(applied.value)
+      onMentionPick?.({
+        entry,
+        insert: applied.value.slice(mention.start, applied.caret),
+        value: applied.value,
+        caret: applied.caret,
+        query: mention.query,
+      })
+      requestAnimationFrame(() => {
+        const ta = ref.current
+        if (!ta) return
+        ta.focus()
+        ta.setSelectionRange(applied.caret, applied.caret)
+      })
+    },
+    [mention, value, onChange, onMentionPick, ref],
+  )
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.nativeEvent.isComposing) return
+
+    // Mention palette has priority over slash — they're never open at once
+    // (typing `@` after a `/query` closes the slash because the `@` is
+    // non-whitespace mid-`/query`).
+    if (mentionOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionActiveIndex((i) =>
+          nextEnabledMentionIndex(mentionRows, i < 0 ? -1 : i, e.key === 'ArrowDown' ? 1 : -1),
+        )
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        const entry = mentionRows[mentionActiveIndex]
+        if (entry && !entry.disabled) {
+          e.preventDefault()
+          pickMention(entry)
+          return
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMentionDismissed(mention?.query ?? '')
+        return
+      }
+    }
+
     if (open) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
@@ -272,13 +402,11 @@ export function AiComposer({
         const cmd = rows[activeIndex]
         if (cmd && !cmd.disabled) {
           e.preventDefault()
-          pick(cmd)
+          pickCommand(cmd)
           return
         }
       }
       if (e.key === 'Escape') {
-        // only swallow Esc while the palette is open; otherwise it must still
-        // reach the "stop the run" branch below
         e.preventDefault()
         setDismissed(slash?.query ?? '')
         return
@@ -304,6 +432,8 @@ export function AiComposer({
 
   const showModes = (modes?.length ?? 0) > 1 && onModeChange !== undefined
   const hasCommands = (commands?.length ?? 0) > 0
+  const hasMentions = (mentions?.length ?? 0) > 0
+  const showSlashTrigger = hasCommands && value === '' && !slashTriggerOpen
 
   const field = (
     <textarea
@@ -311,26 +441,39 @@ export function AiComposer({
       value={value}
       placeholder={placeholder}
       aria-label={ariaLabel}
-      aria-expanded={open || undefined}
-      aria-controls={open ? `${menuId}-menu` : undefined}
-      aria-activedescendant={
-        open && activeIndex >= 0 ? `${menuId}-menu-opt-${activeIndex}` : undefined
+      aria-expanded={open || mentionOpen || undefined}
+      aria-controls={
+        open ? `${menuId}-slash` : mentionOpen ? `${menuId}-mention` : undefined
       }
-      aria-autocomplete={hasCommands ? 'list' : undefined}
+      aria-activedescendant={
+        open && activeIndex >= 0
+          ? `${menuId}-slash-opt-${activeIndex}`
+          : mentionOpen && mentionActiveIndex >= 0
+          ? `${menuId}-mention-opt-${mentionActiveIndex}`
+          : undefined
+      }
+      aria-autocomplete={hasCommands || hasMentions ? 'list' : undefined}
       rows={1}
       dir="auto"
       spellCheck={spellcheck}
       onChange={(e) => {
         const next = e.target.value
         onChange(next)
-        syncSlash(next, e.target.selectionStart ?? next.length)
+        syncPalettes(next, e.target.selectionStart ?? next.length)
       }}
       onKeyDown={onKeyDown}
-      // clicking elsewhere in the text can move the caret back into an
-      // existing `/query`, so the palette follows the caret, not just typing
-      onClick={(e) => syncSlash(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)}
-      onCompositionStart={() => setSlash(null)}
-      onBlur={() => setSlash(null)}
+      onClick={(e) =>
+        syncPalettes(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
+      }
+      onCompositionStart={() => {
+        setSlash(null)
+        setMention(null)
+      }}
+      onBlur={() => {
+        setSlash(null)
+        setMention(null)
+        setSlashTriggerOpen(false)
+      }}
       onPaste={(e) => {
         const files = Array.from(e.clipboardData.files)
         if (files.length > 0) {
@@ -344,6 +487,19 @@ export function AiComposer({
       }}
     />
   )
+
+  const slashTrigger = showSlashTrigger ? (
+    <button
+      type="button"
+      className="ai-slash-trigger"
+      title={slashTriggerTitle}
+      aria-label={slashTriggerTitle ?? slashTriggerLabel}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={openSlashFromTrigger}
+    >
+      {slashTriggerLabel}
+    </button>
+  ) : null
 
   return (
     <div className="ai-input-box">
@@ -366,27 +522,41 @@ export function AiComposer({
         </div>
       )}
       {header}
-      {hasCommands ? (
-        // the wrapper only exists to anchor the palette above the field; with
-        // no command table it is omitted so the markup stays as it was
+      {(hasCommands || hasMentions) ? (
         <div className="ai-input-field">
           {field}
           {open && (
             <AiComposerMenu
-              idPrefix={`${menuId}-menu`}
+              idPrefix={`${menuId}-slash`}
               groups={groups}
               activeIndex={activeIndex}
               query={slash?.query ?? ''}
               label={commandMenuLabel}
               emptyLabel={commandMenuEmptyLabel}
               footHint={commandMenuFootHint}
-              onPick={pick}
+              onPick={pickCommand}
               onHoverIndex={setActiveIndex}
+            />
+          )}
+          {mentionOpen && (
+            <AiMentionMenu
+              idPrefix={`${menuId}-mention`}
+              groups={rankedMentions.groups}
+              activeIndex={mentionActiveIndex}
+              query={mention?.query ?? ''}
+              label={mentionMenuLabel}
+              emptyLabel={mentionMenuEmptyLabel}
+              footHint={mentionMenuFootHint}
+              onPick={pickMention}
+              onHoverIndex={setMentionActiveIndex}
             />
           )}
         </div>
       ) : (
-        field
+        <>
+          {slashTrigger}
+          {field}
+        </>
       )}
       <div className="ai-input-footer">
         {footerStart}
@@ -395,7 +565,20 @@ export function AiComposer({
             {busy ? hintBusy : hintIdle}
           </span>
         )}
+        {slashTrigger && !(hasCommands || hasMentions) ? null : slashTrigger}
         {toolbar}
+        {counter && (
+          <span
+            className={`ai-token-counter${counter.tone === 'warn' ? ' warn' : counter.tone === 'danger' ? ' danger' : ''}`}
+            title={`${counter.tokens} tokens / ${counter.chars} chars`}
+            aria-label={`${counter.tokens} of ${tokenBudget} tokens used`}
+          >
+            <span className="ai-token-bar" aria-hidden>
+              <span style={{ width: `${Math.min(100, counter.ratio * 100)}%` }} />
+            </span>
+            {counter.label}
+          </span>
+        )}
         {voice && voice.available && (
           <button
             type="button"
