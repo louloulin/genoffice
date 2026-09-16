@@ -2341,6 +2341,17 @@ export function AiPanel({
           onModeChange={setMode}
           modeSwitchLabel={t('aiModeSwitchTitle')}
           voice={voice}
+          onEditLast={() => {
+            // Walk the chat back to the most recent user entry and load its
+            // text into the textarea so the user can edit-and-resend.
+            const idx = [...chat].reverse().findIndex((e) => e.role === 'user')
+            if (idx < 0) return
+            const real = chat.length - 1 - idx
+            const entry = chat[real]
+            if (!entry || typeof entry.text !== 'string') return
+            setInput(entry.text)
+            inputRef.current?.focus()
+          }}
           leading={
             activeSkill !== null && (
               <div className="ai-skill-row">
