@@ -32,7 +32,7 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import Type from "typebox"
 import { basename, extname, join } from "node:path"
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { accessSync, constants as fsConstants, existsSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 
@@ -449,8 +449,13 @@ function resolvePython(explicit?: string): string {
     }
   }
   const tryExists = (bin: string): boolean => {
+    // Use Node's fs.accessSync instead of shelling out to `/usr/bin/test -x`:
+    // the latter is not portable to macOS where `test` is a shell builtin and
+    // `/usr/bin/test` does not exist, which silently skipped every Homebrew
+    // python and forced the fallback to bare `python3` (often system Python
+    // without the docx/pptx/openpyxl wheels).
     try {
-      execFileSync("/usr/bin/test", ["-x", bin], { stdio: "ignore" })
+      accessSync(bin, fsConstants.X_OK)
       return true
     } catch {
       return false
