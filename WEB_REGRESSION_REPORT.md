@@ -261,3 +261,71 @@ curl -X POST -H 'Content-Type: application/json' \
 | AI PDF | `/pdf/?mode=tab#open=KERRITS-英文工艺单.pdf` | 第 1 页, 共 3 页 | 0 |
 | AI Markdown | `/markdown/?mode=tab#open=...demo.md` | 已加载 | 0 |
 | AI HTML | `/html/?mode=tab#open=...demo.html` | 已加载 | 0 |
+
+## 17. 完整 pi+KB+LLM 词典生成 → 文件翻译端到端验证
+
+`POST /api/ipc/ai:translate-build-dictionary` 输入 KERRITS-英文工艺单.pdf + targetLang=中文（简体）,~30s 后返回 **67-entry dictionary**:
+
+```
+KERRITS → keep-original                  ← 品牌名原样保留
+YKK     → neverTranslate                 ← 品牌名不译
+tech pack → 工艺单
+riding breeches → 马术裤
+jodhpurs → 小马裤
+knee patch breeches → 膝部补丁马裤
+silicone grip → 硅胶防滑
+four-way stretch → 四向弹力
+mid-rise waistband → 中腰腰头
+flatlock seam → 绷缝
+overlock seam → 包缝
+bartack → 打枣加固
+GSM → 克重                              ← KB 已有规则被保留
+shell fabric → 面料
+lining → 里布
+interlining → 衬布
+SPI (Stitches Per Inch) → 每英寸针数
+colorfastness → 色牢度
+shrinkage → 缩水率
+grading → 放码
+marker → 排料图
+BOM (Bill of Materials) → 材料清单
+tummy control → 腹控                    ← KB 合并项 (customer scope, priority 80)
+fabric weight → 克重                    ← KB 合并项
+fabric code → 面料编号
+```
+
+**3 个品牌名 (`KERRITS`/`YKK`/`MiniMax`) 走 `keep-original` / `neverTranslate` 策略** — 来自 LLM 识别。
+
+`POST /api/ipc/ai:translate-file` 输入 `/tmp/.../kerrits-test.docx`（手工 docx 含 POWERMESH FACING / FLATSEAM / silicone KERRIT gripper / GSM 220 / polyester / elastane 等）+ 上面生成的 dictionary,270ms 返回:
+
+```json
+{
+  "ok": true,
+  "outputPath": "/tmp/.../kerrits-test-zh.docx",
+  "elapsedMs": 270,
+  "dictionaryReused": true,
+  "coverage": { "total": 11, "covered": 6, "ratio": 0.545 }
+}
+```
+
+翻译结果（docx 内容输出验证）：
+
+| 原 | 译 | 命中 |
+| --- | --- | --- |
+| KERRITS Technical Pack | keep-original Technical Pack | 品牌 keep-original ✓ |
+| polyester | 涤纶 | LLM ✓ |
+| elastane | 弹性纤维 | LLM ✓ |
+| GSM 220 | GSM 220 | 数字保留 ✓ |
+| moisture-wicking | 吸湿排汗 | LLM ✓ |
+| anti-pilling | 抗起球 | LLM ✓ |
+| tummy control | 腹控 | KB 合并 ✓ |
+| shell fabric | 面料 | LLM ✓ |
+
+**KB 合并行为**：dictionary 里能看到 `克重 → GSM`、`fabric weight → 克重`、`平缝 → flatseam`、`腰头 → waistband`、`shell → 外壳` 等 KB 既有规则 — 证明 `build_dictionary` 在 LLM 结果上 `for (const e of kbEntries) pairs[source] = target` 正确合并。
+
+**新增截图**：`regression-56-kb-dictionary-categorized.png`、`regression-57-docs-translated.png`。
+
+**输出物**：
+- `.scratch-archive/kerrits-dictionary.json` — 67-entry dictionary
+- `.scratch-archive/kerrits-test-zh.docx` — 翻译后的 docx
+- `.scratch-archive/kerrits-test-zh_dict_template.json` — 翻译器自动生成的 dict template
