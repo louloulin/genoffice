@@ -43,6 +43,7 @@ import {
   type Skill,
 } from '@earendil-works/pi-coding-agent'
 import { DATA_DIR } from '../common/index'
+import { materializeTranslateSuite } from '@genoffice/translation-core'
 
 /** Working directory pi resolves relative package paths against. */
 export const PI_CWD = join(DATA_DIR, 'pi-cwd')
@@ -100,6 +101,27 @@ export function packageSourceOf(entry: PackageSource): string {
 
 // ── skill dir registration ──────────────────────────────────────────
 
+
+/**
+ * Mirror the translate suite from the hashed bundled directory into
+ * `$LUMOS_HOME/skills/translate-...` once at boot so the runtime spawns Python
+ * from a canonical, hash-free path. Idempotent: existing skill dirs are
+ * left alone (delete to refresh). See `materializeTranslateSuite`.
+ */
+export function ensureTranslateSuiteMaterialized(): MaterializeSummary {
+  const result = materializeTranslateSuite()
+  if (result.copied.length > 0) {
+    console.log(
+      `[pi-resources] materialized ${result.copied.length} translate skill${result.copied.length === 1 ? '' : 's'} to ${result.targetDir}`,
+    )
+  }
+  return { copied: result.copied, skipped: result.skipped }
+}
+
+interface MaterializeSummary {
+  copied: string[]
+  skipped: string[]
+}
 
 /** LumosAI bundles its translate suite under `~/.lumos/bundled-skills/<hash>/translate*`.
  *  Without the wrapper below pi's loader silently skips those directories (it only

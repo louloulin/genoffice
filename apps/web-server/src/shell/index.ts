@@ -5,7 +5,7 @@
  */
 import { registerAppInfoHandlers } from './app-info'
 import { registerChartHandlers } from './charts'
-import { ensureLumosSkillsRegistered, ensureSkillDirRegistered, ensureBuiltInSkillsMaterialized } from './pi-resources'
+import { ensureLumosSkillsRegistered, ensureSkillDirRegistered, ensureBuiltInSkillsMaterialized, ensureTranslateSuiteMaterialized } from './pi-resources'
 import { registerPiSessionHandlers } from './pi-session'
 import { registerClipboardHandlers } from './clipboard'
 import { registerCloudHandlers } from './cloud'
@@ -77,6 +77,7 @@ function bootstrapPiSkills(): void {
           (builtIn.skipped.length ? ` (${builtIn.skipped.length} already on disk)` : ''),
         )
       }
+      ensureTranslateSuiteMaterialized()
       const lumos = await ensureLumosSkillsRegistered()
       if (lumos.registered.length || lumos.alreadyHad.length) {
         console.log(

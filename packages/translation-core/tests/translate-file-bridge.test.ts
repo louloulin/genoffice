@@ -7,11 +7,14 @@
  * is covered by the E2E suite when the skill directory is present.
  */
 import { describe, expect, it } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 import {
   defaultOutputPath,
   isSupportedExtension,
+  materializeTranslateSuite,
   resolveTranslateSkills,
   SUPPORTED_EXTENSIONS,
   translateFile,
@@ -50,7 +53,7 @@ describe('translate-file bridge', () => {
       if (loc.source === 'override') {
         expect(loc.scriptPath).toContain('translate.py')
       }
-      expect(['override', 'bundled', 'legacy', 'missing']).toContain(loc.source)
+      expect(['override', 'default', 'bundled', 'missing']).toContain(loc.source)
     } finally {
       if (previous === undefined) delete process.env.GENOFFICE_TRANSLATE_SKILLS_DIR
       else process.env.GENOFFICE_TRANSLATE_SKILLS_DIR = previous
@@ -63,9 +66,116 @@ describe('translate-file bridge', () => {
     expect(result.error).toContain('input not found')
   })
 
+  it('resolveTranslateSkills prefers the canonical default skills dir over bundled', () => {
+    const previousEnv = process.env.LUMOS_HOME
+    const tmp = mkdtempSync(join(tmpdir(), 'resolve-translate-default-'))
+    try {
+      // Materialise a complete translate suite under tmp/skills/translate.
+      const defaultDir = join(tmp, 'skills', 'translate')
+      mkdirSync(join(defaultDir, 'scripts'), { recursive: true })
+      writeFileSync(join(defaultDir, 'scripts', 'translate.py'), '#!/usr/bin/env python3\n', 'utf8')
+      mkdirSync(join(tmp, 'skills', 'translate-pdf', 'scripts'), { recursive: true })
+      writeFileSync(join(tmp, 'skills', 'translate-pdf', 'scripts', 'translate_pdf.py'), '#!/usr/bin/env python3\n', 'utf8')
+
+      // A hashed bundle with the same scripts at a different path.
+      const hashDir = join(tmp, 'bundled-skills', 'abc123')
+      mkdirSync(join(hashDir, 'translate', 'scripts'), { recursive: true })
+      writeFileSync(join(hashDir, 'translate', 'scripts', 'translate.py'), '#!/usr/bin/env python3\n', 'utf8')
+
+      process.env.LUMOS_HOME = tmp
+      const loc = resolveTranslateSkills()
+      expect(loc.source).toBe('default')
+      expect(loc.skillDir).toBe(defaultDir)
+    } finally {
+      if (previousEnv === undefined) delete process.env.LUMOS_HOME
+      else process.env.LUMOS_HOME = previousEnv
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('resolveTranslateSkills falls back to bundled when the default dir is empty', () => {
+    const previousEnv = process.env.LUMOS_HOME
+    const tmp = mkdtempSync(join(tmpdir(), 'resolve-translate-bundled-'))
+    try {
+      const hashDir = join(tmp, 'bundled-skills', 'abc123')
+      mkdirSync(join(hashDir, 'translate', 'scripts'), { recursive: true })
+      writeFileSync(join(hashDir, 'translate', 'scripts', 'translate.py'), '#!/usr/bin/env python3\n', 'utf8')
+      process.env.LUMOS_HOME = tmp
+      const loc = resolveTranslateSkills()
+      expect(loc.source).toBe('bundled')
+      expect(loc.skillDir).toBe(join(hashDir, 'translate'))
+    } finally {
+      if (previousEnv === undefined) delete process.env.LUMOS_HOME
+      else process.env.LUMOS_HOME = previousEnv
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it('translateFile rejects an unsupported extension before spawning', async () => {
     const result = await translateFile({ inputPath: __filename })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('unsupported extension')
+  })
+})
+
+describe('materializeTranslateSuite', () => {
+  it('copies every translate sibling from the newest bundled hash to the default skills dir', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'materialize-'))
+    try {
+      const bundledRoot = join(tmp, 'bundled-skills')
+      const hashDir = join(bundledRoot, 'hashA')
+      for (const sibling of ['translate', 'translate-pdf', 'translate-ppt', 'translate-xls', 'translate-docx']) {
+        mkdirSync(join(hashDir, sibling, 'scripts'), { recursive: true })
+        writeFileSync(join(hashDir, sibling, 'scripts', 'translate.py'), '# stub\n', 'utf8')
+      }
+      const targetRoot = join(tmp, 'skills')
+      const result = materializeTranslateSuite({ bundledRoot, targetRoot })
+      expect(result.sourceDir).toBe(hashDir)
+      expect(result.copied.length).toBe(5)
+      expect(result.skipped).toEqual([])
+      for (const sibling of ['translate', 'translate-pdf', 'translate-ppt', 'translate-xls', 'translate-docx']) {
+        expect(existsSync(join(targetRoot, sibling, 'scripts', 'translate.py'))).toBe(true)
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('is a no-op when no bundled directory is present', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'materialize-empty-'))
+    try {
+      const result = materializeTranslateSuite({
+        bundledRoot: join(tmp, 'does-not-exist'),
+        targetRoot: join(tmp, 'skills'),
+      })
+      expect(result.copied).toEqual([])
+      expect(result.skipped).toEqual([])
+      expect(result.sourceDir).toBeNull()
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves existing destinations alone — delete to refresh', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'materialize-idempotent-'))
+    try {
+      const bundledRoot = join(tmp, 'bundled-skills')
+      const hashDir = join(bundledRoot, 'hashA')
+      mkdirSync(join(hashDir, 'translate', 'scripts'), { recursive: true })
+      writeFileSync(join(hashDir, 'translate', 'scripts', 'translate.py'), '# from bundle\n', 'utf8')
+
+      const targetRoot = join(tmp, 'skills')
+      // Pre-existing destination with hand-edited content we must not clobber.
+      mkdirSync(join(targetRoot, 'translate', 'scripts'), { recursive: true })
+      writeFileSync(join(targetRoot, 'translate', 'scripts', 'translate.py'), '# user edit\n', 'utf8')
+
+      const result = materializeTranslateSuite({ bundledRoot, targetRoot })
+      expect(result.copied).toEqual([])
+      expect(result.skipped).toEqual([join(targetRoot, 'translate')])
+      // Hand-edited file is intact.
+      expect(readFileSync(join(targetRoot, 'translate', 'scripts', 'translate.py'), 'utf8')).toBe('# user edit\n')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })

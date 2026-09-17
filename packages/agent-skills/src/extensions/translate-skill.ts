@@ -46,6 +46,7 @@ import {
   fillDictionaryGaps,
   isSupportedExtension,
   KnowledgeBase,
+  resolveTranslateSkills,
   sharedMemory,
   translateBatch,
   translateFile,
@@ -193,8 +194,66 @@ async function getKb(): Promise<KnowledgeBase> {
   return kbInstance
 }
 
-/** Locate the bundled LumosAI python script for a given file extension. */
+/**
+ * Build the canonical sibling path under a given parent for one extension.
+ *
+ * The translate dispatch script resolves its format-specific siblings via
+ * `os.path.dirname(SKILL_DIR)`, so every sibling has to live under the same
+ * parent. This helper builds the `<parent>/../<sibling>/scripts/...` path
+ * the python runtime expects.
+ */
+function siblingPathFor(ext: string, parent: string): string | null {
+  const siblingMap: Record<string, string> = {
+    ".pdf": "translate-pdf/scripts/translate_pdf.py",
+    ".docx": "translate-docx/scripts/translate_docx.py",
+    ".xls": "translate-xls/scripts/translate_xls.py",
+    ".xlsx": "translate-xls/scripts/translate_xls.py",
+    ".ppt": "translate-ppt/scripts/translate_ppt.py",
+    ".pptx": "translate-ppt/scripts/translate_ppt.py",
+  }
+  const rel = siblingMap[ext.toLowerCase()]
+  return rel ? join(parent, "..", rel) : null
+}
+
+/**
+ * Locate the translate python script for a given file extension.
+ *
+ * Resolution prefers the canonical "default skills" directory
+ * (`$LUMOS_HOME/skills/translate-...`), which `materializeTranslateSuite`
+ * mirrors from the hashed bundled location at startup so the runtime
+ * path is stable across bundle bumps. The hashed bundled location
+ * remains as the fallback for the very first run before the materialize
+ * step has had a chance to mirror anything.
+ *
+ * The single-source-of-truth entry point is the unified
+ * `translate/scripts/translate.py`, which dispatches on the extension.
+ * When only the format-specific sibling is present we use it directly
+ * so newly installed skills still work without the top-level entry.
+ */
 function lumosScriptPath(ext: string): { script: string; handler: 'lumos-pdf' | 'lumos-docx' | 'lumos-xls' | 'lumos-ppt' } | null {
+  const lower = ext.toLowerCase()
+  const formatMap: Record<string, { handler: 'lumos-pdf' | 'lumos-docx' | 'lumos-xls' | 'lumos-ppt' }> = {
+    ".pdf": { handler: "lumos-pdf" },
+    ".docx": { handler: "lumos-docx" },
+    ".xls": { handler: "lumos-xls" },
+    ".xlsx": { handler: "lumos-xls" },
+    ".ppt": { handler: "lumos-ppt" },
+    ".pptx": { handler: "lumos-ppt" },
+  }
+  const meta = formatMap[lower]
+  if (!meta) return null
+
+  // Preferred: canonical default-skills location (populated by
+  // materializeTranslateSuite at startup).
+  const canonical = resolveTranslateSkills()
+  if (canonical.source === 'default' || canonical.source === 'override') {
+    const unified = join(canonical.skillDir, 'scripts', 'translate.py')
+    if (existsSync(unified)) return { script: unified, handler: meta.handler }
+    const sibling = siblingPathFor(lower, canonical.skillDir)
+    if (sibling && existsSync(sibling)) return { script: sibling, handler: meta.handler }
+  }
+
+  // Fallback: hashed bundled location (first run, before the materialize step).
   const root = join(homedir(), ".lumos", "bundled-skills")
   if (!existsSync(root)) return null
   let newest: string | null = null
@@ -211,30 +270,10 @@ function lumosScriptPath(ext: string): { script: string; handler: 'lumos-pdf' | 
     }
   }
   if (!newest) return null
-  // The upstream LumosAI translate suite ships each format as its own skill,
-  // but the bundled script filenames are `<format>_translate.py`, not
-  // `translate.py`. Older code pointed at the wrong filename and silently
-  // returned null — every file translation fell through to the TS fallback
-  // path. The single-source-of-truth entry point is the top-level
-  // `translate/scripts/translate.py`, which dispatches on the extension. We
-  // prefer that when it exists (keeps the dispatch logic upstream-managed);
-  // otherwise we fall back to the format-specific sibling scripts so newly
-  // installed skills still work without the top-level entry.
-  const lower = ext.toLowerCase()
-  const formatMap: Record<string, { handler: 'lumos-pdf' | 'lumos-docx' | 'lumos-xls' | 'lumos-ppt' }> = {
-    ".pdf": { handler: "lumos-pdf" },
-    ".docx": { handler: "lumos-docx" },
-    ".xls": { handler: "lumos-xls" },
-    ".xlsx": { handler: "lumos-xls" },
-    ".ppt": { handler: "lumos-ppt" },
-    ".pptx": { handler: "lumos-ppt" },
-  }
-  const meta = formatMap[lower]
-  if (!meta) return null
   const unified = join(root, newest, "translate", "scripts", "translate.py")
   if (existsSync(unified)) return { script: unified, handler: meta.handler }
-  // Format-specific fallback filenames: the PDF sibling is
-  // `translate_pdf.py`; xls/ppt/docx use `<format>_translate.py`.
+  // Format-specific fallback: the PDF sibling is `translate_pdf.py`;
+  // xls/ppt/docx use `<format>_translate.py`.
   const siblingMap: Record<string, string> = {
     ".pdf": "translate-pdf/scripts/translate_pdf.py",
     ".docx": "translate-docx/scripts/translate_docx.py",

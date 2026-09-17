@@ -16,14 +16,19 @@
  *
  * Discovery order for the scripts directory:
  *   1. `GENOFFICE_TRANSLATE_SKILLS_DIR` (explicit override)
- *   2. `$LUMOS_HOME/bundled-skills/<hash>/translate` (newest hash wins)
- *   3. `<LUMOS_HOME|~/.lumos>/skills/translate`
+ *   2. `$LUMOS_HOME/skills/translate` — the canonical "default skills" dir;
+ *      `materializeTranslateSuite()` mirrors the bundled suite here at
+ *      startup so the runtime path is stable across bundle bumps.
+ *   3. `$LUMOS_HOME/bundled-skills/<hash>/translate` (newest hash wins) —
+ *      fallback for fresh installs before the materialize step has run.
  *
  * The `translate` entry script dispatches to `translate-pdf` / `-xls` / `-ppt`
- * / `-docx` by extension, so a single spawn covers every supported format.
+ * / `-docx` by extension via a sibling lookup (`os.path.dirname(SKILL_DIR)`),
+ * so all five siblings must land under the same parent — the materialize step
+ * mirrors every one of them in one pass.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, extname, join, resolve } from 'node:path'
 
@@ -82,7 +87,7 @@ export interface TranslateSkillsLocation {
   /** Python interpreter we will spawn. */
   pythonPath: string
   /** Where the location was resolved from, for diagnostics. */
-  source: 'override' | 'bundled' | 'legacy' | 'missing'
+  source: 'override' | 'default' | 'bundled' | 'missing'
 }
 
 /** Resolve the Python interpreter the same way the upstream scripts do. */
@@ -95,9 +100,92 @@ function resolvePython(): string {
   return 'python3'
 }
 
+/** Skills that must land side-by-side in the default skills dir so the
+ *  Python sibling resolver can dispatch by extension. */
+const TRANSLATE_SIBLINGS = [
+  'translate',
+  'translate-pdf',
+  'translate-ppt',
+  'translate-xls',
+  'translate-docx',
+  'translate-config',
+] as const
+
+export interface MaterializeResult {
+  /** Skill directories newly written to the canonical location. */
+  copied: string[]
+  /** Skill directories already present and left untouched. */
+  skipped: string[]
+  /** The canonical location used (`<lumosHome>/skills`). */
+  targetDir: string
+  /** Where the suite was mirrored from (`<lumosHome>/bundled-skills/<hash>`),
+   *  or `null` when no bundled hash was available. */
+  sourceDir: string | null
+}
+
 /**
- * Locate the translate skill. Bundled skills live under a content hash
- * directory, so we pick the most recently modified one when several exist.
+ * Mirror the translate suite from a content-hashed bundled directory into
+ * the canonical "default" skills directory so the runtime and pi's loader
+ * see a stable, hash-free path.
+ *
+ * Background: the bundled copy lives at `~/.lumos/bundled-skills/<hash>/`,
+ * a new directory per upstream release, which means every bump produced a
+ * different runtime path. The `translate` entry script resolves its
+ * `translate-pdf` / `-ppt` / `-xls` / `-docx` siblings via
+ * `os.path.dirname(SKILL_DIR)`, so all five siblings must land under the
+ * same parent — this function copies them in lockstep.
+ *
+ * Idempotent: a destination that already exists is left as-is and reported
+ * in `skipped`. Delete the destination directory to force a refresh. When
+ * no bundled hash is present (fresh checkout, never bundled) the call is
+ * a no-op and returns `copied: []`.
+ */
+export function materializeTranslateSuite(options?: {
+  lumosHome?: string
+  bundledRoot?: string
+  targetRoot?: string
+}): MaterializeResult {
+  const lumosHome = options?.lumosHome ?? process.env.LUMOS_HOME ?? join(homedir(), '.lumos')
+  const bundledRoot = options?.bundledRoot ?? join(lumosHome, 'bundled-skills')
+  const targetRoot = options?.targetRoot ?? join(lumosHome, 'skills')
+  const copied: string[] = []
+  const skipped: string[] = []
+
+  if (!existsSync(bundledRoot)) return { copied, skipped, targetDir: targetRoot, sourceDir: null }
+
+  let newest: { dir: string; mtime: number } | null = null
+  for (const entry of readdirSync(bundledRoot)) {
+    const candidate = join(bundledRoot, entry)
+    let mtime = 0
+    try { mtime = statSync(candidate).mtimeMs } catch { /* unreadable — skip */ }
+    if (!newest || mtime > newest.mtime) newest = { dir: candidate, mtime }
+  }
+  if (!newest) return { copied, skipped, targetDir: targetRoot, sourceDir: null }
+
+  mkdirSync(targetRoot, { recursive: true })
+  for (const name of TRANSLATE_SIBLINGS) {
+    const src = join(newest.dir, name)
+    const dst = join(targetRoot, name)
+    if (!existsSync(src)) continue
+    if (existsSync(dst)) { skipped.push(dst); continue }
+    cpSync(src, dst, { recursive: true, errorOnExist: false })
+    copied.push(dst)
+  }
+  return { copied, skipped, targetDir: targetRoot, sourceDir: newest.dir }
+}
+
+/**
+ * Locate the translate skill. Discovery order:
+ *   1. `GENOFFICE_TRANSLATE_SKILLS_DIR` (explicit override)
+ *   2. `$LUMOS_HOME/skills/translate` — the canonical default-skills dir,
+ *      populated by `materializeTranslateSuite()` at startup
+ *   3. `$LUMOS_HOME/bundled-skills/<hash>/translate` — fallback for the
+ *      first run before the materialize step has had a chance to mirror
+ *      anything
+ *
+ * Each resolution tier tags the result with its `source` so callers can log
+ * or warn when they are still reading the hashed bundle instead of the
+ * canonical location.
  */
 export function resolveTranslateSkills(): TranslateSkillsLocation {
   const pythonPath = resolvePython()
@@ -110,6 +198,17 @@ export function resolveTranslateSkills(): TranslateSkillsLocation {
   }
 
   const lumosHome = process.env.LUMOS_HOME ?? join(homedir(), '.lumos')
+
+  // Preferred: the canonical "default skills" dir that materializeTranslateSuite
+  // maintains. The translate entry script resolves its siblings by sibling-dir
+  // lookup, so all five siblings must live here for PDF/PPT/XLS/DOCX to dispatch.
+  const defaultDir = join(lumosHome, 'skills', 'translate')
+  const defaultScript = join(defaultDir, 'scripts', 'translate.py')
+  if (existsSync(defaultScript)) {
+    return { skillDir: defaultDir, scriptPath: defaultScript, pythonPath, source: 'default' }
+  }
+
+  // Fallback: hashed bundled copy (first run, before the materialize step).
   const bundledRoot = join(lumosHome, 'bundled-skills')
   if (existsSync(bundledRoot)) {
     let best: { dir: string; mtime: number } | null = null
@@ -117,11 +216,7 @@ export function resolveTranslateSkills(): TranslateSkillsLocation {
       const candidate = join(bundledRoot, entry, 'translate', 'scripts', 'translate.py')
       if (!existsSync(candidate)) continue
       let mtime = 0
-      try {
-        mtime = statSync(candidate).mtimeMs
-      } catch {
-        /* unreadable — skip */
-      }
+      try { mtime = statSync(candidate).mtimeMs } catch { /* unreadable — skip */ }
       if (!best || mtime > best.mtime) best = { dir: join(bundledRoot, entry, 'translate'), mtime }
     }
     if (best) {
@@ -132,12 +227,6 @@ export function resolveTranslateSkills(): TranslateSkillsLocation {
         source: 'bundled',
       }
     }
-  }
-
-  const legacy = join(lumosHome, 'skills', 'translate')
-  const legacyScript = join(legacy, 'scripts', 'translate.py')
-  if (existsSync(legacyScript)) {
-    return { skillDir: legacy, scriptPath: legacyScript, pythonPath, source: 'legacy' }
   }
 
   return { skillDir: '', scriptPath: '', pythonPath, source: 'missing' }
