@@ -179,6 +179,23 @@ export function __setChatForProviderForTests(fn: ChatForProviderFn | null): void
   chatForProviderOverride = fn
 }
 
+/**
+ * Injected batch translator. `build_dictionary` and `translate_file` both fan
+ * their per-segment work out through {@link translateBatch}; this override lets
+ * a unit test drive those paths without a live provider (the same reason
+ * {@link translateBatchOverride} exists for the single-snippet path).
+ */
+export type TranslateBatchFn = typeof translateBatch
+let translateBatchOverride: TranslateBatchFn | null = null
+export function __setTranslateBatchForTests(fn: TranslateBatchFn | null): void {
+  translateBatchOverride = fn
+}
+
+/** The batch translator a tool should use: test override first, real one otherwise. */
+function batchTranslator(): TranslateBatchFn {
+  return translateBatchOverride ?? translateBatch
+}
+
 let kbInstance: KnowledgeBase | null = null
 export function __resetKbForTests(): void { kbInstance = null }
 
@@ -301,6 +318,24 @@ const TranslateTextParams = Type.Object({
   instruction: Type.Optional(
     Type.String({ description: "Optional style/voice instruction for the model." }),
   ),
+  /**
+   * Terminology from a generated `--dictionary` the host already loaded. These
+   * are layered on top of the KB: they are rendered into the system prompt for
+   * the substrings this text actually contains, matched against the source for
+   * `matchedTerms`, and enforced on the model output exactly like KB terms.
+   *
+   * The host passes pairs (not a path) so this tool stays filesystem-free for
+   * the snippet path; `build_dictionary` is what owns reading and writing the
+   * JSON file.
+   */
+  dictionary: Type.Optional(
+    Type.Array(
+      Type.Object({ source: Type.String(), target: Type.String() }),
+      { description: "Extra mandatory source→target pairs from a generated dictionary." },
+    ),
+  ),
+  /** Glossary bucket (e.g. 'legal') forwarded to the KB resolver. */
+  glossary_category: Type.Optional(Type.String()),
 })
 
 type TranslateTextArgs = {
@@ -308,6 +343,8 @@ type TranslateTextArgs = {
   source_lang?: string
   target_lang: string
   instruction?: string
+  dictionary?: Array<{ source: string; target: string }>
+  glossary_category?: string
 }
 
 interface TranslateTextResult {
@@ -351,6 +388,7 @@ function createTranslateTextTool() {
           targetLang: params.target_lang,
           memoryEnabled: true,
           qualityCheck: true,
+          ...(params.glossary_category !== undefined ? { glossaryCategory: params.glossary_category } : {}),
         }
         const fn = translateOneOverride ?? translateOne
         const res: TranslateResponse = await fn(req, {
@@ -359,6 +397,9 @@ function createTranslateTextTool() {
           memory: sharedMemory,
           knowledgeBase: kb,
           fuzzyMemoryEnabled: true,
+          ...(params.dictionary && params.dictionary.length > 0
+            ? { dictionary: params.dictionary }
+            : {}),
         })
         const summary = res.ok
           ? `translate_text → status=${res.status ?? "translated"}, matchedTerms=${(res.matchedTerms ?? []).length}, warnings=${(res.warnings ?? []).length}, elapsedMs=${Date.now() - start}`
@@ -668,7 +709,7 @@ function createTranslateFileTool() {
                 },
                 {
                   translateBatch: async (input) =>
-                    translateBatch(input, {
+                    batchTranslator()(input, {
                       provider,
                       config: providerConfig,
                       memory: sharedMemory,
@@ -792,7 +833,23 @@ const BuildDictParams = Type.Object({
   output_path: Type.Optional(Type.String({ maxLength: 4096 })),
   target_lang: Type.String(),
   source_lang: Type.Optional(Type.String()),
+  /**
+   * Cap on the number of mined segments handed to the model (and therefore the
+   * dictionary size). Named `max_pairs` for the agent's vocabulary; it maps to
+   * `maxSegments` in translation-core.
+   */
   max_pairs: Type.Optional(Type.Integer({ minimum: 8, maximum: 2000, default: 200 })),
+  /** Skip segments shorter than this. Defaults to 2. */
+  min_chars: Type.Optional(Type.Integer({ minimum: 1, maximum: 64 })),
+  /** Customer name forwarded to the KB resolver. */
+  customer_name: Type.Optional(Type.String()),
+  /** Glossary bucket forwarded to the KB resolver. */
+  glossary_category: Type.Optional(Type.String()),
+  /**
+   * When false the dictionary is KB-only and no model call is made. The
+   * coverage report still describes what the KB alone reaches.
+   */
+  use_llm: Type.Optional(Type.Boolean({ default: true })),
 })
 
 type BuildDictArgs = {
@@ -801,12 +858,23 @@ type BuildDictArgs = {
   target_lang: string
   source_lang?: string
   max_pairs?: number
+  min_chars?: number
+  customer_name?: string
+  glossary_category?: string
+  use_llm?: boolean
 }
 
 interface BuildDictResult {
   ok: boolean
   outputPath?: string
+  dictionaryPath?: string
   pairCount?: number
+  kbEntries?: number
+  llmEntries?: number
+  missed?: string[]
+  totalSegments?: number
+  warnings?: string[]
+  coverage?: CoverageReport
   sourceTerms?: string[]
   error?: string
 }
@@ -847,89 +915,105 @@ function createBuildDictionaryTool() {
     name: "build_dictionary",
     label: "Build Translation Dictionary",
     description:
-      "Ask the LLM to produce source→target pairs for technical terms in a " +
-      "document, then write the result as a JSON dictionary the Python " +
-      "translate scripts consume via `--dictionary`. Use this before " +
-      "translate_file when the document has technical vocabulary (SKUs, " +
-      "fabric codes, regulatory terms).",
-    promptSnippet: "build_dictionary(input_path, target_lang) → JSON file",
+      "Mine every translatable string out of a document, seed the result with " +
+      "the knowledge base's mandatory terms, translate the rest via the active " +
+      "provider, and write the `{ source: target }` JSON the Python translate " +
+      "scripts consume via `--dictionary`. Also reports how much of the file " +
+      "the dictionary reaches (coverage), which is what tells the user whether " +
+      "a file pass is worth running. Use this before translate_file whenever " +
+      "the document has technical vocabulary (SKUs, fabric codes, regulatory " +
+      "terms). Pass use_llm=false for a KB-only dictionary that makes no model " +
+      "call.",
+    promptSnippet: "build_dictionary(input_path, target_lang) → { dictionaryPath, totalSegments, coverage }",
     promptGuidelines: [
-      "Returns at most max_pairs (default 200). The KB provides an additional layer.",
+      "Always pass target_lang as an explicit IETF tag (e.g. 'en-US', 'zh-CN').",
+      "Read `coverage.partial` / `coverage.uncovered` to decide whether to hand " +
+        "the dictionary to translate_file or fill the gaps first.",
+      "max_pairs caps how many mined segments reach the model (default 200).",
     ],
     parameters: BuildDictParams,
     async execute(_id, params: BuildDictArgs, _signal) {
-      const out = params.output_path ?? `${params.input_path}.dictionary.json`
-      await mkdir(join(out, ".."), { recursive: true }).catch(() => undefined)
+      const dataDir = process.env.DATA_DIR ?? process.env.GENOFFICE_WEB_DATA_DIR ?? process.cwd()
       try {
         const settings = await readSettings()
         const { provider, config } = asProvider(settings)
-        const prompt = [
-          `Identify up to ${params.max_pairs ?? 200} technical terms likely to appear in "${basename(params.input_path)}".`,
-          `Output each as: <source> : <${params.target_lang} translation>`,
-          params.source_lang ? `Source language: ${params.source_lang}.` : "Source language: auto-detect.",
-          "Skip generic words; focus on technical vocabulary, brand names, and domain-specific phrases.",
-          "Return ONLY the `source : target` lines — no headers, no commentary.",
-        ].join("\n")
-        // 45s hard cap: a stalled provider (e.g. an offline Ollama) must not
-        // freeze the whole UI. On timeout/empty/error we fall through to the
-        // KB-only path, so the user always gets a usable dictionary file
-        // even when the LLM is unavailable.
-        type LlmOutcome = { kind: "ok"; raw: string } | { kind: "timeout" }
-        const llmPromise: Promise<LlmOutcome> = callProviderForDict(prompt, provider, config)
-          .then((r): LlmOutcome => ({ kind: "ok", raw: r }))
-        const timeoutPromise: Promise<LlmOutcome> = new Promise((res) => setTimeout(() => res({ kind: "timeout" }), 45_000))
-        const llmResult = await Promise.race([llmPromise, timeoutPromise])
-        let pairs: Record<string, string> = {}
-        let llmSource: "llm" | "kb-fallback" | "empty" = "empty"
-        if (llmResult.kind === "ok") {
-          pairs = parseDictionaryFromLlm(extractTranslationText(llmResult.raw) ?? llmResult.raw)
-          llmSource = pairCountOf(pairs) > 0 ? "llm" : "empty"
-        } else {
-          llmSource = "kb-fallback"
-        }
-        // Layer the active KB term entries on top so terminology the user has
-        // curated still appears even when the LLM is down. Lower-cased keys
-        // so the Python translator's exact-match lookup picks them up.
-        try {
-          const kbEntries = await (await getKb()).list({})
-          for (const e of kbEntries) {
-            if (!e || typeof e !== "object") continue
-            const obj = e as unknown as Record<string, unknown>
-            const source = (obj.sourceTerm ?? obj.word ?? obj.name) as string | undefined
-            const target = (obj.targetTerm ?? obj.policy ?? obj.value) as string | undefined
-            if (typeof source === "string" && typeof target === "string" && source && target && source !== target) {
-              pairs[source] = target
-            }
+        const kb = await getKb()
+        // A KB-only build (`use_llm: false`) needs no provider — that is what
+        // makes the "show me the coverage before spending tokens" path work
+        // even with no AI configured.
+        const wantsLlm = params.use_llm !== false
+        if (wantsLlm && !config) {
+          return {
+            content: [{ type: "text" as const, text: `build_dictionary: AI provider "${provider}" not configured (pass use_llm=false for a KB-only dictionary)` }],
+            details: { ok: false, error: `AI provider "${provider}" not configured` },
           }
-        } catch {
-          /* best-effort KB merge — the LLM result is still authoritative */
         }
-        await writeFile(out, JSON.stringify(pairs, null, 2), "utf-8")
+        const request: BuildDictionaryRequest = {
+          inputPath: params.input_path,
+          sourceLang: params.source_lang ?? "auto",
+          targetLang: params.target_lang,
+          dataDir,
+          knowledgeBase: kb,
+          useLlm: wantsLlm,
+          ...(params.output_path !== undefined ? { outputPath: params.output_path } : {}),
+          ...(params.max_pairs !== undefined ? { maxSegments: params.max_pairs } : {}),
+          ...(params.min_chars !== undefined ? { minChars: params.min_chars } : {}),
+          ...(params.customer_name !== undefined ? { customerName: params.customer_name } : {}),
+          ...(params.glossary_category !== undefined ? { glossaryCategory: params.glossary_category } : {}),
+        }
+        const built = await buildDictionary(request, {
+          translateBatch: async (input) => {
+            // Reached only when useLlm is on, where `config` is guaranteed:
+            // the guard above returns early otherwise.
+            if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
+            return batchTranslator()(input, {
+              provider,
+              config,
+              memory: sharedMemory,
+              knowledgeBase: kb,
+            })
+          },
+        })
+        if (!built.ok) {
+          return {
+            content: [{ type: "text" as const, text: `build_dictionary failed: ${built.error ?? "unknown error"}` }],
+            details: { ok: false, error: built.error ?? "build_dictionary failed" },
+          }
+        }
+        const pairCount = (built.kbEntries ?? 0) + (built.llmEntries ?? 0)
+        const coverageNote = built.coverage
+          ? `, coverage=${built.coverage.covered}/${built.coverage.total}`
+          : ""
         return {
-          content: [{ type: "text" as const, text: `build_dictionary → ${pairCountOf(pairs)} pairs at ${out} (source: ${llmSource})` }],
+          content: [{
+            type: "text" as const,
+            text: `build_dictionary → ${pairCount} pairs (kb=${built.kbEntries ?? 0}, llm=${built.llmEntries ?? 0}) from ${built.totalSegments ?? 0} segments at ${built.dictionaryPath}${coverageNote}`,
+          }],
           details: {
             ok: true as const,
-            outputPath: out,
-            pairCount: pairCountOf(pairs),
-            sourceTerms: Object.keys(pairs),
-            llmSource,
+            outputPath: built.dictionaryPath,
+            dictionaryPath: built.dictionaryPath,
+            pairCount,
+            kbEntries: built.kbEntries,
+            llmEntries: built.llmEntries,
+            missed: built.missed,
+            totalSegments: built.totalSegments,
+            warnings: built.warnings,
+            coverage: built.coverage,
+            sourceTerms: (built.segments ?? []).map((seg) => seg.source),
           },
         }
       } catch (err) {
-        // Catastrophic failure (KB not loadable, write permission denied,
-        // etc.). Best-effort: still write an empty file so the caller has
-        // something to pass to translate_file — an empty --dictionary is
-        // legal and just produces zero substitutions.
         const msg = err instanceof Error ? err.message : String(err)
-        try { await writeFile(out, "{}", "utf-8") } catch { /* ignore */ }
         return {
           content: [{ type: "text" as const, text: `build_dictionary error: ${msg}` }],
-          details: { ok: false, error: msg, outputPath: out },
+          details: { ok: false, error: msg },
         }
       }
     },
   })
 }
+
 
 // ============================================================================
 // KB CRUD tools
@@ -1232,7 +1316,7 @@ function createFillDictionaryGapsTool() {
         const kb = await getKb()
         const result = await fillDictionaryGaps(req, {
           translateBatch: async (input) =>
-            translateBatch(input, {
+            batchTranslator()(input, {
               provider,
               config: providerConfig,
               memory: sharedMemory,

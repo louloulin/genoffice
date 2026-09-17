@@ -42,6 +42,7 @@ import { callTranslateTool } from '../shell/pi-session'
 import {
   assessFileCoverage,
   buildDictionary,
+  type BuildDictionaryResult,
   buildTranslationPrompt,
   buildTranslateSystemPrompt,
   defaultOutputPath,
@@ -779,11 +780,18 @@ export function registerAiCoreHandlers(): void {
     const dictionarySources = new Set(dictionaryPairs.map((pair) => pair.source))
 
     const started = Date.now()
+    // The dictionary has to reach the model as an instruction, not only as a
+    // post-hoc rewrite: a term the model never sees is a term it will happily
+    // translate its own way, and the enforcement pass then has to repair the
+    // sentence instead of the model getting it right the first time. The pi
+    // tool layers these pairs on top of the KB for the prompt, for
+    // `matchedTerms`, and for output enforcement.
     const result = (await callTranslateTool('translate_text', {
       text,
       source_lang: req.sourceLang,
       target_lang: req.targetLang,
       instruction: req.customerName ? `customer=${req.customerName}` : undefined,
+      ...(dictionaryPairs.length > 0 ? { dictionary: dictionaryPairs } : {}),
     })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
     if (!result.ok) {
       return {
@@ -847,21 +855,33 @@ export function registerAiCoreHandlers(): void {
       target_lang: req.targetLang,
       ...(req.outputPath !== undefined ? { output_path: req.outputPath } : {}),
       ...(req.maxSegments !== undefined ? { max_pairs: req.maxSegments } : {}),
+      ...(req.minChars !== undefined ? { min_chars: req.minChars } : {}),
+      ...(req.customerName !== undefined ? { customer_name: req.customerName } : {}),
+      ...(req.glossaryCategory !== undefined ? { glossary_category: req.glossaryCategory } : {}),
+      ...(req.useLlm !== undefined ? { use_llm: req.useLlm } : {}),
     })) as { ok: boolean; details?: Record<string, unknown>; summary?: string; error?: string }
     if (!result.ok) {
       return { ok: false, error: result.error ?? result.summary ?? 'build_dictionary failed' }
     }
     const d = result.details ?? {}
-    // Re-shape to match the legacy BuildDictionaryResult so callers that
-    // read `kbEntries` / `llmEntries` / `missed` still work.
-    return {
+    // The pi tool runs the same `buildDictionary` the legacy handler did, so it
+    // reports the mining + coverage stats verbatim. Re-shape to the legacy
+    // BuildDictionaryResult field names the renderer already reads.
+    const built = {
       ok: true,
-      dictionaryPath: (d.outputPath as string) ?? '',
-      kbEntries: undefined, // the pi tool does not split KB vs LLM in this
-      llmEntries: (d.pairCount as number) ?? 0,
-      totalSegments: (d.pairCount as number) ?? 0,
-      segments: [],
+      dictionaryPath: (d.dictionaryPath as string) ?? (d.outputPath as string) ?? '',
+      kbEntries: (d.kbEntries as number) ?? 0,
+      llmEntries: (d.llmEntries as number) ?? 0,
+      missed: (d.missed as string[]) ?? [],
+      warnings: (d.warnings as string[]) ?? [],
+      totalSegments: (d.totalSegments as number) ?? 0,
+      coverage: d.coverage as BuildDictionaryResult['coverage'],
+      segments: [] as BuildDictionaryResult['segments'],
     }
+    // Cache the pairs so a following snippet / file call reuses the same
+    // terminology without a redundant disk read.
+    rememberBuiltDictionary(built)
+    return built
   })
   // user can review or hand-edit a dictionary before spending the file pass.
   // UNIFIED ON PI+SKILLS: the agent and the UI hit the same translate_file

@@ -507,6 +507,16 @@ export interface MarketplaceSkillEntry {
   uploadedAt?: string
   /** Artifact this entry was published with (a real SKILL.md). */
   artifact?: UploadedArtifactRef
+  /**
+   * Alternate names this entry should be found by, beyond {@link name} and
+   * {@link tools}: the upstream script basename (`translate_pptx.py`), the file
+   * format, the vendor term. A user who knows the LumosAI suite types
+   * `translate_pptx`; without this they get no result because the host
+   * deliberately registers no such tool (see `marketplace-catalog-honesty`).
+   * These are search terms only — they are never advertised to the agent, so
+   * listing one cannot make an install produce a phantom tool call.
+   */
+  aliases?: string[]
 }
 
 export interface MarketplacePluginEntry {
@@ -791,6 +801,7 @@ const MARKETPLACE_SKILLS: MarketplaceSkillEntry[] = [
   // match the pi tools the agent exposes so the marketplace card and the
   // runtime agree.
   {
+    aliases: ['translate.py', 'run_pdf_translation', 'run_xls_translation', 'run_ppt_translation', 'run_docx_translation', 'detect_output_path'],
     id: 'translate',
     name: 'Translate (统一翻译入口)',
     description: '按扩展名自动选择处理器,翻译 PDF/Excel/PPT/Word 并保留版式',
@@ -812,6 +823,7 @@ const MARKETPLACE_SKILLS: MarketplaceSkillEntry[] = [
     homepage: 'https://github.com/louloulin/genoffice',
   },
   {
+    aliases: ['translate_config.py', 'add_entry', 'delete_entry', 'export_csv', 'import_csv', 'validate_dictionary'],
     id: 'translate-config',
     name: 'Translate Config (知识库配置)',
     description: '翻译知识库的 5 schema CRUD:术语/禁用译法/品牌词/风格/客户偏好',
@@ -832,6 +844,7 @@ const MARKETPLACE_SKILLS: MarketplaceSkillEntry[] = [
     icon: '⚙️',
   },
   {
+    aliases: ['translate_docx', 'translate_docx.py', 'docx', 'word', 'detect_untranslated'],
     id: 'translate-docx',
     name: 'Translate DOCX',
     description: 'Word 文档 run 级 in-place 翻译,保留所有样式、表格、页眉页脚',
@@ -851,6 +864,7 @@ const MARKETPLACE_SKILLS: MarketplaceSkillEntry[] = [
     icon: '📝',
   },
   {
+    aliases: ['translate_pdf', 'translate_pdf.py', 'pdf', 'get_text_regions_for_page', 'register_chinese_font'],
     id: 'translate-pdf',
     name: 'Translate PDF',
     description: 'PDF 渲染为背景图后叠加中文,最大程度保留排版、表格与插图',
@@ -870,6 +884,7 @@ const MARKETPLACE_SKILLS: MarketplaceSkillEntry[] = [
     icon: '📄',
   },
   {
+    aliases: ['translate_pptx', 'translate_ppt.py', 'translate_ppt', 'pptx', 'powerpoint', 'slides', 'extract_all_texts'],
     id: 'translate-ppt',
     name: 'Translate PPT',
     description: 'PowerPoint run 级翻译,保留所有样式、母版、图片与动画',
@@ -889,6 +904,7 @@ const MARKETPLACE_SKILLS: MarketplaceSkillEntry[] = [
     icon: '📊',
   },
   {
+    aliases: ['translate_xls', 'translate_xlsx', 'translate_xls.py', 'xlsx', 'excel', 'spreadsheet', 'translate_xls_via_soffice'],
     id: 'translate-xls',
     name: 'Translate XLS',
     description: 'Excel 单元格原地翻译,保留图片/图表/合并单元格/数字格式',
@@ -1336,6 +1352,8 @@ export function searchMarketplace(filters: MarketplaceSearchFilters): {
       /** Tool names the extension exposes to the agent. Optional because
        *  curated rows that predate this field don't list any. */
       tools?: string[]
+      /** Alternate search names; never advertised to the agent. */
+      aliases?: string[]
     },
     toks: string[],
   ): number {
@@ -1352,6 +1370,10 @@ export function searchMarketplace(filters: MarketplaceSearchFilters): {
     // description mention. Joined with a separator that is not `[a-z0-9]`
     // so the boundary regex below anchors correctly.
     const tools = (entry.tools ?? []).join(' ').toLowerCase()
+    // Aliases are what the entry is *called* elsewhere (the upstream script
+    // basename), so they rank alongside tags: above description prose, below
+    // the canonical id / name / tool names.
+    const aliases = (entry.aliases ?? []).join(' ').toLowerCase()
 
     let total = 0
     for (const tok of toks) {
@@ -1368,6 +1390,8 @@ export function searchMarketplace(filters: MarketplaceSearchFilters): {
       else if (tools.includes(tok)) tokenScore = Math.max(tokenScore, 160)
       if (new RegExp(`(^|[^a-z0-9])${escapeRe(tok)}`).test(tags)) tokenScore = Math.max(tokenScore, 200)
       else if (tags.includes(tok)) tokenScore = Math.max(tokenScore, 120)
+      if (new RegExp(`(^|[^a-z0-9])${escapeRe(tok)}`).test(aliases)) tokenScore = Math.max(tokenScore, 190)
+      else if (aliases.includes(tok)) tokenScore = Math.max(tokenScore, 110)
       if (desc.includes(tok)) tokenScore = Math.max(tokenScore, 80)
       if (longDesc.includes(tok)) tokenScore = Math.max(tokenScore, 40)
       if (category.includes(tok)) tokenScore = Math.max(tokenScore, 30)
@@ -1391,6 +1415,7 @@ export function searchMarketplace(filters: MarketplaceSearchFilters): {
     rating: number
     category: string
     tools?: string[]
+    aliases?: string[]
   }): boolean {
     if (tokens.length > 0 && score(entry, tokens) === 0) return false
     if (entry.rating < minRating) return false

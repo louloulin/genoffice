@@ -1,11 +1,13 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, describe, expect, it } from "vitest"
 import { homedir } from "node:os"
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   createTranslateSkillExtension,
   ALL_TRANSLATE_TOOL_NAMES,
   __setReadSettingsForTests,
   __setTranslateOneForTests,
+  __setTranslateBatchForTests,
   aiSettingsCandidates,
   __setChatForProviderForTests,
   __resetKbForTests,
@@ -63,6 +65,7 @@ describe("translate-skill", () => {
     __setReadSettingsForTests(null)
     __setTranslateOneForTests(null)
     __setChatForProviderForTests(null)
+    __setTranslateBatchForTests(null)
     __resetKbForTests()
   })
 
@@ -129,26 +132,106 @@ describe("translate-skill", () => {
     expect(out.content[0].text).toMatch(/failed/i)
   })
 
-  it("build_dictionary asks the LLM, parses pairs, and writes a JSON file", async () => {
+  /**
+   * `build_dictionary` is the segment miner, not a term guesser. The regression
+   * this guards against: it was briefly rewritten to ask the model for a list of
+   * terms from a filename, which produced a dictionary with no relationship to
+   * the document (totalSegments 0, coverage missing) and made every file pass
+   * translate nothing. The dictionary must come from the file's own strings.
+   */
+  it("build_dictionary mines the file's own segments and writes them as a JSON dictionary", async () => {
     const pi = makeFakePi()
     __setReadSettingsForTests(async () => fakeSettings())
-    __setChatForProviderForTests(async () => ({
-      ok: true,
-      content: "SKUA : 面料 A\nfabric code : 面料编号\nbrandX : 品牌X\n",
-    }) as never)
+    const seen: string[] = []
+    __setTranslateBatchForTests(async (input) => {
+      seen.push(...input.units.map((u) => u.sourceText))
+      return {
+        ok: true,
+        units: input.units.map((u) => ({
+          unitId: u.unitId,
+          sourceText: u.sourceText,
+          translatedText: `EN: ${u.sourceText}`,
+          status: "translated" as const,
+        })),
+      }
+    })
+
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "transdict-"))
+    const inputPath = join(dir, "supplier.md")
+    writeFileSync(inputPath, "产品验收报告已提交。\n请在一周内完成复核。\n", "utf8")
+    const outPath = join(dir, "out.dictionary.json")
 
     createTranslateSkillExtension()(pi as never)
-    const tool = pi.tools.get("build_dictionary")!
-    const outPath = `${process.env.TMPDIR ?? "/tmp"}/translate-skill-test-${Date.now()}.dictionary.json`
-    const out = await tool.execute(
+    const out = await pi.tools.get("build_dictionary")!.execute(
       "c1",
-      { input_path: "/tmp/fake.pdf", target_lang: "zh-CN", output_path: outPath, max_pairs: 10 },
+      { input_path: inputPath, source_lang: "zh-CN", target_lang: "en-US", output_path: outPath },
       undefined,
     )
-    const details = out.details as { ok: boolean; pairCount: number; outputPath: string }
+    const details = out.details as {
+      ok: boolean
+      pairCount: number
+      totalSegments: number
+      llmEntries: number
+      coverage?: { total: number; covered: number }
+      outputPath: string
+    }
     expect(details.ok).toBe(true)
-    expect(details.pairCount).toBe(3)
-    expect(details.outputPath).toBe(outPath)
+    // Both lines were mined from the file itself and sent to the model.
+    expect(details.totalSegments).toBe(2)
+    expect(seen).toEqual(["产品验收报告已提交。", "请在一周内完成复核。"])
+    expect(details.llmEntries).toBe(2)
+    expect(details.pairCount).toBe(2)
+    // A dictionary that reaches both segments reports full coverage.
+    expect(details.coverage?.total).toBe(2)
+    expect(details.coverage?.covered).toBe(2)
+    // And the file on disk is the { source: target } map the Python handler reads.
+    // Every mined segment is present verbatim; the writer also emits spelling
+    // variants so a handler that reports a de-punctuated region still matches.
+    const written = JSON.parse(readFileSync(outPath, "utf8")) as Record<string, string>
+    expect(written["产品验收报告已提交。"]).toBe("EN: 产品验收报告已提交。")
+    expect(written["请在一周内完成复核。"]).toBe("EN: 请在一周内完成复核。")
+  })
+
+  it("build_dictionary with use_llm=false stays KB-only and makes no model call", async () => {
+    const pi = makeFakePi()
+    __setReadSettingsForTests(async () => fakeSettings())
+    let calls = 0
+    __setTranslateBatchForTests(async () => {
+      calls++
+      return { ok: true, units: [] }
+    })
+
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "transdict-kbonly-"))
+    const inputPath = join(dir, "notes.md")
+    writeFileSync(inputPath, "请在一周内完成复核。\n", "utf8")
+
+    createTranslateSkillExtension()(pi as never)
+    const out = await pi.tools.get("build_dictionary")!.execute(
+      "c1",
+      { input_path: inputPath, source_lang: "zh-CN", target_lang: "en-US", use_llm: false },
+      undefined,
+    )
+    const details = out.details as { ok: boolean; llmEntries: number; totalSegments: number; pairCount: number }
+    expect(details.ok).toBe(true)
+    expect(details.totalSegments).toBe(1)
+    expect(details.llmEntries).toBe(0)
+    expect(details.pairCount).toBe(0)
+    // The whole point of the KB-only path: it is free.
+    expect(calls).toBe(0)
+  })
+
+  it("build_dictionary reports the failure instead of writing a bogus dictionary", async () => {
+    const pi = makeFakePi()
+    __setReadSettingsForTests(async () => fakeSettings())
+
+    createTranslateSkillExtension()(pi as never)
+    const out = await pi.tools.get("build_dictionary")!.execute(
+      "c1",
+      { input_path: "/tmp/definitely-missing-file-xyz.md", target_lang: "en-US" },
+      undefined,
+    )
+    expect((out.details as { ok: boolean }).ok).toBe(false)
+    expect(out.content[0].text).toMatch(/failed|error/i)
   })
 })
 
@@ -157,6 +240,7 @@ describe("kb_upsert shortcut fields", () => {
     __setReadSettingsForTests(null)
     __setTranslateOneForTests(null)
     __setChatForProviderForTests(null)
+    __setTranslateBatchForTests(null)
     __resetKbForTests()
   })
 
