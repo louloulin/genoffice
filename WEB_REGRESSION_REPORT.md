@@ -95,3 +95,41 @@ f108306 fix(translate): canonical script path, content fallback, KB env isolatio
 | `18-ai-pdf-translated.png` | 翻译运行中（流式更新） |
 | `19-ai-translate-scroll-bottom.png` | 翻译结果完整可见 |
 | `01–16-*.png` | 历史截图（之前的 LLM 累积） |
+
+## 8. 额外发现的 P1 缺陷（已记录但未修复）
+
+### P1.1 Sheets / Slides 通过 web 桥打开本地文件后网格为空
+
+**现象**：用 `?open=/path/to/file.xlsx`（Sheets）或 `?open=/path/to/file.pptx`（Slides）打开本地文件后：
+
+- Sheets：底部 `.workbook-status` 显示 `Cannot read properties of undefined (reading 'map')`，grid 不显示任何单元格内容。
+- Slides：仍停在 `appStartOpening` ("正在打开…")，左侧缩略图列表为空。
+
+**根因**：`apps/web-server/src/sheets/index.ts:29` 和 `apps/web-server/src/slides/core.ts:51` 的 `workbook:open-path` / `slides:open-path` 处理器只返回 `{id, path, name, bytes}`，但 renderer 端的 `parseWorkbookFile` (Sheets) 和 `applyOpen` (Slides) 期望完整的解析后模型（Sheets：`{sessionId, sha256, fileBytes, entryCount, sheets, styles, dxfStyles, visuals, definedNames, …}`；Slides：`{path, slides: RenderSlide[], defaultFont}`）。
+
+Electron 桌面版由主进程负责 xlsx/pptx 解析，web-server 没有对应实现 → 解析失败 → 状态被设为「Couldn't parse」但用户感知是「无限 opening」。
+
+**修复方向**：在 web-server 端启动一个 tsx 进程，调用 `apps/sheets/native/xlsx-engine` 或 `packages/pptx-engine` 解析输入字节，返回完整结构。或者，把 `parseWorkbookFile` / `applyOpen` 改成能容忍「只给 bytes」的 fallback，自己在 renderer 里再 parse。
+
+### P1.2 Chrome 对 4.4 MB PDF 的 IPC 回包报 `ERR_NETWORK_CHANGED`
+
+第一次 PDF load 时 `pdf:open-path` 正常，但浏览器连续发起 `pdf:get-username` / `pdf:list-edit-fonts` / `pdf:open-path` / `pdf:dirty-changed` 后，base64 over JSON 把 4.4 MB 文件放大成 6 MB 文本；Chrome 在第二次 load 时把后续 IPC 请求批量 abort，报 `ERR_NETWORK_CHANGED`。表现：状态栏停在「正在打开…」。
+
+**缓解方案**：
+
+1. 把大文件二进制走 `/api/files/read?path=…` 旁路（直读 stream），IPC 只传 metadata；
+2. 或者把 `pdf:open-path` 拆成「manifest」+「GET chunked file」。
+
+不影响 PDF 功能（手动刷新一次就好），但用户体验糟糕。
+
+## 9. 新截图（续）
+
+| 文件 | 说明 |
+| --- | --- |
+| `22-ai-sheets-error.png` | 打开 xlsx 后 grid 为空 + 状态栏报错（已知 P1.1） |
+| `23-ai-sheets-table-built.png` | AI 通过 propose_operations 写入 18 条修改后成品（含表头 + 5 行 + 列宽 + 数字格式） |
+| `24-ai-slides-loading.png` | Slides 通过 `?open=` 后仍停在 opening（已知 P1.1） |
+| `25-ai-markdown-with-ai.png` | AI Markdown 加载 demo.md，右侧 Genspark 面板展开 |
+| `26-ai-markdown-ai-panel.png` | 点击 AI 总结预设按钮后的面板 |
+| `27-ai-html-present-view.png` | AI HTML 演示按钮展开（当前页/全屏/新标签） |
+| `28-ai-html-present-mode.png` | 进入 PresentView 后只剩「退出演示 (Esc)」 |
