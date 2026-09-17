@@ -2,9 +2,13 @@
  * Sheets IPC channels — workbook open/has-queued/consume-new-blank.
  * Persistence uses `sheets-recent.json` for the recent-files list.
  */
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { FILES_DIR, loadRecentSheets, registerHandle, saveRecentSheets } from '../common/index'
+import { WebSheetsSidecar } from './sidecar'
+
+const sheetsSidecar = new WebSheetsSidecar()
 
 export function registerSheetsHandlers(): void {
   registerHandle('sheets:new-blank', async (_event: unknown, options: unknown) => {
@@ -39,16 +43,64 @@ export function registerSheetsHandlers(): void {
     recent.unshift({ id, path: filePath as string, name, openedAt: Date.now() })
     saveRecentSheets(recent)
 
+    // The renderer expects a fully parsed WorkbookFile (workbookFileSchema in
+    // apps/sheets/src/shared/desktop-api.ts). The Electron main process parses
+    // xlsx via the xlsx-sidecar; on the web we spawn the same sidecar binary
+    // and merge its result with the local sha256/fileBytes/path metadata.
+    let workbook: Record<string, unknown>
+    try {
+      const result = (await sheetsSidecar.open(filePath as string)) as Record<string, unknown>
+      workbook = { ...result }
+    } catch (err) {
+      throw new Error(
+        `Failed to parse workbook: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
     return {
+      ...workbook,
       id,
       path: filePath,
       name,
-      bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      sha256,
+      fileBytes: bytes.byteLength,
     }
   })
 
   registerHandle('sheets:consume-new-blank', () => ({ ok: true }))
   registerHandle('workbook:pending-edits', () => ({ ok: true }))
+
+  // The renderer pings workbook:read-range to stream cells for the visible
+  // viewport. We forward the call to the xlsx-sidecar (the same Rust binary
+  // the Electron main process owns); the empty fallback only fires if the
+  // sidecar is unreachable or the session expired.
+  registerHandle('workbook:read-range', async (_event: unknown, request: unknown) => {
+    const req = request as {
+      sessionId?: string
+      sheetId?: string
+      range?: { startRow: number; endRow: number; startColumn: number; endColumn: number }
+    } | undefined
+    const range = req?.range
+    const rows = range ? range.endRow - range.startRow + 1 : 0
+    if (!req?.sessionId || !req.sheetId || !range) {
+      return emptyRange(range?.endRow ?? 0, rows)
+    }
+    try {
+      const result = (await sheetsSidecar.readRange({
+        sessionId: req.sessionId,
+        sheetId: req.sheetId,
+        range,
+      })) as Record<string, unknown>
+      return normalizeRangeResult(result, range.endRow)
+    } catch (err) {
+      // Sidecar session expired: the sidecar is per-process and resets on
+      // process restart, so we may have lost the session. Return empty cells
+      // rather than a hard error so the workbook metadata still shows up.
+      console.warn('[sheets] read-range sidecar failed:', err)
+      return emptyRange(range.endRow, rows)
+    }
+  })
 
   const imageMime: Record<string, string> = {
     png: 'image/png',
@@ -100,4 +152,52 @@ export function registerSheetsHandlers(): void {
       return { path, name: basename(path) }
     })
   })
+}
+
+
+function emptyRange(endRow: number, rows: number): Record<string, unknown> {
+  return {
+    cells: [],
+    rows: Array.from({ length: Math.max(0, rows) }, (_, i) => ({
+      row: Math.max(0, endRow - rows + 1) + i,
+      hidden: false,
+    })),
+    merges: [],
+    hyperlinks: [],
+    conditionalRules: [],
+    autoFilter: null,
+    autoFilterColumns: [],
+    dataValidations: [],
+    styles: [],
+    indexedThroughRow: endRow,
+    indexingComplete: true,
+    sheetProtection: null,
+    protectedRanges: [],
+    rowBreaks: [],
+    colBreaks: [],
+  }
+}
+
+function normalizeRangeResult(result: Record<string, unknown>, endRow: number): Record<string, unknown> {
+  // The xlsx-sidecar returns rows / cells / merges / hyperlinks / etc. directly
+  // in the WorkbookRangeResult shape (workbookRangeResultSchema). Forward as-is
+  // and only fill in missing pagination markers the renderer expects.
+  return {
+    cells: Array.isArray(result.cells) ? result.cells : [],
+    rows: Array.isArray(result.rows) ? result.rows : [],
+    merges: Array.isArray(result.merges) ? result.merges : [],
+    hyperlinks: Array.isArray(result.hyperlinks) ? result.hyperlinks : [],
+    conditionalRules: Array.isArray(result.conditionalRules) ? result.conditionalRules : [],
+    autoFilter: result.autoFilter ?? null,
+    autoFilterColumns: Array.isArray(result.autoFilterColumns) ? result.autoFilterColumns : [],
+    dataValidations: Array.isArray(result.dataValidations) ? result.dataValidations : [],
+    styles: Array.isArray(result.styles) ? result.styles : [],
+    indexedThroughRow:
+      typeof result.indexedThroughRow === 'number' ? result.indexedThroughRow : endRow,
+    indexingComplete: typeof result.indexingComplete === 'boolean' ? result.indexingComplete : true,
+    sheetProtection: result.sheetProtection ?? null,
+    protectedRanges: Array.isArray(result.protectedRanges) ? result.protectedRanges : [],
+    rowBreaks: Array.isArray(result.rowBreaks) ? result.rowBreaks : [],
+    colBreaks: Array.isArray(result.colBreaks) ? result.colBreaks : [],
+  }
 }
