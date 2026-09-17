@@ -204,6 +204,32 @@ export function batchSegments(segments: string[], maxChars = 3000): string[][] {
   return batches
 }
 
+/**
+ * Spelling a key can also be looked up under, beyond the one that was mined.
+ *
+ * The handlers do an exact lookup of the region text and then fall back to
+ * longest-key-first substring replacement, and the region they see comes from
+ * their own extractor — which is not always byte-identical to what
+ * `@genoffice/file-parse` handed the miner. A real tech pack produced the key
+ * `3” WIDE CONTOURED WB, FACING IN A面料,` while the PDF region was
+ * `3” WIDE CONTOURED WB, FACING IN A面料` (the extractors disagree about
+ * whether a line-final comma belongs to the line), so nothing matched and the
+ * English stayed in the output.
+ *
+ * Trailing punctuation and whitespace are therefore also offered as a second
+ * key for the same target. Only the *end* is trimmed: an inner comma is part of
+ * the phrase. Anything that would leave a key under `minChars` is dropped, so a
+ * variant can never start substring-matching every region on the page.
+ */
+export function dictionaryKeyVariants(key: string): string[] {
+  const trimmed = key
+    .replace(/[\s\u3000]+$/u, '')
+    .replace(/[,;:.!?，；：。！？、]+$/u, '')
+    .trim()
+  if (trimmed.length < 2 || trimmed === key) return []
+  return [trimmed]
+}
+
 /** Default on-disk location for generated dictionaries. */
 export function defaultDictionaryPath(dataDir: string, inputPath: string): string {
   const ext = extname(inputPath)
@@ -446,6 +472,14 @@ export async function buildDictionary(
   try {
     const dir = dirname(outputPath)
     mkdirSync(dir, { recursive: true })
+    // Each key also ships under the spellings a handler might report for the
+    // same region (see dictionaryKeyVariants) — a key the writer never looks up
+    // is indistinguishable from no key at all.
+    for (const [source, target] of Object.entries(dictionary)) {
+      for (const variant of dictionaryKeyVariants(source)) {
+        if (dictionary[variant] === undefined) dictionary[variant] = target
+      }
+    }
     // Sorted keys make the file diffable when a user keeps it in git.
     const sorted: Record<string, string> = {}
     for (const key of Object.keys(dictionary).sort()) sorted[key] = dictionary[key]!

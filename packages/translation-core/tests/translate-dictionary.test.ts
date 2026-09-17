@@ -15,6 +15,7 @@ import {
   batchSegments,
   buildDictionary,
   defaultDictionaryPath,
+  dictionaryKeyVariants,
   fillDictionaryGaps,
   mineSegments,
   readDictionaryFile,
@@ -78,6 +79,29 @@ describe('mineSegments', () => {
     expect(segmentFormatForPath('/tmp/a.xlsm')).toBe('xlsx')
     expect(segmentFormatForPath('/tmp/a.pdf')).toBe('flat')
     expect(segmentFormatForPath('/tmp/a.txt')).toBe('flat')
+  })
+})
+
+describe('dictionaryKeyVariants', () => {
+  it('offers the spelling without trailing punctuation', () => {
+    // The PDF extractor and the region splitter disagree about a line-final
+    // comma, so the writer looks up a slightly shorter string than we mined.
+    expect(dictionaryKeyVariants('3” WIDE CONTOURED WB, FACING IN A面料,')).toEqual([
+      '3” WIDE CONTOURED WB, FACING IN A面料',
+    ])
+    expect(dictionaryKeyVariants('居中，顺纱向。')).toEqual(['居中，顺纱向'])
+    expect(dictionaryKeyVariants('ON CB WAISTBAND-  ')).toEqual(['ON CB WAISTBAND-'])
+  })
+
+  it('keeps inner punctuation, which is part of the phrase', () => {
+    expect(dictionaryKeyVariants('A, B, C')).toEqual([])
+    expect(dictionaryKeyVariants('Fabric: 100% cotton')).toEqual([])
+  })
+
+  it('refuses variants short enough to substring-match everywhere', () => {
+    expect(dictionaryKeyVariants('a,')).toEqual([])
+    expect(dictionaryKeyVariants('。，')).toEqual([])
+    expect(dictionaryKeyVariants('')).toEqual([])
   })
 })
 
@@ -272,6 +296,35 @@ describe('buildDictionary', () => {
       { source: 'Hello world', target: '你好世界', origin: 'llm' },
       { source: 'Good morning', target: '早上好', origin: 'llm' },
     ])
+  })
+
+  it('also writes the spellings the file handlers look up', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'genoffice-dict-variant-'))
+    const inputPath = writeInput('3” WIDE CONTOURED WB, FACING IN A面料,\n')
+    const result = await buildDictionary(
+      {
+        inputPath,
+        sourceLang: 'en-US',
+        targetLang: 'zh-CN',
+        outputPath: join(dir, 'dict.json'),
+        dataDir: dir,
+        knowledgeBase: emptyKb(),
+      },
+      {
+        translateBatch: async ({ units }) => ({
+          ok: true,
+          units: units.map((u) => ({
+            unitId: u.unitId,
+            sourceText: u.sourceText,
+            translatedText: '3英寸宽曲线型腰头，采用A面料贴边',
+            status: 'translated' as const,
+          })),
+        }),
+      },
+    )
+    const written = JSON.parse(readFileSync(result.dictionaryPath!, 'utf8')) as Record<string, string>
+    expect(written['3” WIDE CONTOURED WB, FACING IN A面料,']).toBe('3英寸宽曲线型腰头，采用A面料贴边')
+    expect(written['3” WIDE CONTOURED WB, FACING IN A面料']).toBe('3英寸宽曲线型腰头，采用A面料贴边')
   })
 
   it('records segments the model failed on instead of dropping them silently', async () => {
