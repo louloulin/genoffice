@@ -3489,6 +3489,7 @@ export function registerAiIpc(): void {
         totalSegments: dict.totalSegments,
         elapsedMs: dict.elapsedMs,
         segments: dict.segments,
+        warnings: dict.warnings,
       },
       coverage: dict.coverage,
     }

@@ -170,6 +170,8 @@ export {
   type FillGapsResult,
   buildDictionary,
   defaultDictionaryPath,
+  dictionaryKeyVariants,
+  dictionaryWarnings,
   mineSegments,
   segmentFormatForPath,
   type SegmentFormat,

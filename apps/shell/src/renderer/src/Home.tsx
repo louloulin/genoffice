@@ -1532,6 +1532,13 @@ export function Home() {
         targetLang: i18n.dateLocale,
       })
       if (r?.ok) {
+        const warnings = r.dictionary?.warnings
+        if (warnings && warnings.length > 0) {
+          // The file was written but the model never returned a translation —
+          // most of the technical terms are still in the source language. Show
+          // the reason so the user does not assume it worked.
+          window.alert(`Translate finished with a warning:\n\n${warnings.join('\n')}`)
+        }
         void refresh()
       } else {
         window.alert((r as any)?.error || 'Translate failed')

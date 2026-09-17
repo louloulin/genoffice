@@ -82,6 +82,13 @@ export interface BuildDictionaryResult {
   llmEntries?: number
   /** Segments we could not translate (model failure or empty response). */
   missed?: string[]
+  /**
+   * Human-readable caveats for callers that hand the dictionary to the file
+   * writer. The dictionary on disk is still valid, but a non-empty array means
+   * the output file will not be what the user asked for — see
+   * `dictionaryWarnings` for what each string describes.
+   */
+  warnings?: string[]
   /** Total segments considered. */
   totalSegments?: number
   /** How long the whole build took, ms. */
@@ -228,6 +235,37 @@ export function dictionaryKeyVariants(key: string): string[] {
     .trim()
   if (trimmed.length < 2 || trimmed === key) return []
   return [trimmed]
+}
+
+
+/**
+ * Things the caller should tell the user about a dictionary that technically
+ * "succeeded" but is worse than the request implied.
+ *
+ * The build only fails when nothing can be written. A model that never answers
+ * — bad key, offline endpoint, quota exhausted — still produces a file: the
+ * KB mandatory terms land and the already-translated passthrough segments
+ * land, and the pass is reported as `ok: true` because that is the truth
+ * about the dictionary on disk. The downstream `translate_file` step then
+ * overlays a file whose technical terms are all still in the source language,
+ * and the user sees a successful "translate" with nothing translated.
+ *
+ * The strong signal is unambiguous: the model was asked for at least one
+ * segment and returned *nothing*. Anything else (partial coverage, a few
+ * empty responses) is normal noise — a long line the model paraphrased into
+ * an empty string is a single missed segment, not a broken pipeline.
+ */
+export function dictionaryWarnings(input: {
+  llmEntries: number
+  missed: string[]
+  usedLlm: boolean
+}): string[] {
+  if (!input.usedLlm) return []
+  if (input.llmEntries > 0) return []
+  if (input.missed.length === 0) return []
+  return [
+    `the translation model returned nothing for ${input.missed.length} segment${input.missed.length === 1 ? '' : 's'}; the output file only carries the knowledge-base terms and the segments that were already in the target language`,
+  ]
 }
 
 /** Default on-disk location for generated dictionaries. */
@@ -389,6 +427,8 @@ export async function buildDictionary(
   // 2) LLM pass over the remaining segments.
   let llmEntries = 0
   const useLlm = request.useLlm !== false
+  let needsModelCount = 0
+  let warnings: string[] = []
   if (useLlm) {
     const remaining = segments.filter((s) => dictionary[s] === undefined)
     // A mixed-language file (a bilingual tech pack, a partly-localized
@@ -405,6 +445,7 @@ export async function buildDictionary(
       if (isAlreadyInLanguage(segment, request.targetLang)) alreadyTranslated.push(segment)
       else needsModel.push(segment)
     }
+    needsModelCount = needsModel.length
     for (const segment of alreadyTranslated) {
       dictionary[segment] = segment
       dictSegments.push({ source: segment, target: segment, origin: 'passthrough' })
@@ -465,6 +506,7 @@ export async function buildDictionary(
         llmEntries++
       }
     }
+    warnings = dictionaryWarnings({ llmEntries, missed, usedLlm: useLlm && needsModelCount > 0 })
   }
 
   // 3) Write it out.
@@ -502,6 +544,7 @@ export async function buildDictionary(
     elapsedMs: Date.now() - started,
     segments: dictSegments,
     coverage: assessCoverage(segments, dictionary),
+    warnings,
   }
 }
 

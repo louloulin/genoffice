@@ -527,6 +527,12 @@ export interface TranslateFileResult {
     totalSegments?: number
     elapsedMs?: number
     segments?: { source: string; target: string; origin: 'kb' | 'llm' }[]
+    /**
+     * Caveats the UI should surface even when the pass succeeded. Today the
+     * only warning is the model returning nothing for every segment — see
+     * `dictionaryWarnings` in @genoffice/translation-core.
+     */
+    warnings?: string[]
   }
   /** How much of the file the dictionary reaches. `ratio` is 0..1. */
   coverage?: TranslationCoverage

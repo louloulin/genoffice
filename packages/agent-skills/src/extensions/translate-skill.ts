@@ -409,6 +409,7 @@ interface TranslateFileResult {
     totalSegments?: number
     elapsedMs?: number
     segments?: BuildDictionaryResult["segments"]
+    warnings?: BuildDictionaryResult["warnings"]
   }
   coverage?: CoverageReport
   elapsedMs?: number
@@ -657,6 +658,7 @@ function createTranslateFileTool() {
                 totalSegments: built.totalSegments,
                 elapsedMs: built.elapsedMs,
                 segments: built.segments,
+                warnings: built.warnings,
               }
               coverage = built.coverage
             }

@@ -16,6 +16,7 @@ import {
   buildDictionary,
   defaultDictionaryPath,
   dictionaryKeyVariants,
+  dictionaryWarnings,
   fillDictionaryGaps,
   mineSegments,
   readDictionaryFile,
@@ -102,6 +103,40 @@ describe('dictionaryKeyVariants', () => {
     expect(dictionaryKeyVariants('a,')).toEqual([])
     expect(dictionaryKeyVariants('。，')).toEqual([])
     expect(dictionaryKeyVariants('')).toEqual([])
+  })
+})
+
+describe('dictionaryWarnings', () => {
+  it('stays quiet when the model answered at least one segment', () => {
+    expect(
+      dictionaryWarnings({ llmEntries: 5, missed: ['1 short line'], usedLlm: true }),
+    ).toEqual([])
+  })
+
+  it('stays quiet when the LLM pass was deliberately skipped', () => {
+    // KB-only builds never even try to call the model, so a zero LLM count
+    // there is the design, not a failure.
+    expect(
+      dictionaryWarnings({ llmEntries: 0, missed: ['a segment'], usedLlm: false }),
+    ).toEqual([])
+  })
+
+  it('stays quiet when every segment was already in the target language', () => {
+    // All-passthrough: there was nothing to send, so the model returning
+    // nothing is not a failure.
+    expect(
+      dictionaryWarnings({ llmEntries: 0, missed: [], usedLlm: true }),
+    ).toEqual([])
+  })
+
+  it('warns when the model was asked for segments and returned none of them', () => {
+    const warnings = dictionaryWarnings({
+      llmEntries: 0,
+      missed: ['1/2” FLAT, NON-ROLL ELASTIC CAUGHT', 'ON CB WAISTBAND-'],
+      usedLlm: true,
+    })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatch(/returned nothing for 2 segment/)
   })
 })
 
@@ -325,6 +360,36 @@ describe('buildDictionary', () => {
     const written = JSON.parse(readFileSync(result.dictionaryPath!, 'utf8')) as Record<string, string>
     expect(written['3” WIDE CONTOURED WB, FACING IN A面料,']).toBe('3英寸宽曲线型腰头，采用A面料贴边')
     expect(written['3” WIDE CONTOURED WB, FACING IN A面料']).toBe('3英寸宽曲线型腰头，采用A面料贴边')
+  })
+
+  it('surfaces a warning when the model returned nothing for every segment', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'genoffice-dict-warn-'))
+    const inputPath = writeInput('Translate me\nMe too\n')
+    const result = await buildDictionary(
+      {
+        inputPath,
+        sourceLang: 'en-US',
+        targetLang: 'zh-CN',
+        outputPath: join(dir, 'dict.json'),
+        dataDir: dir,
+      },
+      {
+        translateBatch: async ({ units }) => ({
+          ok: true,
+          units: units.map((u) => ({
+            unitId: u.unitId,
+            sourceText: u.sourceText,
+            status: 'failed' as const,
+            errorMessage: 'provider auth failed',
+          })),
+        }),
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(result.llmEntries).toBe(0)
+    expect(result.missed).toEqual(['Translate me', 'Me too'])
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings?.[0]).toMatch(/returned nothing for 2 segment/)
   })
 
   it('records segments the model failed on instead of dropping them silently', async () => {
