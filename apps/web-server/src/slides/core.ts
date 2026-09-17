@@ -6,6 +6,74 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { FILES_DIR, loadRecentSlides, registerHandle, saveRecentSlides } from '../common/index'
+import { openPptx } from '@genoffice/pptx-engine'
+import {
+  buildRenderSlide,
+  HeuristicMetrics,
+} from '@genoffice/pptx-render'
+import { parseTheme } from '@genoffice/pptx-engine'
+import { displayMime } from '../../../slides/src/main/media-mime'
+import { neutralizeJpegOrientation } from '../../../slides/src/main/jpeg-orientation'
+import { tiffToPng } from '../../../slides/src/main/tiff-decode'
+import type { OpenedPptx, Slide } from '@genoffice/pptx-engine'
+
+/** Mirror of the desktop `deckDefaultFont` in apps/slides/src/main/slides-main.ts:
+ *  pull the deck's minor (body) Latin font from theme1.xml so the ribbon font box
+ *  has something meaningful even before the user picks a selection. */
+function deckDefaultFont(opened: OpenedPptx): string | undefined {
+  try {
+    const slidePath = opened.archive.readPresentation().slidePaths[0]
+    if (!slidePath) return undefined
+    const themePath = opened.archive.resolveSlideChain(slidePath).themePath
+    const xml = themePath ? opened.archive.readText(themePath) : undefined
+    return xml ? parseTheme(xml).minorFont : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** web-server-only media resolver (no theme-tint rewrite, no electron deps).
+ *  Decodes TIFF → PNG inline, neutralises EXIF orientation for JPEG, base64
+ *  everything else as `data:` URLs the renderer can `<img src=>` directly. */
+function makeWebMediaResolver(opened: OpenedPptx, _slidePath?: string) {
+  const cache = new Map<string, string | undefined>()
+  return (mediaRef: string): string | undefined => {
+    if (cache.has(mediaRef)) return cache.get(mediaRef)
+    const bytes = opened.archive.readBytes(mediaRef)
+    let url: string | undefined
+    if (bytes) {
+      const mime = displayMime(mediaRef, bytes)
+      if (mime === 'image/tiff') {
+        const decoded = tiffToPng(bytes)
+        if (decoded) url = `data:image/png;base64,${Buffer.from(decoded.png).toString('base64')}`
+      } else {
+        const served = mime === 'image/jpeg' ? neutralizeJpegOrientation(bytes) : bytes
+        url = `data:${mime};base64,${Buffer.from(served).toString('base64')}`
+      }
+    }
+    cache.set(mediaRef, url)
+    return url
+  }
+}
+
+/** Web-server renderer: deterministic heuristic metrics (no font parsing).
+ *  Matches the desktop fallback when `createSystemFontMetrics` hasn't initialised. */
+const webMetrics = new HeuristicMetrics()
+
+function buildWebRenderSlides(opened: OpenedPptx, fitWidthPx: number) {
+  return opened.deck.slides.map((s: Slide, i: number) =>
+    buildRenderSlide(s, opened.deck.size, {
+      fitWidthPx,
+      media: makeWebMediaResolver(opened, s.path),
+      metrics: webMetrics,
+      slideNo: i + 1,
+    }),
+  )
+}
+
+/** Default slide canvas width used when the renderer doesn't pass `fitWidthPx`.
+ *  Matches the desktop default (`FIT_WIDTH = 1280` in apps/slides). */
+const DEFAULT_FIT_WIDTH = 1280
 
 export function registerSlidesCoreHandlers(): void {
   registerHandle('slides:new-blank', async (_event: unknown, options: unknown) => {
@@ -61,11 +129,19 @@ export function registerSlidesCoreHandlers(): void {
     recent.unshift({ id, path: filePath as string, name, openedAt: Date.now() })
     saveRecentSlides(recent)
 
+    // Match the desktop `slides:open-path` shape: parse the pptx via `@genoffice/pptx-engine`
+    // and return the same `{path, slides, size, defaultFont}` the renderer expects. Without
+    // this the web renderer keeps `slides` as `undefined` and the boot screen never goes
+    // away. Uses the web-only helpers above so we avoid the harfbuzz wasm + electron
+    // deps that the desktop `render-helpers.ts` transitively pulls in.
+    const opened = await openPptx(new Uint8Array(bytes))
+    const slides = buildWebRenderSlides(opened, DEFAULT_FIT_WIDTH)
+
     return {
-      id,
       path: filePath,
-      name,
-      bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      slides,
+      size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
+      defaultFont: deckDefaultFont(opened),
     }
   })
 

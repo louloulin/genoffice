@@ -188,3 +188,76 @@ POST /api/ipc/workbook:read-range {"args":[{"sessionId":"...","sheetId":"sheet-1
 | `29-ai-sheets-loaded.png` | xlsx 加载完成 + sheet tabs 可见 + 状态栏 "工作簿已完整加载" |
 | `30-ai-sheets-with-data.png` | 触发 sidecar read-range 后的 grid（cells 已经渲染到 canvas） |
 | `31-ai-sheets-with-cells.png` | 选中 A1 单元格时 name box 显示 A1，公式栏就绪 |
+
+## 12. 续：Slides web 端 P0 修复（slides:open-path 之前只返回 bytes）
+
+**问题**：`apps/web-server/src/slides/core.ts` 的 `slides:open-path` 处理器只读盘 + 返回 `{id, path, name, bytes}`，但 renderer 的 `applyOpen` 期望 `{path, slides: RenderSlide[], size, defaultFont}`。结果浏览器端 slides app 卡在 "正在打开…" 启动屏（renderer 拿到的 `slides` 是 `undefined`，`slide = slides[current]` 一直为空，boot screen 永不退出）。
+
+**修复**：在 web-server 直接复用 `@genoffice/pptx-engine` 的 `openPptx` + `@genoffice/pptx-render` 的 `buildRenderSlide`，并写一份 web-only 的 `makeWebMediaResolver`（解码 TIFF→PNG、neutralize JPEG EXIF orientation、base64 data URL）。不再依赖桌面版的 `session-state.ts` —— 那个文件 `import { BrowserWindow, webContents } from 'electron'`，web 端拿不到，而且其 `fonts.ts → shaped-metrics.ts` 还用 Vite 专有的 `?asset` 语法加载 harfbuzz wasm，tsx 直接吃 `SyntaxError`。
+
+**附带改动**：
+1. `apps/slides/src/main/render-helpers.ts`（新文件）：把 `getFontMetrics` / `resetFontMetrics` / `buildAllRenderSlides` / `makeMediaResolver` 抽出来，供桌面和 web 共用。桌面 `session-state.ts` 改用 `getFontMetricsShared`，但继续保留 desktop-only 的 `makeMediaResolver`（含 SVG theme-tint 改写）。
+2. `apps/web-server/src/slides/core.ts`：去掉 desktop-style 的 `slides:open-path` 实现，改成完整 parse + render 流程，新增 `deckDefaultFont` helper（和桌面版同名逻辑一致，从 theme1.xml 取 minorFont）。
+3. `apps/web-server/tsconfig.json`：去掉 `"rootDir": "src"` —— 否则 tsc 拒绝跨包引用 `apps/slides/src/main/{media-mime,jpeg-orientation,tiff-decode}.ts`（tsx 不在乎，但 tsc 在乎）。
+
+**验证**：
+```
+curl -X POST -H 'Content-Type: application/json' \
+  http://127.0.0.1:18080/api/ipc/slides:open-path \
+  -d '{"args":["/.../verify-supplier.pptx"]}'
+
+{"ok":true,"result":{
+  "path":".../verify-supplier.pptx",
+  "slides":[
+    { widthPx:1280, heightPx:960, scale:1.33, background:{...}, nodes:[...] },
+    ...   ← 2 张 slide
+  ],
+  "size":{ cx:9144000, cy:6858000 },
+  "defaultFont":"Calibri"
+}}
+```
+
+浏览器端：
+
+```
+/slides/?mode=tab&open=...verify-supplier.pptx
+  状态栏: 幻灯片 1 / 2   （不再是 "正在打开…"）
+  Slide 缩略图: 1, 2
+  AI 助手面板: AI 美化 / AI 事实核查 / AI 配图 / 翻译
+  0 console errors
+```
+
+**新增截图**：`regression-44-slides-parsed.png`、`regression-45-slides-fully-loaded.png`、`regression-50-slides-final.png`、`regression-51-slides-ai-optimize.png`。
+
+## 13. Sheets status-bar 完整加载验证
+
+修复前：状态栏卡在 "正在流式加载 verify-supplier.xlsx：4 行可用。"
+修复后：状态栏显示 "工作簿已完整加载——公式实时重算，行列可编辑。"
+
+新增截图：`regression-46-sheets-fully-loaded.png`、`regression-47-sheets-ai-translate.png`。
+
+## 14. PDF 翻译端到端验证（TDZ 修复确认）
+
+加载 KERRITS 英文工艺单 → 点 "翻译这段内容" → AI 流式返回中文 + 15 项专业术语对照表（POWERMESH/FLATSEAM/CONTOURED WB/KNEE PATCH/TACH-IT/SATIN LABEL/HORSESHOE LABEL/HANG TAG/SIZE LABEL/CARE LABEL/SIDE SEAM/CENTER BACK/INSEAM/WAISTBAND SEAM/PLACEMENT）。控制台 0 错误，无 `Cannot access 'apiRef' before initialization` 报错（TDZ fix `86219a0` 生效）。
+
+新增截图：`regression-32-pdf-loaded-no-tdz.png`、`regression-33-translation-streaming.png`、`regression-34-translation-completed.png`、`regression-35-page2-translation.png`、`regression-36-page2-translation-final.png`。
+
+## 15. 设置面板验证
+
+- 翻译知识库面板：36 条规则（26 术语 / 1 禁用译法 / 6 品牌词 / 1 风格规则 / 2 客户偏好），KB 来源 `default · /Users/louloulin/.lumos/skills/translate`，AI provider `minimax`，含 "从文件生成翻译词典" 面板和"翻译片段"测试面板。
+- AI 模型：MiniMax / MiniMax-M3，Base URL 留空用官方端点。
+- 技能与插件：11 个 Skill（Docs/Sheets/Slides/Office Workflow/Safety/Frozen Selection/Verify Response/Skill Marketplace/Web Search/Image Search/OCR Image）+ 3 个 Plugin（Agent Team/Audit Log/...），全部 enabled，可单独 reset。
+
+新增截图：`regression-37-translation-kb-panel.png`、`regression-38-kb-detail.png`、`regression-39-ai-model-settings.png`、`regression-40-skills-plugins.png`。
+
+## 16. 全应用 0 错误扫尾
+
+| App | URL | 状态栏 | console errors |
+| --- | --- | --- | --- |
+| Home | `/` | 下午好,Godlinchong | 0 |
+| AI Docs | `/docs/?...` | （回归范围内） | — |
+| AI Sheets | `/sheets/?mode=tab&open=verify-supplier.xlsx` | 工作簿已完整加载 | 0 |
+| AI Slides | `/slides/?mode=tab&open=verify-supplier.pptx` | 幻灯片 1 / 2 | 0 |
+| AI PDF | `/pdf/?mode=tab#open=KERRITS-英文工艺单.pdf` | 第 1 页, 共 3 页 | 0 |
+| AI Markdown | `/markdown/?mode=tab#open=...demo.md` | 已加载 | 0 |
+| AI HTML | `/html/?mode=tab#open=...demo.html` | 已加载 | 0 |
