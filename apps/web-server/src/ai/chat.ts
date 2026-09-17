@@ -770,6 +770,8 @@ export function registerAiCoreHandlers(): void {
       sourceLang?: string
       targetLang?: string
       customerName?: string
+      /** Filter KB entries by category; mirrors the desktop app's glossaryCategory handling. */
+      glossaryCategory?: string
       dictionaryPath?: string
       useDictionary?: boolean
       settings?: AiSettings
@@ -795,11 +797,19 @@ export function registerAiCoreHandlers(): void {
     // sentence instead of the model getting it right the first time. The pi
     // tool layers these pairs on top of the KB for the prompt, for
     // `matchedTerms`, and for output enforcement.
+    // `customerName` is the customer's display name (e.g. "KERRITS"); it maps
+    // to the KB's `glossaryCategory` filter so per-customer terminology is
+    // applied. The previous web build stuffed it into `instruction`, which
+    // the translate-skill tool appended as the literal "Style: customer=KERRITS"
+    // to the source — wrong text, and zero KB narrowing. The Electron app
+    // already does the right thing; this branch now matches it.
     const result = (await callTranslateTool('translate_text', {
       text,
       source_lang: req.sourceLang,
       target_lang: req.targetLang,
-      instruction: req.customerName ? `customer=${req.customerName}` : undefined,
+      ...(req.customerName || req.glossaryCategory
+        ? { glossary_category: req.glossaryCategory ?? req.customerName }
+        : {}),
       ...(dictionaryPairs.length > 0 ? { dictionary: dictionaryPairs } : {}),
     })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
     if (!result.ok) {

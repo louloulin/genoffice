@@ -23,7 +23,11 @@ interface IpcResult<T = unknown> {
   result: T
 }
 
-async function ipc<T = unknown>(base: string, channel: string, args: unknown[] = []): Promise<IpcResult<T>> {
+async function ipc<T = unknown>(
+  base: string,
+  channel: string,
+  args: unknown[] = [],
+): Promise<IpcResult<T>> {
   const res = await fetch(`${base}/api/ipc/${channel}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -199,6 +203,35 @@ describe('snippet translation + dictionary reuse E2E', () => {
     expect(result.dictionary?.hits).toBe(1)
     // The term had to reach the model as an instruction, not only post-hoc.
     expect(fake.prompts.at(-1)).toContain('Oxford cloth => 牛津布')
+  })
+
+  it('forwards customerName as glossaryCategory, not as instruction text', async () => {
+    // The web-server handler used to stuff `customerName` into the
+    // `instruction` parameter, which the translate-skill appended to the
+    // source as the literal string 'Style: customer=KERRITS' — wrong prompt
+    // shape, and zero KB narrowing. The desktop app already routes the same
+    // field through `glossaryCategory` so the customer's KB bucket applies.
+    const text = 'Sample fabric weight comes from our supplier.'
+    const { result } = await ipc<{
+      ok: boolean
+      matchedTerms?: string[]
+      translation?: string
+    }>(base, 'home:translate-snippet', [
+      {
+        text,
+        sourceLang: 'en-US',
+        targetLang: 'zh-CN',
+        customerName: 'KERRITS',
+        useDictionary: false,
+      },
+    ])
+    expect(result.ok).toBe(true)
+    // The prompt must not leak the legacy 'Style: customer=KERRITS' shim into
+    // the source text the model sees.
+    expect(fake.prompts.at(-1)).not.toContain('Style: customer=KERRITS')
+    // The KB term scoped to the KERRITS bucket must still match.
+    expect(result.matchedTerms).toContain('fabric weight')
+    expect(result.translation).toContain('克重')
   })
 
   it('skips the dictionary when the pane turns reuse off', async () => {
