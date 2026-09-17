@@ -34,13 +34,14 @@ import {
   type CoverageReport,
   type TranslateBatchUnitResult,
 } from '@genoffice/translation-core'
+import { isAlreadyInLanguage } from './languages'
 
 /** A segment worth putting in a dictionary. */
 export interface DictionarySegment {
   /** The original text, exactly as it appears in the file. */
   source: string
   /** Where it came from, for provenance in the UI. */
-  origin: 'kb' | 'llm'
+  origin: 'kb' | 'llm' | 'passthrough'
   target?: string
 }
 
@@ -364,7 +365,25 @@ export async function buildDictionary(
   const useLlm = request.useLlm !== false
   if (useLlm) {
     const remaining = segments.filter((s) => dictionary[s] === undefined)
-    const batches = batchSegments(remaining)
+    // A mixed-language file (a bilingual tech pack, a partly-localized
+    // brochure) contains lines that are *already* in the target language.
+    // Sending those to the model invites it to "translate" them the other way
+    // — a zh-CN job turned 花型有方向性。 into "The pattern is directional."
+    // and then stamped the English over the Chinese original. Answer those
+    // locally with an identity mapping: the file keeps its own text, the
+    // Python writer finds a dictionary hit and skips the region, and the
+    // segments that actually need work still go to the model.
+    const alreadyTranslated: string[] = []
+    const needsModel: string[] = []
+    for (const segment of remaining) {
+      if (isAlreadyInLanguage(segment, request.targetLang)) alreadyTranslated.push(segment)
+      else needsModel.push(segment)
+    }
+    for (const segment of alreadyTranslated) {
+      dictionary[segment] = segment
+      dictSegments.push({ source: segment, target: segment, origin: 'passthrough' })
+    }
+    const batches = batchSegments(needsModel)
     let order = 0
     for (const batch of batches) {
       const units = batch.map((sourceText) => ({

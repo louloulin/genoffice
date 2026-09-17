@@ -41,7 +41,15 @@ export type {
   TranslationUnit,
 } from './types'
 
-export { LANGUAGES, getLanguage, englishLabelFor } from './languages'
+export {
+  LANGUAGES,
+  getLanguage,
+  englishLabelFor,
+  dominantScript,
+  scriptOfLanguage,
+  isAlreadyInLanguage,
+  type TextScript,
+} from './languages'
 
 export {
   buildTranslationPrompt,
