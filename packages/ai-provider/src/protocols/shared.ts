@@ -153,6 +153,146 @@ export function throwIfCreditsNotice(bodyText: string): void {
   if (notice) throw new AiCreditsError(notice)
 }
 
+/**
+ * Streaming-safe stripper for inline `think` blocks in the chat reply.
+ *
+ * MiniMax M3 (and a few other reasoning models) emit their reasoning inline in
+ * `message.content` rather than in the separate `reasoning_content` field, so a
+ * streamed chat reply used to arrive at the renderer as
+ * `<think>…private reasoning…</think>answer`. The non-streaming path already
+ * filtered this, but a stream cannot run the same regex: the tag may be split
+ * across deltas (`<thi` + `nk>`), so a per-delta replace both misses the block
+ * and keeps the partial tag. This class buffers across deltas and only emits
+ * text it knows is outside a think block.
+ *
+ * Text is held back only while it could still become a tag: `open` until the
+ * opening tag is resolved, `closing` until the closing tag is resolved.
+ * Everything else is forwarded immediately so streaming stays incremental.
+ */
+export class ThinkTagFilter {
+  private mode: 'open' | 'body' | 'closing' | 'text' = 'text'
+  private pending = ''
+  /**
+   * Set right after a think block closes. The newline(s) the model writes
+   * between its reasoning and its answer are a separator, not content — the
+   * non-streaming path trims them, so the stream must too or the two shapes
+   * disagree and the reply starts with a blank line.
+   */
+  private trimLeading = false
+  /** chars held back because a fresh `<` might start a tag */
+  private static readonly MAX_TAG_LEN = 32
+
+  /** Feed one delta; returns the user-visible text and any reasoning it unlocks. */
+  push(chunk: string): { text: string; reasoning: string } {
+    if (!chunk) return { text: '', reasoning: '' }
+    let out = ''
+    let reasoning = ''
+    let rest = this.pending + chunk
+    this.pending = ''
+
+    while (rest.length > 0) {
+      if (this.mode === 'body') {
+        // Everything up to `</think>` is the model's private reasoning: route
+        // it to the reasoning channel so the UI can still show it collapsed.
+        const close = /<\/think\s*>/i.exec(rest)
+        if (close) {
+          reasoning += rest.slice(0, close.index)
+          rest = rest.slice(close.index + close[0].length)
+          this.mode = 'text'
+          this.trimLeading = true
+          continue
+        }
+        const hold = partialCloseSuffix(rest)
+        if (hold > 0) {
+          reasoning += rest.slice(0, rest.length - hold)
+          this.pending = rest.slice(rest.length - hold)
+        } else {
+          reasoning += rest
+        }
+        return { text: out, reasoning }
+      }
+
+      if (this.mode === 'open') {
+        // Scanning for the `>` that ends an opening tag.
+        const gt = rest.indexOf('>')
+        if (gt < 0) {
+          this.pending = rest.slice(-ThinkTagFilter.MAX_TAG_LEN)
+          return { text: out, reasoning }
+        }
+        const tag = rest.slice(0, gt + 1)
+        rest = rest.slice(gt + 1)
+        this.mode = /^<think\b/i.test(tag) ? 'body' : 'text'
+        if (this.mode === 'text') out += tag
+        continue
+      }
+
+      // `text` mode: forward everything except a possible tag opener.
+      if (this.trimLeading) {
+        const stripped = rest.replace(/^\s+/, '')
+        if (stripped.length === 0) {
+          // all separator whitespace so far; wait for real content
+          this.pending = ''
+          return { text: out, reasoning }
+        }
+        this.trimLeading = false
+        rest = stripped
+      }
+      const lt = rest.indexOf('<')
+      if (lt < 0) {
+        out += rest
+        return { text: out, reasoning }
+      }
+      out += rest.slice(0, lt)
+      const tail = rest.slice(lt)
+      const prefix = '<think'.slice(0, tail.length)
+      if (tail.length < 6 && prefix.toLowerCase() === tail.toLowerCase()) {
+        // Could still become `<think…`; wait for the next delta.
+        this.pending = tail
+        return { text: out, reasoning }
+      }
+      if (/^<think\b/i.test(tail)) {
+        this.mode = 'open'
+        rest = tail
+        continue
+      }
+      out += '<'
+      rest = tail.slice(1)
+    }
+    return { text: out, reasoning }
+  }
+
+  /**
+   * Flush at end-of-stream. A truncated think block stays hidden (the model was
+   * still reasoning when it stopped); a partial plain tag is returned as-is.
+   */
+  flush(): { text: string; reasoning: string } {
+    const held = this.pending
+    this.pending = ''
+    if (this.mode === 'body' || this.mode === 'open') {
+      this.mode = 'text'
+      return { text: '', reasoning: held }
+    }
+    const out = this.mode === 'text' ? held : ''
+    this.mode = 'text'
+    return { text: out, reasoning: '' }
+  }
+}
+
+/** Length of the trailing substring that could be a prefix of `</think>`. */
+function partialCloseSuffix(text: string): number {
+  const marker = '</think>'
+  const max = Math.min(marker.length - 1, text.length)
+  for (let len = max; len > 0; len--) {
+    if (text.slice(-len).toLowerCase() === marker.slice(0, len)) return len
+  }
+  return 0
+}
+
+/** Whole-string variant for non-streaming bodies; keeps `reasoning` separate. */
+export function stripThinkTags(raw: string): string {
+  if (!raw) return ''
+  return raw.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '').trim()
+}
 /** Don't throw on parse failure (it would kill the whole stream); return error so the loop feeds it back for retry */
 export function parseToolInput(json: string): { input: Record<string, unknown>; error?: string } {
   if (!json.trim()) return { input: {} }

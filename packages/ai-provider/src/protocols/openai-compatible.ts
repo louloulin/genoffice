@@ -10,6 +10,8 @@ import {
   parseToolInput,
   sseErrorText,
   sseLines,
+  stripThinkTags,
+  ThinkTagFilter,
   throwIfCreditsNotice,
   type StreamCallbacks,
 } from './shared'
@@ -23,12 +25,22 @@ function openAiMessages(
   for (const m of messages) {
     if (m.role === 'user') {
       if (!m.images?.length) {
-        out.push({ role: 'user', content: m.text || ((m as unknown as { content?: string }).content ?? '') })
+        out.push({
+          role: 'user',
+          content: m.text || ((m as unknown as { content?: string }).content ?? ''),
+        })
       } else {
         out.push({
           role: 'user',
           content: [
-            ...(m.text || (m as unknown as { content?: string }).content ? [{ type: 'text', text: (m.text || (m as unknown as { content?: string }).content) as string }] : []),
+            ...(m.text || (m as unknown as { content?: string }).content
+              ? [
+                  {
+                    type: 'text',
+                    text: (m.text || (m as unknown as { content?: string }).content) as string,
+                  },
+                ]
+              : []),
             ...m.images.map((img) => ({
               type: 'image_url',
               image_url: { url: `data:${img.mime};base64,${img.base64}` },
@@ -42,7 +54,10 @@ function openAiMessages(
       // compatible proxies drop or reject the follow-up conversation after that.
       out.push({
         role: 'assistant',
-        content: m.text || ((m as unknown as { content?: string }).content ?? '') || (hasTools ? null : '(no content)'),
+        content:
+          m.text ||
+          ((m as unknown as { content?: string }).content ?? '') ||
+          (hasTools ? null : '(no content)'),
         ...(echoReasoning && m.reasoning ? { reasoning_content: m.reasoning } : {}),
         ...(hasTools
           ? {
@@ -95,9 +110,13 @@ function emitOpenAiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
   // payload as the assistant's actual reply.
   const reasoning = choice?.message?.reasoning_content ?? choice?.message?.reasoning
   if (reasoning) cb.onReasoningDelta?.(reasoning)
-  if (choice?.message?.content) {
+  // MiniMax M3 and friends inline their chain-of-thought in `content` as well;
+  // the stream path routes that to the reasoning channel, so the JSON path
+  // must drop it from the visible reply too or the two disagree.
+  const content = stripThinkTags(choice?.message?.content ?? '')
+  if (content) {
     emitted = true
-    cb.onDelta(choice.message.content)
+    cb.onDelta(content)
   } else if (reasoning) {
     emitted = true
     cb.onDelta(reasoning)
@@ -202,6 +221,8 @@ async function openAiCompatibleTurn(
   }
   // tool call arguments stream in fragments keyed by index
   const pendingTools = new Map<number, { id: string; name: string; json: string }>()
+  // Splits an inlined `<think>…</think>` chain-of-thought out of the visible reply.
+  const thinkFilter = new ThinkTagFilter()
   let stopReason: string | undefined
   let abnormalFinish: string | undefined
   let sawFinish = false
@@ -264,8 +285,15 @@ async function openAiCompatibleTurn(
     const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
     if (typeof reasoning === 'string' && reasoning) cb.onReasoningDelta?.(reasoning)
     if (choice.delta?.content) {
-      emitted = true
-      cb.onDelta(choice.delta.content)
+      // Reasoning models that inline their chain-of-thought (MiniMax M3)
+      // stream `<think>…</think>answer`; split the two channels incrementally
+      // so the renderer never receives the private reasoning as the answer.
+      const split = thinkFilter.push(choice.delta.content)
+      if (split.reasoning) cb.onReasoningDelta?.(split.reasoning)
+      if (split.text) {
+        emitted = true
+        cb.onDelta(split.text)
+      }
     }
     for (const tc of choice.delta?.tool_calls ?? []) {
       const pending = pendingTools.get(tc.index) ?? {
@@ -295,6 +323,14 @@ async function openAiCompatibleTurn(
       }
       flushTools()
     }
+  }
+  // Release whatever the filter still held: a trailing partial tag is plain
+  // text, and a reply that ended mid-reasoning stays on the reasoning channel.
+  const tail = thinkFilter.flush()
+  if (tail.reasoning) cb.onReasoningDelta?.(tail.reasoning)
+  if (tail.text) {
+    emitted = true
+    cb.onDelta(tail.text)
   }
   // No finish and no [DONE] with half-received arguments: the connection dropped
   if (!sawFinish && !sawDone) {
@@ -354,9 +390,17 @@ export async function chatOpenAiCompatible(
   // would make response.json() throw; return ok:false instead of leaking a
   // raw SyntaxError to the caller.
   const bodyText = await response.text()
-  let json: { choices?: Array<{ message?: { content?: string; reasoning_content?: string; reasoning?: string } }> }
+  let json: {
+    choices?: Array<{
+      message?: { content?: string; reasoning_content?: string; reasoning?: string }
+    }>
+  }
   try {
-    json = JSON.parse(bodyText) as { choices?: Array<{ message?: { content?: string; reasoning_content?: string; reasoning?: string } }> }
+    json = JSON.parse(bodyText) as {
+      choices?: Array<{
+        message?: { content?: string; reasoning_content?: string; reasoning?: string }
+      }>
+    }
   } catch {
     return {
       ok: false,
@@ -369,8 +413,8 @@ export async function chatOpenAiCompatible(
   // whose `content` is empty but whose `reasoning` carries the answer still
   // surfaces it to the caller.
   const raw = json.choices?.[0]?.message?.content ?? ''
-  const reasoning = json.choices?.[0]?.message?.reasoning_content
-    ?? json.choices?.[0]?.message?.reasoning
+  const reasoning =
+    json.choices?.[0]?.message?.reasoning_content ?? json.choices?.[0]?.message?.reasoning
   const content = stripThinkTags(raw)
   if (!content) {
     if (reasoning) {
@@ -381,17 +425,4 @@ export async function chatOpenAiCompatible(
     return { ok: false, error: 'AI returned an empty response' }
   }
   return reasoning ? { ok: true, content, reasoning } : { ok: true, content }
-}
-
-/**
- * Strip <think>…</think> blocks that reasoning models (notably MiniMax M3)
- * inline into `message.content`. The model echoes its chain-of-thought
- * before the actual answer; without this filter the user sees raw reasoning
- * in the chat reply. We deliberately keep `reasoning_content` as a separate
- * field when the server-side splits it out.
- */
-function stripThinkTags(raw: string): string {
-  if (!raw) return ''
-  // multiple blocks are possible (re-entrant reasoning, tool follow-ups)
-  return raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
 }
