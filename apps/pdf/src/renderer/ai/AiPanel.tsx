@@ -1,8 +1,30 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import { AgentLoop } from '@genoffice/agent-core'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
-import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData, AiRunHeader, AiToolTimeline, AiErrorRecovery, AiInlineLauncher, type AiInlineAction, type AiInlineLauncherStrings } from '@genoffice/ui'
+import {
+  AiComposer,
+  AiScopeQuote,
+  AiTypingIndicator,
+  type AiScopeQuoteData,
+  AiRunHeader,
+  AiToolTimeline,
+  AiErrorRecovery,
+  AiInlineLauncher,
+  type AiInlineAction,
+  type AiInlineLauncherStrings,
+  type ChatMode,
+  type ComposerCommand,
+  type ComposerCommandPick,
+  type ComposerModeOption,
+  type MentionEntry,
+  type MentionPick,
+  DEFAULT_CHAT_MODE,
+  chatModeDirective,
+  composeSystemSuffix,
+  isChatMode,
+  skillDirective,
+} from '@genoffice/ui'
 import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
 import { Markdown } from '@genoffice/ui'
@@ -13,6 +35,17 @@ import { createPdfSkill } from './pdf-skill'
 import { createAiTransport } from './transports'
 import { PDF_NAV_SCHEME, parsePdfNavHref } from './pdf-nav'
 import type { FileOpConfirm, PdfAiDeps, PdfAppDeps } from './tools'
+import {
+  PDF_QUICK_ACTIONS,
+  buildPdfComposerCommands,
+  pdfActionCommandId,
+  pdfMentionEntries,
+  pdfSkillCommandId,
+  pdfSkillIdOfCommand,
+  pdfSkillOptions,
+  type PdfQuickAction,
+  type PdfSkillOption,
+} from './composer-commands'
 
 // Word-parity count (same as docs/markdown): Asian chars one by one + non-Asian words
 const ASIAN_RE =
@@ -121,8 +154,73 @@ export function AiPanel({
   const [sharedRunStatus, setSharedRunStatus] = useState<ChatRunStatus>('idle')
   /** Last error from a finished run; consumed by <AiErrorRecovery>. */
   const [lastError, setLastError] = useState<string | null>(null)
+  /** Composer working mode (Ask/Craft/Plan) — drives the per-turn suffix. */
+  const [mode, setMode] = useState<ChatMode>(DEFAULT_CHAT_MODE)
+  /** Active skill picked from the `/` palette — drives the per-turn skill directive. */
+  const [activeSkillId, setActiveSkillId] = useState<string | null>(null)
   /** Ref for the composer's textarea so <AiErrorRecovery>'s "Edit prompt" can focus it. */
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  // ── slash-command + mention table for the shared AiComposer ─────────────
+  const modeRef = useRef<ChatMode>(mode)
+  modeRef.current = mode
+  const activeSkillIdRef = useRef<string | null>(activeSkillId)
+  activeSkillIdRef.current = activeSkillId
+  const composerSkills: readonly PdfSkillOption[] = useMemo(() => pdfSkillOptions(), [])
+  const composerSkillsRef = useRef(composerSkills)
+  composerSkillsRef.current = composerSkills
+  const modeOptions = useMemo<ComposerModeOption[]>(
+    () => [
+      { id: 'ask', label: t('aiModeAsk'), title: t('aiModeAskHint') },
+      { id: 'craft', label: t('aiModeCraft'), title: t('aiModeCraftHint') },
+      { id: 'plan', label: t('aiModePlan'), title: t('aiModePlanHint') },
+    ],
+    [t],
+  )
+  const composerCommands = useMemo<ComposerCommand[]>(
+    () => buildPdfComposerCommands({ t, skills: composerSkills, quickActions: PDF_QUICK_ACTIONS }),
+    [t, composerSkills],
+  )
+  const composerMentions = useMemo<readonly MentionEntry[]>(
+    () =>
+      pdfMentionEntries({
+        fileName: apiRef.current?.fileName?.() ?? 'document.pdf',
+        pageCount: apiRef.current?.pageCount?.() ?? 1,
+        skills: composerSkills,
+        t,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t, composerSkills, filePath],
+  )
+  const composerSystemSuffix = useCallback((): string => {
+    const pickedId = activeSkillIdRef.current
+    const picked =
+      pickedId === null
+        ? null
+        : (composerSkillsRef.current.find((skill) => skill.id === pickedId) ?? null)
+    if (picked === null) return ''
+    return skillDirective({
+      name: t(picked.labelKey),
+      description: t(picked.descriptionKey),
+    })
+  }, [t])
+  const composerSystemSuffixRef = useRef(composerSystemSuffix)
+  composerSystemSuffixRef.current = composerSystemSuffix
+  const onComposerCommandPick = useCallback((pick: ComposerCommandPick) => {
+    const { command } = pick
+    // Skill picks load rules for the next turns; insert-kind picks (actions,
+    // templates) already wrote their prompt into the box, so nothing else.
+    if (command.kind !== 'run') return
+    const skillId = pdfSkillIdOfCommand(command.id)
+    if (skillId !== null) setActiveSkillId(skillId)
+  }, [])
+  const onComposerMentionPick = useCallback((_pick: MentionPick) => {
+    // The composer mutated the textarea value to insert `@label `. Keep the
+    // handler minimal so the input remains the single source of truth.
+  }, [])
+  const activeSkill =
+    activeSkillId === null
+      ? null
+      : (composerSkills.find((skill) => skill.id === activeSkillId) ?? null)
   const sharedToolSeqRef = useRef(0)
   function emitSharedToolStart(name: string, input: unknown) {
     sharedToolSeqRef.current += 1
@@ -427,7 +525,12 @@ export function AiPanel({
     loopRef.current = new AgentLoop({
       transport: createAiTransport(() => settingsRef.current!),
       skill: createPdfSkill(deps),
-      systemSuffix: () => aiLangDirective(langRef.current),
+      systemSuffix: () =>
+        composeSystemSuffix(
+          aiLangDirective(langRef.current),
+          chatModeDirective(modeRef.current),
+          composerSystemSuffixRef.current(),
+        ),
       events: {
         onText: (text) => {
           setPhase('replying')
@@ -776,47 +879,38 @@ export function AiPanel({
               }}
             />
             <div className="ai-quick-actions">
-              <button
-                className="ai-quick-btn"
-                onClick={() =>
-                  send(t(hasScopeSelection ? 'aiQuickSummarySelPrompt' : 'aiQuickSummaryPrompt'))
-                }
-              >
-                {t('aiQuickSummary')}
-              </button>
-              <button
-                className="ai-quick-btn"
-                onClick={() =>
-                  send(
-                    t(hasScopeSelection ? 'aiQuickKeyPointsSelPrompt' : 'aiQuickKeyPointsPrompt'),
-                  )
-                }
-              >
-                {t('aiQuickKeyPoints')}
-              </button>
-              <button
-                className="ai-quick-btn"
-                onClick={async () => {
-                  const instruction = hasScopeSelection && scopeSel?.text ? scopeSel.text : ''
-                  if (!instruction) {
-                    send(t('aiChipTranslate'))
-                    return
-                  }
-                  const r = await window.pdfApi?.aiTranslate?.({
-                    instruction,
-                    targetLang: 'zh-CN',
-                    preserveFormat: true,
-                  })
-                  if (!r?.ok) {
-                    send(t('aiChipTranslate'))
-                    return
-                  }
-                  setPrompt(r.translated ?? '')
-                  inputRef.current?.focus()
-                }}
-              >
-                {t('aiChipTranslate')}
-              </button>
+              {PDF_QUICK_ACTIONS.map((action) => (
+                <button
+                  key={action.id}
+                  className="ai-quick-btn"
+                  title={action.id}
+                  onClick={async () => {
+                    if (action.id === 'translate') {
+                      const instruction = hasScopeSelection && scopeSel?.text ? scopeSel.text : ''
+                      if (!instruction) {
+                        send(t(action.promptKey))
+                        return
+                      }
+                      const r = await window.pdfApi?.aiTranslate?.({
+                        instruction,
+                        targetLang: 'zh-CN',
+                        preserveFormat: true,
+                      })
+                      if (!r?.ok) {
+                        send(t(action.promptKey))
+                        return
+                      }
+                      setPrompt(r.translated ?? '')
+                      inputRef.current?.focus()
+                      return
+                    }
+                    send(t(action.promptKey))
+                  }}
+                >
+                  <span className="ai-quick-btn-icon" aria-hidden>{action.icon}</span>
+                  <span className="ai-quick-btn-label">{t(action.labelKey)}</span>
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -946,6 +1040,55 @@ export function AiPanel({
           hintBusy={t('aiHintBusy')}
           sendLabel={t('aiSend')}
           stopLabel={t('aiStop')}
+          commands={composerCommands}
+          onCommandPick={onComposerCommandPick}
+          commandMenuLabel={t('aiSlashMenuTitle')}
+          commandMenuEmptyLabel={t('aiSlashMenuEmpty')}
+          commandMenuFootHint={t('aiSlashMenuFoot')}
+          mentions={composerMentions}
+          onMentionPick={onComposerMentionPick}
+          mentionMenuLabel={t('aiMentionMenuTitle')}
+          mentionMenuEmptyLabel={t('aiMentionMenuEmpty')}
+          mentionMenuFootHint={t('aiMentionMenuFoot')}
+          tokenBudget={8000}
+          slashTriggerTitle={t('aiSlashTriggerTitle')}
+          modes={modeOptions}
+          mode={mode}
+          onModeChange={(m) => { if (isChatMode(m)) setMode(m) }}
+          modeSwitchLabel={t('aiModeSwitchTitle')}
+          onEditLast={() => {
+            const idx = [...chat].reverse().findIndex((e) => e.role === 'user')
+            if (idx < 0) return
+            const real = chat.length - 1 - idx
+            const entry = chat[real]
+            if (!entry || typeof entry.text !== 'string') return
+            setPrompt(entry.text)
+            inputRef.current?.focus()
+          }}
+          leading={
+            activeSkill !== null && (
+              <div className="ai-skill-row">
+                <span className="ai-skill-chip" data-tip={t(activeSkill.descriptionKey)}>
+                  <span className="ai-skill-chip-label">{t('aiActiveSkill')}</span>
+                  <span className="ai-skill-chip-name">{t(activeSkill.labelKey)}</span>
+                  <button
+                    type="button"
+                    className="ai-skill-chip-clear"
+                    title={t('aiActiveSkillClear')}
+                    aria-label={t('aiActiveSkillClear')}
+                    onClick={() => setActiveSkillId(null)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 32 32" aria-hidden>
+                      <path
+                        d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </span>
+              </div>
+            )
+          }
           iconOnly
           sendIconEnabled={<img src={sendEnterOn} alt="" aria-hidden />}
           sendIconDisabled={<img src={sendEnterOff} alt="" aria-hidden />}
