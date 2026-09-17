@@ -33,6 +33,16 @@ export interface MarkdownApiOverrides {
     canceled?: boolean
     error?: string
   }>
+  /** Save the document to its known location; the web bridge tracks the
+   * current path from consumePending and injects it as `request.path`. */
+  save?: (request: { text: string; imageSources: string[]; mode: 'save' | 'saveAs'; suggestedName?: string; path?: string }) => Promise<{
+    ok: true; path?: string; canceled?: true; error?: string; imageRewrites?: Array<{ from: string; to: string }>
+  } | { ok: false; error?: string; canceled?: true }>
+  /** Headless export — only used by the Electron CLI; the web build
+   * always resolves with null. */
+  consumeHeadlessExport?: () => Promise<string | null>
+  /** Headless export completion: web build is a no-op. */
+  headlessExportDone?: (result: { ok: boolean; error?: string }) => void
 }
 
 export function createMarkdownApi(
@@ -42,7 +52,7 @@ export function createMarkdownApi(
   const api: MarkdownApi = {
     consumePending: overrides.consumePending ?? (() => t.invoke(MARKDOWN_CHANNELS.consumePending)),
     readFile: (path) => t.invoke(MARKDOWN_CHANNELS.readFile, path),
-    save: (request) => t.invoke(MARKDOWN_CHANNELS.save, request),
+    save: overrides.save ?? ((request) => t.invoke(MARKDOWN_CHANNELS.save, request)),
     setDirty: (dirty) => t.send(MARKDOWN_CHANNELS.dirtyChanged, dirty),
     onSaveRequest: (handler) =>
       t.on(MARKDOWN_CHANNELS.saveRequest, (mode) => handler(mode as SaveMode)),
@@ -60,8 +70,8 @@ export function createMarkdownApi(
     exportDocx:
       overrides.exportDocx ?? ((request) => t.invoke(MARKDOWN_CHANNELS.exportDocx, request)),
     exportPdf: overrides.exportPdf ?? ((request) => t.invoke(MARKDOWN_CHANNELS.exportPdf, request)),
-    consumeHeadlessExport: () => t.invoke(MARKDOWN_CHANNELS.consumeHeadlessExport),
-    headlessExportDone: (result) => t.send(MARKDOWN_CHANNELS.headlessExportDone, result),
+    consumeHeadlessExport: overrides.consumeHeadlessExport ?? (() => t.invoke(MARKDOWN_CHANNELS.consumeHeadlessExport)),
+    headlessExportDone: overrides.headlessExportDone ?? ((result) => t.send(MARKDOWN_CHANNELS.headlessExportDone, result)),
     getLanguage: () => t.invoke(MARKDOWN_CHANNELS.getLanguage),
     onLanguageChanged: (handler) =>
       t.on(MARKDOWN_CHANNELS.languageChanged, (lang) => handler(lang as Lang)),

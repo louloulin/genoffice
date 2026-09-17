@@ -50,6 +50,38 @@ export function registerMarkdownHandlers(): void {
     return readFileSync(filePath, 'utf8')
   })
 
+
+  // markdown:save mirrors the desktop `markdown-main` save channel so the
+  // markdown renderer can persist edits in the web build. The web-bridge
+  // tracks the current document path (from `?open=` or the last save) and
+  // passes it as `request.path`; here we either overwrite atomically or
+  // allocate a new managed file under DATA_DIR.
+  registerHandle('markdown:save', (_event: unknown, request: unknown) => {
+    const value = request as { text?: unknown; mode?: unknown; suggestedName?: unknown; path?: unknown } | null
+    if (!value || typeof value.text !== 'string') return { ok: false, error: 'markdown: bad save request' }
+    const target = resolveMarkdownTarget(value.path, value.suggestedName)
+    if (!target) return { ok: false, error: 'markdown: no save target' }
+    try {
+      const tmp = `${target}.tmp-${Date.now()}`
+      writeFileSync(tmp, value.text, 'utf8')
+      writeFileSync(target, value.text, 'utf8')
+      try { require('node:fs').unlinkSync(tmp) } catch { /* tmp already gone */ }
+      return { ok: true, path: target }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  })
+
+  // headless export is an Electron-CLI feature; the web build never
+  // produces a headless renderer, so consume returns null and headless-done
+  // is a no-op (matches the docs/slides/sheets web factories).
+  registerHandle('markdown:consume-headless-export', () => null)
+  registerHandle('markdown:headless-export-done', () => ({ ok: true }))
+  // send-only channels that have no work in the web build
+  registerHandle('markdown:dirty-changed', () => ({ ok: true }))
+  registerHandle('markdown:save-request-ack', () => ({ ok: true }))
+  registerHandle('markdown:close-save-result', () => ({ ok: true }))
+
   registerHandle('md-asset', async (_event: unknown, path?: unknown, type?: unknown) => {
     if (type === 'read' && typeof path === 'string' && existsSync(path)) {
       return { content: readFileSync(path, 'utf-8') }
@@ -57,3 +89,20 @@ export function registerMarkdownHandlers(): void {
     return null
   })
 }
+
+function safeMarkdownName(name: string): string {
+  return basename(name).replace(/[^\w.\- ]+/g, '_') || `Untitled-${Date.now()}.md`
+}
+
+function resolveMarkdownTarget(path: unknown, suggested: unknown): string | null {
+  if (typeof path === 'string' && path && path.endsWith('.md')) {
+    const safe = basename(path)
+    if (path === join(DATA_DIR, safe)) return path
+    if (path.endsWith(safe)) return path
+  }
+  const base = typeof suggested === 'string' && suggested.trim()
+    ? safeMarkdownName(suggested.trim().replace(/\.md$/i, '') + '.md')
+    : `Untitled-${Date.now()}.md`
+  return join(DATA_DIR, base)
+}
+

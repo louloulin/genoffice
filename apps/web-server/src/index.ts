@@ -57,7 +57,7 @@ import { registerSheetsHandlers } from './sheets/index'
 import { registerSlidesHandlers } from './slides/index'
 import { registerPdfHandlers } from './pdf/index'
 import { registerMarkdownHandlers } from './markdown/index'
-import { registerHtmlHandlers } from './html/index'
+import { getHtmlPreviewBuffer, registerHtmlHandlers } from './html/index'
 import { registerShellHandlers } from './shell/index'
 import { registerCollabHandlers } from './collab/index'
 import { registerEnterpriseHandlers } from './enterprise/index'
@@ -186,6 +186,25 @@ const server = createServer(async (request, response) => {
       lastActivity: session.lastActivity,
     }))
     sendJson(response, 200, { sessions })
+    return
+  }
+
+  if (url.pathname.startsWith('/api/html/preview/') && request.method === 'GET') {
+    const rawId = url.pathname.slice('/api/html/preview/'.length).split('/')[0]
+    const id = rawId ? decodeURIComponent(rawId) : ''
+    const text = getHtmlPreviewBuffer(id)
+    if (!text) {
+      sendJson(response, 404, { error: { message: 'Preview buffer not found' } })
+      return
+    }
+    response.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      // the preview iframe is sandboxed (no allow-same-origin); the buffer
+      // itself runs scripts and links to any CDN/asset it references.
+      'Content-Security-Policy': "default-src 'self' 'unsafe-inline' data: blob: https: http:; media-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self';",
+    })
+    response.end(text)
     return
   }
 

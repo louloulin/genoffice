@@ -14,8 +14,22 @@ import { createMarkdownApi, createMarkdownProjectApi } from '../shared/markdown-
 if (!isElectronRuntime()) {
   const transport = createHttpIpcTransport()
   const bridgedWindow = window as unknown as Record<string, unknown>
+  // the current document path is read from `?open=` and updated by each
+  // successful save so a re-save lands back on the same managed file.
+  let currentPath: string | null = new URLSearchParams(window.location.search).get('open')
   bridgedWindow.markdownApi = createMarkdownApi(transport, {
-    consumePending: async () => new URLSearchParams(window.location.search).get('open'),
+    consumePending: async () => currentPath,
+    consumeHeadlessExport: async () => null,
+    headlessExportDone: () => {},
+    save: async (request) => {
+      const result = (await transport.invoke('markdown:save', { ...request, path: currentPath })) as
+        | { ok: true; path?: string }
+        | { ok: false; error?: string; canceled?: true }
+      if (result && 'path' in result && typeof result.path === 'string' && result.path) {
+        currentPath = result.path
+      }
+      return result
+    },
     pickImage: async () => {
       const picked = await pickFileBytes('image/png,image/jpeg,image/gif')
       if (!picked) return null
