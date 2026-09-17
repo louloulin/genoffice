@@ -8,6 +8,21 @@ import { getProviderAdapter, type ResolvedEndpoint } from './registry'
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog } from './watchdog'
 
+/**
+ * Per-call shaping the caller can request on top of the provider's defaults.
+ *
+ * `reasoningEffort: 'none'` asks the endpoint to skip its chain-of-thought.
+ * Translation / rewriting / extraction are deterministic transforms — the
+ * model does not need to think out loud, and on a small local model the
+ * reasoning trace can consume the entire output budget before the answer
+ * starts. Only endpoints that declare `supportsReasoningEffort` (currently
+ * the user-supplied `custom` OpenAI-compatible route) actually receive the
+ * field; named vendors are unaffected.
+ */
+export interface ChatCallOptions {
+  reasoningEffort?: 'none'
+}
+
 /** route a one-shot (non-streaming, non-tool-calling) chat call by provider id */
 export async function chatForProvider(
   provider: AiProviderId,
@@ -15,6 +30,7 @@ export async function chatForProvider(
   system: string,
   user: string,
   signal?: AbortSignal,
+  options?: ChatCallOptions,
 ): Promise<AiChatResponse> {
   // non-streaming: the server generates the full answer before the headers arrive,
   // so the connect phase gets the long budget; the body read then gets the idle budget
@@ -42,7 +58,12 @@ export async function chatForProvider(
       case 'openai-compatible':
         return chatOpenAiCompatible(wd, endpoint.baseUrl, config, system, user, {
           omitTemperature: endpoint.omitTemperature,
-          bodyExtras: endpoint.bodyExtras,
+          bodyExtras: {
+            ...endpoint.bodyExtras,
+            ...(options?.reasoningEffort && endpoint.supportsReasoningEffort
+              ? { reasoning_effort: options.reasoningEffort }
+              : {}),
+          },
         })
     }
   })

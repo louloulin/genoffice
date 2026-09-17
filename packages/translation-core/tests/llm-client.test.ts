@@ -61,7 +61,35 @@ describe('llm-client seam', () => {
       userPrompt: 'USER',
     })
     expect(r).toEqual({ ok: true, content: '你好' })
-    expect(mockedChat).toHaveBeenCalledWith('anthropic', { apiKey: 'k', model: 'm' }, 'SYS', 'USER')
+    // No reasoningEffort on this call → the 6th arg stays undefined, so the
+    // provider layer falls back to its own default.
+    expect(mockedChat).toHaveBeenCalledWith(
+      'anthropic',
+      { apiKey: 'k', model: 'm' },
+      'SYS',
+      'USER',
+      undefined,
+      undefined,
+    )
+  })
+
+  it('forwards reasoningEffort to chatForProvider when the caller sets it', async () => {
+    mockedChat.mockResolvedValue({ ok: true, content: 'hi' })
+    await callLlm({
+      provider: 'custom',
+      config: { apiKey: 'ollama', model: 'm', baseUrl: 'http://127.0.0.1:11434/v1' },
+      systemPrompt: 'SYS',
+      userPrompt: 'USER',
+      reasoningEffort: 'none',
+    })
+    expect(mockedChat).toHaveBeenCalledWith(
+      'custom',
+      { apiKey: 'ollama', model: 'm', baseUrl: 'http://127.0.0.1:11434/v1' },
+      'SYS',
+      'USER',
+      undefined,
+      { reasoningEffort: 'none' },
+    )
   })
 
   it('aiProviderCaller maps ok=true content to LlmCallResult', async () => {

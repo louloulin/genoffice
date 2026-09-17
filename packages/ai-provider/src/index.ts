@@ -74,7 +74,7 @@ export type {
   ProviderCapabilities,
   ResolvedEndpoint,
 } from './registry'
-export { chatForProvider } from './chat'
+export { chatForProvider, type ChatCallOptions } from './chat'
 export { setAiUserAgent, setRescueFetch } from './fetch'
 export { isAiNetworkError } from './network-error'
 export { isAiOverloadedError, isAiQuotaExhaustedError } from './overload-error'

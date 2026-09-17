@@ -171,11 +171,18 @@ export async function translateOne(
   if (request.glossaryCategory) metadata.glossaryCategory = request.glossaryCategory
   if (request.qualityCheck !== undefined) metadata.qualityCheck = String(request.qualityCheck)
 
+  // Translation is a deterministic transform, not a reasoning task. Asking the
+  // endpoint to skip its chain-of-thought keeps the answer short and — on the
+  // small local models this pipeline is often pointed at — prevents the model
+  // from spending its entire output budget "thinking" before the first
+  // translated character. Endpoints that do not support the field never see
+  // it (see ChatCallOptions in @genoffice/ai-provider).
   const result = await callLlm({
     provider: opts.provider,
     config: opts.config,
     systemPrompt: system,
     userPrompt: buildTranslationPrompt(sourceText),
+    reasoningEffort: 'none',
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   })
 

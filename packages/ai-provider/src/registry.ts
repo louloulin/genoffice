@@ -22,6 +22,16 @@ export interface ResolvedEndpoint {
   useMaxCompletionTokens?: boolean
   /** vendor-specific request fields merged into the chat-completions body */
   bodyExtras?: Record<string, unknown>
+  /**
+   * The endpoint honours OpenAI's `reasoning_effort` body field. True for
+   * self-hosted / user-supplied OpenAI-compatible servers (Ollama, LM Studio,
+   * vLLM) where the caller may legitimately want to suppress the
+   * chain-of-thought: a 750M "thinking" model asked to translate a sentence
+   * will otherwise burn its whole budget on reasoning and never emit the
+   * answer. Named vendor APIs are left false — their handling of the field
+   * varies by model and a reject would be a 400, not a graceful ignore.
+   */
+  supportsReasoningEffort?: boolean
 }
 
 export interface ProviderAdapter {
@@ -263,6 +273,7 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
       return {
         protocol: 'openai-compatible',
         baseUrl: config.baseUrl,
+        supportsReasoningEffort: true,
         ...(modelHasFixedSampling(config.model) ? { omitTemperature: true } : {}),
       }
     },

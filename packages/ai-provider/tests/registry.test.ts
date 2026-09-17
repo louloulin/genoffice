@@ -206,7 +206,11 @@ describe('provider registry', () => {
   it('uses the configured base URL for custom and rejects a missing one', () => {
     expect(
       AI_PROVIDER_ADAPTERS.custom.resolveEndpoint(config('m', 'http://localhost:1234/v1')),
-    ).toEqual({ protocol: 'openai-compatible', baseUrl: 'http://localhost:1234/v1' })
+    ).toEqual({
+      protocol: 'openai-compatible',
+      baseUrl: 'http://localhost:1234/v1',
+      supportsReasoningEffort: true,
+    })
     expect(() => AI_PROVIDER_ADAPTERS.custom.resolveEndpoint(config('m'))).toThrow(
       'A custom provider requires a Base URL',
     )
@@ -254,6 +258,7 @@ describe('fixed-sampling models on indirect routes', () => {
       protocol: 'openai-compatible',
       baseUrl: 'https://api.moonshot.cn/v1',
       omitTemperature: true,
+      supportsReasoningEffort: true,
     })
     expect(AI_PROVIDER_ADAPTERS.openrouter.resolveEndpoint(config('openrouter/auto'))).toEqual({
       protocol: 'openai-compatible',
@@ -273,6 +278,7 @@ describe('fixed-sampling models on indirect routes', () => {
       protocol: 'openai-compatible',
       baseUrl: 'https://mirror/v1',
       omitTemperature: true,
+      supportsReasoningEffort: true,
     })
   })
 
@@ -338,6 +344,7 @@ describe('modelHasFixedSampling case handling', () => {
       protocol: 'openai-compatible',
       baseUrl: 'https://mirror/v1',
       omitTemperature: true,
+      supportsReasoningEffort: true,
     })
     expect(AI_PROVIDER_ADAPTERS.openrouter.resolveEndpoint(config('MOONSHOTAI/KIMI-K3'))).toEqual({
       protocol: 'openai-compatible',
@@ -375,6 +382,7 @@ describe('modelHasFixedSampling case handling', () => {
       protocol: 'openai-compatible',
       baseUrl: 'https://mirror/v1',
       omitTemperature: true,
+      supportsReasoningEffort: true,
     })
   })
 })

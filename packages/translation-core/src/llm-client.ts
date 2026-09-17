@@ -36,6 +36,15 @@ export interface LlmCallOptions {
   systemPrompt: string
   userPrompt: string
   /**
+   * Suppress the endpoint's chain-of-thought for this call. Translation is a
+   * deterministic transform, so the reasoning trace adds latency and cost
+   * without improving the result — and on small local models it can eat the
+   * whole output budget before the first translated character is emitted.
+   * Honoured only by endpoints that declare support (the user-supplied
+   * OpenAI-compatible route); named vendors ignore it.
+   */
+  reasoningEffort?: 'none'
+  /**
    * Optional metadata that flows through to the underlying provider. Hosts
    * use this to thread tags like `glossaryCategory` or `qualityCheck` so
    * they show up in provider-side telemetry without changing the call
@@ -72,6 +81,8 @@ export const aiProviderCaller: LlmCaller = async (opts) => {
       opts.config,
       opts.systemPrompt,
       opts.userPrompt,
+      undefined,
+      opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : undefined,
     )
     if (!result.ok) {
       return {
