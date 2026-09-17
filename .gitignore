@@ -59,3 +59,9 @@ _scratch-*
 # Local exec session artifacts (machine-specific)
 /.run/
 /packages/agent-skills/translation-dictionaries/
+
+# translate_file side-products left next to fixtures
+apps/docs/tests/pagination-corpus/docx/07-page-breaks*.docx
+
+# Agent runtime state (not source)
+/.pi/

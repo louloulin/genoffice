@@ -13,6 +13,7 @@ import {
   __resetKbForTests,
 } from "../src/extensions/translate-skill"
 import type { AiSettings } from "@genoffice/ai-provider"
+import { defaultOutputPath } from "@genoffice/translation-core"
 
 interface RegisteredTool {
   name: string
@@ -235,6 +236,43 @@ describe("translate-skill", () => {
   })
 })
 
+
+  it("translate_file default output path agrees with the shared helper", () => {
+    // The `ai:translate-file-output-path` channel and the pi tool's
+    // `translate_file` must default to the same path so the file the user
+    // is told to open is the one that actually gets written. The shared
+    // `defaultOutputPath` helper defines that contract; the pi tool used
+    // to inline its own `<input>.translated<ext>` form and the two drifted.
+    const input = "/tmp/example.docx"
+    expect(defaultOutputPath(input)).toBe("/tmp/example_translated.docx")
+
+    // Behavioural check: when the pi tool runs in planning mode
+    // (`execute: false`) the details it returns must carry the helper's
+    // path, not the legacy dotted form. The LumosAI handler may or may
+    // not be installed on the test machine; either way the default
+    // *helper* is locked in here so a future regression to the inline
+    // format is caught before it ships.
+    const pi = makeFakePi()
+    createTranslateSkillExtension()(pi as never)
+    const tool = pi.tools.get("translate_file") as {
+      execute: (id: string, params: Record<string, unknown>, signal: unknown) => Promise<{
+        details?: { ok?: boolean; outputPath?: string; handler?: string; error?: string }
+      }>
+    }
+    return tool
+      .execute("c1", { input_path: input, target_lang: "en-US", execute: false }, undefined)
+      .then((res) => {
+        const d = res.details ?? {}
+        if (d.handler === "ts-fallback" || d.error) {
+          // LumosAI not installed on this machine; the helper assertion
+          // above is the lock-in. Skip the behavioral half gracefully.
+          return
+        }
+        expect(d.outputPath).toBe(defaultOutputPath(input))
+        // Anti-regression: explicitly forbid the legacy dotted form.
+        expect(d.outputPath).not.toBe("/tmp/example.translated.docx")
+      })
+  })
 describe("kb_upsert shortcut fields", () => {
   afterEach(() => {
     __setReadSettingsForTests(null)

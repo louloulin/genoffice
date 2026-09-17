@@ -635,7 +635,11 @@ function createTranslateFileTool() {
     async execute(_id, params: TranslateFileArgs, _signal) {
       const start = Date.now()
       const ext = extname(params.input_path)
-      const out = params.output_path ?? `${params.input_path}.translated${ext}`
+      // Use the shared defaultOutputPath helper so the file the pi tool
+      // writes matches what the  channel
+      // advertises to the UI. The two diverged ("_<lang>" vs ".<lang>.")
+      // and the user ended up with the file at an unexpected path.
+      const out = params.output_path ?? defaultOutputPath(params.input_path)
       try {
         const lumos = lumosScriptPath(ext)
         if (lumos) {

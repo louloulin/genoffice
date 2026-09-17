@@ -443,6 +443,28 @@ const server = createServer(async (request, response) => {
     filePath = resolve(STATIC_ROOT, 'docs', 'out', 'renderer', relativePath)
   }
 
+  // SPA sub-routes such as /marketplace/ and /skills/ are rendered by the
+  // shell bundle but keep their route name as a path prefix, so their module
+  // requests arrive as /marketplace/assets/index-*.js. Without this the file
+  // is not found and the SPA index.html is returned instead, which the browser
+  // rejects ("Expected a JavaScript-or-Wasm module script but the server
+  // responded with a MIME type of text/html"). Retry every app with the
+  // leading route segment stripped so the module is served with its real
+  // MIME type. Only files are accepted so a stripped path can never resolve
+  // to a renderer directory.
+  if (!existsSync(filePath)) {
+    const stripped = relativePath.replace(/^[^/]+\//, '')
+    if (stripped && stripped !== relativePath) {
+      for (const candidateApp of APPS) {
+        const candidatePath = resolve(STATIC_ROOT, candidateApp, 'out', 'renderer', stripped)
+        if (existsSync(candidatePath) && statSync(candidatePath).isFile()) {
+          filePath = candidatePath
+          break
+        }
+      }
+    }
+  }
+
   if (!existsSync(filePath) && relativePath.startsWith('assets/')) {
     for (const candidateApp of APPS) {
       const candidatePath = resolve(STATIC_ROOT, candidateApp, 'out', 'renderer', relativePath)
