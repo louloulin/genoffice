@@ -482,6 +482,21 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  // A static asset we could not resolve must not be answered with the SPA
+  // index.html: the browser sees `text/html` for a `.js`/`.css` request and
+  // refuses to execute it ("Expected a JavaScript-or-Wasm module script but
+  // the server responded with a MIME type of text/html") — the exact failure
+  // that broke /marketplace/ before the prefix retry above. Answering 404
+  // makes the miss explicit so the SPA can surface a real error instead of a
+  // MIME mismatch. Extension-less requests still fall through to the SPA so
+  // client-side routing keeps working.
+  const requestedExt = extname(relativePath).toLowerCase()
+  if (requestedExt && requestedExt !== '.html' && requestedExt in MIME_TYPES) {
+    response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+    response.end(`Not found: ${url.pathname}`)
+    return
+  }
+
   const indexPath = resolve(STATIC_ROOT, appName, 'out', 'renderer', 'index.html')
   if (existsSync(indexPath)) {
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })

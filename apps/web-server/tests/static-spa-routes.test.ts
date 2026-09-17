@@ -122,6 +122,31 @@ describe.skipIf(!haveBundle)('static SPA route fallback', () => {
     }
   })
 
+  it('a missing static asset returns 404 instead of the SPA index.html', async () => {
+    // Regression: an unresolved `.js`/`.css` request used to be answered with
+    // the SPA index.html, so the browser saw `text/html` for a module script
+    // and refused to run it. The 404 keeps the miss explicit.
+    for (const asset of [
+      '/definitely-missing/assets/index-00000000.js',
+      '/definitely-missing/assets/index-00000000.css',
+      '/favicon.ico',
+    ]) {
+      const res = await fetch(`${base}${asset}`)
+      expect(res.status, asset).toBe(404)
+      expect(res.headers.get('content-type'), asset).not.toContain('text/html')
+    }
+  })
+
+  it('still serves the SPA for extension-less client routes', async () => {
+    // The 404 guard must not swallow client-side routes: anything without a
+    // known asset extension still reaches the SPA shell.
+    for (const route of ['/settings', '/some/deep/client/route']) {
+      const res = await fetch(`${base}${route}`)
+      expect(res.status, route).toBe(200)
+      expect(res.headers.get('content-type'), route).toContain('text/html')
+    }
+  })
+
   it('unknown first-level routes fall back to the shell without a 500', async () => {
     const res = await fetch(`${base}/definitely-not-a-route/`)
     expect(res.status).toBe(200)
