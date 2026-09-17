@@ -110,6 +110,56 @@ describe('translateOne', () => {
     expect(r.error).toBe('HTTP 500')
   })
 
+  it('explains a quota-exhausted failure instead of dumping the provider body', async () => {
+    // Real MiniMax 429 body: a wall of JSON the translator cannot act on.
+    // `isAiQuotaExhaustedError` exists for exactly this case and translation
+    // used to forward the raw string verbatim.
+    const body =
+      'HTTP 429: {"type":"error","error":{"type":"rate_limit_error",' +
+      '"message":"\u5df2\u8fbe\u5230 Token Plan \u7528\u91cf\u4e0a\u9650\uff1a' +
+      '\u8bf7\u5347\u7ea7 Token Plan \u5957\u9910\u6216\u8d2d\u4e70\u79ef\u5206' +
+      '\u8865\u5145\u7528\u91cf\u3002 (2056)"}}'
+    mockedCall.mockResolvedValue({ ok: false, error: body })
+    const r = await translateOne(
+      { instruction: 'ErrorMe', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/credits or quota/i)
+    expect(r.error).not.toMatch(/rate_limit_error/)
+    expect(r.error).not.toMatch(/\{"/)
+  })
+
+  it('keeps the busy message for a transient 429 without a quota notice', async () => {
+    mockedCall.mockResolvedValue({ ok: false, error: 'HTTP 429: too many requests', overloaded: true })
+    const r = await translateOne(
+      { instruction: 'ErrorMe', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/busy/i)
+  })
+
+  it('classifies a transport failure as a network problem', async () => {
+    mockedCall.mockResolvedValue({ ok: false, error: 'fetch failed: cause=ECONNRESET' })
+    const r = await translateOne(
+      { instruction: 'ErrorMe', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/network/i)
+  })
+
+  it('passes an unclassifiable error through unchanged', async () => {
+    mockedCall.mockResolvedValue({ ok: false, error: 'HTTP 500: internal boom' })
+    const r = await translateOne(
+      { instruction: 'ErrorMe', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.error).toBe('HTTP 500: internal boom')
+  })
+
   it('serves a memory hit without calling the provider', async () => {
     const mem = new TranslationMemory()
     mem.save({

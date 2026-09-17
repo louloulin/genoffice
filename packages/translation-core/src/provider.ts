@@ -1,4 +1,10 @@
-import { type AiProviderConfig, type AiProviderId } from '@genoffice/ai-provider'
+import {
+  isAiNetworkError,
+  isAiOverloadedError,
+  isAiQuotaExhaustedError,
+  type AiProviderConfig,
+  type AiProviderId,
+} from '@genoffice/ai-provider'
 
 import {
   buildTranslationPrompt,
@@ -187,14 +193,7 @@ export async function translateOne(
   })
 
   if (!result.ok) {
-    return {
-      ok: false,
-      error: result.overloaded
-        ? 'AI service is busy — please retry shortly.'
-        : typeof result.error === 'string'
-          ? result.error
-          : 'Translation failed',
-    }
+    return { ok: false, error: describeTranslationFailure(result) }
   }
   const extracted = extractTranslationText(result.content ?? '')
   if (!extracted) {
@@ -244,6 +243,41 @@ function resolveTerminology(input: {
   const fromDictionary = opts.dictionary ?? []
   const dictionaryTerms = fromDictionary.filter((pair) => sourceText.includes(pair.source))
   return { pairs: [...fromKb, ...fromDictionary], dictionaryTerms }
+}
+
+/**
+ * Turn a failed LLM result into a message a translator can act on.
+ *
+ * The provider layer already classifies failures (`overloaded`, `credits`,
+ * `network`, `timeout`), but translation-core used to forward only the
+ * `overloaded` case and hand every other body straight through. A MiniMax
+ * 429 whose body is a 300-character JSON blob ("已达到 Token Plan 用量上限…")
+ * therefore reached the snippet pane verbatim — the user saw a wall of
+ * provider JSON instead of "your credits are exhausted, top up".
+ *
+ * The classifier order matters: a 429 that also names a quota problem is a
+ * credits failure (retrying cannot help), not a transient burst to ride out.
+ * `isAiQuotaExhaustedError` and `isAiOverloadedError` are mutually exclusive
+ * by construction (see @genoffice/ai-provider/overload-error).
+ */
+function describeTranslationFailure(result: {
+  error?: string
+  overloaded?: boolean
+}): string {
+  const raw = typeof result.error === 'string' ? result.error : ''
+  if (isAiQuotaExhaustedError(raw)) {
+    return (
+      'The AI provider reports that your credits or quota are exhausted. ' +
+      'Top up the account or switch providers in Settings → AI, then retry.'
+    )
+  }
+  if (result.overloaded || isAiOverloadedError(raw)) {
+    return 'AI service is busy — please retry shortly.'
+  }
+  if (isAiNetworkError(raw)) {
+    return 'Could not reach the AI provider — check your network connection and retry.'
+  }
+  return raw || 'Translation failed'
 }
 
 /**
