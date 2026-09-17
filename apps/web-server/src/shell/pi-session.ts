@@ -94,9 +94,8 @@ async function buildPiSession(): Promise<OfficeSession> {
   // build_dictionary / kb_search / kb_upsert / kb_remove) become visible
   // to the embedded AgentSession AND to the UI through the home:translate-*
   // IPC handlers registered below. No more `translate-http.ts` bypass.
-  const { createTranslateSkillExtension } = await import(
-    '@genoffice/agent-skills/extensions/translate-skill'
-  )
+  const { createTranslateSkillExtension } =
+    await import('@genoffice/agent-skills/extensions/translate-skill')
   const extensionFactories: NonNullable<OfficeSessionOptions['extensionFactories']> = [
     createTranslateSkillExtension(),
   ]
@@ -104,13 +103,16 @@ async function buildPiSession(): Promise<OfficeSession> {
   if (enabledSet.has('image-search')) extensionFactories.push(createImageSearchExtension())
   if (enabledSet.has('ocr')) extensionFactories.push(createOcrExtension())
   if (enabledSet.has('agent-team')) extensionFactories.push((pi) => installAgentTeam(pi, {}))
-  if (enabledSet.has('audit-log')) extensionFactories.push((pi) =>
-    installAuditLog(pi, {
-      sink: new JsonlAuditSink({
-        filePath: process.env.GENOFFICE_AUDIT_LOG ?? `${process.env.DATA_DIR ?? '.genoffice'}/audit-log.jsonl`,
+  if (enabledSet.has('audit-log'))
+    extensionFactories.push((pi) =>
+      installAuditLog(pi, {
+        sink: new JsonlAuditSink({
+          filePath:
+            process.env.GENOFFICE_AUDIT_LOG ??
+            `${process.env.DATA_DIR ?? '.genoffice'}/audit-log.jsonl`,
+        }),
       }),
-    }),
-  )
+    )
   if (enabledSet.has('local-models')) extensionFactories.push((pi) => installLocalModels(pi, {}))
 
   const opts: OfficeSessionOptions = {
@@ -140,28 +142,51 @@ async function buildPiSession(): Promise<OfficeSession> {
  * the agent uses — one source of truth for the whole translation surface.
  */
 export async function callTranslateTool(name: string, args: unknown): Promise<unknown> {
-    const { session: agent } = await getPiSession()
-    const tool = agent.getToolDefinition(name)
-    if (!tool) {
-      return { ok: false, error: `translate-skill tool "${name}" not registered in pi session` }
-    }
-    // The IPC transport delivers args as an array. If the caller passed a single
+  const { session: agent } = await getPiSession()
+  const tool = agent.getToolDefinition(name)
+  if (!tool) {
+    return { ok: false, error: `translate-skill tool "${name}" not registered in pi session` }
+  }
+  // The IPC transport delivers args as an array. If the caller passed a single
   // object, unwrap it. If they passed an array of positional args, take the
   // first one as the params object.
-  const params = Array.isArray(args)
-    ? (args.length > 0 ? args[0] : {})
-    : (args ?? {})
-  const result = await (tool as unknown as { execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined) => Promise<{ content: Array<{ type: string; text?: string }>; details: unknown }> }).execute(`ui-${Date.now()}`, params as Record<string, unknown>, undefined)
-    const first = (result?.content ?? []).find((c: { type?: string }) => c.type === 'text') as { text?: string } | undefined
-    return {
-      ok: (result?.details as { ok?: boolean } | undefined)?.ok ?? true,
-      details: result?.details ?? null,
-      summary: first?.text ?? '',
+  const params = Array.isArray(args) ? (args.length > 0 ? args[0] : {}) : (args ?? {})
+  const result = await (
+    tool as unknown as {
+      execute: (
+        id: string,
+        params: Record<string, unknown>,
+        signal: AbortSignal | undefined,
+      ) => Promise<{ content: Array<{ type: string; text?: string }>; details: unknown }>
     }
+  ).execute(`ui-${Date.now()}`, params as Record<string, unknown>, undefined)
+  const first = (result?.content ?? []).find((c: { type?: string }) => c.type === 'text') as
+    { text?: string } | undefined
+  const details = (result?.details ?? null) as { ok?: boolean; error?: unknown } | null
+  const ok = details?.ok ?? true
+  const summary = first?.text ?? ''
+  // Every translate-skill tool reports failures inside `details` and mirrors
+  // the message in its `content` text. Surfacing only that text left callers
+  // that read `result.error` (ai:translate-batch, the generate/slides bridges)
+  // with `undefined`, so a provider failure reached the UI as a bare
+  // `ok: false` with no reason attached. Hoist `details.error` — falling back
+  // to the summary — so every caller sees one failure shape.
+  const error =
+    typeof details?.error === 'string' && details.error.length > 0
+      ? details.error
+      : summary.length > 0
+        ? summary
+        : undefined
+  return {
+    ok,
+    details,
+    summary,
+    ...(ok || error === undefined ? {} : { error }),
   }
+}
 
 export function registerPiSessionHandlers(): void {
-registerHandle('home:pi-list-skills', async () => {
+  registerHandle('home:pi-list-skills', async () => {
     try {
       const { resourceLoader } = await getPiSession()
       const loaded = resourceLoader.getSkills()
@@ -201,7 +226,9 @@ registerHandle('home:pi-list-skills', async () => {
     try {
       const { session } = await getPiSession()
       const tools = session.getAllTools()
-      const skills = (await import('node:fs')).readdirSync(PI_SKILLS_DIR).filter((n) => !n.startsWith('.'))
+      const skills = (await import('node:fs'))
+        .readdirSync(PI_SKILLS_DIR)
+        .filter((n) => !n.startsWith('.'))
       return {
         ok: true,
         ready: true,
@@ -224,8 +251,6 @@ registerHandle('home:pi-list-skills', async () => {
   // chat.ts handlers (`ai:translate`, `ai:translate-file`, ...) remain
   // untouched so existing renderer code keeps working while we migrate.
   // ------------------------------------------------------------------
-
-
 
   registerHandle('home:translate-text', async (_event, args) => {
     return callTranslateTool('translate_text', args)

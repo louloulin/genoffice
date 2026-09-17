@@ -445,8 +445,9 @@ export function registerAiCoreHandlers(): void {
     //    upgrades to "configured" once the user supplies a key.
     const searchSettings = aiSettings.search
     const searchProvider = searchSettings?.provider ?? 'genspark'
-    const searchKeyed = searchProvider !== 'genspark'
-      && !!searchSettings?.providers?.[searchProvider as 'serper' | 'tavily']?.apiKey
+    const searchKeyed =
+      searchProvider !== 'genspark' &&
+      !!searchSettings?.providers?.[searchProvider as 'serper' | 'tavily']?.apiKey
     report.search = {
       available: true,
       via: searchKeyed ? searchProvider : 'duckduckgo',
@@ -464,37 +465,33 @@ export function registerAiCoreHandlers(): void {
       via: searchKeyed ? searchProvider : 'duckduckgo',
       fallback: searchKeyed ? 'duckduckgo' : undefined,
       configured: searchKeyed || aiSettings.gskToolsEnabled !== false,
-      note: searchKeyed
-        ? undefined
-        : 'DuckDuckGo image endpoint works without a key.',
+      note: searchKeyed ? undefined : 'DuckDuckGo image endpoint works without a key.',
     }
 
     // 3) image generation — needs a media provider with a key (or Genspark
     //    credits). DDG does not generate images.
     const mediaSettings = aiSettings.media
     const imageProvider = mediaSettings?.imageProvider ?? 'genspark'
-    const imageKeyed = imageProvider !== 'genspark'
-      && !!mediaSettings?.providers?.[imageProvider]?.apiKey
+    const imageKeyed =
+      imageProvider !== 'genspark' && !!mediaSettings?.providers?.[imageProvider]?.apiKey
     report.image_generation = {
       available: imageKeyed || aiSettings.gskToolsEnabled !== false,
-      via: imageKeyed
-        ? imageProvider
-        : (aiSettings.gskToolsEnabled === false ? 'none' : 'genspark'),
+      via: imageKeyed ? imageProvider : aiSettings.gskToolsEnabled === false ? 'none' : 'genspark',
       configured: imageKeyed || aiSettings.gskToolsEnabled !== false,
-      note: imageKeyed
-        ? undefined
-        : 'Add a key for OpenAI/Gemini/Doubao/etc. to generate images.',
+      note: imageKeyed ? undefined : 'Add a key for OpenAI/Gemini/Doubao/etc. to generate images.',
     }
 
     // 4) media analysis — same shape as image generation.
     const analysisProvider = mediaSettings?.analysisProvider ?? 'genspark'
-    const analysisKeyed = analysisProvider !== 'genspark'
-      && !!mediaSettings?.providers?.[analysisProvider]?.apiKey
+    const analysisKeyed =
+      analysisProvider !== 'genspark' && !!mediaSettings?.providers?.[analysisProvider]?.apiKey
     report.media_analysis = {
       available: analysisKeyed || aiSettings.gskToolsEnabled !== false,
       via: analysisKeyed
         ? analysisProvider
-        : (aiSettings.gskToolsEnabled === false ? 'none' : 'genspark'),
+        : aiSettings.gskToolsEnabled === false
+          ? 'none'
+          : 'genspark',
       configured: analysisKeyed || aiSettings.gskToolsEnabled !== false,
       note: analysisKeyed
         ? undefined
@@ -698,24 +695,36 @@ export function registerAiCoreHandlers(): void {
     if (!targetLang) {
       return { ok: false, error: 'ai:translate-batch expected non-empty `targetLang`', units: [] }
     }
-    const settled = await Promise.all(units.map(async (u) => {
-      const result = (await callTranslateTool('translate_text', {
-        text: u.sourceText ?? '',
-        source_lang: req.sourceLang,
-        target_lang: targetLang,
-      })) as { ok: boolean; details?: Record<string, unknown>; error?: string }
-      const d = result.details ?? {}
-      return {
-        ok: result.ok,
-        unitId: u.unitId ?? '',
-        translatedText: (d.translated as string) ?? '',
-        matchedTerms: (d.matchedTerms as string[]) ?? [],
-        warnings: (d.warnings as string[]) ?? [],
-        errorMessage: result.error,
-      }
-    }))
+    const settled = await Promise.all(
+      units.map(async (u) => {
+        const result = (await callTranslateTool('translate_text', {
+          text: u.sourceText ?? '',
+          source_lang: req.sourceLang,
+          target_lang: targetLang,
+        })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
+        const d = result.details ?? {}
+        return {
+          ok: result.ok,
+          unitId: u.unitId ?? '',
+          translatedText: (d.translated as string) ?? '',
+          matchedTerms: (d.matchedTerms as string[]) ?? [],
+          warnings: (d.warnings as string[]) ?? [],
+          errorMessage: result.error ?? (result.ok ? undefined : result.summary),
+        }
+      }),
+    )
     const allOk = settled.every((s) => s.ok)
-    return { ok: allOk, units: settled }
+    // A failed batch used to answer `{ ok: false, units: [...] }` with no
+    // top-level reason: the per-unit `errorMessage` was the only place the
+    // provider message lived, and the docs/sheets bridges that read
+    // `response.error` showed an empty failure banner. Mirror the first
+    // unit's message so both shapes carry the reason.
+    const firstFailure = settled.find((s) => !s.ok && s.errorMessage)
+    return {
+      ok: allOk,
+      units: settled,
+      ...(firstFailure ? { error: firstFailure.errorMessage } : {}),
+    }
   })
   scheduleMemoryFlush()
 
@@ -1029,7 +1038,12 @@ export function registerAiCoreHandlers(): void {
     const result = (await callTranslateTool('kb_list', {
       schema: f.schema,
       limit: f.limit,
-    })) as { ok: boolean; details?: { entries?: unknown[]; count?: number }; summary?: string; error?: string }
+    })) as {
+      ok: boolean
+      details?: { entries?: unknown[]; count?: number }
+      summary?: string
+      error?: string
+    }
     if (!result.ok) {
       return { ok: false, entries: [], error: result.error ?? result.summary ?? 'kb_list failed' }
     }
@@ -1045,7 +1059,10 @@ export function registerAiCoreHandlers(): void {
       return { ok: false, error: 'KB entry must include a string `id`' }
     }
     const result = (await callTranslateTool('kb_upsert', { entry: candidate })) as {
-      ok: boolean; details?: { id?: string }; summary?: string; error?: string
+      ok: boolean
+      details?: { id?: string }
+      summary?: string
+      error?: string
     }
     if (!result.ok) {
       return { ok: false, error: result.error ?? result.summary ?? 'kb_upsert failed' }
@@ -1057,16 +1074,28 @@ export function registerAiCoreHandlers(): void {
     const targetId = String(id ?? '').trim()
     if (!targetId) return { ok: false, error: 'ai:translation-kb-remove expected a non-empty id' }
     const result = (await callTranslateTool('kb_remove', { id: targetId })) as {
-      ok: boolean; details?: { removed?: boolean }; summary?: string; error?: string
+      ok: boolean
+      details?: { removed?: boolean }
+      summary?: string
+      error?: string
     }
     if (!result.ok) {
-      return { ok: false, removed: false, error: result.error ?? result.summary ?? 'kb_remove failed' }
+      return {
+        ok: false,
+        removed: false,
+        error: result.error ?? result.summary ?? 'kb_remove failed',
+      }
     }
     return { ok: true, removed: result.details?.removed ?? false }
   })
 
   registerHandle('ai:translation-kb-resolve', async (_event: unknown, request: unknown) => {
-    const req = (request ?? {}) as { sourceLang?: string; targetLang?: string; category?: string; customerName?: string }
+    const req = (request ?? {}) as {
+      sourceLang?: string
+      targetLang?: string
+      category?: string
+      customerName?: string
+    }
     if (!req.targetLang) {
       return { ok: false, error: 'ai:translation-kb-resolve expected non-empty `targetLang`' }
     }
@@ -1076,10 +1105,18 @@ export function registerAiCoreHandlers(): void {
     // give us the same entries; we rebuild the promptBlock from the term
     // entries only.
     const result = (await callTranslateTool('kb_list', { limit: 1000 })) as {
-      ok: boolean; details?: { entries?: unknown[]; count?: number }; summary?: string; error?: string
+      ok: boolean
+      details?: { entries?: unknown[]; count?: number }
+      summary?: string
+      error?: string
     }
     if (!result.ok) {
-      return { ok: false, terms: [], promptBlock: '', error: result.error ?? result.summary ?? 'kb_list failed' }
+      return {
+        ok: false,
+        terms: [],
+        promptBlock: '',
+        error: result.error ?? result.summary ?? 'kb_list failed',
+      }
     }
     const all = (result.details?.entries ?? []) as Array<Record<string, unknown>>
     const sourceLang = req.sourceLang ?? 'auto'
@@ -1094,9 +1131,8 @@ export function registerAiCoreHandlers(): void {
     const termPairs = terms
       .filter((e) => typeof e.sourceTerm === 'string' && typeof e.targetTerm === 'string')
       .map((e) => `${e.sourceTerm} → ${e.targetTerm}`)
-    const promptBlock = termPairs.length > 0
-      ? `Use these preferred terms:\n${termPairs.join('\n')}`
-      : ''
+    const promptBlock =
+      termPairs.length > 0 ? `Use these preferred terms:\n${termPairs.join('\n')}` : ''
     return {
       ok: true,
       terms,
@@ -1111,19 +1147,32 @@ export function registerAiCoreHandlers(): void {
     // The pi session's kb_list is the single source of truth — the same
     // store the agent and the UI mutate.
     const result = (await callTranslateTool('kb_list', { limit: 1000 })) as {
-      ok: boolean; details?: { entries?: unknown[]; count?: number }; error?: string; summary?: string
+      ok: boolean
+      details?: { entries?: unknown[]; count?: number }
+      error?: string
+      summary?: string
     }
     if (!result.ok) {
-      return { ok: false, total: 0, bySchema: {}, error: result.error ?? result.summary ?? 'kb_list failed' }
+      return {
+        ok: false,
+        total: 0,
+        bySchema: {},
+        error: result.error ?? result.summary ?? 'kb_list failed',
+      }
     }
     const all = (result.details?.entries ?? []) as Array<Record<string, unknown>>
     const bySchema: Record<string, number> = {}
     for (const entry of all) {
-      const key = ('sourceTerm' in entry && 'targetTerm' in entry) ? 'term'
-        : ('forbiddenText' in entry) ? 'forbidden'
-        : ('policy' in entry) ? 'brand'
-        : ('description' in entry && 'name' in entry) ? 'styleRule'
-        : 'customerPreference'
+      const key =
+        'sourceTerm' in entry && 'targetTerm' in entry
+          ? 'term'
+          : 'forbiddenText' in entry
+            ? 'forbidden'
+            : 'policy' in entry
+              ? 'brand'
+              : 'description' in entry && 'name' in entry
+                ? 'styleRule'
+                : 'customerPreference'
       bySchema[key] = (bySchema[key] ?? 0) + 1
     }
     return { ok: true, total: all.length, bySchema }
@@ -1158,7 +1207,8 @@ export function registerAiCoreHandlers(): void {
     if (!req.dictionaryPath) {
       return {
         ok: false,
-        error: 'ai:translate-file needs an existing dictionary (use ai:translate-build-dictionary first)',
+        error:
+          'ai:translate-file needs an existing dictionary (use ai:translate-build-dictionary first)',
       }
     }
     const location2 = resolveTranslateSkills()
@@ -1171,7 +1221,10 @@ export function registerAiCoreHandlers(): void {
       execute: true,
     })) as { ok: boolean; details?: Record<string, unknown>; error?: string }
     if (!result.ok) {
-      return { ok: false, error: (result.details?.error as string) ?? result.error ?? 'translate_file failed' }
+      return {
+        ok: false,
+        error: (result.details?.error as string) ?? result.error ?? 'translate_file failed',
+      }
     }
     return {
       ok: true,
@@ -1232,7 +1285,7 @@ export function registerAiCoreHandlers(): void {
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
-          'Accept': 'text/html',
+          Accept: 'text/html',
           'Accept-Language': 'en-US,en;q=0.9',
         },
       })
@@ -1271,7 +1324,7 @@ export function registerAiCoreHandlers(): void {
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15',
-          'Accept': 'text/html',
+          Accept: 'text/html',
         },
       })
       if (!response.ok) {
