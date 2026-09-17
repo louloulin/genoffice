@@ -135,6 +135,10 @@ export const th = {
   aiSlashMenuTitle: 'สกิลและคำสั่ง',
   aiSlashMenuEmpty: 'ไม่มีคำสั่งที่ตรงกัน',
   aiSlashMenuFoot: '↑↓ เลือก · Enter รัน · Esc ปิด',
-  aiActiveSkill: 'สกิลที่ใช้งาน',
+
+  aiMentionMenuTitle: 'ไฟล์และทักษะ',
+  aiMentionMenuEmpty: 'ไม่มีไฟล์หรือทักษะที่ตรงกัน',
+  aiMentionMenuFoot: '↑↓ เลือก · Enter ยืนยัน · Esc ปิด',
+  aiSlashTriggerTitle: 'เปิดพาเลตคำสั่ง',  aiActiveSkill: 'สกิลที่ใช้งาน',
   aiActiveSkillClear: 'ลบสกิล',
 } satisfies Record<keyof typeof zh, string>

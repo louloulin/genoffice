@@ -136,6 +136,10 @@ export const ms = {
   aiSlashMenuTitle: 'Kemahiran & tindakan',
   aiSlashMenuEmpty: 'Tiada perintah',
   aiSlashMenuFoot: '↑↓ pilih · Enter jalan · Esc tutup',
-  aiActiveSkill: 'Kemahiran aktif',
+
+  aiMentionMenuTitle: 'Fail & kemahiran',
+  aiMentionMenuEmpty: 'Tiada fail atau kemahiran yang sepadan',
+  aiMentionMenuFoot: '↑↓ pilih · Enter untuk sahkan · Esc untuk tutup',
+  aiSlashTriggerTitle: 'Buka palet perintah',  aiActiveSkill: 'Kemahiran aktif',
   aiActiveSkillClear: 'Buang kemahiran',
 } satisfies Record<keyof typeof zh, string>

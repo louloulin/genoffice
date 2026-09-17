@@ -137,6 +137,10 @@ export const nl = {
   aiSlashMenuTitle: 'Skills en acties',
   aiSlashMenuEmpty: 'Geen opdrachten',
   aiSlashMenuFoot: '↑↓ kies · Enter uitvoeren · Esc sluiten',
-  aiActiveSkill: 'Actieve skill',
+
+  aiMentionMenuTitle: 'Bestanden en vaardigheden',
+  aiMentionMenuEmpty: 'Geen overeenkomende bestanden of vaardigheden',
+  aiMentionMenuFoot: '↑↓ kies · Enter om te bevestigen · Esc om te sluiten',
+  aiSlashTriggerTitle: 'Open opdrachtenpalet',  aiActiveSkill: 'Actieve skill',
   aiActiveSkillClear: 'Skill wissen',
 } satisfies Record<keyof typeof zh, string>

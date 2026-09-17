@@ -137,6 +137,10 @@ export const de = {
   aiSlashMenuTitle: 'Skills & Aktionen',
   aiSlashMenuEmpty: 'Kein passender Befehl',
   aiSlashMenuFoot: '↑↓ wählen · Enter ausführen · Esc schließen',
-  aiActiveSkill: 'Aktiver Skill',
+
+  aiMentionMenuTitle: 'Dateien & Skills',
+  aiMentionMenuEmpty: 'Keine passende Datei oder Skill',
+  aiMentionMenuFoot: '↑↓ Auswahl · Enter zum Übernehmen · Esc zum Schließen',
+  aiSlashTriggerTitle: 'Befehlspalette öffnen',  aiActiveSkill: 'Aktiver Skill',
   aiActiveSkillClear: 'Skill entfernen',
 } satisfies Record<keyof typeof zh, string>

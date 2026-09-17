@@ -135,6 +135,10 @@ export const pl = {
   aiSlashMenuTitle: 'Umiejętności i akcje',
   aiSlashMenuEmpty: 'Brak pasujących',
   aiSlashMenuFoot: '↑↓ wybór · Enter wykonaj · Esc zamknij',
-  aiActiveSkill: 'Aktywna umiejętność',
+
+  aiMentionMenuTitle: 'Pliki i umiejętności',
+  aiMentionMenuEmpty: 'Brak pasujących plików lub umiejętności',
+  aiMentionMenuFoot: '↑↓ wybierz · Enter zatwierdź · Esc zamknij',
+  aiSlashTriggerTitle: 'Otwórz paletę poleceń',  aiActiveSkill: 'Aktywna umiejętność',
   aiActiveSkillClear: 'Usuń umiejętność',
 } satisfies Record<keyof typeof zh, string>

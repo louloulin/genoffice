@@ -134,6 +134,10 @@ export const ko = {
   aiSlashMenuTitle: '스킬 및 작업',
   aiSlashMenuEmpty: '일치하는 명령이 없습니다',
   aiSlashMenuFoot: '↑↓ 이동 · Enter 실행 · Esc 닫기',
-  aiActiveSkill: '활성 스킬',
+
+  aiMentionMenuTitle: '파일과 스킬',
+  aiMentionMenuEmpty: '일치하는 파일이나 스킬이 없습니다',
+  aiMentionMenuFoot: '↑↓ 선택 · Enter 확정 · Esc 닫기',
+  aiSlashTriggerTitle: '명령 팔레트 열기',  aiActiveSkill: '활성 스킬',
   aiActiveSkillClear: '활성 스킬 지우기',
 } satisfies Record<keyof typeof zh, string>

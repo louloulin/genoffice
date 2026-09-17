@@ -136,6 +136,10 @@ export const it = {
   aiSlashMenuTitle: 'Skill e azioni',
   aiSlashMenuEmpty: 'Nessun comando',
   aiSlashMenuFoot: '↑↓ muovi · Enter esegui · Esc chiudi',
-  aiActiveSkill: 'Skill attivo',
+
+  aiMentionMenuTitle: 'File e competenze',
+  aiMentionMenuEmpty: 'Nessun file o competenza',
+  aiMentionMenuFoot: '↑↓ seleziona · Invio per confermare · Esc per chiudere',
+  aiSlashTriggerTitle: 'Apri la palette dei comandi',  aiActiveSkill: 'Skill attivo',
   aiActiveSkillClear: 'Rimuovi skill',
 } satisfies Record<keyof typeof zh, string>

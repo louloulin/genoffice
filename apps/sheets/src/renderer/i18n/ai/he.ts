@@ -131,6 +131,10 @@ export const he = {
   aiSlashMenuTitle: 'מיומנויות ופעולות',
   aiSlashMenuEmpty: 'אין פקודות תואמות',
   aiSlashMenuFoot: '↑↓ לבחור · Enter להפעיל · Esc לסגור',
-  aiActiveSkill: 'מיומנות פעילה',
+
+  aiMentionMenuTitle: 'קבצים ומיומנויות',
+  aiMentionMenuEmpty: 'אין קבצים או מיומנויות תואמים',
+  aiMentionMenuFoot: '↑↓ בחירה · Enter לאישור · Esc לסגירה',
+  aiSlashTriggerTitle: 'פתח את לוח הפקודות',  aiActiveSkill: 'מיומנות פעילה',
   aiActiveSkillClear: 'הסר מיומנות',
 } satisfies Record<keyof typeof zh, string>

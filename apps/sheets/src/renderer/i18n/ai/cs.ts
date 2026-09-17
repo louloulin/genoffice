@@ -136,6 +136,10 @@ export const cs = {
   aiSlashMenuTitle: 'Dovednosti a akce',
   aiSlashMenuEmpty: 'Žádné příkazy',
   aiSlashMenuFoot: '↑↓ výběr · Enter spustit · Esc zavřít',
-  aiActiveSkill: 'Aktivní dovednost',
+
+  aiMentionMenuTitle: 'Soubory a dovednosti',
+  aiMentionMenuEmpty: 'Žádné odpovídající soubory ani dovednosti',
+  aiMentionMenuFoot: '↑↓ vyberte · Enter potvrdit · Esc zavřít',
+  aiSlashTriggerTitle: 'Otevřít paletu příkazů',  aiActiveSkill: 'Aktivní dovednost',
   aiActiveSkillClear: 'Odebrat dovednost',
 } satisfies Record<keyof typeof zh, string>

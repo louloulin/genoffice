@@ -135,6 +135,10 @@ export const id = {
   aiSlashMenuTitle: 'Keterampilan & aksi',
   aiSlashMenuEmpty: 'Tidak ada perintah',
   aiSlashMenuFoot: '↑↓ pindah · Enter jalan · Esc tutup',
-  aiActiveSkill: 'Keterampilan aktif',
+
+  aiMentionMenuTitle: 'File & keterampilan',
+  aiMentionMenuEmpty: 'Tidak ada file atau keterampilan yang cocok',
+  aiMentionMenuFoot: '↑↓ pilih · Enter untuk konfirmasi · Esc untuk tutup',
+  aiSlashTriggerTitle: 'Buka palet perintah',  aiActiveSkill: 'Keterampilan aktif',
   aiActiveSkillClear: 'Hapus keterampilan',
 } satisfies Record<keyof typeof zh, string>

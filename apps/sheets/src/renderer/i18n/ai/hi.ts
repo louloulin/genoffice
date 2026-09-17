@@ -136,6 +136,10 @@ export const hi = {
   aiSlashMenuTitle: 'स्किल और क्रियाएँ',
   aiSlashMenuEmpty: 'कोई मेल नहीं',
   aiSlashMenuFoot: '↑↓ चुनें · Enter चलाएँ · Esc बंद',
-  aiActiveSkill: 'सक्रिय स्किल',
+
+  aiMentionMenuTitle: 'फ़ाइलें और कौशल',
+  aiMentionMenuEmpty: 'कोई मेल खाती फ़ाइल या कौशल नहीं',
+  aiMentionMenuFoot: '↑↓ चुनें · Enter पुष्टि करें · Esc बंद करें',
+  aiSlashTriggerTitle: 'कमांड पैलेट खोलें',  aiActiveSkill: 'सक्रिय स्किल',
   aiActiveSkillClear: 'स्किल हटाएँ',
 } satisfies Record<keyof typeof zh, string>

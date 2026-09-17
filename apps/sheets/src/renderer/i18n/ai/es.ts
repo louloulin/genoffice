@@ -138,6 +138,10 @@ export const es = {
   aiSlashMenuTitle: 'Habilidades y acciones',
   aiSlashMenuEmpty: 'Sin comandos',
   aiSlashMenuFoot: '↑↓ mover · Enter ejecutar · Esc cerrar',
-  aiActiveSkill: 'Habilidad activa',
+
+  aiMentionMenuTitle: 'Archivos y habilidades',
+  aiMentionMenuEmpty: 'Sin archivos o habilidades',
+  aiMentionMenuFoot: '↑↓ seleccionar · Intro para elegir · Esc para cerrar',
+  aiSlashTriggerTitle: 'Abrir paleta de comandos',  aiActiveSkill: 'Habilidad activa',
   aiActiveSkillClear: 'Quitar habilidad',
 } satisfies Record<keyof typeof zh, string>

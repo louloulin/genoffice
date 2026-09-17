@@ -137,6 +137,10 @@ export const pt = {
   aiSlashMenuTitle: 'Skills e ações',
   aiSlashMenuEmpty: 'Nenhum comando',
   aiSlashMenuFoot: '↑↓ mover · Enter executar · Esc fechar',
-  aiActiveSkill: 'Skill ativo',
+
+  aiMentionMenuTitle: 'Arquivos e habilidades',
+  aiMentionMenuEmpty: 'Nenhum arquivo ou habilidade',
+  aiMentionMenuFoot: '↑↓ selecionar · Enter para escolher · Esc para fechar',
+  aiSlashTriggerTitle: 'Abrir paleta de comandos',  aiActiveSkill: 'Skill ativo',
   aiActiveSkillClear: 'Remover skill',
 } satisfies Record<keyof typeof zh, string>

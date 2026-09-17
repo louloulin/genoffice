@@ -137,6 +137,10 @@ export const fr = {
   aiSlashMenuTitle: 'Compétences et actions',
   aiSlashMenuEmpty: 'Aucune commande correspondante',
   aiSlashMenuFoot: '↑↓ pour naviguer · Enter pour valider · Esc pour fermer',
-  aiActiveSkill: 'Compétence active',
+
+  aiMentionMenuTitle: 'Fichiers & compétences',
+  aiMentionMenuEmpty: 'Aucun fichier ou compétence',
+  aiMentionMenuFoot: '↑↓ sélection · Entrée pour valider · Échap pour fermer',
+  aiSlashTriggerTitle: 'Ouvrir la palette',  aiActiveSkill: 'Compétence active',
   aiActiveSkillClear: 'Désactiver la compétence',
 } satisfies Record<keyof typeof zh, string>

@@ -136,6 +136,10 @@ export const en = {
   aiSlashMenuTitle: 'Skills & actions',
   aiSlashMenuEmpty: 'No matching command',
   aiSlashMenuFoot: '↑↓ to move · Enter to run · Esc to close',
-  aiActiveSkill: 'Active skill',
+
+  aiMentionMenuTitle: 'Files & skills',
+  aiMentionMenuEmpty: 'No matching file or skill',
+  aiMentionMenuFoot: '↑↓ select · Enter to pick · Esc to close',
+  aiSlashTriggerTitle: 'Open command palette',  aiActiveSkill: 'Active skill',
   aiActiveSkillClear: 'Clear active skill',
 } satisfies Record<keyof typeof zh, string>

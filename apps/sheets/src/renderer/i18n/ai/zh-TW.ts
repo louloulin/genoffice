@@ -130,6 +130,10 @@ export const zhTW = {
   aiSlashMenuTitle: '技能與操作',
   aiSlashMenuEmpty: '沒有匹配的指令',
   aiSlashMenuFoot: '↑↓ 選擇 · Enter 確認 · Esc 關閉',
-  aiActiveSkill: '當前技能',
+
+  aiMentionMenuTitle: '檔案與技能',
+  aiMentionMenuEmpty: '沒有符合的檔案或技能',
+  aiMentionMenuFoot: '↑↓ 選擇 · Enter 確認 · Esc 關閉',
+  aiSlashTriggerTitle: '開啟指令面板',  aiActiveSkill: '當前技能',
   aiActiveSkillClear: '清除當前技能',
 } satisfies Record<keyof typeof zh, string>

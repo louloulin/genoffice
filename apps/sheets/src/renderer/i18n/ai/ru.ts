@@ -136,6 +136,10 @@ export const ru = {
   aiSlashMenuTitle: 'Навыки и действия',
   aiSlashMenuEmpty: 'Нет команд',
   aiSlashMenuFoot: '↑↓ выбор · Enter выполнить · Esc закрыть',
-  aiActiveSkill: 'Активный навык',
+
+  aiMentionMenuTitle: 'Файлы и навыки',
+  aiMentionMenuEmpty: 'Нет подходящих файлов или навыков',
+  aiMentionMenuFoot: '↑↓ выбор · Enter — выбрать · Esc — закрыть',
+  aiSlashTriggerTitle: 'Открыть палитру команд',  aiActiveSkill: 'Активный навык',
   aiActiveSkillClear: 'Снять навык',
 } satisfies Record<keyof typeof zh, string>

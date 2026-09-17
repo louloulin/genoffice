@@ -7,6 +7,7 @@ import {
   type ComposerCommand,
   type ComposerCommandPick,
   type ComposerModeOption,
+  type MentionEntry,
 } from '@genoffice/ui'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
 import { AiRunHeader, AiToolTimeline, AiChangeSummary, AiErrorRecovery } from '@genoffice/ui'
@@ -15,7 +16,7 @@ import type { ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import { GensparkMark, ProviderMark } from '../ribbon-icons'
 import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import { ATTACHMENT_IMAGE_EXTS, type AttachmentMeta } from '../../shared/desktop-api'
-import { useI18n, type TFunc } from '../i18n/locale'
+import { useI18n, type StringKey, type TFunc } from '../i18n/locale'
 import { aiLangDirective } from '../i18n/locale'
 import {
   SHEETS_QUICK_ACTIONS,
@@ -23,6 +24,58 @@ import {
   sheetsSkillOptions,
   skillIdOfCommand,
 } from './composer-commands'
+
+/**
+ * Build the @-mention palette for the sheets panel. The attachments come
+ * first (the user is most likely to @-mention a workbook they just opened),
+ * then the same skills the slash palette exposes.
+ */
+function sheetsMentionEntries(input: {
+  attachments: readonly AttachmentMeta[]
+  skills: ReadonlyArray<{
+    id: string
+    trigger: string
+    labelKey: StringKey
+    descriptionKey: StringKey
+    available: boolean
+  }>
+  t: (key: StringKey) => string
+}): readonly MentionEntry[] {
+  const seen = new Set<string>()
+  const out: MentionEntry[] = []
+  for (const a of input.attachments) {
+    if (seen.has(a.path)) continue
+    seen.add(a.path)
+    const trigger = (a.name || a.path)
+      .toLowerCase()
+      .replace(/\.[a-z0-9]+$/i, '')
+      .replace(/[^\w\u4e00-\u9fff]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 16) || a.path
+    out.push({
+      id: `file-${a.path}`,
+      trigger,
+      label: a.name,
+      description: a.path,
+      group: 'Files',
+      kind: 'file',
+      hint: a.ext ? `.${a.ext}` : undefined,
+    })
+  }
+  for (const s of input.skills) {
+    out.push({
+      id: `skill-${s.id}`,
+      trigger: s.trigger,
+      label: input.t(s.labelKey),
+      description: input.t(s.descriptionKey),
+      group: 'Skills',
+      kind: 'skill',
+      disabled: !s.available,
+      hint: s.id,
+    })
+  }
+  return out
+}
 import { Markdown } from '@genoffice/ui'
 import { SHEET_NAV_SCHEME } from './sheet-nav'
 import sendEnterOn from '../assets/send-enter-on.png'
@@ -344,6 +397,29 @@ export function AiChatPanel({
     () => buildSheetsComposerCommands({ t, skills: composerSkills, quickActions: SHEETS_QUICK_ACTIONS }),
     [t, composerSkills],
   )
+
+  /** @-mention palette (Cursor-style picker for files + skills). */
+  const composerMentions = useMemo(
+    () =>
+      sheetsMentionEntries({
+        attachments,
+        skills: composerSkills.map((s) => ({
+          id: s.id,
+          trigger: s.trigger,
+          labelKey: s.labelKey,
+          descriptionKey: s.descriptionKey,
+          available: s.available,
+        })),
+        t,
+      }),
+    [attachments, composerSkills, t],
+  )
+
+  const onComposerMentionPick = useCallback(() => undefined, [])
+
+  /** Optional token-budget badge. 8k is the safe default for sheets —
+   *  the workbook snapshot is held by tools, not by the prompt. */
+  const tokenBudget = 8000
 
   const activeSkill =
     activeSkillId === null
@@ -859,6 +935,13 @@ export function AiChatPanel({
           commandMenuLabel={t('aiSlashMenuTitle')}
           commandMenuEmptyLabel={t('aiSlashMenuEmpty')}
           commandMenuFootHint={t('aiSlashMenuFoot')}
+          mentions={composerMentions}
+          onMentionPick={onComposerMentionPick}
+          mentionMenuLabel={t('aiMentionMenuTitle')}
+          mentionMenuEmptyLabel={t('aiMentionMenuEmpty')}
+          mentionMenuFootHint={t('aiMentionMenuFoot')}
+          tokenBudget={tokenBudget}
+          slashTriggerTitle={t('aiSlashTriggerTitle')}
           modes={modeOptions}
           mode={mode}
           onModeChange={setMode}

@@ -135,6 +135,10 @@ export const ja = {
   aiSlashMenuTitle: 'スキルと操作',
   aiSlashMenuEmpty: '一致するコマンドがありません',
   aiSlashMenuFoot: '↑↓ 選択 · Enter 実行 · Esc 閉じる',
-  aiActiveSkill: '現在のスキル',
+
+  aiMentionMenuTitle: 'ファイルとスキル',
+  aiMentionMenuEmpty: '該当するファイルやスキルはありません',
+  aiMentionMenuFoot: '↑↓ 選択 · Enter で確定 · Esc で閉じる',
+  aiSlashTriggerTitle: 'コマンドパレットを開く',  aiActiveSkill: '現在のスキル',
   aiActiveSkillClear: '現在のスキルをクリア',
 } satisfies Record<keyof typeof zh, string>

@@ -135,6 +135,10 @@ export const ar = {
   aiSlashMenuTitle: 'مهارات وإجراءات',
   aiSlashMenuEmpty: 'لا أوامر مطابقة',
   aiSlashMenuFoot: '↑↓ للتنقل · Enter للتنفيذ · Esc للإغلاق',
-  aiActiveSkill: 'المهارة النشطة',
+
+  aiMentionMenuTitle: 'ملفات ومهارات',
+  aiMentionMenuEmpty: 'لا توجد ملفات أو مهارات',
+  aiMentionMenuFoot: '↑↓ للاختيار · Enter للتأكيد · Esc للإغلاق',
+  aiSlashTriggerTitle: 'افتح لوحة الأوامر',  aiActiveSkill: 'المهارة النشطة',
   aiActiveSkillClear: 'إزالة المهارة',
 } satisfies Record<keyof typeof zh, string>
