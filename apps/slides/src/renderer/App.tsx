@@ -602,7 +602,7 @@ export function App() {
         }
         return false
       })
-    return slides.every((s) => !nodesHaveContent(s.nodes))
+    return slides.every((s) => !s || !nodesHaveContent(s.nodes))
   }, [slides])
 
   /** Write the notes draft back to the main process (called on page switch / blur / before save). */

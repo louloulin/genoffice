@@ -14,9 +14,17 @@ import { createMarkdownApi, createMarkdownProjectApi } from '../shared/markdown-
 if (!isElectronRuntime()) {
   const transport = createHttpIpcTransport()
   const bridgedWindow = window as unknown as Record<string, unknown>
-  // the current document path is read from `?open=` and updated by each
-  // successful save so a re-save lands back on the same managed file.
-  let currentPath: string | null = new URLSearchParams(window.location.search).get('open')
+  // The current document path is read from `?open=` (query) or `#open=` (hash)
+  // and updated by each successful save so a re-save lands back on the same
+  // managed file. Both forms are accepted: the shell builds the URL with the
+  // hash form (`#open=...`), while `?open=...` is used by direct navigation.
+  function readCurrentPath(): string | null {
+    const query = new URLSearchParams(window.location.search).get('open')
+    if (query) return query
+    const hash = new URLSearchParams(window.location.hash.slice(1)).get('open')
+    return hash
+  }
+  let currentPath: string | null = readCurrentPath()
   bridgedWindow.markdownApi = createMarkdownApi(transport, {
     consumePending: async () => currentPath,
     consumeHeadlessExport: async () => null,
