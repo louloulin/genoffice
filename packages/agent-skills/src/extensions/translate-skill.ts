@@ -634,12 +634,29 @@ function createTranslateFileTool() {
     parameters: TranslateFileParams,
     async execute(_id, params: TranslateFileArgs, _signal) {
       const start = Date.now()
-      const ext = extname(params.input_path)
+      // Guard before reading params: `extname(undefined)` used to throw a raw
+      // ERR_INVALID_ARG_TYPE out of the tool (the IPC layer surfaced "The
+      // \"path\" argument must be of type string") instead of the structured
+      // { ok: false, error } every other translate tool returns. A caller
+      // that forgets input_path should get a message it can act on.
+      const raw = (params ?? {}) as Partial<TranslateFileArgs>
+      if (typeof raw.input_path !== "string" || raw.input_path.trim() === "") {
+        return {
+          content: [{ type: "text" as const, text: "translate_file: `input_path` is required" }],
+          details: {
+            ok: false,
+            error: "translate_file: `input_path` is required",
+            elapsedMs: Date.now() - start,
+          },
+        }
+      }
+      const ext = extname(raw.input_path)
       // Use the shared defaultOutputPath helper so the file the pi tool
-      // writes matches what the  channel
-      // advertises to the UI. The two diverged ("_<lang>" vs ".<lang>.")
-      // and the user ended up with the file at an unexpected path.
-      const out = params.output_path ?? defaultOutputPath(params.input_path)
+      // writes matches what the `ai:translate-file-output-path` channel
+      // advertises to the UI. The two diverged ("_translated" vs
+      // ".translated.") and the user ended up with the file at an
+      // unexpected path.
+      const out = raw.output_path ?? defaultOutputPath(raw.input_path)
       try {
         const lumos = lumosScriptPath(ext)
         if (lumos) {
@@ -1295,7 +1312,19 @@ function createFillDictionaryGapsTool() {
       "and the UI hit one source of truth.",
     parameters: FillDictParams,
     async execute(_id, params: FillDictArgs, _signal) {
-      const out = params.output_path ?? `${params.dictionary_path}.filled.json`
+      // Same guard as translate_file: template-literal interpolation of an
+      // undefined dictionary_path produced "undefined.filled.json" and then
+      // threw from mkdir, which the IPC layer surfaced as a raw fs error.
+      const raw = (params ?? {}) as Partial<FillDictArgs>
+      if (typeof raw.dictionary_path !== "string" || raw.dictionary_path.trim() === "") {
+        return {
+          content: [
+            { type: "text" as const, text: "fill_dictionary_gaps: `dictionary_path` is required" },
+          ],
+          details: { ok: false, error: "fill_dictionary_gaps: `dictionary_path` is required" },
+        }
+      }
+      const out = raw.output_path ?? `${raw.dictionary_path}.filled.json`
       await mkdir(join(out, ".."), { recursive: true }).catch(() => undefined)
       try {
         const settings = await readSettings()

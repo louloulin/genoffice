@@ -193,6 +193,41 @@ describe("translate-skill", () => {
     expect(written["请在一周内完成复核。"]).toBe("EN: 请在一周内完成复核。")
   })
 
+  it("translate_file without input_path returns a structured error, not a raw throw", async () => {
+    // Regression: `extname(params.input_path)` ran before the try block, so a
+    // missing argument escaped as a raw ERR_INVALID_ARG_TYPE. The IPC layer
+    // surfaced "The \"path\" argument must be of type string" instead of a
+    // message the caller could act on.
+    const pi = makeFakePi()
+    createTranslateSkillExtension()(pi as never)
+    const tool = pi.tools.get("translate_file") as {
+      execute: (id: string, params: Record<string, unknown>, signal: unknown) => Promise<{
+        details?: { ok?: boolean; error?: string }
+      }>
+    }
+    const res = await tool.execute("c1", {}, undefined)
+    expect(res.details?.ok).toBe(false)
+    expect(res.details?.error).toMatch(/input_path/)
+    // Must not leak the Node type error.
+    expect(res.details?.error).not.toMatch(/ERR_INVALID_ARG_TYPE/)
+    expect(res.details?.error).not.toMatch(/must be of type string/)
+  })
+
+  it("fill_dictionary_gaps without dictionary_path returns a structured error", async () => {
+    const pi = makeFakePi()
+    createTranslateSkillExtension()(pi as never)
+    const tool = pi.tools.get("fill_dictionary_gaps") as {
+      execute: (id: string, params: Record<string, unknown>, signal: unknown) => Promise<{
+        details?: { ok?: boolean; error?: string }
+      }>
+    }
+    const res = await tool.execute("c1", { input_path: "/tmp/x.docx", target_lang: "en-US" }, undefined)
+    expect(res.details?.ok).toBe(false)
+    expect(res.details?.error).toMatch(/dictionary_path/)
+    // The old code interpolated undefined into the output path.
+    expect(res.details?.error).not.toMatch(/undefined/)
+  })
+
   it("build_dictionary with use_llm=false stays KB-only and makes no model call", async () => {
     const pi = makeFakePi()
     __setReadSettingsForTests(async () => fakeSettings())
