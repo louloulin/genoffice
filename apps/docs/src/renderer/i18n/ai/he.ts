@@ -190,7 +190,11 @@ export const he = {
   aiSlashMenuTitle: 'פקודות ומיומנויות',
   aiSlashMenuEmpty: 'אין פקודה מתאימה',
   aiSlashMenuFoot: '↑↓ בחירה · Enter ביצוע · Esc סגירה',
-  aiCmdGroupSkills: 'מיומנויות',
+
+  aiMentionMenuTitle: 'קבצים ומיומנויות',
+  aiMentionMenuEmpty: 'אין קבצים או מיומנויות תואמים',
+  aiMentionMenuFoot: '↑↓ בחירה · Enter לאישור · Esc לסגירה',
+  aiSlashTriggerTitle: 'פתח את לוח הפקודות',  aiCmdGroupSkills: 'מיומנויות',
   aiCmdGroupActions: 'פעולות',
   aiCmdGroupTemplates: 'תבניות',
   aiCmdSkillDocs: 'עריכת מסמך',

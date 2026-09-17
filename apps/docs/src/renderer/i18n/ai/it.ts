@@ -200,7 +200,11 @@ export const it = {
   aiSlashMenuTitle: 'Comandi e competenze',
   aiSlashMenuEmpty: 'Nessun comando corrispondente',
   aiSlashMenuFoot: '↑↓ seleziona · Invio esegui · Esc chiudi',
-  aiCmdGroupSkills: 'Competenze',
+
+  aiMentionMenuTitle: 'File e competenze',
+  aiMentionMenuEmpty: 'Nessun file o competenza',
+  aiMentionMenuFoot: '↑↓ seleziona · Invio per confermare · Esc per chiudere',
+  aiSlashTriggerTitle: 'Apri la palette dei comandi',  aiCmdGroupSkills: 'Competenze',
   aiCmdGroupActions: 'Azioni',
   aiCmdGroupTemplates: 'Modelli',
   aiCmdSkillDocs: 'Modifica del documento',

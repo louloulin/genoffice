@@ -200,7 +200,11 @@ export const de = {
   aiSlashMenuTitle: 'Befehle und Skills',
   aiSlashMenuEmpty: 'Kein passender Befehl',
   aiSlashMenuFoot: '↑↓ auswählen · Enter ausführen · Esc schließen',
-  aiCmdGroupSkills: 'Skills',
+
+  aiMentionMenuTitle: 'Dateien & Skills',
+  aiMentionMenuEmpty: 'Keine passende Datei oder Skill',
+  aiMentionMenuFoot: '↑↓ Auswahl · Enter zum Übernehmen · Esc zum Schließen',
+  aiSlashTriggerTitle: 'Befehlspalette öffnen',  aiCmdGroupSkills: 'Skills',
   aiCmdGroupActions: 'Aktionen',
   aiCmdGroupTemplates: 'Vorlagen',
   aiCmdSkillDocs: 'Dokumentbearbeitung',

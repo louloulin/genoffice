@@ -195,7 +195,11 @@ export const id = {
   aiSlashMenuTitle: 'Perintah dan keterampilan',
   aiSlashMenuEmpty: 'Tidak ada perintah yang cocok',
   aiSlashMenuFoot: '↑↓ pilih · Enter jalankan · Esc tutup',
-  aiCmdGroupSkills: 'Keterampilan',
+
+  aiMentionMenuTitle: 'File & keterampilan',
+  aiMentionMenuEmpty: 'Tidak ada file atau keterampilan yang cocok',
+  aiMentionMenuFoot: '↑↓ pilih · Enter untuk konfirmasi · Esc untuk tutup',
+  aiSlashTriggerTitle: 'Buka palet perintah',  aiCmdGroupSkills: 'Keterampilan',
   aiCmdGroupActions: 'Tindakan',
   aiCmdGroupTemplates: 'Templat',
   aiCmdSkillDocs: 'Penyuntingan dokumen',

@@ -198,7 +198,11 @@ export const fr = {
   aiSlashMenuTitle: 'Commandes et compétences',
   aiSlashMenuEmpty: 'Aucune commande correspondante',
   aiSlashMenuFoot: '↑↓ choisir · Entrée exécuter · Échap fermer',
-  aiCmdGroupSkills: 'Compétences',
+
+  aiMentionMenuTitle: 'Fichiers & compétences',
+  aiMentionMenuEmpty: 'Aucun fichier ou compétence',
+  aiMentionMenuFoot: '↑↓ sélection · Entrée pour valider · Échap pour fermer',
+  aiSlashTriggerTitle: 'Ouvrir la palette',  aiCmdGroupSkills: 'Compétences',
   aiCmdGroupActions: 'Actions',
   aiCmdGroupTemplates: 'Modèles',
   aiCmdSkillDocs: 'Édition du document',

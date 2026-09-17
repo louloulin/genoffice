@@ -195,7 +195,11 @@ export const hi = {
   aiSlashMenuTitle: 'कमांड और स्किल',
   aiSlashMenuEmpty: 'कोई मेल खाता कमांड नहीं',
   aiSlashMenuFoot: '↑↓ चुनें · Enter चलाएँ · Esc बंद करें',
-  aiCmdGroupSkills: 'स्किल',
+
+  aiMentionMenuTitle: 'फ़ाइलें और कौशल',
+  aiMentionMenuEmpty: 'कोई मेल खाती फ़ाइल या कौशल नहीं',
+  aiMentionMenuFoot: '↑↓ चुनें · Enter पुष्टि करें · Esc बंद करें',
+  aiSlashTriggerTitle: 'कमांड पैलेट खोलें',  aiCmdGroupSkills: 'स्किल',
   aiCmdGroupActions: 'क्रियाएँ',
   aiCmdGroupTemplates: 'टेम्पलेट',
   aiCmdSkillDocs: 'दस्तावेज़ संपादन',

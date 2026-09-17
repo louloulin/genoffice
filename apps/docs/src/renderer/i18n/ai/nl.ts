@@ -198,7 +198,11 @@ export const nl = {
   aiSlashMenuTitle: 'Opdrachten en vaardigheden',
   aiSlashMenuEmpty: 'Geen overeenkomende opdracht',
   aiSlashMenuFoot: '↑↓ kiezen · Enter uitvoeren · Esc sluiten',
-  aiCmdGroupSkills: 'Vaardigheden',
+
+  aiMentionMenuTitle: 'Bestanden en vaardigheden',
+  aiMentionMenuEmpty: 'Geen overeenkomende bestanden of vaardigheden',
+  aiMentionMenuFoot: '↑↓ kies · Enter om te bevestigen · Esc om te sluiten',
+  aiSlashTriggerTitle: 'Open opdrachtenpalet',  aiCmdGroupSkills: 'Vaardigheden',
   aiCmdGroupActions: 'Acties',
   aiCmdGroupTemplates: 'Sjablonen',
   aiCmdSkillDocs: 'Document bewerken',

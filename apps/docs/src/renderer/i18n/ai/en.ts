@@ -195,7 +195,11 @@ export const en = {
   aiSlashMenuTitle: 'Commands and skills',
   aiSlashMenuEmpty: 'No matching command',
   aiSlashMenuFoot: '↑↓ select · Enter run · Esc close',
-  aiCmdGroupSkills: 'Skills',
+
+  aiMentionMenuTitle: 'Files & skills',
+  aiMentionMenuEmpty: 'No matching file or skill',
+  aiMentionMenuFoot: '↑↓ select · Enter to pick · Esc to close',
+  aiSlashTriggerTitle: 'Open command palette',  aiCmdGroupSkills: 'Skills',
   aiCmdGroupActions: 'Actions',
   aiCmdGroupTemplates: 'Templates',
   aiCmdSkillDocs: 'Document editing',

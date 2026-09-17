@@ -67,6 +67,7 @@ import {
   docsSkillOptions,
   skillIdOfCommand,
 } from './composer-commands'
+import { docsMentionFiles, docsMentionSkills } from './composer-mentions'
 import {
   AiRunHeader,
   AiToolTimeline,
@@ -907,6 +908,43 @@ export function AiPanel({
       buildDocsComposerCommands({ t, skills: composerSkills, quickActions: DOCS_QUICK_ACTIONS }),
     [t, composerSkills],
   )
+
+  /**
+   * @-mention palette. Built every render so attachment removals show up
+   * immediately; cheap because the input is bounded (≤ 8 files + 5 skills).
+   */
+  const composerMentions = useMemo(
+    () => [
+      ...docsMentionFiles({
+        attachments,
+        recent: chat.flatMap((e) => e.attachments ?? []).slice(-3),
+      }),
+      ...docsMentionSkills(
+        composerSkills.map((s) => ({
+          id: s.id,
+          trigger: s.trigger,
+          label: t(s.labelKey),
+          description: t(s.descriptionKey),
+          available: s.available,
+        })),
+      ),
+    ],
+    [attachments, chat, composerSkills, t],
+  )
+
+  const onComposerMentionPick = useCallback((pick: { entry: { id: string }; value: string; caret: number }) => {
+    // The composer already mutated the value to insert `@label `. We just
+    // log the pick so future host code (e.g. resolveMentionTokens) can hook
+    // in without touching this file. Keep the handler minimal so the
+    // textarea state stays the single source of truth.
+    void pick
+  }, [])
+
+  /** Optional token-budget badge — shows how full the prompt is. The model
+   *  context window changes per provider; 8k is a safe default for the docs
+   *  panel because we keep the document in a separate tool call, not in the
+   *  prompt. */
+  const tokenBudget = 8000
 
   const activeSkill =
     activeSkillId === null
@@ -2336,6 +2374,13 @@ export function AiPanel({
           commandMenuLabel={t('aiSlashMenuTitle')}
           commandMenuEmptyLabel={t('aiSlashMenuEmpty')}
           commandMenuFootHint={t('aiSlashMenuFoot')}
+          mentions={composerMentions}
+          onMentionPick={onComposerMentionPick}
+          mentionMenuLabel={t('aiMentionMenuTitle')}
+          mentionMenuEmptyLabel={t('aiMentionMenuEmpty')}
+          mentionMenuFootHint={t('aiMentionMenuFoot')}
+          tokenBudget={tokenBudget}
+          slashTriggerTitle={t('aiSlashTriggerTitle')}
           modes={modeOptions}
           mode={mode}
           onModeChange={setMode}

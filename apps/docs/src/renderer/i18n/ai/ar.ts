@@ -193,7 +193,11 @@ export const ar = {
   aiSlashMenuTitle: 'الأوامر والمهارات',
   aiSlashMenuEmpty: 'لا يوجد أمر مطابق',
   aiSlashMenuFoot: '↑↓ اختيار · Enter تنفيذ · Esc إغلاق',
-  aiCmdGroupSkills: 'المهارات',
+
+  aiMentionMenuTitle: 'ملفات ومهارات',
+  aiMentionMenuEmpty: 'لا توجد ملفات أو مهارات',
+  aiMentionMenuFoot: '↑↓ للاختيار · Enter للتأكيد · Esc للإغلاق',
+  aiSlashTriggerTitle: 'افتح لوحة الأوامر',  aiCmdGroupSkills: 'المهارات',
   aiCmdGroupActions: 'الإجراءات',
   aiCmdGroupTemplates: 'القوالب',
   aiCmdSkillDocs: 'تحرير المستند',

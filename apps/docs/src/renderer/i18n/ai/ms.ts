@@ -196,7 +196,11 @@ export const ms = {
   aiSlashMenuTitle: 'Arahan dan kemahiran',
   aiSlashMenuEmpty: 'Tiada arahan sepadan',
   aiSlashMenuFoot: '↑↓ pilih · Enter laksana · Esc tutup',
-  aiCmdGroupSkills: 'Kemahiran',
+
+  aiMentionMenuTitle: 'Fail & kemahiran',
+  aiMentionMenuEmpty: 'Tiada fail atau kemahiran yang sepadan',
+  aiMentionMenuFoot: '↑↓ pilih · Enter untuk sahkan · Esc untuk tutup',
+  aiSlashTriggerTitle: 'Buka palet perintah',  aiCmdGroupSkills: 'Kemahiran',
   aiCmdGroupActions: 'Tindakan',
   aiCmdGroupTemplates: 'Templat',
   aiCmdSkillDocs: 'Suntingan dokumen',

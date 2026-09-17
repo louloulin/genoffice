@@ -197,7 +197,11 @@ export const pl = {
   aiSlashMenuTitle: 'Polecenia i umiejętności',
   aiSlashMenuEmpty: 'Brak pasującego polecenia',
   aiSlashMenuFoot: '↑↓ wybierz · Enter wykonaj · Esc zamknij',
-  aiCmdGroupSkills: 'Umiejętności',
+
+  aiMentionMenuTitle: 'Pliki i umiejętności',
+  aiMentionMenuEmpty: 'Brak pasujących plików lub umiejętności',
+  aiMentionMenuFoot: '↑↓ wybierz · Enter zatwierdź · Esc zamknij',
+  aiSlashTriggerTitle: 'Otwórz paletę poleceń',  aiCmdGroupSkills: 'Umiejętności',
   aiCmdGroupActions: 'Akcje',
   aiCmdGroupTemplates: 'Szablony',
   aiCmdSkillDocs: 'Edycja dokumentu',

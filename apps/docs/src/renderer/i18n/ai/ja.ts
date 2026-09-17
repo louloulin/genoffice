@@ -196,7 +196,11 @@ export const ja = {
   aiSlashMenuTitle: 'コマンドとスキル',
   aiSlashMenuEmpty: '一致するコマンドがありません',
   aiSlashMenuFoot: '↑↓ 選択 · Enter 実行 · Esc 閉じる',
-  aiCmdGroupSkills: 'スキル',
+
+  aiMentionMenuTitle: 'ファイルとスキル',
+  aiMentionMenuEmpty: '該当するファイルやスキルはありません',
+  aiMentionMenuFoot: '↑↓ 選択 · Enter で確定 · Esc で閉じる',
+  aiSlashTriggerTitle: 'コマンドパレットを開く',  aiCmdGroupSkills: 'スキル',
   aiCmdGroupActions: '操作',
   aiCmdGroupTemplates: 'テンプレート',
   aiCmdSkillDocs: '文書編集',

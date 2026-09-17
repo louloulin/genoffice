@@ -188,7 +188,11 @@ export const zhTW = {
   aiSlashMenuTitle: '指令與技能',
   aiSlashMenuEmpty: '沒有符合的指令',
   aiSlashMenuFoot: '↑↓ 選擇 · Enter 執行 · Esc 關閉',
-  aiCmdGroupSkills: '技能',
+
+  aiMentionMenuTitle: '檔案與技能',
+  aiMentionMenuEmpty: '沒有符合的檔案或技能',
+  aiMentionMenuFoot: '↑↓ 選擇 · Enter 確認 · Esc 關閉',
+  aiSlashTriggerTitle: '開啟指令面板',  aiCmdGroupSkills: '技能',
   aiCmdGroupActions: '動作',
   aiCmdGroupTemplates: '範本',
   aiCmdSkillDocs: '文件編輯',

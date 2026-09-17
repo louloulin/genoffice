@@ -186,7 +186,11 @@ export const zh = {
   aiSlashMenuTitle: '指令与技能',
   aiSlashMenuEmpty: '没有匹配的指令',
   aiSlashMenuFoot: '↑↓ 选择 · Enter 执行 · Esc 关闭',
-  aiCmdGroupSkills: '技能',
+
+  aiMentionMenuTitle: '文件与技能',
+  aiMentionMenuEmpty: '没有匹配的文件或技能',
+  aiMentionMenuFoot: '↑↓ 选择 · Enter 确认 · Esc 关闭',
+  aiSlashTriggerTitle: '打开指令面板',  aiCmdGroupSkills: '技能',
   aiCmdGroupActions: '动作',
   aiCmdGroupTemplates: '模板',
   aiCmdSkillDocs: '文档编辑',

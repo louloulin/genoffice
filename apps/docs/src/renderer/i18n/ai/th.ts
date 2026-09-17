@@ -193,7 +193,11 @@ export const th = {
   aiSlashMenuTitle: 'คำสั่งและสกิล',
   aiSlashMenuEmpty: 'ไม่พบคำสั่งที่ตรงกัน',
   aiSlashMenuFoot: '↑↓ เลือก · Enter ใช้งาน · Esc ปิด',
-  aiCmdGroupSkills: 'สกิล',
+
+  aiMentionMenuTitle: 'ไฟล์และทักษะ',
+  aiMentionMenuEmpty: 'ไม่มีไฟล์หรือทักษะที่ตรงกัน',
+  aiMentionMenuFoot: '↑↓ เลือก · Enter ยืนยัน · Esc ปิด',
+  aiSlashTriggerTitle: 'เปิดพาเลตคำสั่ง',  aiCmdGroupSkills: 'สกิล',
   aiCmdGroupActions: 'การทำงาน',
   aiCmdGroupTemplates: 'เทมเพลต',
   aiCmdSkillDocs: 'แก้ไขเอกสาร',

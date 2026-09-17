@@ -199,7 +199,11 @@ export const pt = {
   aiSlashMenuTitle: 'Comandos e habilidades',
   aiSlashMenuEmpty: 'Nenhum comando correspondente',
   aiSlashMenuFoot: '↑↓ selecionar · Enter executar · Esc fechar',
-  aiCmdGroupSkills: 'Habilidades',
+
+  aiMentionMenuTitle: 'Arquivos e habilidades',
+  aiMentionMenuEmpty: 'Nenhum arquivo ou habilidade',
+  aiMentionMenuFoot: '↑↓ selecionar · Enter para escolher · Esc para fechar',
+  aiSlashTriggerTitle: 'Abrir paleta de comandos',  aiCmdGroupSkills: 'Habilidades',
   aiCmdGroupActions: 'Ações',
   aiCmdGroupTemplates: 'Modelos',
   aiCmdSkillDocs: 'Edição do documento',

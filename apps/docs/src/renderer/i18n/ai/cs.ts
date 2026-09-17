@@ -198,7 +198,11 @@ export const cs = {
   aiSlashMenuTitle: 'Příkazy a dovednosti',
   aiSlashMenuEmpty: 'Žádný odpovídající příkaz',
   aiSlashMenuFoot: '↑↓ vybrat · Enter spustit · Esc zavřít',
-  aiCmdGroupSkills: 'Dovednosti',
+
+  aiMentionMenuTitle: 'Soubory a dovednosti',
+  aiMentionMenuEmpty: 'Žádné odpovídající soubory ani dovednosti',
+  aiMentionMenuFoot: '↑↓ vyberte · Enter potvrdit · Esc zavřít',
+  aiSlashTriggerTitle: 'Otevřít paletu příkazů',  aiCmdGroupSkills: 'Dovednosti',
   aiCmdGroupActions: 'Akce',
   aiCmdGroupTemplates: 'Šablony',
   aiCmdSkillDocs: 'Úprava dokumentu',

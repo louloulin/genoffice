@@ -193,7 +193,11 @@ export const ko = {
   aiSlashMenuTitle: '명령과 스킬',
   aiSlashMenuEmpty: '일치하는 명령이 없습니다',
   aiSlashMenuFoot: '↑↓ 선택 · Enter 실행 · Esc 닫기',
-  aiCmdGroupSkills: '스킬',
+
+  aiMentionMenuTitle: '파일과 스킬',
+  aiMentionMenuEmpty: '일치하는 파일이나 스킬이 없습니다',
+  aiMentionMenuFoot: '↑↓ 선택 · Enter 확정 · Esc 닫기',
+  aiSlashTriggerTitle: '명령 팔레트 열기',  aiCmdGroupSkills: '스킬',
   aiCmdGroupActions: '동작',
   aiCmdGroupTemplates: '템플릿',
   aiCmdSkillDocs: '문서 편집',

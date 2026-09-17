@@ -197,7 +197,11 @@ export const ru = {
   aiSlashMenuTitle: 'Команды и навыки',
   aiSlashMenuEmpty: 'Нет подходящих команд',
   aiSlashMenuFoot: '↑↓ выбрать · Enter выполнить · Esc закрыть',
-  aiCmdGroupSkills: 'Навыки',
+
+  aiMentionMenuTitle: 'Файлы и навыки',
+  aiMentionMenuEmpty: 'Нет подходящих файлов или навыков',
+  aiMentionMenuFoot: '↑↓ выбор · Enter — выбрать · Esc — закрыть',
+  aiSlashTriggerTitle: 'Открыть палитру команд',  aiCmdGroupSkills: 'Навыки',
   aiCmdGroupActions: 'Действия',
   aiCmdGroupTemplates: 'Шаблоны',
   aiCmdSkillDocs: 'Редактирование документа',
