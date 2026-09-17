@@ -165,6 +165,11 @@ export function AiPanel({
   modeRef.current = mode
   const activeSkillIdRef = useRef<string | null>(activeSkillId)
   activeSkillIdRef.current = activeSkillId
+  // Declared here (not further down) because composerMentions below reads it
+  // during render; a later declaration puts apiRef in the temporal dead zone
+  // and every PDF tab crashes with "Cannot access 'apiRef' before initialization".
+  const apiRef = useRef(api)
+  apiRef.current = api
   const composerSkills: readonly PdfSkillOption[] = useMemo(() => pdfSkillOptions(), [])
   const composerSkillsRef = useRef(composerSkills)
   composerSkillsRef.current = composerSkills
@@ -415,8 +420,6 @@ export function AiPanel({
   }, [])
   const langRef = useRef(lang)
   langRef.current = lang
-  const apiRef = useRef(api)
-  apiRef.current = api
   const onRunDoneRef = useRef(onRunDone)
   onRunDoneRef.current = onRunDone
   /** Any tool in the current run reported mutated: true */
