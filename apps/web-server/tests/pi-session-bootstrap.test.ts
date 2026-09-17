@@ -91,6 +91,30 @@ describe('pi-session bootstrap', () => {
     expect(body).toMatch(/^description:\s+/m)
   })
 
+  it('translate-sibling wrapper SKILL.md never points at a hashed bundled-skills directory', async () => {
+    // Mirror the bundled translate suite to the canonical materialize target
+    // first, so the wrapper's scriptPath resolution picks up the canonical
+    // location. Without this the wrapper falls back to the bundled hash.
+    const { materializeTranslateSuite } = await import('@genoffice/translation-core')
+    materializeTranslateSuite()
+    const result = await ensureLumosSkillsRegistered()
+    if (result.registered.length === 0 && result.alreadyHad.length === 0) return
+    // The translate siblings (`translate`, `translate-pdf`, etc.) get mirrored
+    // into `$LUMOS_HOME/skills/<id>/` at boot, so their wrapper must point at
+    // that canonical path. Other LumosAI skills (e.g. `email-draft`) are not
+    // materialized and legitimately still reference the bundled hash.
+    const translateIds = ['translate', 'translate-pdf', 'translate-ppt', 'translate-xls', 'translate-docx', 'translate-config']
+    for (const id of translateIds) {
+      const skillPath = join(LUMOS_SKILLS_WRAPPER_DIR, id, 'SKILL.md')
+      if (!existsSync(skillPath)) continue
+      const body = readFileSync(skillPath, 'utf-8')
+      expect(
+        body,
+        `wrapper ${id} still points at a bundled-skills hash path`,
+      ).not.toMatch(/bundled-skills\/[A-Fa-f0-9]{8,}/)
+    }
+  })
+
   it('registers both skill dirs in pi settings.json', async () => {
     await ensureSkillDirRegistered()
     const settings = JSON.parse(readFileSync(join(PI_AGENT_DIR, 'settings.json'), 'utf-8')) as { skills: string[] }

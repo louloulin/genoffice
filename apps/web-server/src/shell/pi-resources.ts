@@ -171,20 +171,31 @@ export async function ensureLumosSkillsRegistered(): Promise<{ registered: strin
     if (!existsSync(candidate)) continue
     const wrapperDir = join(wrapperRoot, entry)
     const wrapperSkill = join(wrapperDir, 'SKILL.md')
-    if (existsSync(wrapperSkill)) {
+    const body = readFileSync(candidate, 'utf-8')
+    const rendered = renderLumosSkillWrapper({ name: entry, source: candidate, body })
+    // Treat the wrapper as stale when it points at a bundled-skills hash —
+    // every release creates a new hash, so a cached wrapper whose body still
+    // mentions `bundled-skills/<hash>/` would bash into a directory that may
+    // have been replaced. Overwrite in place; the content-addressed path keeps
+    // it idempotent for everything else.
+    const stale = existsSync(wrapperSkill) &&
+      readFileSync(wrapperSkill, 'utf-8').includes('bundled-skills/')
+    if (existsSync(wrapperSkill) && !stale) {
       alreadyHad.push(wrapperSkill)
       wrapDirs.push(wrapperDir)
       continue
     }
     mkdirSync(wrapperDir, { recursive: true })
-    const body = readFileSync(candidate, 'utf-8')
     // Pi reads only frontmatter; everything below is for the agent. We rewrite the
     // body so the agent sees a clean description + a direct bash pointer at the
     // upstream LumosAI script. The LumosAI frontmatter (command_dispatch, etc.) is
     // dropped — pi would warn on those unknown fields anyway.
-    const wrapper = renderLumosSkillWrapper({ name: entry, source: candidate, body })
-    writeFileSync(wrapperSkill, wrapper, 'utf-8')
-    registered.push(wrapperSkill)
+    writeFileSync(wrapperSkill, rendered, 'utf-8')
+    if (stale) {
+      registered.push(wrapperSkill) // overwrite counts as a write
+    } else {
+      registered.push(wrapperSkill)
+    }
     wrapDirs.push(wrapperDir)
   }
 
@@ -346,6 +357,31 @@ function yamlDoubleQuoted(text: string): string {
   return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
+
+/** Pick the right script for a LumosAI sibling, preferring the canonical
+ *  materialize target. The unified `translate.py` (when present) is the
+ *  preferred entry point — it dispatches to the right sibling by file
+ *  extension. Sibling-specific scripts (`translate_pdf.py`, etc.) are
+ *  returned only when `translate.py` is absent, which is the case for every
+ *  sibling other than `translate` itself. */
+function resolveLumosSiblingScript(opts: {
+  canonicalDir: string
+  bundledDir: string
+  name: string
+}): string {
+  const canonicalScript = join(opts.canonicalDir, 'scripts', 'translate.py')
+  if (existsSync(canonicalScript)) return canonicalScript
+  // Sibling-specific script: derive from the sibling name. translate-pdf →
+  // translate_pdf.py. Only the canonical form is allowed here — if it is
+  // missing we deliberately fall through to the bundled path rather than
+  // guessing at a script name.
+  const canonicalSiblingScript = join(opts.canonicalDir, 'scripts', `${opts.name.replace(/-/g, '_')}.py`)
+  if (existsSync(canonicalSiblingScript)) return canonicalSiblingScript
+  const bundledScript = join(opts.bundledDir, 'scripts', 'translate.py')
+  if (existsSync(bundledScript)) return bundledScript
+  return join(opts.bundledDir, 'scripts', `${opts.name.replace(/-/g, '_')}.py`)
+}
+
 function renderLumosSkillWrapper(opts: {
   name: string
   source: string
@@ -360,7 +396,19 @@ function renderLumosSkillWrapper(opts: {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 64) || 'skill'
-  const scriptPath = join(dirname(opts.source), 'scripts', 'translate.py')
+  // Prefer the canonical materialize target (`$LUMOS_HOME/skills/<name>/`) so
+  // the wrapper never points at a hashed bundled directory that may disappear
+  // on the next upstream release. Each sibling uses a script named after itself
+  // (`translate.py`, `translate_pdf.py`, `translate_ppt.py`, ...), so we look
+  // for both the unified `translate.py` (the entry script) and the
+  // sibling-specific file. Fall back to the bundled location only when the
+  // canonical sibling does not exist yet (first boot before materialize).
+  const lumosHome = process.env.LUMOS_HOME ?? join(homedir(), '.lumos')
+  const scriptPath = resolveLumosSiblingScript({
+    canonicalDir: join(lumosHome, 'skills', opts.name),
+    bundledDir: dirname(opts.source),
+    name: opts.name,
+  })
   const fallback = `python3 ${scriptPath} <input> <output> --dictionary <dict.json>`
   return [
     '---',
@@ -370,14 +418,12 @@ function renderLumosSkillWrapper(opts: {
     // the script.
     `description: "${yamlDoubleQuoted(description).slice(0, 1024)}"`,
     // Pi ignores unknown metadata fields, so we drop the LumosAI-specific
-    // `metadata.hermes` block (which only ever meant something to LumosAI).
+    // the metadata.hermes block (which only ever meant something to LumosAI).
     '---',
     '',
     `# ${opts.name}`,
     '',
-    'This is a GenOffice wrapper around a LumosAI skill. The upstream `SKILL.md` lives',
-    `at \`${opts.source}\` and is kept verbatim. Pi only reads the frontmatter above; the`,
-    'body below is the agent-facing playbook and points at the upstream Python script.',
+    'This is a GenOffice wrapper around the LumosAI ' + opts.name + ' skill. The upstream SKILL.md is kept verbatim in the LumosAI bundled suite; this wrapper is regenerated at boot so the body points at the canonical materialize target. Pi only reads the frontmatter above; the body below is the agent-facing playbook and points at the canonical Python script.',
     '',
     '## Setup',
     '',

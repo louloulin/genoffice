@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import {
@@ -45,6 +45,20 @@ function fakeSettings(overrides: Partial<AiSettings> = {}): AiSettings {
 }
 
 describe("translate-skill", () => {
+  beforeAll(() => {
+    // Isolated KB so tests do not read the user's real ~/.genoffice/translation-kb.json.
+    // The KnowledgeBase honors GENOFFICE_TRANSLATION_KB before falling back to the default path.
+    const tmp = join(process.env.TMPDIR ?? '/tmp', `agent-skills-test-kb-${process.pid}.json`)
+    process.env.GENOFFICE_TRANSLATION_KB = tmp
+    require('node:fs').writeFileSync(tmp, JSON.stringify({
+      'trade.translation.term': [],
+      'trade.translation.forbidden': [],
+      'trade.translation.brand': [],
+      'trade.translation.styleRule': [],
+      'trade.translation.customerPreference': [],
+    }))
+  })
+
   afterEach(() => {
     __setReadSettingsForTests(null)
     __setTranslateOneForTests(null)
@@ -52,18 +66,20 @@ describe("translate-skill", () => {
     __resetKbForTests()
   })
 
-  it("exposes the 6-tool surface in ALL_TRANSLATE_TOOL_NAMES", () => {
+  it("exposes the 8-tool surface in ALL_TRANSLATE_TOOL_NAMES", () => {
     expect(ALL_TRANSLATE_TOOL_NAMES).toEqual([
       "translate_text",
       "translate_file",
       "build_dictionary",
+      "fill_dictionary_gaps",
+      "kb_list",
       "kb_search",
       "kb_upsert",
       "kb_remove",
     ])
   })
 
-  it("registers all 6 tools on the pi extension", () => {
+  it("registers all 8 tools on the pi extension", () => {
     const pi = makeFakePi()
     createTranslateSkillExtension()(pi as never)
     for (const name of ALL_TRANSLATE_TOOL_NAMES) {

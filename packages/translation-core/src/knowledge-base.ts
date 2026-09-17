@@ -166,13 +166,19 @@ export interface KBListFilters {
  * and portable installs can point at a scratch file without touching the
  * user's real KB.
  */
-const DEFAULT_FILE_PATH =
-  process.env.GENOFFICE_TRANSLATION_KB ??
-  path.join(
-    process.env.HOME ?? path.join(path.sep, 'tmp'),
-    '.genoffice',
-    'translation-kb.json',
+function defaultFilePath(): string {
+  // Read at construction time (not module load) so tests can flip the
+  // GENOFFICE_TRANSLATION_KB env var in beforeAll() and have the next
+  // getKb() pick up the new path.
+  return (
+    process.env.GENOFFICE_TRANSLATION_KB ??
+    path.join(
+      process.env.HOME ?? path.join(path.sep, 'tmp'),
+      '.genoffice',
+      'translation-kb.json',
+    )
   )
+}
 
 export class KnowledgeBase {
   private store: KBStore
@@ -181,7 +187,7 @@ export class KnowledgeBase {
   private dirty = false
 
   constructor(opts: KnowledgeBaseOptions = {}) {
-    this.filePath = opts.filePath ?? DEFAULT_FILE_PATH
+    this.filePath = opts.filePath ?? defaultFilePath()
     this.fs = opts.fileSystem ?? defaultFileSystem
     this.store = cloneStore(opts.seed ?? {})
   }

@@ -23,12 +23,12 @@ function openAiMessages(
   for (const m of messages) {
     if (m.role === 'user') {
       if (!m.images?.length) {
-        out.push({ role: 'user', content: m.text })
+        out.push({ role: 'user', content: m.text || ((m as unknown as { content?: string }).content ?? '') })
       } else {
         out.push({
           role: 'user',
           content: [
-            ...(m.text ? [{ type: 'text', text: m.text }] : []),
+            ...(m.text || (m as unknown as { content?: string }).content ? [{ type: 'text', text: (m.text || (m as unknown as { content?: string }).content) as string }] : []),
             ...m.images.map((img) => ({
               type: 'image_url',
               image_url: { url: `data:${img.mime};base64,${img.base64}` },
@@ -42,7 +42,7 @@ function openAiMessages(
       // compatible proxies drop or reject the follow-up conversation after that.
       out.push({
         role: 'assistant',
-        content: m.text || (hasTools ? null : '(no content)'),
+        content: m.text || ((m as unknown as { content?: string }).content ?? '') || (hasTools ? null : '(no content)'),
         ...(echoReasoning && m.reasoning ? { reasoning_content: m.reasoning } : {}),
         ...(hasTools
           ? {

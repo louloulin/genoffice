@@ -40,8 +40,23 @@ import { installAgentTeam } from '@genoffice/agent-skills/extensions/agent-team'
 import { JsonlAuditSink, installAuditLog } from '@genoffice/agent-skills/extensions/audit-log'
 import { installLocalModels } from '@genoffice/agent-skills/extensions/local-models'
 import { getEnabledBuiltinIds } from './skills'
-import { PI_AGENT_DIR, PI_PLUGIN_DIR, PI_SKILLS_DIR, PI_CWD } from './pi-resources'
-import { LUMOS_SKILLS_WRAPPER_DIR } from './pi-resources'
+import {
+  PI_AGENT_DIR,
+  PI_PLUGIN_DIR,
+  PI_SKILLS_DIR,
+  PI_CWD,
+  LUMOS_SKILLS_WRAPPER_DIR,
+} from './pi-resources'
+import { homedir } from 'node:os'
+import { join as joinPath } from 'node:path'
+
+/** Canonical materialize target that `materializeTranslateSuite()` mirrors the
+ *  LumosAI translate siblings into. Surfaced to pi so the agent sees the
+ *  siblings at a stable, hash-free path even before the wrapper regen runs. */
+const LUMOS_CANONICAL_SKILLS_DIR = joinPath(
+  process.env.LUMOS_HOME ?? joinPath(homedir(), '.lumos'),
+  'skills',
+)
 
 /** Resolve lazily so the session is built on first use, not at module import. */
 let sessionPromise: Promise<OfficeSession> | null = null
@@ -103,9 +118,11 @@ async function buildPiSession(): Promise<OfficeSession> {
     agentDir: PI_AGENT_DIR,
     extensionMode: 'print',
     uiAdapter,
-    additionalSkillPaths: [PI_SKILLS_DIR, LUMOS_SKILLS_WRAPPER_DIR].filter(
-      (dir): dir is string => !!dir && dir.length > 0,
-    ),
+    additionalSkillPaths: [
+      PI_SKILLS_DIR,
+      LUMOS_CANONICAL_SKILLS_DIR,
+      LUMOS_SKILLS_WRAPPER_DIR,
+    ].filter((dir): dir is string => !!dir && dir.length > 0),
     extensionFactories,
   }
   return createOfficeSession(opts)
