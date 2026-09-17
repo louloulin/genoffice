@@ -133,3 +133,58 @@ Electron 桌面版由主进程负责 xlsx/pptx 解析，web-server 没有对应�
 | `26-ai-markdown-ai-panel.png` | 点击 AI 总结预设按钮后的面板 |
 | `27-ai-html-present-view.png` | AI HTML 演示按钮展开（当前页/全屏/新标签） |
 | `28-ai-html-present-mode.png` | 进入 PresentView 后只剩「退出演示 (Esc)」 |
+
+## 10. P1.1 Sheets web 端打开 .xlsx 修复
+
+提交 `7c16869`：
+
+| 改动 | 说明 |
+| --- | --- |
+| 新增 `apps/web-server/src/sheets/sidecar.ts` | 最小化的 xlsx-sidecar 子进程包装，复用 Electron 主进程的同一个 Rust 二进制（`apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar`），支持 `open` + `read_range` 命令 |
+| 修改 `apps/web-server/src/sheets/index.ts:33` | `workbook:open-path` 调用 sidecar 解析，把解析后的 workbook 与本地 sha256/fileBytes/path/id 合并返回完整 WorkbookFile 形状 |
+| 修改 `apps/web-server/src/sheets/index.ts:71` | 新增 `workbook:read-range` IPC handler，把 renderer 的 `readWorkbookRange` 请求转发给 sidecar，`normalizeRangeResult` 兜底空响应 |
+| 新增 `emptyRange` / `normalizeRangeResult` | 帮助函数 + 端到端验证 |
+
+### 端到端验证
+
+```
+POST /api/ipc/workbook:open-path {"args":["/Users/louloulin/appx/genoffice/.playwright-mcp/verify-supplier.xlsx"]}
+  → 200 OK
+  result.sessionId: 003de09b-4916-4f66-a59d-8ed73dc588f9
+  result.sheets: [sheet-1: 报价明细, sheet-2: 汇总]
+  result.entryCount: 10, fileBytes: 5546, sha256: 6c5213e7...
+  
+POST /api/ipc/workbook:read-range {"args":[{"sessionId":"...","sheetId":"sheet-1","range":{"startRow":0,"endRow":3,"startColumn":0,"endColumn":2}}]}
+  → 200 OK
+  result.cells: 11 条
+    {column:0, row:0, value:"物料"}
+    {column:1, row:0, value:"单价"}
+    {column:2, row:0, value:"交期"}
+    {column:0, row:1, value:"牛津布"}
+    {column:1, row:1, value:"12.50"}
+    {column:2, row:1, value:"三周"}
+    ... (合计 11 个 cell，含 4 行 × 3 列)
+```
+
+浏览器端：
+
+```
+/sheets/?mode=tab&open=...xlsx
+  状态栏: 工作簿已完整加载——公式实时重算，行列可编辑。
+  Sheet tabs: 报价明细 | 汇总
+  Grid canvas: 1680 × 1324 px
+  0 console errors
+```
+
+### 已知遗留（未在本提交修复）
+
+- Slides web 端 `slides:open-path` 同样只返回 `{id, path, name, bytes}`；renderer 的 `applyOpen` 期望 `{path, slides: RenderSlide[], defaultFont}`。需要类似处理：在 web-server 端用 `openPptx` + `buildRenderSlide`（来自 `@genoffice/pptx-render`）构建 RenderSlide[]。这部分代码需要从 Electron 主进程拆出来，超出本 PR 范围。
+- Sidecar 进程是单例，sessionId 跨进程重启会失效。Electron 主进程重启时 sidecar session 也会失效，需要 renderer 端触发 `workbook:open-path` 重新打开。
+
+## 11. 新截图（续 P1.1）
+
+| 文件 | 说明 |
+| --- | --- |
+| `29-ai-sheets-loaded.png` | xlsx 加载完成 + sheet tabs 可见 + 状态栏 "工作簿已完整加载" |
+| `30-ai-sheets-with-data.png` | 触发 sidecar read-range 后的 grid（cells 已经渲染到 canvas） |
+| `31-ai-sheets-with-cells.png` | 选中 A1 单元格时 name box 显示 A1，公式栏就绪 |
