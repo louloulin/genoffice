@@ -4,6 +4,7 @@ dist/
 release/
 *.log
 .DS_Store
+*.tsbuildinfo
 .refs/
 .env
 .env.*

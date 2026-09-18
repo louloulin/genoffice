@@ -24,7 +24,7 @@
  */
 import { createServer, type IncomingMessage, ServerResponse } from 'node:http'
 import { createReadStream, existsSync, statSync } from 'node:fs'
-import { resolve, extname } from 'node:path'
+import { resolve, extname, sep } from 'node:path'
 
 import {
   APPS,
@@ -40,11 +40,7 @@ import {
   handlerCount,
   listChannels,
 } from './common/index'
-import {
-  registerAiHandlers,
-  AI_STREAM_SESSIONS,
-  runProviderStream,
-} from './ai/index'
+import { registerAiHandlers, AI_STREAM_SESSIONS, runProviderStream } from './ai/index'
 import { classifyWebError, ipcErrorStatus, InvalidArgumentError } from './ai/errors'
 import {
   handleTranslateBatchHttp,
@@ -171,10 +167,16 @@ function pushSseEvent(session: string, channel: string, args: unknown[]): void {
   const frame = `data: ${JSON.stringify({ channel, args: encodedArgs })}\n\n`
   const connections = sessionConnections.get(session)
   if (connections) {
+    // A write failure means the client socket is gone; drop the dead
+    // connection instead of retrying every subsequent event against it.
     for (const response of connections) {
       try {
         response.write(frame)
-      } catch {}
+      } catch (error) {
+        connections.delete(response)
+        // The listener that populated this set removes itself on 'close',
+        // but a write can fail before 'close' fires (half-open sockets).
+      }
     }
   } else {
     const pending = PENDING_FRAMES.get(session) || []
@@ -184,19 +186,89 @@ function pushSseEvent(session: string, channel: string, args: unknown[]): void {
   }
 }
 
+/**
+ * Resolve a renderer file inside `<app>/out/renderer`, refusing anything that
+ * escapes that root.
+ *
+ * `relativePath` is attacker-controlled request data. `path.resolve` throws
+ * away everything to the left of an absolute segment, so `GET /docs//etc/passwd`
+ * (the route regex captures `/etc/passwd`) used to hand `createReadStream` a
+ * path outside STATIC_ROOT and serve any readable file on the host. Callers
+ * pass a path with its leading slashes already stripped, and this containment
+ * check is the second line of defence for `..` segments.
+ *
+ * Returns null when the candidate escapes, so callers can distinguish
+ * "outside the root" from "inside the root but missing".
+ */
+function resolveRendererFile(appName: string, relativePath: string): string | null {
+  const root = resolve(STATIC_ROOT, appName, 'out', 'renderer')
+  const candidate = resolve(root, relativePath.replace(/^[/\\]+/, ''))
+  if (candidate !== root && !candidate.startsWith(root + sep)) return null
+  return candidate
+}
+
+/**
+ * Resolve the value for the `Access-Control-Allow-Origin` response header.
+ *
+ * Priority:
+ *   1. `WEB_CORS_ORIGINS` (comma-separated allowlist) — match against the
+ *      request's Origin; return it on hit, omit the header on miss.
+ *   2. `WEB_CORS_ORIGIN="*"` — explicit opt-in to the old open behaviour
+ *      for trusted deployments (e.g. behind a same-origin reverse proxy).
+ *   3. Default: echo the request's Origin so credentials work in dev
+ *      (localhost:18081, localhost:5173, LAN hosts). A missing Origin
+ *      means a same-origin request — no header needed.
+ */
+const CORS_ALLOWLIST = (process.env.WEB_CORS_ORIGINS || '')
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter((entry) => entry.length > 0)
+const CORS_EXPLICIT = process.env.WEB_CORS_ORIGIN
+function resolveCorsOrigin(requestOrigin: string | string[] | undefined): string | null {
+  const origin = Array.isArray(requestOrigin) ? requestOrigin[0] : requestOrigin
+  if (CORS_EXPLICIT === '*') return '*'
+  if (!origin) return null
+  if (CORS_ALLOWLIST.length > 0) {
+    return CORS_ALLOWLIST.includes(origin) ? origin : null
+  }
+  return origin
+}
+
 // ----- request handling ----------------------------------------------------
 const server = createServer(async (request, response) => {
-  const url = new URL(request.url || '/', `http://${request.headers.host}`)
+  // A malformed request target (`GET /api/html/preview/%`, bad percent-encoding)
+  // or a missing/HTTP-1.0 Host header makes the URL constructor throw. A throw
+  // that escapes the request listener is fatal: the global trap only logs it and
+  // the event loop then dies, so one request could take the whole server down.
+  // Answer 400 instead.
+  let url: URL
+  try {
+    url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`)
+  } catch {
+    response.writeHead(400, { 'Content-Type': 'application/json' })
+    response.end(
+      JSON.stringify({ error: { message: 'Malformed request URL', code: 'INVALID_ARGUMENT' } }),
+    )
+    return
+  }
   const pathPrefix = (process.env.WEB_PATH_PREFIX || '').replace(/^\/+|\/+$/g, '')
   const prefix = pathPrefix ? `/${pathPrefix}` : ''
-  const requestPath = prefix && url.pathname.startsWith(`${prefix}/`)
-    ? url.pathname.slice(prefix.length) || '/'
-    : url.pathname
+  const requestPath =
+    prefix && url.pathname.startsWith(`${prefix}/`)
+      ? url.pathname.slice(prefix.length) || '/'
+      : url.pathname
   url.pathname = requestPath
 
-  response.setHeader('Access-Control-Allow-Origin', '*')
-  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-IPC-Session')
+  // CORS: by default, echo the request's Origin so credentials work in dev.
+  // Override with WEB_CORS_ORIGINS (comma-separated allowlist) or WEB_CORS_ORIGIN="*"
+  // to restore the previous open behaviour for a trusted deployment.
+  const corsOrigin = resolveCorsOrigin(request.headers.origin)
+  if (corsOrigin) {
+    response.setHeader('Access-Control-Allow-Origin', corsOrigin)
+    response.setHeader('Vary', 'Origin')
+    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-IPC-Session')
+  }
 
   if (request.method === 'OPTIONS') {
     response.writeHead(204)
@@ -232,7 +304,17 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname.startsWith('/api/html/preview/') && request.method === 'GET') {
     const rawId = url.pathname.slice('/api/html/preview/'.length).split('/')[0]
-    const id = rawId ? decodeURIComponent(rawId) : ''
+    let id = ''
+    try {
+      id = rawId ? decodeURIComponent(rawId) : ''
+    } catch {
+      // `decodeURIComponent('%')` throws URIError; unchecked it was another way
+      // to kill the process from a single request.
+      sendJson(response, 400, {
+        error: { message: 'Invalid preview id encoding', code: 'INVALID_ARGUMENT' },
+      })
+      return
+    }
     const text = getHtmlPreviewBuffer(id)
     if (!text) {
       sendJson(response, 404, { error: { message: 'Preview buffer not found' } })
@@ -243,7 +325,8 @@ const server = createServer(async (request, response) => {
       'Cache-Control': 'no-store',
       // the preview iframe is sandboxed (no allow-same-origin); the buffer
       // itself runs scripts and links to any CDN/asset it references.
-      'Content-Security-Policy': "default-src 'self' 'unsafe-inline' data: blob: https: http:; media-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self';",
+      'Content-Security-Policy':
+        "default-src 'self' 'unsafe-inline' data: blob: https: http:; media-src * data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self';",
     })
     response.end(text)
     return
@@ -273,10 +356,7 @@ const server = createServer(async (request, response) => {
       try {
         parsed = JSON.parse(body || '{}') as { args?: unknown[] }
       } catch {
-        throw new InvalidArgumentError(
-          channel,
-          'request body is not valid JSON',
-        )
+        throw new InvalidArgumentError(channel, 'request body is not valid JSON')
       }
       const args = parsed.args ?? []
       decodedArgs = (args as unknown[]).map((arg) => decodeTransportValue(arg))
@@ -389,12 +469,10 @@ const server = createServer(async (request, response) => {
         // shape that the rest of the API returns for malformed bodies.
         // Without this the caller sees `Unexpected token 'o', ... is not
         // valid JSON` as a 500.
-        throw new InvalidArgumentError(
-          '/api/ai/stream',
-          'request body is not valid JSON',
-        )
+        throw new InvalidArgumentError('/api/ai/stream', 'request body is not valid JSON')
       }
-      const streamId = req.requestId || `sse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const streamId =
+        req.requestId || `sse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       requestId = streamId
       // Import inside the handler to grab the live settings the AI module
       // has just persisted (avoids a duplicate cached copy).
@@ -403,10 +481,11 @@ const server = createServer(async (request, response) => {
       }
       // The renderer can include its own settings override; otherwise use
       // the server's persisted ones.
-      const chatMod = (await import('./ai/chat' as string).catch(() => null)) as
-        | { aiSettings?: AiSettings }
-        | null
-      const settings: AiSettings = (req.settings as AiSettings | undefined) ?? chatMod?.aiSettings ?? aiSettingsFallback
+      const chatMod = (await import('./ai/chat' as string).catch(() => null)) as {
+        aiSettings?: AiSettings
+      } | null
+      const settings: AiSettings =
+        (req.settings as AiSettings | undefined) ?? chatMod?.aiSettings ?? aiSettingsFallback
 
       response.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -418,7 +497,11 @@ const server = createServer(async (request, response) => {
       const send = (chunk: AiStreamChunk) => {
         try {
           response.write(`data: ${JSON.stringify({ ...chunk, requestId: streamId })}\n\n`)
-        } catch {}
+        } catch (error) {
+          // Client disconnected mid-stream: abort the upstream call so we
+          // don't keep producing tokens into the void.
+          sessionAbort?.abort()
+        }
       }
 
       // Track the session so /api/ai/stream/cancel can abort it.
@@ -431,12 +514,19 @@ const server = createServer(async (request, response) => {
         AI_STREAM_SESSIONS.delete(streamId)
       })
 
-      await runProviderStream(settings, req.system || '', req.messages || [], req.tools || [], req.maxTokens ?? undefined, {
-        onAbort: (c) => {
-          sessionAbort = c
+      await runProviderStream(
+        settings,
+        req.system || '',
+        req.messages || [],
+        req.tools || [],
+        req.maxTokens ?? undefined,
+        {
+          onAbort: (c) => {
+            sessionAbort = c
+          },
+          send,
         },
-        send,
-      })
+      )
     } catch (error) {
       // Two failure windows exist on this endpoint. Before `writeHead` the
       // raw JS error must NOT reach the wire — JSON.parse errors look like a
@@ -454,7 +544,11 @@ const server = createServer(async (request, response) => {
       }
       sessionAbort?.abort()
     } finally {
-      try { response.end() } catch {}
+      try {
+        response.end()
+      } catch (error) {
+        // Already closed by the peer or by a prior error; nothing to do.
+      }
     }
     return
   }
@@ -466,10 +560,7 @@ const server = createServer(async (request, response) => {
       try {
         ;({ requestId } = JSON.parse(body || '{}') as { requestId?: string })
       } catch {
-        throw new InvalidArgumentError(
-          '/api/ai/stream/cancel',
-          'request body is not valid JSON',
-        )
+        throw new InvalidArgumentError('/api/ai/stream/cancel', 'request body is not valid JSON')
       }
       if (!requestId) {
         sendJson(response, 400, { error: { message: 'requestId required' } })
@@ -519,16 +610,23 @@ const server = createServer(async (request, response) => {
   )
   const isManagementRoute =
     url.pathname === '/' || url.pathname === '/manage' || url.pathname === '/management'
-  const appName = isManagementRoute
-    ? 'shell'
-    : url.searchParams.get('app') || pathMatch?.[1] || 'shell'
-  const relativePath = pathMatch
+  // The app segment is request-controlled `?app=`, so it goes through the APPS
+  // allow-list. Unvalidated, `?app=../../../../etc` walked out of the static
+  // root and every `<anywhere>/out/renderer/*` file became readable.
+  const requestedApp = url.searchParams.get('app') || pathMatch?.[1] || 'shell'
+  const appName = isManagementRoute ? 'shell' : APPS.includes(requestedApp) ? requestedApp : 'shell'
+  // `pathMatch[2]` keeps whatever followed the route name and may start with a
+  // slash (`/docs//etc/passwd` captures `/etc/passwd`). Strip leading slashes
+  // before any join so the path can never be read as absolute.
+  const rawRelative = pathMatch
     ? pathMatch[2] || 'index.html'
     : url.pathname.replace(/^\/+/, '') || 'index.html'
-  let filePath = resolve(STATIC_ROOT, appName, 'out', 'renderer', relativePath)
+  const relativePath = rawRelative.replace(/^[/\\]+/, '') || 'index.html'
+  let filePath = resolveRendererFile(appName, relativePath)
 
-  if (!existsSync(filePath)) {
-    filePath = resolve(STATIC_ROOT, 'docs', 'out', 'renderer', relativePath)
+  if (!filePath || !existsSync(filePath)) {
+    const docsCandidate = resolveRendererFile('docs', relativePath)
+    if (docsCandidate) filePath = docsCandidate
   }
 
   // SPA sub-routes such as /marketplace/ and /skills/ are rendered by the
@@ -540,12 +638,12 @@ const server = createServer(async (request, response) => {
   // leading route segment stripped so the module is served with its real
   // MIME type. Only files are accepted so a stripped path can never resolve
   // to a renderer directory.
-  if (!existsSync(filePath)) {
+  if (!filePath) {
     const stripped = relativePath.replace(/^[^/]+\//, '')
     if (stripped && stripped !== relativePath) {
       for (const candidateApp of APPS) {
-        const candidatePath = resolve(STATIC_ROOT, candidateApp, 'out', 'renderer', stripped)
-        if (existsSync(candidatePath) && statSync(candidatePath).isFile()) {
+        const candidatePath = resolveRendererFile(candidateApp, stripped)
+        if (candidatePath && existsSync(candidatePath) && statSync(candidatePath).isFile()) {
           filePath = candidatePath
           break
         }
@@ -553,17 +651,17 @@ const server = createServer(async (request, response) => {
     }
   }
 
-  if (!existsSync(filePath) && relativePath.startsWith('assets/')) {
+  if (!filePath && relativePath.startsWith('assets/')) {
     for (const candidateApp of APPS) {
-      const candidatePath = resolve(STATIC_ROOT, candidateApp, 'out', 'renderer', relativePath)
-      if (existsSync(candidatePath)) {
+      const candidatePath = resolveRendererFile(candidateApp, relativePath)
+      if (candidatePath && existsSync(candidatePath)) {
         filePath = candidatePath
         break
       }
     }
   }
 
-  if (existsSync(filePath) && statSync(filePath).isFile()) {
+  if (filePath && existsSync(filePath) && statSync(filePath).isFile()) {
     const ext = extname(filePath)
     response.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' })
     createReadStream(filePath).pipe(response)
@@ -595,12 +693,12 @@ const server = createServer(async (request, response) => {
   response.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' })
   response.end(
     `<!doctype html><meta charset="utf-8"><title>GenOffice Web Server</title>` +
-    `<style>body{font-family:system-ui;max-width:640px;margin:48px auto;padding:0 24px;color:#222;line-height:1.55}` +
-    `code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-size:0.92em}</style>` +
-    `<h1>GenOffice Web Server</h1>` +
-    `<p>The renderer apps were not found at <code>${STATIC_ROOT}</code>.</p>` +
-    `<p>Either run <code>npm run build:all</code> at the repo root and keep it on the same disk layout, ` +
-    `or set <code>WEB_STATIC_ROOT=/path/to/apps</code> to point at an apps directory you mounted.</p>`,
+      `<style>body{font-family:system-ui;max-width:640px;margin:48px auto;padding:0 24px;color:#222;line-height:1.55}` +
+      `code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-size:0.92em}</style>` +
+      `<h1>GenOffice Web Server</h1>` +
+      `<p>The renderer apps were not found at <code>${STATIC_ROOT}</code>.</p>` +
+      `<p>Either run <code>npm run build:all</code> at the repo root and keep it on the same disk layout, ` +
+      `or set <code>WEB_STATIC_ROOT=/path/to/apps</code> to point at an apps directory you mounted.</p>`,
   )
 })
 
@@ -653,9 +751,7 @@ ${staticHint}║                                                           ║
  * flush timer — was lost. Imported lazily because `ai/chat.ts` is heavy.
  */
 function flushTranslationMemory(): Promise<void> {
-  return import('./ai/chat')
-    .then((mod) => mod.flushTranslationMemory())
-    .catch(() => undefined)
+  return import('./ai/chat').then((mod) => mod.flushTranslationMemory()).catch(() => undefined)
 }
 
 function shutdown(code = 0): void {
@@ -666,7 +762,6 @@ function shutdown(code = 0): void {
 
 process.on('SIGTERM', () => shutdown())
 process.on('SIGINT', () => shutdown())
-
 
 /**
  * SSE bridge to the embedded pi AgentSession. We lazy-import `pi-session` so
@@ -726,7 +821,11 @@ async function handlePiPromptStreamHttp(
 
   const teardown = () => {
     if (unsubscribe) {
-      try { unsubscribe() } catch { /* ignore */ }
+      try {
+        unsubscribe()
+      } catch {
+        /* ignore */
+      }
       unsubscribe = null
     }
   }
@@ -784,9 +883,17 @@ async function handlePiPromptStreamHttp(
       message: error instanceof Error ? error.message : String(error),
     })
     // If the agent itself is broken, drop the session so the next call rebuilds.
-    try { invalidatePiSession() } catch { /* ignore */ }
+    try {
+      invalidatePiSession()
+    } catch {
+      /* ignore */
+    }
   } finally {
     teardown()
-    try { response.end() } catch { /* ignore */ }
+    try {
+      response.end()
+    } catch {
+      /* ignore */
+    }
   }
 }
