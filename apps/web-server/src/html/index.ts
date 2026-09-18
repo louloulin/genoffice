@@ -9,7 +9,7 @@
  * stubbed — the web-bridge supplies browser equivalents that never reach
  * the server.
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { DATA_DIR, registerHandle } from '../common/index'
 import { NotFoundError } from '../ai/errors'
@@ -151,7 +151,7 @@ export function registerHtmlHandlers(): void {
         /* ignore */
       }
       try {
-        require('node:fs').unlinkSync(tmp)
+        unlinkSync(tmp)
       } catch {
         /* ignore */
       }

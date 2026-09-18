@@ -1,7 +1,7 @@
 /**
  * Markdown channels — single channel for reading markdown asset files.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { DATA_DIR, registerHandle } from '../common/index'
 import { NotFoundError } from '../ai/errors'
@@ -79,7 +79,7 @@ export function registerMarkdownHandlers(): void {
       writeFileSync(tmp, value.text, 'utf8')
       writeFileSync(target, value.text, 'utf8')
       try {
-        require('node:fs').unlinkSync(tmp)
+        unlinkSync(tmp)
       } catch {
         /* tmp already gone */
       }

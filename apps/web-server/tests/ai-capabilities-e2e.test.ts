@@ -106,7 +106,6 @@ describe('home:ai-capabilities E2E', () => {
     }
     if (dataDir) {
       try {
-        const { rmSync } = require('node:fs') as typeof import('node:fs')
         rmSync(dataDir, { recursive: true, force: true })
       } catch { /* ignore */ }
     }

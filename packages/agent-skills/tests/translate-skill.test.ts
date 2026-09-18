@@ -53,7 +53,7 @@ describe("translate-skill", () => {
     // The KnowledgeBase honors GENOFFICE_TRANSLATION_KB before falling back to the default path.
     const tmp = join(process.env.TMPDIR ?? '/tmp', `agent-skills-test-kb-${process.pid}.json`)
     process.env.GENOFFICE_TRANSLATION_KB = tmp
-    require('node:fs').writeFileSync(tmp, JSON.stringify({
+    writeFileSync(tmp, JSON.stringify({
       'trade.translation.term': [],
       'trade.translation.forbidden': [],
       'trade.translation.brand': [],
