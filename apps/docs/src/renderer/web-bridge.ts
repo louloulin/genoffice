@@ -11,6 +11,7 @@ import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge
 import {
   createWebFileBridge,
   downloadBytes,
+  installBackToHome,
   pickFileBytes,
   webCopyImage,
   webFontMetrics,
@@ -32,7 +33,13 @@ import {
 } from '../shared/embed-bridge'
 
 if (!isElectronRuntime()) {
-  const embeddedPathPrefix = window.location.pathname.startsWith('/office-engine/') ? '/office-engine' : ''
+  // Mount the floating "返回主页" pill once the renderer has wired its
+  // IPC bridge. The helper is idempotent and reads no state, so it is safe
+  // to call at the top of every web-only bridge.
+  installBackToHome({ label: '返回主页' })
+  const embeddedPathPrefix = window.location.pathname.startsWith('/office-engine/')
+    ? '/office-engine'
+    : ''
   const transport = createHttpIpcTransport({ pathPrefix: embeddedPathPrefix })
   const files = createWebFileBridge(transport)
   let dataflareContext: DataflareOfficeContext | null = null
@@ -52,15 +59,27 @@ if (!isElectronRuntime()) {
       method: (init.method || 'GET').toUpperCase() as 'GET' | 'POST',
       path,
       jsonBody: typeof init.body === 'string' ? init.body : undefined,
-    }).then((result) => new Response(result.body, { status: result.status, headers: result.headers }))
+    }).then(
+      (result) => new Response(result.body, { status: result.status, headers: result.headers }),
+    )
   }
   const uploadDataflare = (path: string, data: ArrayBuffer, fields: Record<string, string>) => {
     if (window.parent === window) {
       const token = localStorage.getItem('Manager-Token')
       const form = new FormData()
-      form.append('file', new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'document.docx')
+      form.append(
+        'file',
+        new Blob([data], {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        }),
+        'document.docx',
+      )
       Object.entries(fields).forEach(([key, value]) => form.append(key, value))
-      return fetch(path, { method: 'POST', headers: token ? { 'Manager-Token': token } : undefined, body: form })
+      return fetch(path, {
+        method: 'POST',
+        headers: token ? { 'Manager-Token': token } : undefined,
+        body: form,
+      })
     }
     return requestDataflareParent({
       type: 'http-request',
@@ -68,11 +87,26 @@ if (!isElectronRuntime()) {
       sessionId: getDataflareEmbedSessionId() || '',
       method: 'POST',
       path,
-      file: { bytes: data, filename: 'document.docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      file: {
+        bytes: data,
+        filename: 'document.docx',
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      },
       fields,
-    }).then((result) => new Response(result.body, { status: result.status, headers: result.headers }))
+    }).then(
+      (result) => new Response(result.body, { status: result.status, headers: result.headers }),
+    )
   }
+  // SAFETY: the global `window` is typed as lib.dom's Window, which has no
+  // `desktop` / `projectApi` / `dataflareOfficeBridge` fields. We are
+  // declaring those properties on the runtime window below (mirroring the
+  // preload bridge that does the same in the electron build), so the cast
+  // is structurally correct at runtime even though TypeScript cannot prove
+  // it from the lib.dom types alone.
   const bridgedWindow = window as unknown as Record<string, unknown>
+  // SAFETY: see comment above; the `desktop` property is assigned on the
+  // very next statement and the desktopApi() closure always reads it back
+  // after that assignment, so the narrowing is sound within this module.
   const desktopApi = (): DesktopApi => bridgedWindow.desktop as DesktopApi
   bridgedWindow.desktop = createDesktopApi(transport, {
     saveDocx: async (_path, data, _auto) => {
@@ -80,15 +114,23 @@ if (!isElectronRuntime()) {
       if (!documentId || dataflareContext?.documentSource !== 'knowledge') {
         return await transport.invoke('docs:save', _path, data, _auto === true)
       }
-      const response = await uploadDataflare(`/crmapi/knowledge/office/${encodeURIComponent(documentId)}`, data, { expectedRevision: dataflareRevision })
-      const body = await response.json().catch(() => null) as {
+      const response = await uploadDataflare(
+        `/crmapi/knowledge/office/${encodeURIComponent(documentId)}`,
+        data,
+        { expectedRevision: dataflareRevision },
+      )
+      const body = (await response.json().catch(() => null)) as {
         code?: number
         msg?: string
         data?: { revision?: string }
       } | null
       if (!response.ok || body?.code !== 0) {
         const error = body?.msg || `Dataflare document save failed (${response.status})`
-        postToEmbedParent({ type: 'error', code: response.status === 409 || body?.code === 409 ? 'document-conflict' : 'save-failed', message: error })
+        postToEmbedParent({
+          type: 'error',
+          code: response.status === 409 || body?.code === 409 ? 'document-conflict' : 'save-failed',
+          message: error,
+        })
         return { ok: false, reason: 'external-modified', error }
       }
       dataflareRevision = body.data?.revision || String(Number(dataflareRevision) + 1)
@@ -127,13 +169,15 @@ if (!isElectronRuntime()) {
               qualityCheck: request.qualityCheck,
               glossaryCategory: request.glossaryCategory,
             },
-            [{
-              unitId,
-              kind: scope === 'document' ? 'document' : 'paragraph',
-              sourceText: request.instruction,
-              order: 0,
-              range: request.range,
-            }],
+            [
+              {
+                unitId,
+                kind: scope === 'document' ? 'document' : 'paragraph',
+                sourceText: request.instruction,
+                order: 0,
+                range: request.range,
+              },
+            ],
           ),
         ),
       })
@@ -142,7 +186,10 @@ if (!isElectronRuntime()) {
       const parsed = parseDataflareTranslateResponse(await response.json().catch(() => null))
       const unit = parsed.units[0]
       if (!response.ok || !unit?.translatedText) {
-        return { ok: false, error: unit?.errorMessage || parsed.error || 'Dataflare translation failed' }
+        return {
+          ok: false,
+          error: unit?.errorMessage || parsed.error || 'Dataflare translation failed',
+        }
       }
       return {
         ok: true,
@@ -159,7 +206,11 @@ if (!isElectronRuntime()) {
         ...(parsed.quality ? { quality: parsed.quality } : {}),
       }
     },
-    aiTranslateBatch: async (request: Parameters<NonNullable<import('../shared/desktop-api-factory').DesktopApiOverrides['aiTranslateBatch']>>[0]) => {
+    aiTranslateBatch: async (
+      request: Parameters<
+        NonNullable<import('../shared/desktop-api-factory').DesktopApiOverrides['aiTranslateBatch']>
+      >[0],
+    ) => {
       if (!dataflareContext) {
         return await transport.invoke('ai:translate-batch', request)
       }
@@ -199,10 +250,16 @@ if (!isElectronRuntime()) {
         ok: response.ok && parsed.ok && units.length === request.units.length,
         units,
         quality: parsed.quality,
-        error: parsed.error || (!response.ok ? `Dataflare translation failed (${response.status})` : undefined),
+        error:
+          parsed.error ||
+          (!response.ok ? `Dataflare translation failed (${response.status})` : undefined),
       }
     },
-    aiTranslateBatchStream: async (request: Parameters<NonNullable<import('../shared/desktop-api-factory').DesktopApiOverrides['aiTranslateBatch']>>[0]) => {
+    aiTranslateBatchStream: async (
+      request: Parameters<
+        NonNullable<import('../shared/desktop-api-factory').DesktopApiOverrides['aiTranslateBatch']>
+      >[0],
+    ) => {
       // SSE 流式批量翻译：每完成一个 unit 立即收到推送事件，
       // 通过 onUnit 回调让 GenOffice AI 面板实时追加翻译预览，
       // 替代旧的"等待整批返回"。
@@ -210,7 +267,12 @@ if (!isElectronRuntime()) {
         // 独立模式：fallback 到同步批量接口
         return await desktopApi().aiTranslateBatch(request)
       }
-      const streamUnits = new Map<string, NonNullable<NonNullable<Awaited<ReturnType<DesktopApi['aiTranslateBatch']>>>['units']>[number]>()
+      const streamUnits = new Map<
+        string,
+        NonNullable<
+          NonNullable<Awaited<ReturnType<DesktopApi['aiTranslateBatch']>>>['units']
+        >[number]
+      >()
       let streamQuality: { overallScore?: number; warnings?: string[] } | undefined
       let streamError: string | undefined
       let streamOk = true
@@ -269,13 +331,22 @@ if (!isElectronRuntime()) {
                   errorMessage: payload.unit.errorMessage,
                   range: input?.range || null,
                 })
-                postToEmbedParent({ type: 'ai-progress', status: 'running', progress: streamUnits.size / Math.max(request.units.length, 1) })
+                postToEmbedParent({
+                  type: 'ai-progress',
+                  status: 'running',
+                  progress: streamUnits.size / Math.max(request.units.length, 1),
+                })
               } else if (payload.type === 'quality' && payload.quality) {
                 streamQuality = payload.quality
               } else if (payload.type === 'complete') {
-                if (payload.status && payload.status !== 'completed' && payload.status !== 'partial') {
+                if (
+                  payload.status &&
+                  payload.status !== 'completed' &&
+                  payload.status !== 'partial'
+                ) {
                   streamOk = false
-                  if (payload.status === 'failed') streamError = 'Dataflare translation completed with failed status'
+                  if (payload.status === 'failed')
+                    streamError = 'Dataflare translation completed with failed status'
                 }
               } else if (payload.type === 'error') {
                 streamOk = false
@@ -330,13 +401,16 @@ if (!isElectronRuntime()) {
           units: request.units,
         }),
       })
-      const body = await response.json().catch(() => null) as {
+      const body = (await response.json().catch(() => null)) as {
         code?: number
         msg?: string
         data?: { savedCount?: number; skippedCount?: number }
       } | null
       if (!response.ok || body?.code !== 0) {
-        return { ok: false, error: body?.msg || `Dataflare memory save failed (${response.status})` }
+        return {
+          ok: false,
+          error: body?.msg || `Dataflare memory save failed (${response.status})`,
+        }
       }
       return { ok: true, savedCount: body.data?.savedCount, skippedCount: body.data?.skippedCount }
     },
@@ -364,14 +438,33 @@ if (!isElectronRuntime()) {
       return { base64: bytesToBase64(bytes), mime, name }
     },
     saveDocxAs: async (defaultName, data) => {
+      // Persist into the webserver's FILES_DIR so the document survives
+      // reload, shows up on the home recents, and is the canonical path that
+      // the next saveDocx() call rewrites in place. downloadBytes is a
+      // convenience copy for the user; writeTempFile used to be the only
+      // "persisted" output and the bytes landed in /tmp — gone on restart.
+      const saved = (await transport.invoke('docs:save-new', defaultName, data)) as {
+        id?: string
+        path?: string
+        name?: string
+      } | null
+      if (!saved?.path) {
+        return { ok: false, error: 'webserver refused docs:save-new' }
+      }
       downloadBytes(defaultName, data)
-      const path = await files.writeTempFile(defaultName, data)
-      return { ok: true, path }
+      return { ok: true, path: saved.path, passwordIntentPending: false }
     },
     saveDocxNew: async (defaultName, data) => {
+      const saved = (await transport.invoke('docs:save-new', defaultName, data)) as {
+        id?: string
+        path?: string
+        name?: string
+      } | null
+      if (!saved?.path) {
+        return { ok: false, error: 'webserver refused docs:save-new' }
+      }
       downloadBytes(defaultName, data)
-      const path = await files.writeTempFile(defaultName, data)
-      return { ok: true, path }
+      return { ok: true, path: saved.path, passwordIntentPending: false }
     },
     print: async () => {
       webPrint()
@@ -417,10 +510,20 @@ if (!isElectronRuntime()) {
     onCommand: (command: DataflareEmbedCommand) => {
       if (command.type === 'init') dataflareContext = command.context
       window.dispatchEvent(new CustomEvent('dataflare:office-command', { detail: command }))
-      if (command.type === 'init' && command.context.documentId && command.context.documentSource === 'knowledge') {
-        void openDataflareKnowledgeDocument(command.context, transport, files, requestDataflare, (revision) => {
-          dataflareRevision = revision
-        })
+      if (
+        command.type === 'init' &&
+        command.context.documentId &&
+        command.context.documentSource === 'knowledge'
+      ) {
+        void openDataflareKnowledgeDocument(
+          command.context,
+          transport,
+          files,
+          requestDataflare,
+          (revision) => {
+            dataflareRevision = revision
+          },
+        )
       }
     },
     onGlobalState: (state, revision) => {
@@ -429,7 +532,9 @@ if (!isElectronRuntime()) {
       if (incoming !== undefined && incoming !== null) {
         dataflareRevision = String(incoming)
       }
-      window.dispatchEvent(new CustomEvent('dataflare:office-global-state', { detail: { state, revision } }))
+      window.dispatchEvent(
+        new CustomEvent('dataflare:office-global-state', { detail: { state, revision } }),
+      )
     },
   })
 }
@@ -444,9 +549,15 @@ async function openDataflareKnowledgeDocument(
   const documentId = context.documentId?.trim()
   if (!documentId || context.documentType !== 'docx') return
   try {
-    const response = await requestDataflare(`/crmapi/knowledge/office/${encodeURIComponent(documentId)}`)
+    const response = await requestDataflare(
+      `/crmapi/knowledge/office/${encodeURIComponent(documentId)}`,
+    )
     if (!response.ok) throw new Error(`Dataflare document download failed (${response.status})`)
-    onRevision(response.headers.get('X-Office-Revision') || response.headers.get('ETag')?.replace(/^"|"$/g, '') || '0')
+    onRevision(
+      response.headers.get('X-Office-Revision') ||
+        response.headers.get('ETag')?.replace(/^"|"$/g, '') ||
+        '0',
+    )
     const bytes = await response.arrayBuffer()
     const name = `dataflare-${documentId}.docx`
     const path = await files.writeTempFile(name, bytes)

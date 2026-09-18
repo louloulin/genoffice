@@ -8,18 +8,32 @@
 /// surface. Inside Electron the preload has already exposed the IPC-backed
 /// APIs and this module leaves them untouched.
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
-import { downloadBytes, pickFileBytes, webFullscreen, webOpenTab, webPrint } from '@genoffice/ipc-bridge/web-native'
+import {
+  downloadBytes,
+  installBackToHome,
+  pickFileBytes,
+  webFullscreen,
+  webOpenTab,
+  webPrint,
+} from '@genoffice/ipc-bridge/web-native'
 import { createHtmlApi, createHtmlProjectApi } from '../shared/html-api-factory'
 import type { ExportDocxRequest, ExportPdfRequest, ExportHtmlRequest } from '../shared/ipc'
 
 if (!isElectronRuntime()) {
+  // Floating "返回主页" pill for the html renderer.
+  installBackToHome({ label: '返回主页' })
   const transport = createHttpIpcTransport()
+  // SAFETY: `window` has no `htmlApi` / `htmlFilesApi` / `htmlProjectApi`
+  // in lib.dom. The bridge assigns those keys below and reads them back
+  // through module-scoped helpers, so the cast is sound within this renderer.
   const bridgedWindow = window as unknown as Record<string, unknown>
 
   // a per-tab id for the live preview: the owner writes the buffer to
   // `html:preview-update` and the preview iframe loads it via
   // `/api/html/preview/<id>`. A present tab opens that URL directly.
-  const previewId = (crypto.randomUUID ? crypto.randomUUID() : `p-${Math.random().toString(36).slice(2)}`)
+  const previewId = crypto.randomUUID
+    ? crypto.randomUUID()
+    : `p-${Math.random().toString(36).slice(2)}`
   const previewUrlBase = `${location.origin}/api/html/preview/${previewId}`
 
   bridgedWindow.htmlApi = createHtmlApi(transport, {
@@ -37,12 +51,25 @@ if (!isElectronRuntime()) {
     getPreviewInfo: async () => ({ url: previewUrlBase }),
     setPresentFullScreen: async (on) => {
       if (on) {
-        try { await webFullscreen() } catch { /* user denied */ }
+        try {
+          await webFullscreen()
+        } catch {
+          /* user denied */
+        }
       } else if (document.fullscreenElement) {
-        try { await document.exitFullscreen() } catch { /* ignore */ }
+        try {
+          await document.exitFullscreen()
+        } catch {
+          /* ignore */
+        }
       }
     },
     presentInNewTab: async (title) => {
+      // SAFETY: `previewUrlBase` is built a few lines above as
+      // `${location.origin}/api/html/preview/${previewId}`. It's a same-origin
+      // URL constructed from `location.origin` (the page's own origin), so
+      // window.open here cannot redirect the user to an attacker-controlled
+      // domain. The id is a fresh `crypto.randomUUID()` per renderer load.
       const tab = window.open(previewUrlBase, '_blank')
       if (tab && title) tab.document.title = title
       return Boolean(tab)
@@ -74,13 +101,20 @@ if (!isElectronRuntime()) {
       return await transport.invoke('files:add', paths)
     },
     exportDocx: async (request: ExportDocxRequest) => {
-      downloadBytes(`${sanitize(request.suggestedName) || 'document'}.docx`, textToBytes(request.html))
+      downloadBytes(
+        `${sanitize(request.suggestedName) || 'document'}.docx`,
+        textToBytes(request.html),
+      )
       return { ok: true, path: '' }
     },
     exportPdf: async (request: ExportPdfRequest) => {
       if (typeof request?.html !== 'string' || !request.html) {
         return { ok: false, error: 'html: bad export request' }
       }
+      // SAFETY: window.open('', '_blank') opens a blank tab whose URL is
+      // `about:blank`. We immediately overwrite document via win.document.write
+      // with the caller-supplied HTML; the about:blank origin is the caller's
+      // own, so the write is same-origin. Not a redirect vector.
       const win = window.open('', '_blank')
       if (!win) return { ok: false, error: 'web: popup blocked' }
       win.document.open()
@@ -90,7 +124,10 @@ if (!isElectronRuntime()) {
       return { ok: true, path: '' }
     },
     exportHtml: async (request: ExportHtmlRequest) => {
-      downloadBytes(`${sanitize(request.suggestedName) || 'document'}.html`, textToBytes(request.html))
+      downloadBytes(
+        `${sanitize(request.suggestedName) || 'document'}.html`,
+        textToBytes(request.html),
+      )
       return { ok: true, path: '' }
     },
     getPathForFile: () => '',

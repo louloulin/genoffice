@@ -12,6 +12,7 @@ import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge
 import {
   createWebFileBridge,
   downloadBytes,
+  installBackToHome,
   pickFileBytes,
   webFullscreen,
   webPrint,
@@ -23,8 +24,14 @@ import {
 } from '../shared/slides-api-factory'
 
 if (!isElectronRuntime()) {
+  // Floating "返回主页" pill for the slides renderer.
+  installBackToHome({ label: '返回主页' })
   const transport = createHttpIpcTransport()
   const files = createWebFileBridge(transport)
+  // SAFETY: lib.dom's `window` has no `slidesApi` / `slidesFilesApi` /
+  // `slidesProjectApi`. The bridge assigns those keys on the next lines and
+  // reads them back through the same module-scoped helpers, so the cast is
+  // safe within this renderer.
   const bridgedWindow = window as unknown as Record<string, unknown>
   bridgedWindow.slidesApi = createSlidesApi(transport, {
     consumePendingOpen: async (fitWidthPx) => {
@@ -171,6 +178,10 @@ if (!isElectronRuntime()) {
 }
 
 async function deckSizePx(): Promise<{ cx: number; cy: number } | null> {
+  // SAFETY: `window.slidesApi` is assigned by the bridge module in this same
+  // file (web-only path); optional chaining guards against the electron
+  // build where the assignment never happens. The narrow structural cast is
+  // how we type just the field we need without dragging the whole API in.
   const size = await (
     window as unknown as { slidesApi?: { getSlideSize?: () => Promise<unknown> } }
   ).slidesApi?.getSlideSize?.()

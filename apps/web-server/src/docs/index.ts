@@ -34,15 +34,17 @@ function isWithin(root: string, target: string): boolean {
 }
 
 function isManagedDocPath(filePath: string): boolean {
-  return /\.docx$/i.test(filePath) && [DATA_DIR, WEB_TEMP_ROOT].some((root) => isWithin(root, filePath))
+  return (
+    /\.docx$/i.test(filePath) && [DATA_DIR, WEB_TEMP_ROOT].some((root) => isWithin(root, filePath))
+  )
 }
 
 function bytesFrom(value: unknown): Buffer | null {
   if (value instanceof ArrayBuffer) return Buffer.from(value)
-  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+  if (ArrayBuffer.isView(value))
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength)
   return null
 }
-
 
 // Mirrors apps/docs/src/main/docx-encryption.ts:isEncryptedDocx for the web build.
 // The renderer contract (OpenFileResult) distinguishes encrypted from plain
@@ -227,14 +229,18 @@ export function registerDocsHandlers(): void {
   registerHandle('docs:create-document', async (_event: unknown, request: unknown) => {
     const value = request as { type?: unknown; title?: unknown; content?: unknown } | null
     const type = value?.type
-    const title = String(value?.title ?? 'Untitled')
-      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
-      .trim()
-      .slice(0, 80) || 'Untitled'
+    const title =
+      String(value?.title ?? 'Untitled')
+        .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+        .trim()
+        .slice(0, 80) || 'Untitled'
     const content = typeof value?.content === 'string' ? value.content : ''
     if (!content.trim()) return { ok: false, error: 'content must not be empty' }
     if (type !== 'md' && type !== 'html') {
-      return { ok: false, error: `WEB_UNSUPPORTED: document type '${String(type)}' requires the desktop renderer` }
+      return {
+        ok: false,
+        error: `WEB_UNSUPPORTED: document type '${String(type)}' requires the desktop renderer`,
+      }
     }
     const filePath = join(DATA_DIR, `${title}.${type}`)
     try {
@@ -291,6 +297,12 @@ export function registerDocsHandlers(): void {
       const path = join(FILES_DIR, `${id}.docx`)
 
       if (data) {
+        // FILES_DIR is created at module load, but a `rm -rf` against
+        // DATA_DIR (e.g. between test runs, or a misconfigured deploy)
+        // would otherwise make writeFileSync throw ENOENT. Re-create the
+        // parent before each write — mkdirSync({recursive:true}) is a
+        // no-op when the directory already exists.
+        mkdirSync(FILES_DIR, { recursive: true })
         writeFileSync(path, Buffer.from(data as ArrayBuffer))
       }
 

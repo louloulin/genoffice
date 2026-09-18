@@ -608,8 +608,16 @@ const server = createServer(async (request, response) => {
   const pathMatch = url.pathname.match(
     /^\/(docs|sheets|slides|pdf|markdown|html|shell)(?:\/(.*))?$/,
   )
+  // `/` is the management route ONLY when the caller did not pin a specific
+  // app — `/?app=docs` must reach the docs bundle, not the shell home tab.
+  // Without this guard every sub-page (`/?app=docs`, `/?app=sheets`, …) used
+  // to fall through to apps/shell/out/renderer/index.html and never reached
+  // its own renderer bundle. Same for `/manage` and `/management`: only the
+  // bare path counts; a `?app=` override is honored.
+  const hasAppHint = url.searchParams.has('app') || pathMatch !== null
   const isManagementRoute =
-    url.pathname === '/' || url.pathname === '/manage' || url.pathname === '/management'
+    !hasAppHint &&
+    (url.pathname === '/' || url.pathname === '/manage' || url.pathname === '/management')
   // The app segment is request-controlled `?app=`, so it goes through the APPS
   // allow-list. Unvalidated, `?app=../../../../etc` walked out of the static
   // root and every `<anywhere>/out/renderer/*` file became readable.

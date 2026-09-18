@@ -9,12 +9,23 @@
 /// has already exposed the IPC-backed APIs and this module leaves them
 /// untouched.
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
-import { createWebFileBridge, pickFileBytes } from '@genoffice/ipc-bridge/web-native'
+import {
+  createWebFileBridge,
+  installBackToHome,
+  pickFileBytes,
+} from '@genoffice/ipc-bridge/web-native'
 import { createSheetsApi, createSheetsProjectApi } from '../shared/sheets-api-factory'
 
 if (!isElectronRuntime()) {
+  // Floating "返回主页" pill — works even when the user landed on a deep
+  // link like `/sheets/...` without ever visiting the home tab.
+  installBackToHome({ label: '返回主页' })
   const transport = createHttpIpcTransport()
   const files = createWebFileBridge(transport)
+  // SAFETY: lib.dom's `window` type has no `desktopApi` / `sheetsApi` /
+  // `projectApi` properties. The bridge assigns those keys below and reads
+  // them back through the same module-scoped helper closures, so the
+  // double-cast is sound within this renderer.
   const bridgedWindow = window as unknown as Record<string, unknown>
   bridgedWindow.desktopApi = createSheetsApi(transport, {
     hasQueuedWorkbook: async () => new URLSearchParams(window.location.search).has('open'),
