@@ -418,7 +418,9 @@ export function AiPanel({
       const merged = base + (finalText || interim)
       voiceBaseRef.current = merged
       setInput(merged)
-      if (finalText) voiceRef.current && (voiceRef.current.base = base + finalText)
+      if (finalText && voiceRef.current) {
+        voiceRef.current.base = base + finalText
+      }
     }
     recog.onerror = () => setVoiceActive(false)
     recog.onend = () => setVoiceActive(false)
