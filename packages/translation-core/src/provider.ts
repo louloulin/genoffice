@@ -23,7 +23,7 @@ import type {
   TranslateRequest,
   TranslateResponse,
 } from './types'
-import { callLlm } from './llm-client'  // W9: seam between translation-core and the underlying LLM SDK
+import { callLlm } from './llm-client' // W9: seam between translation-core and the underlying LLM SDK
 import {
   applyTerminology,
   matchTermsInSource,
@@ -126,9 +126,7 @@ export async function translateOne(
   if (opts.provider !== 'codex' && !opts.config.model) {
     return { ok: false, error: `No model selected for "${opts.provider}".` }
   }
-  const memory = request.memoryEnabled === false
-    ? null
-    : (opts.memory ?? sharedMemory)
+  const memory = request.memoryEnabled === false ? null : (opts.memory ?? sharedMemory)
   const sourceLang = normalizeSourceLang(request.sourceLang)
   const preserveFormat = request.preserveFormat !== false
 
@@ -169,8 +167,28 @@ export async function translateOne(
   // `fuzzyMemoryEnabled: true` and the memory exposes `fuzzyLookup`.
   // PersistentTranslationMemory ships this method; the plain TranslationMemory
   // does not, so the lookup stays exact-match for legacy callers.
-  if (opts.fuzzyMemoryEnabled && memory && typeof (memory as { fuzzyLookup?: unknown }).fuzzyLookup === 'function') {
-    const fuzzyHit = (memory as unknown as { fuzzyLookup: (s: string, t: string, x: string, b?: string) => { translatedText: string; confidence: number } | null }).fuzzyLookup(sourceLang, targetLang, sourceText, bucket)
+  if (
+    opts.fuzzyMemoryEnabled &&
+    memory &&
+    typeof (memory as { fuzzyLookup?: unknown }).fuzzyLookup === 'function'
+  ) {
+    // SAFETY: the optional `fuzzyLookup` lives only on PersistentTranslationMemory;
+    // the plain TranslationMemory class does not declare it. The previous
+    // `typeof ... === 'function'` guard proves the method is callable, but
+    // TypeScript cannot infer that narrowing across the type assertion.
+    // We therefore re-cast through `unknown` and pin the call signature so
+    // a future refactor that breaks the method shape fails this build, not
+    // runtime.
+    const fuzzyHit = (
+      memory as unknown as {
+        fuzzyLookup: (
+          s: string,
+          t: string,
+          x: string,
+          b?: string,
+        ) => { translatedText: string; confidence: number } | null
+      }
+    ).fuzzyLookup(sourceLang, targetLang, sourceText, bucket)
     if (fuzzyHit) {
       return {
         ok: true,
@@ -250,7 +268,10 @@ export async function translateOne(
  * `warnings` as an optional response field. An empty array is omitted so a
  * clean translation keeps the exact shape the existing callers/tests expect.
  */
-function warningsOption(sourceText: string, translated: string | undefined): {
+function warningsOption(
+  sourceText: string,
+  translated: string | undefined,
+): {
   warnings?: string[]
 } {
   const warnings = assessQuality(sourceText, translated).warnings
@@ -312,10 +333,7 @@ function resolveTerminology(input: {
  * `isAiQuotaExhaustedError` and `isAiOverloadedError` are mutually exclusive
  * by construction (see @genoffice/ai-provider/overload-error).
  */
-function describeTranslationFailure(result: {
-  error?: string
-  overloaded?: boolean
-}): string {
+function describeTranslationFailure(result: { error?: string; overloaded?: boolean }): string {
   const raw = typeof result.error === 'string' ? result.error : ''
   if (isAiQuotaExhaustedError(raw)) {
     return (
@@ -369,7 +387,9 @@ function terminologyForBatch(
     request: {
       instruction: '',
       targetLang,
-      ...(request.glossaryCategory !== undefined ? { glossaryCategory: request.glossaryCategory } : {}),
+      ...(request.glossaryCategory !== undefined
+        ? { glossaryCategory: request.glossaryCategory }
+        : {}),
       ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
     },
     opts,
@@ -392,10 +412,7 @@ function terminologyForBatch(
  *
  * Returns null when the element is usable.
  */
-function malformedUnitResult(
-  index: number,
-  raw: unknown,
-): TranslateBatchUnitResult | null {
+function malformedUnitResult(index: number, raw: unknown): TranslateBatchUnitResult | null {
   const unit = raw as { unitId?: unknown; sourceText?: unknown; range?: unknown } | null
   if (typeof unit?.sourceText === 'string') return null
   const unitId = typeof unit?.unitId === 'string' ? unit.unitId : ''
@@ -432,9 +449,7 @@ export async function translateBatch(
   if (request.targetLang !== undefined && typeof request.targetLang !== 'string') {
     return { ok: false, error: 'ai:translate-batch expected `targetLang` to be a string' }
   }
-  const memory = request.memoryEnabled === false
-    ? null
-    : (opts.memory ?? sharedMemory)
+  const memory = request.memoryEnabled === false ? null : (opts.memory ?? sharedMemory)
   const sourceLang = normalizeSourceLang(request.sourceLang)
   const targetLang = (request.targetLang ?? '').trim()
   const preserveFormat = request.preserveFormat !== false
@@ -482,7 +497,9 @@ export async function translateBatch(
       // which made desktop and web disagree about the same request.
       const qualityEnabled = request.qualityCheck !== false
       const warnings = qualityEnabled
-        ? (res.ok ? warningsFor(unit, res.translated) : ['provider-error'])
+        ? res.ok
+          ? warningsFor(unit, res.translated)
+          : ['provider-error']
         : []
       const result: TranslateBatchUnitResult = {
         unitId: unitIdOf(unit),
@@ -505,7 +522,6 @@ export async function translateBatch(
   if (failed?.errorMessage) response.error = failed.errorMessage
   return response
 }
-
 
 /**
  * Options for {@link translateBatchStream}. The streaming variant is wire-shape
@@ -547,9 +563,7 @@ export async function translateBatchStream(
   if (!Array.isArray(request.units) || request.units.length === 0) {
     return { ok: false, error: 'ai:translate-batch expected a non-empty `units` array' }
   }
-  const memory = request.memoryEnabled === false
-    ? null
-    : (opts.memory ?? sharedMemory)
+  const memory = request.memoryEnabled === false ? null : (opts.memory ?? sharedMemory)
   const sourceLang = normalizeSourceLang(request.sourceLang)
   const targetLang = (request.targetLang ?? '').trim()
   const preserveFormat = request.preserveFormat !== false
@@ -564,6 +578,14 @@ export async function translateBatchStream(
   // Build a unit-settler that re-uses the same per-unit logic as translateBatch.
   const settleOne = async (index: number): Promise<void> => {
     const unit = request.units[index]
+    // sparse array (noUncheckedIndexedAccess): bail with the same malformed
+    // shape a missing sourceText produces, so `settled[index]` is always set.
+    if (unit === undefined) {
+      const malformed = malformedUnitResult(index, unit)
+      settled[index] = malformed!
+      if (streamOpts.onUnit) await streamOpts.onUnit({ index, total, result: malformed! })
+      return
+    }
     // A malformed element used to `return` here, which left a hole in
     // `settled`: sparse `Array.prototype.every` skips holes (so the batch
     // reported `ok`) and `find` on one threw. Fill the slot explicitly.
@@ -604,9 +626,12 @@ export async function translateBatchStream(
       const status: TranslateBatchUnitResult['status'] = res.ok ? 'translated' : 'failed'
       // See translateBatch: `qualityCheck: false` must suppress both the
       // per-unit warnings and the batch score.
-      const warnings = request.qualityCheck === false
-        ? []
-        : (res.ok ? warningsFor(unit, res.translated) : ['provider-error'])
+      const warnings =
+        request.qualityCheck === false
+          ? []
+          : res.ok
+            ? warningsFor(unit, res.translated)
+            : ['provider-error']
       result = {
         unitId: unitIdOf(unit),
         sourceText,
@@ -626,12 +651,13 @@ export async function translateBatchStream(
 
   // Bounded-concurrency driver: pull the next pending index when a slot frees up.
   let nextIndex = 0
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (true) {
-      const i = nextIndex++
-      if (i >= total) return
+  const workers = Array.from({ length: concurrency }, async (): Promise<void> => {
+    for (let i = nextIndex++; i < total; i = nextIndex++) {
       await settleOne(i)
     }
+    // explicit return for array-callback-return; the for-loop exit path
+    // already drops out at `i >= total`, so the function resolves void.
+    return
   })
   await Promise.all(workers)
 

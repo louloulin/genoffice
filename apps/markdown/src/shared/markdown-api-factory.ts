@@ -13,7 +13,14 @@ import type { ProjectApi } from '@genoffice/project-store'
 import type { IpcTransport } from '@genoffice/ipc-bridge/client'
 import { AI_CHANNELS, MARKDOWN_CHANNELS } from './ipc'
 import type { AutoSaveDefault } from './ipc'
-import type { ExportFormat, MarkdownApi, SaveMode, UiTheme } from './ipc'
+import type {
+  ExportFormat,
+  MarkdownApi,
+  SaveMarkdownRequest,
+  SaveMarkdownResult,
+  SaveMode,
+  UiTheme,
+} from './ipc'
 
 export interface MarkdownApiOverrides {
   consumePending?: () => Promise<string | null>
@@ -34,10 +41,10 @@ export interface MarkdownApiOverrides {
     error?: string
   }>
   /** Save the document to its known location; the web bridge tracks the
-   * current path from consumePending and injects it as `request.path`. */
-  save?: (request: { text: string; imageSources: string[]; mode: 'save' | 'saveAs'; suggestedName?: string; path?: string }) => Promise<{
-    ok: true; path?: string; canceled?: true; error?: string; imageRewrites?: Array<{ from: string; to: string }>
-  } | { ok: false; error?: string; canceled?: true }>
+   * current path from consumePending and injects it as `request.path`. The
+   * shape mirrors `SaveMarkdownResult` exactly so the override flows back
+   * into the desktop call site without a cast. */
+  save?: (request: SaveMarkdownRequest) => Promise<SaveMarkdownResult>
   /** Headless export — only used by the Electron CLI; the web build
    * always resolves with null. */
   consumeHeadlessExport?: () => Promise<string | null>
@@ -70,8 +77,11 @@ export function createMarkdownApi(
     exportDocx:
       overrides.exportDocx ?? ((request) => t.invoke(MARKDOWN_CHANNELS.exportDocx, request)),
     exportPdf: overrides.exportPdf ?? ((request) => t.invoke(MARKDOWN_CHANNELS.exportPdf, request)),
-    consumeHeadlessExport: overrides.consumeHeadlessExport ?? (() => t.invoke(MARKDOWN_CHANNELS.consumeHeadlessExport)),
-    headlessExportDone: overrides.headlessExportDone ?? ((result) => t.send(MARKDOWN_CHANNELS.headlessExportDone, result)),
+    consumeHeadlessExport:
+      overrides.consumeHeadlessExport ?? (() => t.invoke(MARKDOWN_CHANNELS.consumeHeadlessExport)),
+    headlessExportDone:
+      overrides.headlessExportDone ??
+      ((result) => t.send(MARKDOWN_CHANNELS.headlessExportDone, result)),
     getLanguage: () => t.invoke(MARKDOWN_CHANNELS.getLanguage),
     onLanguageChanged: (handler) =>
       t.on(MARKDOWN_CHANNELS.languageChanged, (lang) => handler(lang as Lang)),
@@ -80,14 +90,10 @@ export function createMarkdownApi(
       t.on(MARKDOWN_CHANNELS.themeChanged, (theme) => handler(theme as UiTheme)),
     getAutoSaveDefault: () => t.invoke(MARKDOWN_CHANNELS.getAutoSaveDefault),
     onAutoSaveDefaultChanged: (handler) =>
-      t.on(MARKDOWN_CHANNELS.autoSaveDefaultChanged, (value) =>
-        handler(value as AutoSaveDefault),
-      ),
+      t.on(MARKDOWN_CHANNELS.autoSaveDefaultChanged, (value) => handler(value as AutoSaveDefault)),
     getAiPanelPrefs: () => t.invoke(MARKDOWN_CHANNELS.getAiPanelPrefs),
     onAiPanelPrefsChanged: (handler) =>
-      t.on(MARKDOWN_CHANNELS.aiPanelPrefsChanged, (prefs) =>
-        handler(prefs as AiPanelPrefs),
-      ),
+      t.on(MARKDOWN_CHANNELS.aiPanelPrefsChanged, (prefs) => handler(prefs as AiPanelPrefs)),
     onChromePressed: (handler) => t.on('app:chrome-pressed', () => handler()),
     getAiSettings: () => t.invoke(AI_CHANNELS.getSettings),
     aiGskStatus: (withEmail?: boolean) => t.invoke(AI_CHANNELS.gskStatus, withEmail),

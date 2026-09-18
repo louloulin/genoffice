@@ -13,11 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react'
-import {
-  PiDialogHost,
-  NotificationToaster,
-  PiStatusBar,
-} from '../src/components'
+import { PiDialogHost, NotificationToaster, PiStatusBar } from '../src/components'
 import { OfficeSessionContext } from '../src/provider'
 import type { ReactUIAdapter } from '../src/ui-adapter'
 
@@ -65,9 +61,13 @@ function ProviderWithAdapter(props: {
   children: React.ReactNode
 }): React.ReactNode {
   // Fake session — we never touch session.* in component tests, only uiAdapter.
+  // `resourceLoader` is type-cast because the tests do not exercise it; the
+  // real implementation lives in session.ts and is verified by the live
+  // session tests there.
   const fakeSession = {
     session: {} as never,
     uiAdapter: props.adapter,
+    resourceLoader: {} as never,
     reloadResources: async () => ({ skills: 0, extensions: 0 }),
     dispose: () => {},
   }
@@ -99,7 +99,7 @@ describe('PiDialogHost', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <PiDialogHost />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
@@ -112,7 +112,7 @@ describe('PiDialogHost', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <PiDialogHost />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
@@ -122,7 +122,9 @@ describe('PiDialogHost', () => {
     await act(async () => {
       const p = adapter.confirm('Save changes?', 'You have unsaved work.')
       // Subscribe to resolution
-      p.then((v) => { resolved = v })
+      p.then((v) => {
+        resolved = v
+      })
     })
     // After act flush, the dialog should appear
     const backdrop = byTestId(m.container, 'pi-dialog-backdrop')
@@ -150,20 +152,25 @@ describe('PiDialogHost', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <PiDialogHost />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
 
     let resolved: string | undefined = 'unset'
     await act(async () => {
-      adapter.input('Rename', 'new name').then((v) => { resolved = v })
+      adapter.input('Rename', 'new name').then((v) => {
+        resolved = v
+      })
     })
     const input = byTestId(m.container, 'pi-dialog-input') as HTMLInputElement | null
     expect(input).not.toBeNull()
     await act(async () => {
       // Simulate user typing
-      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      )!.set!
       nativeSetter.call(input, 'Document_v2.docx')
       input!.dispatchEvent(new Event('input', { bubbles: true }))
     })
@@ -183,14 +190,16 @@ describe('PiDialogHost', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <PiDialogHost />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
 
     let resolved: string | undefined = 'unset'
     await act(async () => {
-      adapter.select('Pick format', ['docx', 'pdf', 'md']).then((v) => { resolved = v })
+      adapter.select('Pick format', ['docx', 'pdf', 'md']).then((v) => {
+        resolved = v
+      })
     })
     const pdfBtn = byTestId(m.container, 'pi-dialog-option-pdf')
     expect(pdfBtn).not.toBeNull()
@@ -209,14 +218,16 @@ describe('PiDialogHost', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <PiDialogHost />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
 
     let resolved: boolean | undefined = undefined
     await act(async () => {
-      adapter.confirm('Delete?', 'Cannot undo').then((v) => { resolved = v })
+      adapter.confirm('Delete?', 'Cannot undo').then((v) => {
+        resolved = v
+      })
     })
     const cancelBtn = byTestId(m.container, 'pi-dialog-cancel')
     await act(async () => {
@@ -234,14 +245,16 @@ describe('PiDialogHost', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <PiDialogHost showCountdown={false} />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
 
     let resolved: boolean | undefined = undefined
     await act(async () => {
-      adapter.confirm('Slow?', 'Patient', { timeout: 30 }).then((v) => { resolved = v })
+      adapter.confirm('Slow?', 'Patient', { timeout: 30 }).then((v) => {
+        resolved = v
+      })
     })
     expect(byTestId(m.container, 'pi-dialog-backdrop')).not.toBeNull()
     // Wait past the timeout
@@ -272,7 +285,7 @@ describe('NotificationToaster', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <NotificationToaster />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
@@ -285,7 +298,7 @@ describe('NotificationToaster', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <NotificationToaster />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
@@ -336,7 +349,7 @@ describe('PiStatusBar', () => {
     const m = mount(
       <ProviderWithAdapter adapter={adapter}>
         <PiStatusBar />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
     root = m.root
     container = m.container
@@ -375,19 +388,23 @@ describe('listener cleanup', () => {
         <PiDialogHost />
         <NotificationToaster />
         <PiStatusBar />
-      </ProviderWithAdapter>
+      </ProviderWithAdapter>,
     )
 
     // After mount, there should be a listener from each subscription
     expect((adapter as unknown as { dialogListeners: Set<unknown> }).dialogListeners.size).toBe(1)
-    expect((adapter as unknown as { notificationListeners: Set<unknown> }).notificationListeners.size).toBe(1)
+    expect(
+      (adapter as unknown as { notificationListeners: Set<unknown> }).notificationListeners.size,
+    ).toBe(1)
     expect((adapter as unknown as { statusListeners: Set<unknown> }).statusListeners.size).toBe(1)
 
     unmount(m.root, m.container)
 
     // After unmount, all listeners should be cleaned up
     expect((adapter as unknown as { dialogListeners: Set<unknown> }).dialogListeners.size).toBe(0)
-    expect((adapter as unknown as { notificationListeners: Set<unknown> }).notificationListeners.size).toBe(0)
+    expect(
+      (adapter as unknown as { notificationListeners: Set<unknown> }).notificationListeners.size,
+    ).toBe(0)
     expect((adapter as unknown as { statusListeners: Set<unknown> }).statusListeners.size).toBe(0)
   })
 })

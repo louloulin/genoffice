@@ -21,6 +21,18 @@ export default tseslint.config(
       // Browser-side extractor fragments are function-body slices (top-level
       // return), not modules; they are injected as raw text.
       'packages/html2docx/src/browser/**',
+      // Local agent/editor tooling (gitignored) — comet-hook-router.mjs is a
+      // minified bundle that floods the run with ~1200 false-positive
+      // no-unused-expressions / no-control-regex hits. Same for the other
+      // AI-agent scratch directories.
+      '.agents/**',
+      '.claude/**',
+      '.trae/**',
+      '.codex/**',
+      '.comet/**',
+      '.pi/**',
+      // Local scratch archives (tracked files but not part of the build).
+      '.scratch-archive/**',
     ],
   },
   js.configs.recommended,

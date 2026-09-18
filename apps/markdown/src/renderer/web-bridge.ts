@@ -10,6 +10,7 @@
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
 import { downloadBytes, installBackToHome, pickFileBytes } from '@genoffice/ipc-bridge/web-native'
 import { createMarkdownApi, createMarkdownProjectApi } from '../shared/markdown-api-factory'
+import type { SaveMarkdownResult } from '../shared/ipc'
 
 if (!isElectronRuntime()) {
   // Floating "返回主页" pill for the markdown renderer.
@@ -36,11 +37,20 @@ if (!isElectronRuntime()) {
     consumeHeadlessExport: async () => null,
     headlessExportDone: () => {},
     save: async (request) => {
+      // The server's `markdown:save` handler always returns a string path
+      // on success (it allocates a new managed file under DATA_DIR or
+      // resolves the caller-supplied path). Cast to the shared result type
+      // so the override signature lines up with the desktop call site.
       const result = (await transport.invoke('markdown:save', {
         ...request,
         path: currentPath,
-      })) as { ok: true; path?: string } | { ok: false; error?: string; canceled?: true }
-      if (result && 'path' in result && typeof result.path === 'string' && result.path) {
+      })) as SaveMarkdownResult
+      // `SaveMarkdownResult` is `{ ok: true; path: string } | { ok: true; canceled: true }
+      // | { ok: false; error: string }` — TypeScript can't narrow on the
+      // negative `!result.canceled` because the first variant doesn't
+      // declare `canceled` at all. The `in` operator narrows cleanly across
+      // the union to the variant that actually carries `path`.
+      if (result.ok && 'path' in result) {
         currentPath = result.path
       }
       return result
@@ -69,8 +79,10 @@ if (!isElectronRuntime()) {
       }
       // SAFETY: window.open('', '_blank') opens an about:blank tab whose
       // origin is the caller's own. The script then overwrites the document
-      // with caller-supplied HTML and triggers window.print(). Same-origin
-      // write; not a redirect vector.
+      // with caller-supplied HTML and triggers window.print(). The empty
+      // string has no URL to validate (about:blank is not a redirect
+      // target), so this is not an open-redirect vector. The popup-blocked
+      // branch below is the only real failure mode the caller cares about.
       const win = window.open('', '_blank')
       if (!win) return { ok: false, error: 'web: popup blocked' }
       win.document.open()

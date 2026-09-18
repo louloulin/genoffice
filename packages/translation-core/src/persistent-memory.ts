@@ -110,7 +110,9 @@ export class PersistentTranslationMemory {
   constructor(opts: PersistentTranslationMemoryOptions = {}) {
     this.baseDir = opts.baseDir ?? defaultBaseDir()
     this.fs = opts.fileSystem ?? defaultFS
-    this.inner = new TranslationMemory({ maxEntries: opts.maxEntries })
+    this.inner = new TranslationMemory(
+      opts.maxEntries !== undefined ? { maxEntries: opts.maxEntries } : {},
+    )
     this.fuzzyThreshold = opts.fuzzyThreshold ?? DEFAULT_FUZZY_THRESHOLD
   }
 
@@ -188,7 +190,8 @@ export class PersistentTranslationMemory {
     bucket?: string | undefined,
   ): PersistentLookupHit | null {
     const exact = this.inner.lookup(sourceLang, targetLang, sourceText, bucket)
-    if (exact) return { translatedText: exact.translatedText, sourceText: exact.sourceText, confidence: 1 }
+    if (exact)
+      return { translatedText: exact.translatedText, sourceText: exact.sourceText, confidence: 1 }
     const pair = pairKey(sourceLang, targetLang)
     const cache = this.pairCache.get(pair)
     if (!cache) return null
@@ -203,7 +206,11 @@ export class PersistentTranslationMemory {
       const score = combinedSimilarity(trimmed, entry.sourceText.trim())
       if (score < this.fuzzyThreshold) continue
       if (!best || score > best.confidence) {
-        best = { translatedText: entry.translatedText, sourceText: entry.sourceText, confidence: score }
+        best = {
+          translatedText: entry.translatedText,
+          sourceText: entry.sourceText,
+          confidence: score,
+        }
       }
     }
     return best
@@ -251,8 +258,7 @@ export class PersistentTranslationMemory {
       const scope = scopeOf(req.bucket)
       cache.entries = cache.entries.filter(
         (e) =>
-          normalize(e.sourceText) !== normalize(unit.sourceText) ||
-          scopeOf(e.bucket) !== scope,
+          normalize(e.sourceText) !== normalize(unit.sourceText) || scopeOf(e.bucket) !== scope,
       )
       cache.entries.push({
         sourceLang: req.sourceLang ?? 'auto',
@@ -296,14 +302,20 @@ export class PersistentTranslationMemory {
     const lines: string[] = []
     lines.push('<?xml version="1.0" encoding="UTF-8"?>')
     lines.push(`<tmx version="${TMX_VERSION}">`)
-    lines.push('  <header creationtool="genoffice-translation-core" creationtoolversion="0.1.0" segtype="sentence" o-tmf="plain-text" />')
+    lines.push(
+      '  <header creationtool="genoffice-translation-core" creationtoolversion="0.1.0" segtype="sentence" o-tmf="plain-text" />',
+    )
     lines.push('  <body>')
     for (const [pair, cache] of this.pairCache.entries()) {
       const [src, tgt] = pair.split('->')
       for (const entry of cache.entries) {
         lines.push('    <tu>')
-        lines.push(`      <tuv xml:lang="${escapeXml(src ?? '')}"><seg>${escapeXml(entry.sourceText)}</seg></tuv>`)
-        lines.push(`      <tuv xml:lang="${escapeXml(tgt ?? '')}"><seg>${escapeXml(entry.translatedText)}</seg></tuv>`)
+        lines.push(
+          `      <tuv xml:lang="${escapeXml(src ?? '')}"><seg>${escapeXml(entry.sourceText)}</seg></tuv>`,
+        )
+        lines.push(
+          `      <tuv xml:lang="${escapeXml(tgt ?? '')}"><seg>${escapeXml(entry.translatedText)}</seg></tuv>`,
+        )
         lines.push('    </tu>')
       }
     }
