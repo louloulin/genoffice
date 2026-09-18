@@ -13,6 +13,7 @@ import {
   downloadBytes,
   installBackToHome,
   pickFileBytes,
+  uploadFileToServer,
   webCopyImage,
   webFontMetrics,
   webOpenTab,
@@ -481,9 +482,26 @@ if (!isElectronRuntime()) {
       if (!picked) return null
       const paths: string[] = []
       for (const file of picked) {
-        paths.push(await files.writeTempFile(file.name, file.bytes))
+        // Land every picked file in FILES_DIR (persistent webserver storage)
+        // AND keep the temp-file path the docx pipeline needs for the
+        // immediate `files:add` call. Without the FILES_DIR copy, restart
+        // would lose every attachment.
+        try {
+          const uploaded = await uploadFileToServer(transport, file.name, file.bytes)
+          paths.push(uploaded.path)
+        } catch {
+          // fall back to the legacy temp path so an upload hiccup does
+          // not block the rest of the flow
+          paths.push(await files.writeTempFile(file.name, file.bytes))
+        }
       }
       return await transport.invoke('files:add', paths)
+    },
+    uploadFile: async (projectId?: string) => {
+      const picked = await pickFileBytes(undefined, false)
+      if (!picked) return null
+      const file = picked[0]
+      return await uploadFileToServer(transport, file.name, file.bytes, projectId)
     },
     openNewTab: async (openPath) => {
       webOpenTab(openPath ? `#open=${encodeURIComponent(openPath)}` : window.location.href)

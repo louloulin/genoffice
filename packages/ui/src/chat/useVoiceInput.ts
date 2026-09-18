@@ -114,14 +114,13 @@ export function useVoiceInput(options: UseVoiceInputOptions): UseVoiceInputRetur
       baseRef.current = merged
       onResult(merged)
       if (finalText && recogRef.current) {
-        // Mirror what AiPanel.tsx does for its voiceRef.current: stash the
+        // mirror what AiPanel.tsx does for its voiceRef.current: stash the
         // committed base so a subsequent interim segment can diff against
         // it instead of the initial empty string.
-        // SAFETY: `SpeechRecognition` does not declare a private `_committedBase`
-        // field on its public type — the property is added by this module as a
-        // side cache that survives across interim/final transitions. The cast
-        // widens through `unknown` because the structural shape is the only
-        // invariant we can guarantee at runtime.
+
+        // SAFETY: SpeechRecognition has no `_committedBase` on its public
+        // type; the field is a per-instance side cache this module adds to
+        // ride across interim/final transitions.
         ;(recogRef.current as unknown as { _committedBase?: string })._committedBase = base + finalText
       }
     }

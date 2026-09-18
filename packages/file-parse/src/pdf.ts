@@ -1,7 +1,4 @@
-// Ambient types for the pdfjs worker. The lint rule no longer allows
-// triple-slash references in TS-isolatedModules mode; `import './x'`
-// resolves to the matching `.d.ts` and gives the same global declarations.
-import './pdfjs-worker'
+/// <reference path="./pdfjs-worker.d.ts" />
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 

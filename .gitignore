@@ -70,3 +70,8 @@ apps/docs/tests/pagination-corpus/docx/07-page-breaks*.docx
 
 # Agent runtime state (not source)
 /.pi/
+
+# Auto-generated planning artifacts (pi-lens overnight runs).
+# Each `plan-NN-*.md` is regenerated on every scan; committing them
+# would create noisy churn and pull planning commentary into the tree.
+/plan/

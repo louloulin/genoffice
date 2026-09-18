@@ -71,6 +71,11 @@ export interface DesktopApiOverrides {
   fontMetrics?: (family: string) => Promise<unknown>
   /** Web-native attachment picker (browser file input → temp files → files:add). */
   pickAttachments?: () => Promise<unknown>
+  /** Web-native upload: pick a file in the browser and land it in
+   * FILES_DIR via `web:save-file`. Returns null when the user cancels;
+   * the returned object's `path` is FILES_DIR-resident so the desktop
+   * `files:add` channel accepts it without further copying. */
+  uploadFile?: (projectId?: string) => Promise<{ id: string; path: string; name: string } | null>
   /** Web-native tab management (browser tabs). */
   openNewTab?: (openPath?: string | null) => Promise<void>
   listDocsTabs?: () => Promise<unknown>
@@ -137,6 +142,11 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
       t.invoke('docs:write-recovery', path, data),
     onTeardown: (handler) => t.on('docs:teardown', () => handler()),
     respellKick: () =>
+      // SAFETY: `t.invoke` returns `Promise<unknown>` because the IPC
+      // transport cannot infer channel return types at this layer. The
+      // docs:respell-kick handler is registered with the `{ ok, supported }`
+      // shape documented in apps/docs/src/main/docs-main.ts; the cast is
+      // structural, not a promise of stronger typing.
       t.invoke('docs:respell-kick') as unknown as Promise<{ ok: boolean; supported?: boolean }>,
     saveDocxAs:
       overrides.saveDocxAs ??
