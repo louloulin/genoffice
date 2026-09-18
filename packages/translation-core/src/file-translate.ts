@@ -232,14 +232,32 @@ export function resolveTranslateSkills(): TranslateSkillsLocation {
   return { skillDir: '', scriptPath: '', pythonPath, source: 'missing' }
 }
 
-/** True when the extension is one the upstream script knows how to handle. */
-export function isSupportedExtension(pathOrExt: string): boolean {
+/**
+ * True when the extension is one the upstream script knows how to handle.
+ *
+ * `pathOrExt` arrives straight off the IPC wire, so it can be a number or an
+ * object. Calling `.startsWith` on those threw `pathOrExt.startsWith is not a
+ * function` out of `ai:translate-file` / `ai:translate-file-auto`, which the
+ * transport reported as a 500 for what is plainly a malformed request. A
+ * non-string is simply not a supported extension.
+ */
+export function isSupportedExtension(pathOrExt: unknown): boolean {
+  if (typeof pathOrExt !== 'string') return false
   const ext = pathOrExt.startsWith('.') ? pathOrExt.toLowerCase() : extname(pathOrExt).toLowerCase()
   return (SUPPORTED_EXTENSIONS as readonly string[]).includes(ext)
 }
 
-/** Default output path: `<input>_translated<ext>` next to the source. */
-export function defaultOutputPath(inputPath: string): string {
+/**
+ * Default output path: `<input>_translated<ext>` next to the source.
+ *
+ * `ai:translate-file-output-path` forwards its argument unvalidated, and a
+ * number produced `"123_translated"` while a boolean produced
+ * `"true_translated"` — a plausible-looking path the caller then handed to the
+ * translator. Only a string can name a file; anything else is empty, which the
+ * handler already reports as a missing input.
+ */
+export function defaultOutputPath(inputPath: unknown): string {
+  if (typeof inputPath !== 'string' || !inputPath) return ''
   const ext = extname(inputPath)
   const base = inputPath.slice(0, inputPath.length - ext.length)
   return `${base}_translated${ext}`

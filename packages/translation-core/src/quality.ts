@@ -1,3 +1,4 @@
+import { informationLength } from './languages'
 import type { QualityReport, TranslationUnit } from './types'
 
 /**
@@ -23,7 +24,11 @@ export function assessQuality(
     warnings.push('refusal-marker')
   }
   if (src.length > 0) {
-    const ratio = trimmed.length / src.length
+    // Compare information, not characters: a Han character carries far more
+    // than a Latin letter, so the raw `length` ratio flagged every legitimate
+    // tech-pack term ("Fabric weight" -> "克重" scored 0.15 and "too-short").
+    // Weighting both sides keeps the ratio meaningful in either direction.
+    const ratio = informationLength(trimmed) / informationLength(src)
     if (ratio < MIN_RATIO) warnings.push('too-short')
     if (ratio > MAX_RATIO) warnings.push('too-long')
     // verbatim copy on a meaningful input → model probably echoed source

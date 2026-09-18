@@ -34,12 +34,26 @@ import path from 'node:path'
 import { TranslationMemory } from './memory'
 import type { MemoryEntry, MemorySaveRequest, MemorySaveResponse } from './memory'
 
-/** File layout mirrors LumosAI: `~/.lumosai/translation_memory/<pair>.json`. */
-const DEFAULT_BASE_DIR = path.join(
-  process.env.HOME ?? path.join(path.sep, 'tmp'),
-  '.genoffice',
-  'translation-memory',
-)
+/**
+ * Default on-disk directory: `<data dir>/translation-memory`.
+ *
+ * Resolved per construction, not at module load, so a host that sets
+ * `DATA_DIR` (the web-server does) or a test that points at a scratch
+ * directory actually gets its own store. The previous module-load constant
+ * was fixed to `$HOME/.genoffice/translation-memory`, which meant the
+ * standalone web-server wrote translation memory into the operator's real
+ * home directory regardless of `DATA_DIR` — and no test could isolate it.
+ *
+ * Precedence mirrors the KB's `GENOFFICE_TRANSLATION_KB`:
+ * `GENOFFICE_TRANSLATION_MEMORY` > `DATA_DIR` > `~/.genoffice`.
+ */
+function defaultBaseDir(): string {
+  const override = process.env.GENOFFICE_TRANSLATION_MEMORY
+  if (override) return override
+  const dataDir = process.env.DATA_DIR ?? process.env.GENOFFICE_WEB_DATA_DIR
+  const root = dataDir ?? path.join(process.env.HOME ?? path.join(path.sep, 'tmp'), '.genoffice')
+  return path.join(root, 'translation-memory')
+}
 
 /** Minimum similarity score (0..1) for a fuzzy hit to be returned. */
 const DEFAULT_FUZZY_THRESHOLD = 0.7
@@ -94,7 +108,7 @@ export class PersistentTranslationMemory {
   private readonly dirtyPairs = new Set<string>()
 
   constructor(opts: PersistentTranslationMemoryOptions = {}) {
-    this.baseDir = opts.baseDir ?? DEFAULT_BASE_DIR
+    this.baseDir = opts.baseDir ?? defaultBaseDir()
     this.fs = opts.fileSystem ?? defaultFS
     this.inner = new TranslationMemory({ maxEntries: opts.maxEntries })
     this.fuzzyThreshold = opts.fuzzyThreshold ?? DEFAULT_FUZZY_THRESHOLD
@@ -153,8 +167,13 @@ export class PersistentTranslationMemory {
    * Exact match (same as {@link TranslationMemory.lookup}). Returns null when
    * there is no entry; use {@link fuzzyLookup} for similarity-based matches.
    */
-  lookup(sourceLang: string, targetLang: string, sourceText: string): MemoryEntry | null {
-    return this.inner.lookup(sourceLang, targetLang, sourceText)
+  lookup(
+    sourceLang: string,
+    targetLang: string,
+    sourceText: string,
+    bucket?: string | undefined,
+  ): MemoryEntry | null {
+    return this.inner.lookup(sourceLang, targetLang, sourceText, bucket)
   }
 
   /**
@@ -162,16 +181,25 @@ export class PersistentTranslationMemory {
    * candidate whose similarity meets {@link PersistentTranslationMemoryOptions.fuzzyThreshold}
    * is returned. Returns null when no candidate is close enough.
    */
-  fuzzyLookup(sourceLang: string, targetLang: string, sourceText: string): PersistentLookupHit | null {
-    const exact = this.inner.lookup(sourceLang, targetLang, sourceText)
+  fuzzyLookup(
+    sourceLang: string,
+    targetLang: string,
+    sourceText: string,
+    bucket?: string | undefined,
+  ): PersistentLookupHit | null {
+    const exact = this.inner.lookup(sourceLang, targetLang, sourceText, bucket)
     if (exact) return { translatedText: exact.translatedText, sourceText: exact.sourceText, confidence: 1 }
     const pair = pairKey(sourceLang, targetLang)
     const cache = this.pairCache.get(pair)
     if (!cache) return null
     const trimmed = sourceText.trim()
     if (!trimmed) return null
+    const scope = scopeOf(bucket)
     let best: PersistentLookupHit | null = null
     for (const entry of cache.entries) {
+      // Fuzzy matches must respect the glossary / customer bucket too, or a
+      // near-identical sentence from another customer would leak across.
+      if (scopeOf(entry.bucket) !== scope) continue
       const score = combinedSimilarity(trimmed, entry.sourceText.trim())
       if (score < this.fuzzyThreshold) continue
       if (!best || score > best.confidence) {
@@ -187,7 +215,9 @@ export class PersistentTranslationMemory {
     const pair = pairKey(entry.sourceLang, entry.targetLang)
     const cache = this.pairCache.get(pair) ?? { entries: [] }
     const next = cache.entries.filter(
-      (e) => normalize(e.sourceText) !== normalize(entry.sourceText),
+      (e) =>
+        normalize(e.sourceText) !== normalize(entry.sourceText) ||
+        scopeOf(e.bucket) !== scopeOf(entry.bucket),
     )
     next.push({ ...entry, updatedAt: Date.now() })
     cache.entries = next
@@ -204,19 +234,36 @@ export class PersistentTranslationMemory {
    */
   saveMany(req: MemorySaveRequest): MemorySaveResponse {
     const inner = this.inner.saveMany(req)
-    for (const unit of req.units ?? []) {
-      if (!unit.sourceText) continue
+    // The inner call rejects a non-array `units` instead of throwing; stop
+    // before the loop below repeats the same mistake on the disk cache.
+    if (!inner.ok) return inner
+    for (const unit of req.units) {
+      if (!unit || typeof unit.sourceText !== 'string' || !unit.sourceText) continue
       const pair = pairKey(req.sourceLang ?? 'auto', req.targetLang ?? 'auto')
       let cache = this.pairCache.get(pair)
       if (!cache) {
         cache = { entries: [] }
         this.pairCache.set(pair, cache)
       }
+      // Replace the previous entry for the same source *and* bucket instead of
+      // appending. Appending grew the file without bound on repeated passes and
+      // left the stale translation in place for every later fuzzy match.
+      const scope = scopeOf(req.bucket)
+      cache.entries = cache.entries.filter(
+        (e) =>
+          normalize(e.sourceText) !== normalize(unit.sourceText) ||
+          scopeOf(e.bucket) !== scope,
+      )
       cache.entries.push({
         sourceLang: req.sourceLang ?? 'auto',
         targetLang: req.targetLang ?? 'auto',
         sourceText: unit.sourceText,
         translatedText: unit.translatedText,
+        // The bucket has to be written to disk: without it the entry came back
+        // unscoped after a restart, so the first customer's batch translation
+        // was replayed for every other customer. `save()` always kept it —
+        // which is why the single-snippet path looked correct.
+        ...(req.bucket !== undefined ? { bucket: req.bucket } : {}),
         updatedAt: Date.now(),
       })
       this.dirtyPairs.add(pair)
@@ -272,6 +319,11 @@ export class PersistentTranslationMemory {
 
 interface PairCache {
   entries: MemoryEntry[]
+}
+
+/** Normalized glossary/customer scope; `undefined` == unscoped. */
+export function scopeOf(bucket: string | undefined): string {
+  return typeof bucket === 'string' ? bucket.trim() : ''
 }
 
 function pairKey(sourceLang: string, targetLang: string): string {

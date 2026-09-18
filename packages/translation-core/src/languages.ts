@@ -33,9 +33,19 @@ function familyOf(value: string): string {
   return (idx >= 0 ? value.slice(0, idx) : value).toLowerCase()
 }
 
-/** Look up a language by BCP-47 code; falls back to an English-label guess. */
+/**
+ * Look up a language by BCP-47 code; falls back to an English-label guess.
+ *
+ * `value` is typed as a string but reaches this from untyped JSON on every
+ * wire (`ai:translate`'s `sourceLang`, the HTTP batch's `sourceLanguage`), so
+ * it can be a number or an object. `familyOf` calls `value.indexOf`, which
+ * threw `value3.indexOf is not a function` straight out of `translateOne` —
+ * the HTTP endpoint answered 500 and the IPC endpoint reported the raw
+ * JavaScript expression as the translation error. Only a string names a
+ * language; anything else is "unknown", which every caller already handles.
+ */
 export function getLanguage(value: string | undefined | null): LanguageOption | null {
-  if (!value) return null
+  if (typeof value !== 'string' || !value) return null
   const direct = BY_VALUE.get(value as LanguageCode)
   if (direct) return direct
   // tolerate stripped region codes (e.g. 'en' from a foreign UI)
@@ -51,7 +61,7 @@ export function getLanguage(value: string | undefined | null): LanguageOption | 
 export function englishLabelFor(value: string | undefined | null): string {
   const lang = getLanguage(value)
   if (lang) return lang.englishLabel
-  if (!value || value === 'auto') return 'Auto-detect'
+  if (typeof value !== 'string' || !value || value === 'auto') return 'Auto-detect'
   // last resort — pass the code through so the model still gets a target
   return value
 }
@@ -104,6 +114,51 @@ export function dominantScript(text: string): TextScript {
     }
   }
   return best
+}
+
+/**
+ * Per-character information weight, by writing system.
+ *
+ * Length heuristics (see `quality.ts`) compare a translation against its
+ * source, but raw character counts are not comparable across scripts: one Han
+ * character carries roughly the information of two-and-a-half Latin letters,
+ * so "Fabric weight" -> "克重" measured 2/13 = 0.15 and every tech-pack term
+ * was flagged `too-short` (6 of 20 real garment strings in a spot check).
+ * Weighting the CJK scripts removes that systematic false positive; every
+ * other script stays at 1 so same-script comparisons are unchanged.
+ */
+const SCRIPT_WEIGHT: Readonly<Record<TextScript, number>> = {
+  han: 2.5,
+  kana: 2.5,
+  hangul: 2.5,
+  latin: 1,
+  cyrillic: 1,
+  arabic: 1,
+  devanagari: 1,
+  thai: 1,
+  other: 1,
+}
+
+/**
+ * `text`'s length in "Latin-letter equivalents" — CJK characters count as
+ * {@link SCRIPT_WEIGHT}, everything else (letters, digits, punctuation,
+ * whitespace) counts as one.
+ *
+ * Only ever used to compare a translation with its source, never to reject
+ * input, so the exact weights matter less than their being applied
+ * consistently at both ends of the ratio.
+ */
+export function informationLength(text: string): number {
+  let weighted = 0
+  let counted = 0
+  for (const [script, pattern] of SCRIPT_PATTERNS) {
+    const count = (text.match(pattern) ?? []).length
+    counted += count
+    weighted += count * SCRIPT_WEIGHT[script]
+  }
+  // Characters no script pattern matched (digits, punctuation, whitespace)
+  // still occupy a position in the output, so they keep weight 1.
+  return weighted + (text.length - counted)
 }
 
 /**

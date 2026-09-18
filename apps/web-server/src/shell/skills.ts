@@ -26,6 +26,7 @@ import {
   type SkillMarketEntry,
 } from '@genoffice/agent-skills/extensions/skill-market'
 import { DATA_DIR, registerHandle } from '../common/index'
+import { InvalidArgumentError } from '../ai/errors'
 import {
   PI_SKILLS_DIR,
   artifactBytes,
@@ -1749,9 +1750,16 @@ export function registerSkillHandlers(): void {
     return { ok: true, skills }
   })
 
-  registerHandle('home:uninstall-skill', async (_event: unknown, args: unknown) => {    await invalidateLivePiSession()
+  registerHandle('home:uninstall-skill', async (_event: unknown, args: unknown) => {
+    await invalidateLivePiSession()
 
     const { id } = (args || {}) as { id: SkillKind }
+    // `removeSkillFromPi(undefined)` throws a bare TypeError from `path.join`,
+    // which the transport reported as a server fault. An uninstall request
+    // with no id is the caller's mistake.
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new InvalidArgumentError('home:uninstall-skill', 'requires a skill id')
+    }
     const all = loadSkills()
     const skill = all.find((s) => s.id === id)
     // Built-in skills can never be uninstalled.

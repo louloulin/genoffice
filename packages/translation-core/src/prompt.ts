@@ -52,8 +52,13 @@ export function buildTranslateSystemPrompt(opts: {
   const preserve = opts.preserveFormat
     ? 'Preserve the original formatting: never restyle, never wrap in lists or code blocks unless the source already does so.'
     : 'Return only the translated text; no formatting or commentary.'
-  const glossaryHint = opts.glossaryCategory && opts.glossaryCategory.trim()
-    ? ` Domain glossary: prefer terminology consistent with the "${opts.glossaryCategory.trim()}" domain.`
+  // glossaryCategory arrives straight off the wire and was `.trim()`-ed without
+  // a type guard: a number or array answered 500 with
+  // `opts.glossaryCategory.trim is not a function`. Keep it as the prompt-level
+  // signal it is, only when it really is a non-empty string.
+  const glossaryRaw = typeof opts.glossaryCategory === 'string' ? opts.glossaryCategory.trim() : ''
+  const glossaryHint = glossaryRaw
+    ? ` Domain glossary: prefer terminology consistent with the "${glossaryRaw}" domain.`
     : ''
 
   const kbBlock = opts.knowledgeBase
@@ -136,6 +141,6 @@ export function extractTranslationText(content: string): string | null {
  * string for `auto` so the prompt falls back to "auto-detect".
  */
 export function normalizeSourceLang(raw: string | LanguageCode | undefined): string {
-  if (!raw || raw === 'auto') return 'auto'
+  if (typeof raw !== 'string' || !raw || raw === 'auto') return 'auto'
   return raw
 }

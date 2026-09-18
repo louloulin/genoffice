@@ -14,12 +14,16 @@ import {
   saveProjects,
   WEB_TEMP_ROOT,
 } from '../common/index'
+import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 export function registerWebHandlers(): void {
   registerHandle('web:write-temp-file', async (_event: unknown, request: unknown) => {
     const record = request as { name?: unknown; bytes?: unknown } | null
     if (!record || typeof record.name !== 'string' || !(record.bytes instanceof ArrayBuffer)) {
-      throw new Error('web:write-temp-file expects { name: string, bytes: ArrayBuffer }')
+      throw new InvalidArgumentError(
+        'web:write-temp-file',
+        'expects { name: string, bytes: ArrayBuffer }',
+      )
     }
     const safeName = (basename(record.name) || 'file').replace(/[^\w.\- ]+/g, '_') || 'file'
     const dir = mkdirSync(
@@ -33,7 +37,7 @@ export function registerWebHandlers(): void {
 
   registerHandle('web:read-file-bytes', async (_event: unknown, path: unknown) => {
     if (!existsSync(path as string)) {
-      throw new Error(`File not found: ${path}`)
+      throw new NotFoundError('web:read-file-bytes', `File not found: ${String(path)}`)
     }
     const bytes = readFileSync(path as string)
     return {
@@ -52,7 +56,9 @@ export function registerWebHandlers(): void {
       bytes?: ArrayBuffer
       projectId?: string
     }
-    if (!name || !bytes) throw new Error('web:save-file expects { name, bytes, projectId? }')
+    if (!name || !bytes) {
+      throw new InvalidArgumentError('web:save-file', 'expects { name, bytes, projectId? }')
+    }
 
     const fileId = `${Date.now()}-${name}`
     const filePath = join(FILES_DIR, fileId)

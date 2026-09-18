@@ -289,16 +289,21 @@ export function defaultDictionaryPath(dataDir: string, inputPath: string): strin
 export function applyKbRules(
   translated: string,
   kb: KnowledgeBase,
-  opts: { sourceLang: string; targetLang: string; customerName?: string },
+  opts: { sourceLang: string; targetLang: string; customerName?: string; glossaryCategory?: string },
   /** Original source text — only when known. Used to decide whether a
    *  neverTranslate brand rule *should* apply: the model can only have
    *  "translated the brand away" if the source actually had it. */
   sourceText?: string,
 ): { text: string; matchedTerms: string[] } {
+  // `glossaryCategory` has to reach the resolver too: renderer paths send the
+  // customer under that name (`docs` passes the customer as glossaryCategory),
+  // so forwarding only `customerName` made the post-translation enforcement
+  // pass apply every customer's terms to the file.
   const resolved = kb.resolve({
     sourceLang: opts.sourceLang,
     targetLang: opts.targetLang,
     ...(opts.customerName !== undefined ? { customerName: opts.customerName } : {}),
+    ...(opts.glossaryCategory !== undefined ? { category: opts.glossaryCategory } : {}),
   })
   let text = translated
   const matchedTerms: string[] = []
@@ -329,14 +334,40 @@ export function applyKbRules(
     }
   }
 
-  for (const term of resolved.terms) {
-    if (!term.sourceTerm || !term.targetTerm) continue
+  // Longest source first, exactly like `terminologyPairs` and for the same
+  // reason: enforcement rewrites with `split/join`, so a term that is a
+  // substring of a longer one has to run *after* it. The resolver returns terms
+  // in scope/priority order, which put `fabric` ahead of `fabric weight` and
+  // turned "fabric weight spec" into "布料 weight spec" — the longer mapping
+  // was already destroyed by the time it was reached. `matchedTerms` is built
+  // from the terms that actually fired, so the UI badge does not count a rule
+  // that had nothing left to rewrite.
+  const applicable = resolved.terms
+    .filter((term) => Boolean(term.sourceTerm) && Boolean(term.targetTerm))
+    .sort((a, b) => b.sourceTerm.length - a.sourceTerm.length)
+  for (const term of applicable) {
     if (!text.includes(term.sourceTerm)) continue
     text = text.split(term.sourceTerm).join(term.targetTerm)
     matchedTerms.push(term.sourceTerm)
   }
 
   return { text, matchedTerms }
+}
+
+/**
+ * Reject a file path that cannot name a file.
+ *
+ * `inputPath` / `dictionaryPath` arrive straight off the IPC wire, so a number
+ * is truthy and slipped past the `!request.inputPath` guard into `node:path`,
+ * which answered `The "path" argument must be of type string. Received type
+ * number (123)` from three layers down. That reads as a server fault for what
+ * is a plain shape error.
+ */
+function requirePath(value: unknown, field: string): string | null {
+  if (typeof value !== 'string' || !value.trim()) {
+    return `expected a non-empty \`${field}\``
+  }
+  return null
 }
 
 export interface BuildDictionaryDeps {
@@ -360,7 +391,8 @@ export async function buildDictionary(
   deps: BuildDictionaryDeps,
 ): Promise<BuildDictionaryResult> {
   const started = Date.now()
-  if (!request.inputPath) return { ok: false, error: 'expected a non-empty `inputPath`' }
+  const inputPathError = requirePath(request.inputPath, 'inputPath')
+  if (inputPathError) return { ok: false, error: inputPathError }
   if (!request.targetLang) return { ok: false, error: 'expected a non-empty `targetLang`' }
 
   let text: string | undefined
@@ -498,6 +530,9 @@ export async function buildDictionary(
             sourceLang: request.sourceLang,
             targetLang: request.targetLang,
             ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+            ...(request.glossaryCategory !== undefined
+              ? { glossaryCategory: request.glossaryCategory }
+              : {}),
           },
           unit.sourceText,
         )
@@ -599,10 +634,10 @@ export interface FileCoverageResult {
 export async function assessFileCoverage(
   request: FileCoverageRequest,
 ): Promise<FileCoverageResult> {
-  if (!request.inputPath) return { ok: false, error: 'expected a non-empty `inputPath`' }
-  if (!request.dictionaryPath) {
-    return { ok: false, error: 'expected a non-empty `dictionaryPath`' }
-  }
+  const inputPathError = requirePath(request.inputPath, 'inputPath')
+  if (inputPathError) return { ok: false, error: inputPathError }
+  const dictionaryPathError = requirePath(request.dictionaryPath, 'dictionaryPath')
+  if (dictionaryPathError) return { ok: false, error: dictionaryPathError }
   const dictionary = readDictionaryFile(request.dictionaryPath)
   if (!dictionary) {
     return { ok: false, error: `could not read the dictionary at ${request.dictionaryPath}` }
@@ -697,8 +732,10 @@ export async function fillDictionaryGaps(
   deps: BuildDictionaryDeps,
 ): Promise<FillGapsResult> {
   const started = Date.now()
-  if (!request.inputPath) return { ok: false, error: 'expected a non-empty `inputPath`' }
-  if (!request.dictionaryPath) {
+  const inputPathError = requirePath(request.inputPath, 'inputPath')
+  if (inputPathError) return { ok: false, error: inputPathError }
+  const dictionaryPathError = requirePath(request.dictionaryPath, 'dictionaryPath')
+  if (dictionaryPathError) {
     return { ok: false, error: 'expected a non-empty `dictionaryPath` to extend' }
   }
   if (!request.targetLang) return { ok: false, error: 'expected a non-empty `targetLang`' }

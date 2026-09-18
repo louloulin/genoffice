@@ -1310,25 +1310,33 @@ export function App() {
           const ch = node.data[after.anchorOffset - 1]
           if (ch === ' ' || ch === '\u00a0') node.deleteData(after.anchorOffset - 1, 1)
         }
-        void window.desktop
+        const kickPromise = window.desktop
           .respellKick()
-          .catch(() => undefined)
-          .then(async () => {
-            // the IPC can resolve before the input pipeline delivers the
-            // keystroke — wait for the shield to see it (or give up quietly:
-            // a kick that never landed left nothing to scrub)
-            const deadline = Date.now() + 800
-            while (!sawKick && Date.now() < deadline) {
-              await new Promise((r) => setTimeout(r, 30))
-            }
-            // Linux/mac Hunspell respells in the keystroke's wake; the Windows
-            // OS spellchecker samples the text asynchronously with throttling,
-            // and a scrub 0.12s after the keystroke erased the mutation before
-            // the service ever saw it (squiggles only
-            // returned when repeated toggles happened to straddle a sampling
-            // window). Let the typed state live long enough to be sampled.
-            if (sawKick && /win/i.test(navigator.platform)) {
-              await new Promise((r) => setTimeout(r, 900))
+          .catch(() => ({ ok: false, supported: false }))
+        void kickPromise.then(async (result) => {
+            // The web build has no `webContents` to deliver a synthetic
+            // keystroke to, so the channel answers `{ok:true, supported:false}`
+            // and the whole wait-for-shield + 900ms sampling delay becomes
+            // dead weight. Branch on the flag instead of waiting 1.7s for a
+            // timer that was never going to fire.
+            const supported = result?.supported !== false
+            if (supported) {
+              // the IPC can resolve before the input pipeline delivers the
+              // keystroke — wait for the shield to see it (or give up quietly:
+              // a kick that never landed left nothing to scrub)
+              const deadline = Date.now() + 800
+              while (!sawKick && Date.now() < deadline) {
+                await new Promise((r) => setTimeout(r, 30))
+              }
+              // Linux/mac Hunspell respells in the keystroke's wake; the Windows
+              // OS spellchecker samples the text asynchronously with throttling,
+              // and a scrub 0.12s after the keystroke erased the mutation before
+              // the service ever saw it (squiggles only
+              // returned when repeated toggles happened to straddle a sampling
+              // window). Let the typed state live long enough to be sampled.
+              if (sawKick && /win/i.test(navigator.platform)) {
+                await new Promise((r) => setTimeout(r, 900))
+              }
             }
             scrub()
             observer.start()

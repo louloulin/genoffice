@@ -63,3 +63,39 @@ describe('normalizeSourceLang', () => {
     expect(normalizeSourceLang('en-US')).toBe('en-US')
   })
 })
+
+describe('buildTranslateSystemPrompt shape guards', () => {
+  it('does not throw when glossaryCategory is a non-string', () => {
+    // A number or array used to throw `opts.glossaryCategory.trim is not a
+    // function` from inside the system-prompt builder — the prompt is built
+    // even though the bucket is meaningless, and the renderer gets a sane
+    // (bucket-less) translation instead of a 500.
+    expect(() =>
+      buildTranslateSystemPrompt({
+        sourceLang: 'auto',
+        targetLang: 'zh-CN',
+        preserveFormat: true,
+        glossaryCategory: 7 as unknown as string,
+      }),
+    ).not.toThrow()
+    expect(() =>
+      buildTranslateSystemPrompt({
+        sourceLang: 'auto',
+        targetLang: 'zh-CN',
+        preserveFormat: true,
+        glossaryCategory: {} as unknown as string,
+      }),
+    ).not.toThrow()
+  })
+
+  it('does not throw when sourceLang is a non-string', () => {
+    expect(() =>
+      buildTranslateSystemPrompt({
+        sourceLang: 7 as unknown as string,
+        targetLang: 'zh-CN',
+        preserveFormat: true,
+      }),
+    ).not.toThrow()
+  })
+})
+

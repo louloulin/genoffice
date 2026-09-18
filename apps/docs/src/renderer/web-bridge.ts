@@ -20,6 +20,7 @@ import {
 import { createDesktopApi, createProjectApi } from '../shared/desktop-api-factory'
 import type { DesktopApi } from '../shared/ipc'
 import { parseDataflareTranslateResponse } from '../shared/dataflare-translate-response'
+import { buildEmbedTranslateBody } from '../shared/translate-embed-body'
 import {
   installDataflareEmbedBridge,
   getDataflareEmbedSessionId,
@@ -113,25 +114,28 @@ if (!isElectronRuntime()) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          requestId: unitId,
-          idempotencyKey: unitId,
-          documentId: dataflareContext?.documentId,
-          documentType: 'docx',
-          scene: scope,
-          sourceLanguage: request.sourceLang || 'auto',
-          targetLanguage: request.targetLang,
-          preserveFormatting: request.preserveFormat !== false,
-          memoryEnabled: true,
-          qualityCheck: true,
-          units: [{
-            unitId,
-            kind: scope === 'document' ? 'document' : 'paragraph',
-            sourceText: request.instruction,
-            order: 0,
-            metadata: request.range ? { range: request.range } : undefined,
-          }],
-        }),
+        body: JSON.stringify(
+          buildEmbedTranslateBody(
+            {
+              requestId: unitId,
+              documentId: dataflareContext?.documentId,
+              scene: scope,
+              sourceLanguage: request.sourceLang,
+              targetLanguage: request.targetLang,
+              preserveFormatting: request.preserveFormat,
+              memoryEnabled: request.memoryEnabled,
+              qualityCheck: request.qualityCheck,
+              glossaryCategory: request.glossaryCategory,
+            },
+            [{
+              unitId,
+              kind: scope === 'document' ? 'document' : 'paragraph',
+              sourceText: request.instruction,
+              order: 0,
+              range: request.range,
+            }],
+          ),
+        ),
       })
       // 响应由 GenOffice web-server 返回（{ ok, units, quality }），旧 Dataflare
       // 信封（{ code, data }）也一并兼容，避免再次出现 translatedText 解析失败。
@@ -147,6 +151,12 @@ if (!isElectronRuntime()) {
         sourceLang: request.sourceLang,
         targetLang: request.targetLang,
         preserveFormat: request.preserveFormat !== false,
+        // The one-shot branch used to drop the quality warnings the server
+        // computed, so an embedded selection translation looked clean even
+        // when the batch branch (same response shape) would have flagged it.
+        ...(unit.matchedTerms ? { matchedTerms: unit.matchedTerms } : {}),
+        ...(unit.warnings ? { warnings: unit.warnings } : {}),
+        ...(parsed.quality ? { quality: parsed.quality } : {}),
       }
     },
     aiTranslateBatch: async (request: Parameters<NonNullable<import('../shared/desktop-api-factory').DesktopApiOverrides['aiTranslateBatch']>>[0]) => {
@@ -157,26 +167,22 @@ if (!isElectronRuntime()) {
       const response = await requestDataflare('/office-engine/api/ai/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requestId: batchId,
-          idempotencyKey: batchId,
-          documentId: dataflareContext?.documentId,
-          documentType: 'docx',
-          scene: request.scene || 'document',
-          sourceLanguage: request.sourceLang || 'auto',
-          targetLanguage: request.targetLang,
-          preserveFormatting: request.preserveFormat !== false,
-          memoryEnabled: true,
-          qualityCheck: true,
-          units: request.units.map((unit) => ({
-            unitId: unit.unitId,
-            kind: unit.kind,
-            sourceText: unit.sourceText,
-            order: unit.order,
-            path: unit.path,
-            metadata: { ...(unit.metadata || {}), range: unit.range || undefined },
-          })),
-        }),
+        body: JSON.stringify(
+          buildEmbedTranslateBody(
+            {
+              requestId: batchId,
+              documentId: dataflareContext?.documentId,
+              scene: request.scene || 'document',
+              sourceLanguage: request.sourceLang,
+              targetLanguage: request.targetLang,
+              preserveFormatting: request.preserveFormat,
+              memoryEnabled: request.memoryEnabled,
+              qualityCheck: request.qualityCheck,
+              glossaryCategory: request.glossaryCategory,
+            },
+            request.units,
+          ),
+        ),
       })
       const parsed = parseDataflareTranslateResponse(await response.json().catch(() => null))
       const units = parsed.units.map((unit) => ({
@@ -217,26 +223,22 @@ if (!isElectronRuntime()) {
             sessionId: getDataflareEmbedSessionId() || '',
             method: 'POST',
             path: '/office-engine/api/ai/translate/stream',
-            jsonBody: JSON.stringify({
-              requestId: batchId,
-              idempotencyKey: batchId,
-              documentId: dataflareContext?.documentId,
-              documentType: 'docx',
-              scene: request.scene || 'document',
-              sourceLanguage: request.sourceLang || 'auto',
-              targetLanguage: request.targetLang,
-              preserveFormatting: request.preserveFormat !== false,
-              memoryEnabled: true,
-              qualityCheck: true,
-              units: request.units.map((unit) => ({
-                unitId: unit.unitId,
-                kind: unit.kind,
-                sourceText: unit.sourceText,
-                order: unit.order,
-                path: unit.path,
-                metadata: { ...(unit.metadata || {}), range: unit.range || undefined },
-              })),
-            }),
+            jsonBody: JSON.stringify(
+              buildEmbedTranslateBody(
+                {
+                  requestId: batchId,
+                  documentId: dataflareContext?.documentId,
+                  scene: request.scene || 'document',
+                  sourceLanguage: request.sourceLang,
+                  targetLanguage: request.targetLang,
+                  preserveFormatting: request.preserveFormat,
+                  memoryEnabled: request.memoryEnabled,
+                  qualityCheck: request.qualityCheck,
+                  glossaryCategory: request.glossaryCategory,
+                },
+                request.units,
+              ),
+            ),
           },
           (event) => {
             try {
@@ -321,6 +323,10 @@ if (!isElectronRuntime()) {
           scene: request.scene,
           sourceLanguage: request.sourceLang,
           targetLanguage: request.targetLang,
+          // Forward the glossary the entry was produced under so the backend
+          // can scope the memory. The local store already keys on it.
+          glossaryCategory: request.glossaryCategory,
+          customerName: request.customerName,
           units: request.units,
         }),
       })

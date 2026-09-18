@@ -4,6 +4,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { registerHandle } from '../common/index'
+import { NotFoundError } from '../ai/errors'
 
 export function registerPdfHandlers(): void {
   registerHandle('pdf:consume-pending', () => null)
@@ -13,7 +14,7 @@ export function registerPdfHandlers(): void {
 
   registerHandle('pdf:read-file', async (_event: unknown, filePath: unknown) => {
     if (typeof filePath !== 'string' || !existsSync(filePath)) {
-      throw new Error(`File not found: ${String(filePath)}`)
+      throw new NotFoundError('pdf:read-file', `File not found: ${String(filePath)}`)
     }
     const bytes = readFileSync(filePath)
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
@@ -21,7 +22,7 @@ export function registerPdfHandlers(): void {
 
   registerHandle('pdf:open-path', async (_event: unknown, filePath: unknown) => {
     if (!existsSync(filePath as string)) {
-      throw new Error(`File not found: ${filePath}`)
+      throw new NotFoundError('pdf:open-path', `File not found: ${String(filePath)}`)
     }
     const bytes = readFileSync(filePath as string)
     return {

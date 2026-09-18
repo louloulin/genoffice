@@ -15,6 +15,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
 import { FILES_DIR, registerHandle } from '../common/index'
+import { NotFoundError } from '../ai/errors'
 
 interface AnyDocConfig {
   ocrEnabled: boolean
@@ -39,7 +40,7 @@ export function registerAnydocHandlers(): void {
   registerHandle('anydoc:recognize', async (_event: unknown, args: unknown) => {
     const { filePath } = args as { filePath: string; options?: { ocr?: boolean; language?: string } }
     if (!existsSync(filePath)) {
-      throw new Error(`File not found: ${filePath}`)
+      throw new NotFoundError('anydoc:recognize', `File not found: ${String(filePath)}`)
     }
 
     const ext = extname(filePath).toLowerCase()
@@ -73,7 +74,7 @@ export function registerAnydocHandlers(): void {
   registerHandle('anydoc:convert', async (_event: unknown, args: unknown) => {
     const { filePath, targetFormat } = args as { filePath: string; targetFormat: string }
     if (!existsSync(filePath)) {
-      throw new Error(`File not found: ${filePath}`)
+      throw new NotFoundError('anydoc:convert', `File not found: ${String(filePath)}`)
     }
 
     const sourceFormat = extname(filePath).slice(1)
@@ -148,7 +149,7 @@ export function registerAnydocHandlers(): void {
     const { filePath, options } = args as { filePath: string; options?: { width?: number; height?: number } }
 
     if (!existsSync(filePath)) {
-      throw new Error(`File not found: ${filePath}`)
+      throw new NotFoundError('anydoc:render-preview', `File not found: ${String(filePath)}`)
     }
 
     const bytes = readFileSync(filePath)

@@ -228,6 +228,109 @@ describe('registerAiIpc — translation channels', () => {
     expect(missing).toEqual({ ok: true, removed: false })
   })
 
+  it('snippet translation refuses a non-string text instead of throwing', async () => {
+    const { registerAiIpc } = await import('../src/main/docs-main')
+    registerAiIpc()
+
+    // `(req.text ?? '').trim()` threw a TypeError for a number, which reached
+    // the renderer as an unhandled rejection rather than a reported shape
+    // error. The web-server handler had the same hole and answered HTTP 500.
+    for (const text of [123, {}, [], true] as unknown[]) {
+      const result = (await handlers.get('home:translate-snippet')!({} as never, {
+        text,
+        targetLang: 'zh-CN',
+      })) as { ok: boolean; error: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe('home:translate-snippet expected `text` to be a string')
+    }
+  })
+
+  it('batch translation refuses a non-array units payload instead of throwing', async () => {
+    const { registerAiIpc } = await import('../src/main/docs-main')
+    registerAiIpc()
+
+    for (const units of ['nope', {}, 3] as unknown[]) {
+      const result = (await handlers.get('ai:translate-batch')!({} as never, {
+        units,
+        targetLang: 'zh-CN',
+      })) as { ok: boolean; error?: string; units?: unknown[] }
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe('ai:translate-batch expected `units` to be an array')
+      expect(result.units).toEqual([])
+    }
+  })
+
+  it('batch translation reports a malformed element in place instead of dropping it', async () => {
+    const { registerAiIpc } = await import('../src/main/docs-main')
+    registerAiIpc()
+
+    // `.filter(u => u && typeof u === 'object')` used to drop bad elements, so
+    // a partly-broken document looked fully translated: the renderer maps
+    // results back by `unitId` and a dropped unit simply never appeared.
+    const result = (await handlers.get('ai:translate-batch')!({} as never, {
+      units: [
+        null,
+        { unitId: 'u2', sourceText: 123 },
+        'nope',
+        { unitId: 'u4', sourceText: 456 },
+      ],
+      targetLang: 'zh-CN',
+    })) as {
+      ok: boolean
+      units?: Array<{ status?: string; errorMessage?: string; unitId?: string }>
+      error?: string
+    }
+    // No provider is configured in this suite, so the call still fails — but
+    // the failure must carry one settled entry per input unit, each naming the
+    // unit that was malformed.
+    expect(result.units).toHaveLength(4)
+    for (const index of [0, 1, 2, 3]) {
+      expect(result.units?.[index]?.status, `unit ${index}`).toBe('failed')
+    }
+    expect(result.units?.[0]?.errorMessage).toMatch(/expected unit 0/)
+    expect(result.units?.[1]?.errorMessage).toMatch(/expected unit 1/)
+    expect(result.units?.[3]?.errorMessage).toMatch(/expected unit 3/)
+  })
+
+  it('file-output-path refuses a value that cannot name a file', async () => {
+    const { registerAiIpc } = await import('../src/main/docs-main')
+    registerAiIpc()
+
+    // `String(123)` answered `ok: true` with "123_translated" — a believable
+    // path for a value that never named a file.
+    for (const inputPath of [123, true, {}, ['a']] as unknown[]) {
+      const result = (await handlers.get('ai:translate-file-output-path')!({} as never, inputPath)) as {
+        ok: boolean
+        outputPath?: string
+        error?: string
+      }
+      expect(result.ok, JSON.stringify(inputPath)).toBe(false)
+      expect(result.outputPath).toBeUndefined()
+      expect(result.error).toBe('expected a non-empty inputPath')
+    }
+  })
+
+  it('save-translation-memory refuses a non-array units payload instead of throwing', async () => {
+    const { registerAiIpc } = await import('../src/main/docs-main')
+    registerAiIpc()
+
+    const bad = (await handlers.get('ai:save-translation-memory')!({} as never, {
+      units: 'nope',
+    })) as { ok: boolean; error?: string }
+    expect(bad.ok).toBe(false)
+    expect(bad.error).toBe('units must be an array')
+
+    // A null element used to be dereferenced; it must be skipped instead.
+    const mixed = (await handlers.get('ai:save-translation-memory')!({} as never, {
+      sourceLang: 'en-US',
+      targetLang: 'zh-CN',
+      units: [null, {}, { sourceText: 'Hello', translatedText: '你好' }],
+    })) as { ok: boolean; savedCount: number; skippedCount: number }
+    expect(mixed.ok).toBe(true)
+    expect(mixed.savedCount).toBe(1)
+    expect(mixed.skippedCount).toBe(2)
+  })
+
   it('snippet translation refuses an empty text payload', async () => {
     const { registerAiIpc } = await import('../src/main/docs-main')
     registerAiIpc()

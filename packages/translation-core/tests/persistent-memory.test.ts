@@ -49,6 +49,47 @@ describe('PersistentTranslationMemory', () => {
     expect(reloaded.size()).toBe(1)
   })
 
+  it('round-trips the bucket through saveMany / flush / load', async () => {
+    // `saveMany` pushed entries without their bucket, so a memory written by
+    // the batch path came back unscoped after a restart: the first customer's
+    // translation was replayed to the next one. `save()` kept the bucket, which
+    // is why the single-snippet path looked fine.
+    const fs = new MemoryFS()
+    const tm = new PersistentTranslationMemory({ baseDir: '/tmp/tm', fileSystem: fs })
+    tm.saveMany({
+      scene: 'document',
+      sourceLang: 'en-US',
+      targetLang: 'zh-CN',
+      bucket: 'KERRITS',
+      units: [{ unitId: 'u1', sourceText: 'fabric weight', translatedText: '克重(K)' }],
+    })
+    await tm.flush()
+
+    const reloaded = new PersistentTranslationMemory({ baseDir: '/tmp/tm', fileSystem: fs })
+    await reloaded.load()
+    expect(reloaded.lookup('en-US', 'zh-CN', 'fabric weight', 'KERRITS')?.translatedText).toBe('克重(K)')
+    // And a different customer must not see it.
+    expect(reloaded.lookup('en-US', 'zh-CN', 'fabric weight', 'ACME')).toBeNull()
+  })
+
+  it('fuzzy lookup respects the bucket of entries written by saveMany', async () => {
+    const fs = new MemoryFS()
+    const tm = new PersistentTranslationMemory({ baseDir: '/tmp/tm', fileSystem: fs })
+    tm.saveMany({
+      scene: 'document',
+      sourceLang: 'en-US',
+      targetLang: 'zh-CN',
+      bucket: 'KERRITS',
+      units: [{ unitId: 'u1', sourceText: 'machine wash cold', translatedText: '冷水机洗' }],
+    })
+    await tm.flush()
+
+    const reloaded = new PersistentTranslationMemory({ baseDir: '/tmp/tm', fileSystem: fs })
+    await reloaded.load()
+    expect(reloaded.fuzzyLookup('en-US', 'zh-CN', 'machine wash, cold', 'KERRITS')).not.toBeNull()
+    expect(reloaded.fuzzyLookup('en-US', 'zh-CN', 'machine wash, cold', 'ACME')).toBeNull()
+  })
+
   it('fuzzy lookup finds near matches with confidence < 1', () => {
     const tm = new PersistentTranslationMemory({ baseDir: '/tmp/tm', fileSystem: new MemoryFS() })
     tm.save({

@@ -62,12 +62,58 @@ export class CorruptError extends Error {
 }
 
 /**
+ * HTTP status for a structured IPC error code.
+ *
+ * Every code except `WEB_UNSUPPORTED` used to answer 500, so a caller that
+ * forgot a required argument could not tell its own malformed request from a
+ * server fault — and neither could the retry logic.
+ */
+export function ipcErrorStatus(code: string | undefined): number {
+  switch (code) {
+    case 'WEB_UNSUPPORTED':
+      return 501
+    case 'INVALID_ARGUMENT':
+      return 400
+    case 'NOT_FOUND':
+      return 404
+    case 'CORRUPT':
+      return 422
+    default:
+      return 500
+  }
+}
+
+/**
+ * A handler that destructures its single object argument
+ * (`(_event, args) => { const { docId } = args as … }`) throws a raw
+ * `TypeError` when the caller omits `args` altogether: "Cannot destructure
+ * property 'docId' of 'args' as it is undefined". `args` is optional on the
+ * wire (`{ args = [] }` in the dispatcher), so this is a malformed request —
+ * but it surfaced as HTTP 500, and 85 of the 531 registered channels answered
+ * a no-argument call that way.
+ *
+ * Defaulting `args` to `{}` in the dispatcher would be worse than the 500: a
+ * handler like `collab:join` would go on to build the session key
+ * `"undefined:undefined"` instead of failing. Classify it instead.
+ */
+const MISSING_ARGS_TYPE_ERROR =
+  /Cannot destructure property .* of .*as it is undefined|Cannot read properties of undefined \(reading/
+
+/**
  * Best-effort classifier: if the IPC reply is already a structured error
  * code (the renderer emitted one via `throw { code, channel, reason }`),
  * surface the matching class; otherwise wrap the original.
  */
 export function classifyWebError(err: unknown, fallbackChannel: string): Error {
-  if (err instanceof Error) return err
+  if (err instanceof Error) {
+    if (err.name === 'TypeError' && MISSING_ARGS_TYPE_ERROR.test(err.message)) {
+      return new InvalidArgumentError(
+        fallbackChannel,
+        `${fallbackChannel} was called without its required argument object`,
+      )
+    }
+    return err
+  }
   if (err && typeof err === 'object') {
     const e = err as { code?: unknown; channel?: unknown; reason?: unknown }
     if (e.code === 'WEB_UNSUPPORTED') {

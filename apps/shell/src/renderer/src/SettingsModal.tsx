@@ -1220,7 +1220,12 @@ function tkbRowText(entry: TranslationKbEntry): { primary: string; secondary: st
     default:
       return {
         primary: entry.customerName ?? '',
-        secondary: [entry.preferenceType, entry.value].filter(Boolean).join(' = '),
+        // `value` is the current field; `preference` is the legacy spelling an
+        // early kb_upsert shortcut wrote. Rendering only `value` made such a
+        // row look empty in the list even though the prompt still carried it.
+        secondary: [entry.preferenceType, entry.value ?? entry.preference]
+          .filter(Boolean)
+          .join(' = '),
       }
   }
 }

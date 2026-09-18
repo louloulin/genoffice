@@ -58,6 +58,7 @@ import {
   type FillGapsResult,
   type TranslateRequest,
   type TranslateResponse,
+  type TranslationMemoryLike,
 } from "@genoffice/translation-core"
 import {
   chatForProvider,
@@ -199,6 +200,23 @@ function batchTranslator(): TranslateBatchFn {
 let kbInstance: KnowledgeBase | null = null
 export function __resetKbForTests(): void { kbInstance = null }
 
+/**
+ * The translation memory every tool in this extension shares.
+ *
+ * Defaults to the package-level in-memory TM, which is fine for the agent
+ * process but loses everything on restart. The web-server injects its
+ * file-backed `PersistentTranslationMemory` here instead, so a translation the
+ * agent makes is still a cache hit for the UI after a restart — and so the
+ * agent and the UI read one memory rather than two that never meet.
+ */
+let memoryInstance: TranslationMemoryLike | null = null
+export function setTranslateMemory(memory: TranslationMemoryLike | null): void {
+  memoryInstance = memory
+}
+function getMemory(): TranslationMemoryLike {
+  return memoryInstance ?? sharedMemory
+}
+
 async function getKb(): Promise<KnowledgeBase> {
   if (!kbInstance) {
     // Respect GENOFFICE_TRANSLATION_KB / DATA_DIR like the rest of the
@@ -206,8 +224,15 @@ async function getKb(): Promise<KnowledgeBase> {
     // from chat.ts's sharedKnowledgeBase and made the e2e tests' KB
     // upserts land in a different file than the agent's reads.
     kbInstance = new KnowledgeBase()
+    await kbInstance.load()
+    return kbInstance
   }
-  await kbInstance.load()
+  // A full `load()` on every tool call re-parsed the whole file even when
+  // nothing had changed, and — worse — reset the store to `{}` whenever the
+  // file was missing, discarding an upsert that had not been saved yet.
+  // `refresh()` re-reads only on a byte change and keeps the in-memory store
+  // while it is dirty.
+  await kbInstance.refresh().catch(() => false)
   return kbInstance
 }
 
@@ -336,6 +361,24 @@ const TranslateTextParams = Type.Object({
   ),
   /** Glossary bucket (e.g. 'legal') forwarded to the KB resolver. */
   glossary_category: Type.Optional(Type.String()),
+  /**
+   * Customer / brand the call is for. Forwarded to the KB resolver so
+   * per-customer terms and customerPreference entries narrow the prompt.
+   */
+  customer_name: Type.Optional(Type.String({ description: "Customer name for KB narrowing (e.g. 'KERRITS')." })),
+  /**
+   * Caller wants line breaks / paragraph boundaries preserved verbatim
+   * (the docs app sends `true` when the editor's selection is multi-line).
+   * Forwards to translateOne; defaults to `true` when omitted so callers
+   * that ignore the field keep current behaviour.
+   */
+  preserve_format: Type.Optional(Type.Boolean({ description: "Preserve line breaks / paragraph boundaries in the answer." })),
+  /** Skip the in-memory translation-memory cache for this call. */
+  memory_enabled: Type.Optional(Type.Boolean({ description: "Use the in-memory translation-memory cache. Defaults to true." })),
+  /** Run the post-translation quality check (length / number coverage). */
+  quality_check: Type.Optional(Type.Boolean({ description: "Run the post-translation quality check. Defaults to true." })),
+  /** Opaque scene tag passed through for provider-side telemetry. */
+  scene: Type.Optional(Type.String({ description: "Scene tag (e.g. 'document', 'snippet') for provider telemetry." })),
 })
 
 type TranslateTextArgs = {
@@ -345,6 +388,11 @@ type TranslateTextArgs = {
   instruction?: string
   dictionary?: Array<{ source: string; target: string }>
   glossary_category?: string
+  customer_name?: string
+  preserve_format?: boolean
+  memory_enabled?: boolean
+  quality_check?: boolean
+  scene?: string
 }
 
 interface TranslateTextResult {
@@ -386,15 +434,18 @@ function createTranslateTextTool() {
             : params.text,
           sourceLang: params.source_lang,
           targetLang: params.target_lang,
-          memoryEnabled: true,
-          qualityCheck: true,
+          ...(params.memory_enabled !== undefined ? { memoryEnabled: params.memory_enabled } : {}),
+          ...(params.quality_check !== undefined ? { qualityCheck: params.quality_check } : {}),
+          ...(params.preserve_format !== undefined ? { preserveFormat: params.preserve_format } : {}),
           ...(params.glossary_category !== undefined ? { glossaryCategory: params.glossary_category } : {}),
+          ...(params.customer_name !== undefined ? { customerName: params.customer_name } : {}),
+          ...(params.scene !== undefined ? { scene: params.scene } : {}),
         }
         const fn = translateOneOverride ?? translateOne
         const res: TranslateResponse = await fn(req, {
           provider,
           config,
-          memory: sharedMemory,
+          memory: getMemory(),
           knowledgeBase: kb,
           fuzzyMemoryEnabled: true,
           ...(params.dictionary && params.dictionary.length > 0
@@ -454,6 +505,26 @@ const TranslateFileParams = Type.Object({
    * / PyMuPDF preinstalled) when the system python3 lacks those deps.
    */
   python_path: Type.Optional(Type.String({ maxLength: 4096 })),
+  /**
+   * PDF render scale, passed to the handler as `--scale`. Higher renders the
+   * page bitmap at a larger multiple so the overlaid text is sharper. Only the
+   * PDF handler uses it; the others ignore it.
+   *
+   * This was reachable from the UI (`ai:translate-file-auto` takes `scale` and
+   * forwarded it here) but had no slot on the tool schema, so the value was
+   * dropped in validation and every PDF was rendered at the script's default.
+   */
+  scale: Type.Optional(Type.Number({ minimum: 0.5, maximum: 8 })),
+  /** Kill the Python translator after this many ms. Defaults to 5 minutes. */
+  timeout_ms: Type.Optional(Type.Integer({ minimum: 1000, maximum: 3_600_000 })),
+  /**
+   * Customer name forwarded to the KB resolver. Without it the dictionary
+   * built for this file is unscoped, so every customer's branded term is
+   * fair game and one customer's terminology leaks into another's file.
+   */
+  customer_name: Type.Optional(Type.String({ maxLength: 512 })),
+  /** Glossary bucket forwarded to the KB resolver (see customer_name). */
+  glossary_category: Type.Optional(Type.String({ maxLength: 512 })),
 })
 
 type TranslateFileArgs = {
@@ -464,6 +535,10 @@ type TranslateFileArgs = {
   target_lang: string
   execute?: boolean
   python_path?: string
+  scale?: number
+  timeout_ms?: number
+  customer_name?: string
+  glossary_category?: string
 }
 
 interface TranslateFileResult {
@@ -567,11 +642,24 @@ async function executeFileTranslation(args: {
   outputPath: string
   dictionaryPath?: string
   pythonPath?: string
+  scale?: number
+  timeoutMs?: number
 }): Promise<{ ok: boolean; stdout: string; stderr: string; code: number; elapsedMs: number; bytes?: number; error?: string }> {
   const start = Date.now()
   const pythonBin = resolvePython(args.pythonPath)
   const dict = args.dictionaryPath ? ` --dictionary "${args.dictionaryPath}"` : ""
-  const cmd = `${pythonBin} "${args.script}" "${args.inputPath}" "${args.outputPath}"${dict}`
+  // Only the PDF path renders a bitmap, so `--scale` is meaningful — and
+  // accepted — there alone. The unified `translate.py` takes the flag and
+  // forwards it to the PDF handler; the format siblings
+  // (`translate_docx.py`, `translate_xls.py`, …) have no such argument and
+  // argparse exits 2 with "unrecognized arguments". Gate on the input
+  // extension, which is what both entry points route on.
+  const scale =
+    args.scale !== undefined && extname(args.inputPath).toLowerCase() === ".pdf"
+      ? args.scale
+      : undefined
+  const scaleArg = scale !== undefined ? ` --scale ${scale}` : ""
+  const cmd = `${pythonBin} "${args.script}" "${args.inputPath}" "${args.outputPath}"${dict}${scaleArg}`
   return await new Promise((resolve) => {
     try {
       const proc = nodeSpawn(pythonBin, [
@@ -579,15 +667,31 @@ async function executeFileTranslation(args: {
         args.inputPath,
         args.outputPath,
         ...(args.dictionaryPath ? ["--dictionary", args.dictionaryPath] : []),
+        ...(scale !== undefined ? ["--scale", String(scale)] : []),
       ], { stdio: ["ignore", "pipe", "pipe"] })
       let stdout = ""
       let stderr = ""
+      // A hung Python handler (a malformed PDF the renderer blocks on, a
+      // missing font) used to hold the tool call — and therefore the UI's
+      // "translating" spinner — open forever. Kill it and report a timeout.
+      const timeoutMs = args.timeoutMs ?? 5 * 60_000
+      let timedOut = false
+      const timer = setTimeout(() => {
+        timedOut = true
+        try {
+          proc.kill("SIGKILL")
+        } catch {
+          /* already gone */
+        }
+      }, timeoutMs)
       proc.stdout.on("data", (chunk) => { stdout += chunk.toString("utf-8") })
       proc.stderr.on("data", (chunk) => { stderr += chunk.toString("utf-8") })
       proc.on("error", (err) => {
+        clearTimeout(timer)
         resolve({ ok: false, stdout, stderr: stderr + "\n" + err.message, code: -1, elapsedMs: Date.now() - start, error: err.message })
       })
       proc.on("close", (code) => {
+        clearTimeout(timer)
         // Best-effort: stat the output file for `bytes`. A real Python
         // translator always writes here on success, but we never want this
         // helper to throw — a stat failure is fine.
@@ -599,13 +703,17 @@ async function executeFileTranslation(args: {
           bytes = undefined
         }
         resolve({
-          ok: code === 0,
+          ok: !timedOut && code === 0,
           stdout,
           stderr,
           code: code ?? -1,
           elapsedMs: Date.now() - start,
           bytes,
-          ...(code !== 0 ? { error: stderr.split("\n").filter(Boolean).pop() || `exit ${code}` } : {}),
+          ...(timedOut
+            ? { error: `translate_file timed out after ${timeoutMs} ms` }
+            : code !== 0
+              ? { error: stderr.split("\n").filter(Boolean).pop() || `exit ${code}` }
+              : {}),
         })
       })
     } catch (err) {
@@ -661,7 +769,8 @@ function createTranslateFileTool() {
         const lumos = lumosScriptPath(ext)
         if (lumos) {
           const dict = params.dictionary_path ? ` --dictionary ${params.dictionary_path}` : ""
-          const cmd = `${params.python_path ?? "python3"} ${lumos.script} "${params.input_path}" "${out}"${dict}`
+          const scaleArg = params.scale !== undefined && ext.toLowerCase() === ".pdf" ? ` --scale ${params.scale}` : ""
+          const cmd = `${params.python_path ?? "python3"} ${lumos.script} "${params.input_path}" "${out}"${dict}${scaleArg}`
           if (params.execute) {
             // UI / IPC path: actually run the translator end-to-end. The agent
             // loop leaves execute unset and gets back the bash command it can
@@ -727,13 +836,23 @@ function createTranslateFileTool() {
                   sourceLang: params.source_lang ?? "auto",
                   targetLang: params.target_lang,
                   dataDir,
+                  // Scope the mined dictionary to the caller's customer /
+                  // glossary bucket. Dropping these produced one unscoped
+                  // dictionary per file, so KB terms belonging to customer A
+                  // were applied to customer B's document.
+                  ...(params.customer_name !== undefined
+                    ? { customerName: params.customer_name }
+                    : {}),
+                  ...(params.glossary_category !== undefined
+                    ? { glossaryCategory: params.glossary_category }
+                    : {}),
                 },
                 {
                   translateBatch: async (input) =>
                     batchTranslator()(input, {
                       provider,
                       config: providerConfig,
-                      memory: sharedMemory,
+                      memory: getMemory(),
                       knowledgeBase: kb,
                     }),
                 },
@@ -772,6 +891,8 @@ function createTranslateFileTool() {
               outputPath: out,
               ...(dictionaryPath ? { dictionaryPath } : {}),
               ...(params.python_path ? { pythonPath: params.python_path } : {}),
+              ...(params.scale !== undefined ? { scale: params.scale } : {}),
+              ...(params.timeout_ms !== undefined ? { timeoutMs: params.timeout_ms } : {}),
             })
 
             // Refresh coverage from the just-written dictionary if we did
@@ -990,7 +1111,7 @@ function createBuildDictionaryTool() {
             return batchTranslator()(input, {
               provider,
               config,
-              memory: sharedMemory,
+              memory: getMemory(),
               knowledgeBase: kb,
             })
           },
@@ -1040,6 +1161,34 @@ function createBuildDictionaryTool() {
 // KB CRUD tools
 // ============================================================================
 
+/** The five short schema keys the KB tools accept, in stable order. */
+const SCHEMA_KEYS = [
+  "term",
+  "forbidden",
+  "brand",
+  "styleRule",
+  "customerPreference",
+] as const
+
+function isSchemaKey(value: unknown): value is (typeof SCHEMA_KEYS)[number] {
+  return typeof value === "string" && (SCHEMA_KEYS as readonly string[]).includes(value)
+}
+
+/**
+ * Coerce a caller-supplied page size, or null when it is not usable.
+ *
+ * `undefined` means "use the default". Everything else has to be a positive
+ * integer within `max`: `Array.prototype.slice` accepts a negative or a NaN
+ * limit and answers a short or empty array, which reads to the caller as an
+ * empty knowledge base rather than a bad request.
+ */
+function kbListLimit(value: unknown, fallback = 500, max = 1000): number | null {
+  if (value === undefined || value === null) return fallback
+  if (typeof value !== "number" || !Number.isInteger(value)) return null
+  if (value < 1 || value > max) return null
+  return value
+}
+
 const KbUpsertParams = Type.Object({
   // Either provide a fully-formed entry, or the common shortcut fields below.
   entry: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Full KB entry object." })),
@@ -1058,7 +1207,20 @@ const KbUpsertParams = Type.Object({
   name: Type.Optional(Type.String({ description: "Shortcut: style rule name (for schema=styleRule)." })),
   description: Type.Optional(Type.String({ description: "Shortcut: style rule description (for schema=styleRule)." })),
   customerName: Type.Optional(Type.String({ description: "Shortcut: customer name (for schema=customerPreference)." })),
-  preference: Type.Optional(Type.String({ description: "Shortcut: customer preference text (for schema=customerPreference)." })),
+  /**
+   * The customer-preference schema is `{ customerName, preferenceType, value }`
+   * — three fields, not one `preference` blob. This shortcut used to write
+   * `entry.preference`, which no reader looks at: `renderPromptBlock` renders
+   * `${preferenceType}=${value}`, so a preference saved through it put
+   * "KERRITS: undefined=undefined" in the prompt while the UI showed a
+   * populated row.
+   */
+  preferenceType: Type.Optional(
+    Type.String({ description: "Shortcut: customer preference kind (for schema=customerPreference)." }),
+  ),
+  preference: Type.Optional(
+    Type.String({ description: "Shortcut: customer preference value (for schema=customerPreference)." }),
+  ),
   priority: Type.Optional(Type.Number({ description: "Priority (higher = earlier). Defaults to 50." })),
   sourceLang: Type.Optional(Type.String({ description: "Source language code." })),
   targetLang: Type.Optional(Type.String({ description: "Target language code." })),
@@ -1067,6 +1229,7 @@ const KbUpsertParams = Type.Object({
 type KbUpsertArgs = {
   entry?: Record<string, unknown>
   schema?: 'term' | 'forbidden' | 'brand' | 'styleRule' | 'customerPreference'
+  preferenceType?: string
   source?: string
   target?: string
   replacement?: string
@@ -1117,16 +1280,43 @@ function createKbUpsertTool() {
           entry.description = params.description ?? entry.description
         } else if (params.schema === 'customerPreference') {
           entry.customerName = params.customerName ?? entry.customerName
-          entry.preference = params.preference ?? entry.preference
+          // `preference` is the shortcut's name for the preference's value;
+          // the stored field is `value`. Default the kind so a caller that
+          // only knows the text still produces a readable prompt line.
+          entry.value = params.preference ?? entry.value
+          entry.preferenceType = params.preferenceType ?? entry.preferenceType ?? 'preference'
         }
         if (params.priority !== undefined) entry.priority = params.priority
         if (params.sourceLang) entry.sourceLang = params.sourceLang
         if (params.targetLang) entry.targetLang = params.targetLang
-        // Auto-generate a stable id when the caller did not provide one.
+        // An upsert with none of the identifying fields used to be accepted
+        // and persisted: `seed` fell back to the empty string, the id became
+        // `entry-<random>`, and `schemaForEntry` classified the row as a
+        // customerPreference because nothing matched its branches. The result
+        // was a permanent blank row in the user's KB file from a malformed or
+        // exploratory call. Reject it instead of writing it.
+        const payloadKey = entry.sourceTerm ?? entry.forbiddenText ?? entry.word ?? entry.name ?? entry.customerName
+        if (typeof payloadKey !== "string" || payloadKey.trim() === "") {
+          return {
+            content: [{
+              type: "text" as const,
+              text:
+                "kb_upsert needs a schema plus its identifying field " +
+                "(sourceTerm / forbiddenText / word / name / customerName)",
+            }],
+            details: {
+              ok: false,
+              error:
+                "kb_upsert needs a schema plus its identifying field " +
+                "(sourceTerm / forbiddenText / word / name / customerName)",
+            },
+          }
+        }
+        // Auto-generate a stable id when the caller did not provide one. A
+        // `customerPreference` keys on its customer, not on the free-text
+        // value, so the id stays stable when only the wording changes.
         if (!entry.id) {
-          const seed =
-            (entry.sourceTerm ?? entry.forbiddenText ?? entry.word ?? entry.name ?? entry.customerName ?? "").toString()
-          entry.id = `${entry.schema ?? "entry"}-${seed.replace(/\s+/g, "-").toLowerCase() || Date.now().toString(36)}`
+          entry.id = `${entry.schema ?? "entry"}-${payloadKey.replace(/\s+/g, "-").toLowerCase()}`
         }
         const saved = await kb.upsert(entry as never)
         await kb.save().catch(() => undefined) // best-effort persistence; tolerate read-only mounts
@@ -1195,14 +1385,35 @@ function createKbSearchTool() {
     promptSnippet: "kb_search(query[, limit]) → entries[]",
     promptGuidelines: ["Use kb_upsert to add new entries discovered during translation."],
     parameters: KbSearchParams,
-    async execute(_id, params: { query: string; limit?: number }, _signal) {
+    async execute(_id, rawParams: unknown, _signal) {
       try {
+        const params = (rawParams ?? {}) as { query?: unknown; limit?: unknown }
         const kb = await getKb()
         const entries = await kb.list({})
+        // The tool schema marks `query` required, but execute() is also
+        // reachable from the IPC bridge with whatever JSON the caller sent.
+        // A missing query used to surface as "Cannot read properties of
+        // undefined (reading 'toLowerCase')" instead of a shape error.
+        if (typeof params.query !== "string" || params.query.trim() === "") {
+          return {
+            content: [{ type: "text" as const, text: "kb_search: `query` is required" }],
+            details: { ok: false, error: "kb_search: `query` is required" },
+          }
+        }
         const q = params.query.toLowerCase()
+        // See kb_list: a malformed limit silently emptied the result set and
+        // read as "no matches" for a query that does match.
+        const limit = kbListLimit(params.limit, 20, 100)
+        if (limit === null) {
+          const error = `kb_search: \`limit\` must be an integer between 1 and 100 (got ${JSON.stringify(params.limit)})`
+          return {
+            content: [{ type: "text" as const, text: error }],
+            details: { ok: false, error },
+          }
+        }
         const filtered = entries
           .filter((e) => JSON.stringify(e).toLowerCase().includes(q))
-          .slice(0, params.limit ?? 20)
+          .slice(0, limit)
         return {
           content: [{ type: "text" as const, text: `kb_search("${params.query}") → ${filtered.length} hits` }],
           details: { ok: true, entries: filtered, count: filtered.length },
@@ -1247,12 +1458,27 @@ function createKbListTool() {
     parameters: KbListParams,
     async execute(_id, rawParams: unknown, _signal) {
       try {
-        const params = (rawParams ?? {}) as { schema?: string; limit?: number }
+        const params = (rawParams ?? {}) as { schema?: unknown; limit?: unknown }
         const kb = await getKb()
+        // `limit` and `schema` are untyped on the IPC wire (the tool schema
+        // only constrains the agent path). `entries.slice(0, 'x')` answered
+        // `[]` and `slice(0, -5)` dropped the tail, so a list request with a
+        // malformed limit reported an empty KB to a user whose rows were all
+        // still on disk. A bogus `schema` did the same through the store
+        // lookup. Reject both shapes.
+        const limit = kbListLimit(params.limit)
+        if (limit === null) {
+          const error = `kb_list: \`limit\` must be an integer between 1 and 1000 (got ${JSON.stringify(params.limit)})`
+          return { content: [{ type: "text" as const, text: error }], details: { ok: false, error } }
+        }
+        if (params.schema !== undefined && !isSchemaKey(params.schema)) {
+          const error = `kb_list: unknown schema ${JSON.stringify(params.schema)}; expected one of ${SCHEMA_KEYS.join(", ")}`
+          return { content: [{ type: "text" as const, text: error }], details: { ok: false, error } }
+        }
         const filter: { schema?: string } = {}
-        if (params.schema) filter.schema = params.schema
+        if (params.schema) filter.schema = params.schema as string
         const entries = await kb.list(filter as never)
-        const sliced = entries.slice(0, params.limit ?? 500)
+        const sliced = entries.slice(0, limit)
         return {
           content: [{ type: "text" as const, text: `kb_list → ${sliced.length}/${entries.length} entries` }],
           details: {
@@ -1284,6 +1510,8 @@ const FillDictParams = Type.Object({
   source_lang: Type.Optional(Type.String()),
   output_path: Type.Optional(Type.String({ maxLength: 4096 })),
   max_pairs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000, default: 200 })),
+  /** Skip segments shorter than this. Mirrors `minChars` in translation-core. */
+  min_chars: Type.Optional(Type.Integer({ minimum: 1, maximum: 64 })),
   customer_name: Type.Optional(Type.String()),
   glossary_category: Type.Optional(Type.String()),
 })
@@ -1295,6 +1523,7 @@ type FillDictArgs = {
   source_lang?: string
   output_path?: string
   max_pairs?: number
+  min_chars?: number
   customer_name?: string
   glossary_category?: string
 }
@@ -1343,6 +1572,12 @@ function createFillDictionaryGapsTool() {
           targetLang: params.target_lang,
           dataDir,
           ...(params.output_path !== undefined ? { outputPath: params.output_path } : {}),
+          // `max_pairs` / `min_chars` were declared on the tool schema and then
+          // dropped: the model's cap silently stayed at the core default of 400
+          // and the caller's "only fill these gaps" budget was ignored, so a
+          // fill pass cost more tokens than the caller asked for.
+          ...(params.max_pairs !== undefined ? { maxSegments: params.max_pairs } : {}),
+          ...(params.min_chars !== undefined ? { minChars: params.min_chars } : {}),
           ...(params.customer_name !== undefined ? { customerName: params.customer_name } : {}),
           ...(params.glossary_category !== undefined ? { glossaryCategory: params.glossary_category } : {}),
         }
@@ -1352,7 +1587,7 @@ function createFillDictionaryGapsTool() {
             batchTranslator()(input, {
               provider,
               config: providerConfig,
-              memory: sharedMemory,
+              memory: getMemory(),
               knowledgeBase: kb,
             }),
         })

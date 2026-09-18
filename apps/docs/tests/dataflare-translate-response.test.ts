@@ -68,6 +68,24 @@ describe('parseDataflareTranslateResponse', () => {
     expect(parsed.units[0].errorMessage).toBe('rate limited')
   })
 
+  it('surfaces the GenOffice error envelope instead of a bare status', () => {
+    // The web-server answers failures with `{ error: { message, code } }`.
+    // Reading only a string `error` made every 4xx/5xx degrade to
+    // "Dataflare translation failed (400)" and hid the actionable reason.
+    const parsed = parseDataflareTranslateResponse({
+      error: { message: 'AI provider "openai" not configured', code: 'PROVIDER_NOT_CONFIGURED' },
+    })
+
+    expect(parsed.ok).toBe(false)
+    expect(parsed.error).toBe('AI provider "openai" not configured')
+  })
+
+  it('still accepts a bare string error', () => {
+    const parsed = parseDataflareTranslateResponse({ error: 'provider unavailable' })
+    expect(parsed.ok).toBe(false)
+    expect(parsed.error).toBe('provider unavailable')
+  })
+
   it('is defensive about malformed bodies', () => {
     expect(parseDataflareTranslateResponse(null).ok).toBe(false)
     expect(parseDataflareTranslateResponse('nope').ok).toBe(false)

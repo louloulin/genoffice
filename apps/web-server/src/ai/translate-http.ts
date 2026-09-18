@@ -38,7 +38,42 @@ import {
   translateBatchStream,
 } from '@genoffice/translation-core'
 
-import { aiSettings as defaultSettings } from './chat'
+import {
+  aiSettings as defaultSettings,
+  ensureKbLoaded,
+  ensureMemoryLoaded,
+  scheduleMemoryFlush,
+  sharedKnowledgeBase,
+  translationMemory,
+} from './chat'
+
+/**
+ * The storage the HTTP endpoints translate against.
+ *
+ * These endpoints are the Dataflare bridge's primary path, and they used to
+ * pass no `knowledgeBase` and no `memory` at all: `translateBatch` therefore
+ * fell back to the package-level in-memory TM and skipped the KB entirely.
+ * Every KB term the UI had just saved was ignored on the HTTP path, and the
+ * bucket filter had nothing to filter — a request that named a customer got
+ * the same answer as one that did not. Resolve the same singletons the IPC
+ * handlers use so both surfaces see one KB and one translation memory.
+ *
+ * `sharedKnowledgeBase` is a long-lived instance, and the UI writes the KB
+ * through the pi session's *other* instance, which writes the same file. A
+ * plain `ensureKbLoaded()` therefore served the boot-time snapshot forever:
+ * verified on a live server, a term upserted after the first HTTP request was
+ * invisible to every later HTTP translation until the process restarted.
+ * `refresh()` re-reads only when the file's bytes changed, so a warm path costs
+ * one read and no parse.
+ */
+async function translationStorage(): Promise<{
+  knowledgeBase: typeof sharedKnowledgeBase
+  memory: typeof translationMemory
+}> {
+  await Promise.all([ensureKbLoaded(), ensureMemoryLoaded()])
+  await sharedKnowledgeBase.refresh().catch(() => false)
+  return { knowledgeBase: sharedKnowledgeBase, memory: translationMemory }
+}
 
 interface TranslateUnitRequest {
   unitId?: string
@@ -63,6 +98,8 @@ interface TranslateBatchHttpRequest {
   qualityCheck?: boolean
   glossaryCategory?: string
   units?: TranslateUnitRequest[]
+  /** Customer name — narrows the KB to per-customer terms + preferences. */
+  customerName?: string
   settings?: AiSettings
 }
 
@@ -103,7 +140,7 @@ function castRange(raw: TranslateUnitRequest['range']): {
   return { from: raw.from, to: raw.to, scope: castScope(raw.scope) }
 }
 
-function toCoreUnits(raw: TranslateUnitRequest[] | undefined): Array<{
+interface CoreUnit {
   unitId: string
   kind: 'paragraph' | 'heading' | 'list-item' | 'table-cell' | 'document'
   sourceText: string
@@ -111,16 +148,52 @@ function toCoreUnits(raw: TranslateUnitRequest[] | undefined): Array<{
   path?: string
   metadata?: Record<string, unknown>
   range?: { from?: number; to?: number; scope?: CoreScope } | null
-}> {
-  return (raw ?? []).map((u) => ({
-    unitId: u.unitId ?? '',
-    kind: (u.kind ?? 'paragraph') as 'paragraph' | 'heading' | 'list-item' | 'table-cell' | 'document',
-    sourceText: u.sourceText ?? '',
-    order: u.order ?? 0,
-    path: u.path,
-    metadata: u.metadata,
-    range: castRange(u.range),
-  }))
+}
+
+/**
+ * Normalise the request's unit list, keeping malformed elements.
+ *
+ * `units` is untyped JSON off the wire, so an element can be `null` and the
+ * list itself can be a string. Reading `.unitId` on a null element used to
+ * throw straight out of this function: the synchronous handler answered 500
+ * with the raw JavaScript message, and the SSE handler — which writes its 200
+ * header *before* calling this — never reached its `response.end()`, so the
+ * socket stayed open and the caller hung until its own timeout.
+ *
+ * The core layer already turns a malformed element into a failed unit that
+ * names its own index (`malformedUnitResult`), so hand the element through
+ * untouched rather than dropping or dereferencing it. Dropping would silently
+ * shorten the batch, and the caller maps results back by position.
+ */
+function pickInvalidStringField(
+  obj: Record<string, unknown>,
+  fields: readonly string[],
+): string | null {
+  for (const field of fields) {
+    const value = obj[field]
+    if (value === undefined) continue
+    if (typeof value !== 'string') return field
+  }
+  return null
+}
+
+function toCoreUnits(raw: unknown): CoreUnit[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((entry): CoreUnit => {
+    if (!entry || typeof entry !== 'object') return entry as unknown as CoreUnit
+    const u = entry as TranslateUnitRequest
+    return {
+      unitId: typeof u.unitId === 'string' ? u.unitId : '',
+      kind: (u.kind ?? 'paragraph') as CoreUnit['kind'],
+      // A non-string is passed through verbatim so the core layer reports it
+      // as the shape error it is, rather than this layer inventing "".
+      sourceText: u.sourceText as string,
+      order: typeof u.order === 'number' ? u.order : 0,
+      path: u.path,
+      metadata: u.metadata,
+      range: castRange(u.range),
+    }
+  })
 }
 
 function writeSseEvent(
@@ -159,9 +232,48 @@ export async function handleTranslateBatchHttp(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
+  let body: TranslateBatchHttpRequest
   try {
     const raw = await readBody(request)
-    const body = (raw ? JSON.parse(raw) : {}) as TranslateBatchHttpRequest
+    body = (raw ? JSON.parse(raw) : {}) as TranslateBatchHttpRequest
+  } catch {
+    // A body that is not JSON is the caller's mistake; answering 500 made the
+    // bridge retry a request that can never succeed.
+    sendJson(response, 400, { error: { message: 'invalid JSON body', code: 'INVALID_ARGUMENT' } })
+    return
+  }
+  if (body.units !== undefined && !Array.isArray(body.units)) {
+    sendJson(response, 400, {
+      error: { message: 'expected `units` to be an array', code: 'INVALID_ARGUMENT' },
+    })
+    return
+  }
+  // Glossary / customer / language fields arrive straight off the wire. The
+  // core layer crashes on a number (`opts.glossaryCategory.trim is not a
+  // function`) and on the older `value3.indexOf is not a function` from the
+  // `englishLabelFor` path, so guard each here instead of letting it bleed
+  // through as a 500.
+  const badField = pickInvalidStringField(body as unknown as Record<string, unknown>, [
+    'sourceLanguage',
+    'targetLanguage',
+    'glossaryCategory',
+    'customerName',
+    'scene',
+    'documentId',
+    'documentType',
+    'requestId',
+    'idempotencyKey',
+  ])
+  if (badField) {
+    sendJson(response, 400, {
+      error: {
+        message: `expected \`${badField}\` to be a string`,
+        code: 'INVALID_ARGUMENT',
+      },
+    })
+    return
+  }
+  try {
     const { provider, config } = resolveProvider(body)
     if (!config) {
       sendJson(response, 400, {
@@ -169,9 +281,10 @@ export async function handleTranslateBatchHttp(
       })
       return
     }
+    const storage = await translationStorage()
     const result = await translateBatch(
       {
-        units: toCoreUnits(body.units),
+        units: toCoreUnits(body.units) as never,
         sourceLang: body.sourceLanguage,
         targetLang: body.targetLanguage ?? '',
         preserveFormat: body.preserveFormatting,
@@ -179,14 +292,31 @@ export async function handleTranslateBatchHttp(
         memoryEnabled: body.memoryEnabled,
         qualityCheck: body.qualityCheck,
         glossaryCategory: body.glossaryCategory,
+        ...(body.customerName !== undefined ? { customerName: body.customerName } : {}),
       },
-      { provider, config },
+      { provider, config, ...storage },
     )
     sendJson(response, 200, result)
   } catch (error) {
-    sendJson(response, 500, {
-      error: { message: (error as Error)?.message ?? String(error) },
-    })
+    // A structured `InvalidArgumentError` here means the request shape was
+    // wrong (the core layer throws one for a null `request.units`); anything
+    // else is a real fault and keeps its 500.
+    const asInvalid = error as { code?: string; message?: string }
+    if (asInvalid?.code === 'INVALID_ARGUMENT') {
+      sendJson(response, 400, {
+        error: { message: asInvalid.message ?? 'invalid argument', code: 'INVALID_ARGUMENT' },
+      })
+    } else {
+      sendJson(response, 500, {
+        error: { message: (error as Error)?.message ?? String(error) },
+      })
+    }
+  } finally {
+    // `translateBatch` only marks the pair dirty; without this the HTTP path
+    // kept every memory hit in memory and lost the whole cache on restart.
+    // In `finally` so a partially-completed run that then threw still persists
+    // the units that did succeed, rather than discarding the whole pass.
+    scheduleMemoryFlush()
   }
 }
 
@@ -235,56 +365,76 @@ export async function handleTranslateStreamHttp(
     }
   })
 
-  const units = toCoreUnits(body.units)
-  if (units.length === 0) {
-    writeSseEvent(response, 'error', {
-      type: 'error',
-      requestId: effectiveRequestId,
-      message: 'expected non-empty `units` array',
-    })
-    TRANSLATE_STREAM_SESSIONS.delete(effectiveRequestId)
-    try {
-      response.end()
-    } catch {
-      /* ignore */
-    }
-    return
-  }
-
-  const { provider, config } = resolveProvider(body)
-  if (!config) {
-    writeSseEvent(response, 'error', {
-      type: 'error',
-      requestId: effectiveRequestId,
-      message: `AI provider "${provider}" not configured`,
-    })
-    TRANSLATE_STREAM_SESSIONS.delete(effectiveRequestId)
-    try {
-      response.end()
-    } catch {
-      /* ignore */
-    }
-    return
-  }
-
-  const startedAt = Date.now()
-  writeSseEvent(response, 'start', {
-    type: 'start',
-    requestId: effectiveRequestId,
-    sourceLanguage: body.sourceLanguage ?? 'auto',
-    targetLanguage: body.targetLanguage ?? '',
-    totalUnits: units.length,
-  })
-
   let completed = 0
   let okCount = 0
   let memoryHitCount = 0
   let failedCount = 0
 
+  // Everything between `writeHead` above and the `finally` at the bottom runs
+  // inside this try. Once the 200 has gone out, the only correct way to fail
+  // is an `error` event followed by `end()` — a throw that escapes without
+  // ending the response leaves the socket open and the caller hanging until
+  // its own timeout, with no way to tell why. That is what `toCoreUnits` used
+  // to do on a `null` element. Keeping the whole region guarded means the
+  // `finally` always runs, so the response always ends.
   try {
+    const units = toCoreUnits(body.units)
+    if (!Array.isArray(body.units) || units.length === 0) {
+      writeSseEvent(response, 'error', {
+        type: 'error',
+        requestId: effectiveRequestId,
+        message: 'expected non-empty `units` array',
+      })
+      return
+    }
+    // Same wire-shape guard as the non-streaming endpoint. The earlier entry
+    // point already crashed the SSE with `opts.glossaryCategory.trim is not a
+    // function` (or `value3.indexOf is not a function` for `sourceLanguage`),
+    // which the `try` above would have caught but the response would then be
+    // an `error` event with a raw JS message — confusing the caller into
+    // chasing the wrong fix. Reject with a structured shape instead.
+    const badField = pickInvalidStringField(body as Record<string, unknown>, [
+      'sourceLanguage',
+      'targetLanguage',
+      'glossaryCategory',
+      'customerName',
+      'scene',
+      'documentId',
+      'documentType',
+      'requestId',
+      'idempotencyKey',
+    ])
+    if (badField) {
+      writeSseEvent(response, 'error', {
+        type: 'error',
+        requestId: effectiveRequestId,
+        message: `expected \`${badField}\` to be a string`,
+      })
+      return
+    }
+    const { provider, config } = resolveProvider(body)
+    if (!config) {
+      writeSseEvent(response, 'error', {
+        type: 'error',
+        requestId: effectiveRequestId,
+        message: `AI provider "${provider}" not configured`,
+      })
+      return
+    }
+
+    const startedAt = Date.now()
+    writeSseEvent(response, 'start', {
+      type: 'start',
+      requestId: effectiveRequestId,
+      sourceLanguage: body.sourceLanguage ?? 'auto',
+      targetLanguage: body.targetLanguage ?? '',
+      totalUnits: units.length,
+    })
+
+    const storage = await translationStorage()
     const response_ = await translateBatchStream(
       {
-        units,
+        units: units as never,
         sourceLang: body.sourceLanguage,
         targetLang: body.targetLanguage ?? '',
         preserveFormat: body.preserveFormatting,
@@ -292,8 +442,9 @@ export async function handleTranslateStreamHttp(
         memoryEnabled: body.memoryEnabled,
         qualityCheck: body.qualityCheck,
         glossaryCategory: body.glossaryCategory,
+        ...(body.customerName !== undefined ? { customerName: body.customerName } : {}),
       },
-      { provider, config },
+      { provider, config, ...storage },
       {
         concurrency: 25,
         onUnit: ({ index, total, result }) => {
@@ -314,6 +465,9 @@ export async function handleTranslateStreamHttp(
           }
           if (result.translatedText !== undefined) unitPayload.translatedText = result.translatedText
           if (result.errorMessage) unitPayload.errorMessage = result.errorMessage
+          if (result.matchedTerms && result.matchedTerms.length > 0) {
+            unitPayload.matchedTerms = result.matchedTerms
+          }
           writeSseEvent(response, 'unit', {
             type: 'unit',
             requestId: effectiveRequestId,
@@ -364,6 +518,9 @@ export async function handleTranslateStreamHttp(
       })
     }
   } finally {
+    // Every unit `translateBatchStream` settled is already in the memory; a
+    // mid-stream abort or provider failure must not throw those away.
+    scheduleMemoryFlush()
     TRANSLATE_STREAM_SESSIONS.delete(effectiveRequestId)
     try {
       response.end()
@@ -380,22 +537,29 @@ export async function handleTranslateStreamCancelHttp(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
+  let requestId: string | undefined
   try {
     const raw = await readBody(request)
-    const { requestId } = (raw ? JSON.parse(raw) : {}) as { requestId?: string }
-    if (!requestId) {
-      sendJson(response, 400, { error: { message: 'requestId required' } })
-      return
-    }
-    const session = TRANSLATE_STREAM_SESSIONS.get(requestId)
-    if (session) {
-      session.abort()
-      TRANSLATE_STREAM_SESSIONS.delete(requestId)
-    }
-    sendJson(response, 200, { ok: true, aborted: Boolean(session) })
-  } catch (error) {
-    sendJson(response, 500, {
-      error: { message: (error as Error)?.message ?? String(error) },
-    })
+    requestId = ((raw ? JSON.parse(raw) : {}) as { requestId?: string }).requestId
+  } catch {
+    // Same reasoning as the batch endpoint: an unparseable body is a client
+    // mistake and a retry with the same bytes will fail identically.
+    sendJson(response, 400, { error: { message: 'invalid JSON body', code: 'INVALID_ARGUMENT' } })
+    return
   }
+  if (!requestId) {
+    sendJson(response, 400, {
+      error: { message: 'requestId required', code: 'INVALID_ARGUMENT' },
+    })
+    return
+  }
+  const session = TRANSLATE_STREAM_SESSIONS.get(requestId)
+  if (session) {
+    session.abort()
+    TRANSLATE_STREAM_SESSIONS.delete(requestId)
+  }
+  // Not finding the id is not an error: the stream may have finished, or the
+  // caller may be cancelling twice. Reporting `aborted: false` lets it tell
+  // "nothing to cancel" from "cancelled" without a failure banner.
+  sendJson(response, 200, { ok: true, aborted: Boolean(session) })
 }

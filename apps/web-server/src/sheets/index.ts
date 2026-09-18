@@ -7,6 +7,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { FILES_DIR, loadRecentSheets, registerHandle, saveRecentSheets } from '../common/index'
 import { WebSheetsSidecar } from './sidecar'
+import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const sheetsSidecar = new WebSheetsSidecar()
 
@@ -32,7 +33,7 @@ export function registerSheetsHandlers(): void {
 
   registerHandle('workbook:open-path', async (_event: unknown, filePath: unknown) => {
     if (!existsSync(filePath as string)) {
-      throw new Error(`File not found: ${filePath}`)
+      throw new NotFoundError('workbook:open-path', `File not found: ${String(filePath)}`)
     }
 
     const bytes = readFileSync(filePath as string)
@@ -146,9 +147,15 @@ export function registerSheetsHandlers(): void {
   })
 
   registerHandle('workbook:open-for-merge', (_event: unknown, paths: unknown) => {
-    if (!Array.isArray(paths) || paths.length === 0 || paths.length > 20) throw new Error('merge sources must be 1-20 files')
+    if (!Array.isArray(paths) || paths.length === 0 || paths.length > 20) {
+      throw new InvalidArgumentError('workbook:open-for-merge', 'merge sources must be 1-20 files')
+    }
     return paths.map((path) => {
-      if (typeof path !== 'string' || !existsSync(path)) throw new Error(`Merge source not found: ${String(path)}`)
+      if (typeof path !== 'string' || !existsSync(path)) {
+        // A caller-supplied path that does not exist is a 404, not a server
+        // fault: the renderer shows "file moved or deleted" for this case.
+        throw new NotFoundError('workbook:open-for-merge', `Merge source not found: ${String(path)}`)
+      }
       return { path, name: basename(path) }
     })
   })

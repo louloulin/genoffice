@@ -48,6 +48,7 @@ export {
   dominantScript,
   scriptOfLanguage,
   isAlreadyInLanguage,
+  informationLength,
   type TextScript,
 } from './languages'
 

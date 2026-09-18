@@ -65,6 +65,9 @@ export interface TranslateRequest {
   qualityCheck?: boolean | undefined
   /** Free-form bucket label (e.g. 'legal', 'finance') for memory grouping. */
   glossaryCategory?: string | undefined
+  /** Customer name — forwarded to the KB resolver so per-customer terms
+   *  (and customerPreference entries) narrow the prompt + matchedTerms. */
+  customerName?: string | undefined
 }
 
 export interface TranslateResponse {
@@ -92,6 +95,9 @@ export interface TranslateBatchRequest {
   qualityCheck?: boolean | undefined
   /** Free-form bucket label for memory grouping / routing. */
   glossaryCategory?: string | undefined
+  /** Customer name — forwarded to the KB resolver so per-customer terms
+   *  (and customerPreference entries) narrow the result set. */
+  customerName?: string | undefined
 }
 
 export interface TranslateBatchUnitResult {

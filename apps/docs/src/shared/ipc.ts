@@ -293,8 +293,11 @@ export interface DesktopApi {
   /** one trusted space keystroke into this webContents — the only thing that
    *  makes Blink respell existing text after the spellcheck attribute turns
    *  back on (r168); the caller pauses the PM DOM observer and removes the
-   *  space again by script */
-  respellKick(): Promise<void>
+   *  space again by script.
+   *  On the web build the equivalent is a no-op — the response carries
+   *  `supported:false` so the renderer can skip the wait-for-shield loop
+   *  instead of timing out for nothing. */
+  respellKick(): Promise<{ ok: boolean; supported?: boolean }>
   /** sourcePath: the document's current path — Save As uses its desired next-save
    *  password and commits that state to the chosen path only after success */
   saveDocxAs(
@@ -360,6 +363,8 @@ export interface DesktopApi {
     memoryEnabled?: boolean
     qualityCheck?: boolean
     glossaryCategory?: string
+    /** Customer name — the KB confidentiality boundary. */
+    customerName?: string
   }): Promise<{
     ok: boolean
     translated?: string
@@ -368,6 +373,21 @@ export interface DesktopApi {
     sourceLang?: string
     targetLang?: string
     preserveFormat?: boolean
+    /**
+     * KB / dictionary source terms the text actually matched. The batch path
+     * has always returned these; the one-shot path returns them too but the
+     * renderer type never declared it, so the fan-out fallbacks in
+     * `desktop-api-factory.ts` silently dropped them.
+     */
+    matchedTerms?: string[]
+    /**
+     * Quality warnings for this translation. Populated by the local
+     * `ai:translate` handler and the embedded HTTP branch; absent when the
+     * caller passed `qualityCheck: false`.
+     */
+    warnings?: string[]
+    /** Batch-level score, present only on the embedded HTTP branch. */
+    quality?: { overallScore?: number; warnings?: string[] }
   }>
   /** Translate multiple document units while preserving their editor anchors. */
   aiTranslateBatch(request: {
@@ -387,6 +407,8 @@ export interface DesktopApi {
     memoryEnabled?: boolean
     qualityCheck?: boolean
     glossaryCategory?: string
+    /** Customer name — the KB confidentiality boundary. */
+    customerName?: string
   }): Promise<{
     ok: boolean
     units?: Array<{
@@ -414,6 +436,13 @@ export interface DesktopApi {
     scene: string
     sourceLang: string
     targetLang: string
+    /**
+     * Glossary / customer scope the translations were produced under. Local
+     * stores key the memory on it; without it a KERRITS sentence became a
+     * cache hit for every other customer on the next run.
+     */
+    glossaryCategory?: string
+    customerName?: string
     units: Array<{ unitId: string; sourceText: string; translatedText: string }>
   }): Promise<{ ok: boolean; savedCount?: number; skippedCount?: number; error?: string }>
   /** Genspark account status (gsk login state); withEmail also returns the email (needs a network request, slower) */

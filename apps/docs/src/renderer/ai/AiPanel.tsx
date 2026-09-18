@@ -1578,12 +1578,17 @@ export function AiPanel({
         scene: translateScope,
         sourceLang: request.sourceLang,
         targetLang: request.targetLang,
+        // The glossary the panel is translating under has to travel with the
+        // entry. Saving it unscoped made one customer's sentence a cache hit
+        // for every other customer on the next run — the same cross-customer
+        // leak the reader-side bucket key was added to prevent.
+        ...(glossaryCategory ? { glossaryCategory } : {}),
         units: request.units,
       })
       if (!result.ok) throw new Error(result.error || 'Failed to save translation memory')
       return { savedCount: result.savedCount, skippedCount: result.skippedCount }
     },
-    [translateScope],
+    [translateScope, glossaryCategory],
   )
 
   type TranslationItem = {

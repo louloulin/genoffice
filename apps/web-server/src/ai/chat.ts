@@ -34,12 +34,14 @@ import {
   maxOutputTokensOf,
   streamForProvider,
 } from '@genoffice/ai-provider'
+import { InvalidArgumentError } from './errors'
 import { fetchRemoteImage } from '@genoffice/electron-utils/remote-image'
 import { gskApiKey, hasGskAuth, gskLoginInfo } from '@genoffice/ai-search'
 
 import { parseDuckDuckGo, parseDuckDuckGoImages } from '@genoffice/agent-skills'
 import { callTranslateTool } from '../shell/pi-session'
 import {
+  assessBatchQuality,
   assessFileCoverage,
   buildDictionary,
   type BuildDictionaryResult,
@@ -71,7 +73,7 @@ export { buildTranslationPrompt, buildTranslateSystemPrompt, extractTranslationT
 // the in-memory store with the (empty) on-disk state.
 export const sharedKnowledgeBase = new KnowledgeBase()
 let kbLoadPromise: Promise<void> | null = null
-function ensureKbLoaded(): Promise<void> {
+export function ensureKbLoaded(): Promise<void> {
   if (!kbLoadPromise) {
     kbLoadPromise = sharedKnowledgeBase.load().catch((err: unknown) => {
       console.warn('[translation-kb] load failed:', err)
@@ -87,7 +89,17 @@ function ensureKbLoaded(): Promise<void> {
 // reuse kicks in without the user having to wire anything up.
 export const translationMemory = new PersistentTranslationMemory()
 let tmLoadPromise: Promise<void> | null = null
-function ensureMemoryLoaded(): Promise<void> {
+function normalizeBucket(
+  glossaryCategory: string | undefined,
+  customerName: string | undefined,
+): string | undefined {
+  for (const value of [glossaryCategory, customerName]) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+export function ensureMemoryLoaded(): Promise<void> {
   if (!tmLoadPromise) {
     tmLoadPromise = translationMemory.load().catch((err: unknown) => {
       console.warn('[translation-memory] load failed:', err)
@@ -99,14 +111,39 @@ function ensureMemoryLoaded(): Promise<void> {
 // Debounce flushes so a burst of translations doesn't hit the disk on every
 // call; the underlying `isDirty` already prevents redundant work.
 let flushTimer: NodeJS.Timeout | null = null
-function scheduleMemoryFlush(delayMs = 250): void {
+/**
+ * Debounced flush, shared by every surface that writes translation memory.
+ *
+ * The HTTP translate endpoints write into the same `translationMemory` as the
+ * IPC handlers, so they need the same debounce; before this was exported they
+ * saved without ever scheduling a write and the HTTP path only ever persisted
+ * on a clean shutdown.
+ */
+export function scheduleMemoryFlush(delayMs = 250): void {
   if (flushTimer) return
   flushTimer = setTimeout(() => {
     flushTimer = null
-    void translationMemory.flush().catch((err: unknown) => {
-      console.warn('[translation-memory] flush failed:', err)
-    })
+    void flushTranslationMemory()
   }, delayMs)
+}
+
+/**
+ * Write every pending translation-memory entry to disk now.
+ *
+ * `PersistentTranslationMemory.save()` only marks the language pair dirty, so
+ * anything translated after the last debounce tick — including a translation
+ * made moments before the process is signalled — lives in memory only. The
+ * shutdown path calls this so "the cache survives a restart" holds even when
+ * the flush timer never fires.
+ */
+export async function flushTranslationMemory(): Promise<void> {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  await translationMemory.flush().catch((err: unknown) => {
+    console.warn('[translation-memory] flush failed:', err)
+  })
 }
 
 // Most recently generated `--dictionary`.
@@ -116,21 +153,44 @@ function scheduleMemoryFlush(delayMs = 250): void {
 // Rather than make them re-paste it, the snippet path reuses the last built
 // dictionary (or an explicit `dictionaryPath`). Parsed lazily and cached by
 // path so repeated snippet calls are free.
-let lastDictionary: { path: string; pairs: TerminologyPair[] } | null = null
+//
+// The dictionary is remembered together with the glossary / customer bucket it
+// was built for. A dictionary is terminology, not a cache: reusing a KERRITS
+// dictionary for an ACME snippet would apply KERRITS' branded wording to
+// another customer's document, which is the same leak the KB bucket filter
+// exists to prevent. An implicit reuse that crosses buckets is therefore
+// refused, and the snippet translates with the caller's own KB instead.
+let lastDictionary: { path: string; pairs: TerminologyPair[]; bucket: string } | null = null
 
 interface LoadedDictionary {
   path: string
   /** Terminology pairs, longest source first so multi-word terms win. */
   pairs: TerminologyPair[]
+  /** Normalized glossary / customer bucket the dictionary was built for. */
+  bucket: string
+}
+
+/** Normalize a glossary / customer bucket; `undefined` == unscoped. */
+function dictionaryBucket(...candidates: Array<string | undefined>): string {
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
 }
 
 /**
  * Read a generated `{ "source": "target" }` dictionary off disk. Returns null
  * when the file is missing or malformed — the caller then translates without
  * the dictionary instead of failing the whole request.
+ *
+ * `bucket` is the glossary / customer the caller is translating for. When it
+ * differs from the bucket the cached entry was loaded for, the on-disk file is
+ * re-read: two customers can share a path only by mistake, and silently
+ * serving the first one's pairs is exactly the cross-customer leak this cache
+ * used to cause.
  */
-function loadDictionary(path: string): LoadedDictionary | null {
-  if (lastDictionary?.path === path) return lastDictionary
+function loadDictionary(path: string, bucket = ''): LoadedDictionary | null {
+  if (lastDictionary?.path === path && lastDictionary.bucket === bucket) return lastDictionary
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
@@ -142,7 +202,7 @@ function loadDictionary(path: string): LoadedDictionary | null {
     }
     if (pairs.length === 0) return null
     pairs.sort((a, b) => b.source.length - a.source.length)
-    lastDictionary = { path, pairs }
+    lastDictionary = { path, pairs, bucket }
     return lastDictionary
   } catch {
     return null
@@ -150,9 +210,17 @@ function loadDictionary(path: string): LoadedDictionary | null {
 }
 
 /** Remember a freshly written dictionary without a redundant disk read. */
-function rememberDictionary(path: string, pairs: readonly TerminologyPair[]): void {
+function rememberDictionary(
+  path: string,
+  pairs: readonly TerminologyPair[],
+  bucket = '',
+): void {
   if (pairs.length === 0) return
-  lastDictionary = { path, pairs: [...pairs].sort((a, b) => b.source.length - a.source.length) }
+  lastDictionary = {
+    path,
+    pairs: [...pairs].sort((a, b) => b.source.length - a.source.length),
+    bucket,
+  }
 }
 
 /**
@@ -160,20 +228,23 @@ function rememberDictionary(path: string, pairs: readonly TerminologyPair[]): vo
  * segments, so we avoid re-reading the file we just wrote; when a builder omits
  * them (older callers) we fall back to reading it back from disk.
  */
-function rememberBuiltDictionary(result: {
-  ok: boolean
-  dictionaryPath?: string | undefined
-  segments?: Array<{ source: string; target?: string | undefined }> | undefined
-}): void {
+function rememberBuiltDictionary(
+  result: {
+    ok: boolean
+    dictionaryPath?: string | undefined
+    segments?: Array<{ source: string; target?: string | undefined }> | undefined
+  },
+  bucket = '',
+): void {
   if (!result.ok || !result.dictionaryPath) return
   const pairs = (result.segments ?? [])
     .filter((seg) => seg.target !== undefined && seg.target.trim().length > 0)
     .map((seg) => ({ source: seg.source, target: seg.target as string }))
   if (pairs.length === 0) {
-    loadDictionary(result.dictionaryPath)
+    loadDictionary(result.dictionaryPath, bucket)
     return
   }
-  rememberDictionary(result.dictionaryPath, pairs)
+  rememberDictionary(result.dictionaryPath, pairs, bucket)
 }
 
 // ----- settings persistence --------------------------------------------------
@@ -390,7 +461,9 @@ export function registerAiCoreHandlers(): void {
   registerHandle('ai:set-settings', (_event: unknown, settings: unknown) => {
     const next = settings as AiSettings
     if (!next || typeof next !== 'object') {
-      throw new Error('ai:set-settings expected an AiSettings object')
+      // A malformed request, not a server fault: answered 500 for years and
+      // the renderer could not tell that its own payload was the problem.
+      throw new InvalidArgumentError('ai:set-settings', 'expected an AiSettings object')
     }
     aiSettings = {
       ...aiSettings,
@@ -532,7 +605,7 @@ export function registerAiCoreHandlers(): void {
   registerHandle('ai:chat', async (_event: unknown, request: unknown) => {
     const req = request as AiChatRequest | undefined
     if (!req || typeof req.user !== 'string') {
-      throw new Error('ai:chat expected { settings, system, user }')
+      throw new InvalidArgumentError('ai:chat', 'expected { settings, system, user }')
     }
     const incoming = req.settings || aiSettings
     const provider = incoming.provider
@@ -642,17 +715,46 @@ export function registerAiCoreHandlers(): void {
       memoryEnabled?: boolean
       qualityCheck?: boolean
       glossaryCategory?: string
+      customerName?: string
       settings?: AiSettings
     }
     if (!req.targetLang) {
       return { ok: false, error: 'ai:translate expected non-empty `targetLang`' }
     }
+    if (req.instruction !== undefined && typeof req.instruction !== 'string') {
+      return { ok: false, error: 'ai:translate expected `instruction` to be a string' }
+    }
+    // glossaryCategory / customerName ride into the prompt and into the bucket
+    // filter. They are typed as strings but arrive as anything the renderer
+    // sent. Guard both here so `buildTranslateSystemPrompt` and `bucketFor`
+    // never see a number or array.
+    if (req.glossaryCategory !== undefined && typeof req.glossaryCategory !== 'string') {
+      return { ok: false, error: 'ai:translate expected `glossaryCategory` to be a string' }
+    }
+    if (req.customerName !== undefined && typeof req.customerName !== 'string') {
+      return { ok: false, error: 'ai:translate expected `customerName` to be a string' }
+    }
     const result = (await callTranslateTool('translate_text', {
       text: req.instruction ?? '',
-      source_lang: req.sourceLang,
+      source_lang: typeof req.sourceLang === 'string' ? req.sourceLang : undefined,
       target_lang: req.targetLang,
-      instruction: req.preserveFormat ? 'preserve_format' : undefined,
+      // preserve_format is a boolean, not an instruction string. The
+      // previous shape stuffed the literal "preserve_format" into
+      // the instruction field, which the translate-skill tool
+      // appended as "Style: preserve_format"; the model then echoed
+      // it back in its reply and the UI displayed gibberish.
+      ...(req.preserveFormat !== undefined ? { preserve_format: req.preserveFormat } : {}),
+      ...(req.memoryEnabled !== undefined ? { memory_enabled: req.memoryEnabled } : {}),
+      ...(req.qualityCheck !== undefined ? { quality_check: req.qualityCheck } : {}),
+      ...(req.glossaryCategory !== undefined ? { glossary_category: req.glossaryCategory } : {}),
+      ...(req.customerName !== undefined ? { customer_name: req.customerName } : {}),
     })) as { ok: boolean; details?: Record<string, unknown>; summary?: string; error?: string }
+    // The pi tool saved this translation into the persistent TM, which only
+    // marks the language pair dirty, so a flush has to be scheduled. It ran
+    // only on the success path, which meant a provider failure discarded the
+    // memory writes the tool had already made for this call. `scheduleMemoryFlush`
+    // is a no-op when nothing is dirty.
+    scheduleMemoryFlush()
     if (!result.ok) {
       return { ok: false, error: result.error ?? result.summary ?? 'translate_text failed' }
     }
@@ -683,74 +785,293 @@ export function registerAiCoreHandlers(): void {
         range?: { from?: number; to?: number; scope?: string } | null
       }>
       sourceLang?: string
+      sourceLanguage?: string
       targetLang?: string
       preserveFormat?: boolean
       scene?: string
       memoryEnabled?: boolean
       qualityCheck?: boolean
       glossaryCategory?: string
+      customerName?: string
     }
+    // Accept the alias the HTTP transport sends — `sourceLanguage` matches the
+    // legacy IPC schema and the docs renderer sends it on the bridge path.
+    if (req.sourceLang === undefined && req.sourceLanguage !== undefined) {
+      req.sourceLang = req.sourceLanguage
+    }
+    // `units` is the whole request body, so a caller that sent an object (or a
+    // string, or null) used to reach `units.length` and throw a TypeError that
+    // the transport reported as a server fault.
+    if (req.units !== undefined && !Array.isArray(req.units)) {
+      return {
+        ok: false,
+        error: 'ai:translate-batch expected `units` to be an array',
+        units: [],
+      }
+    }
+    // The element-shape guard lives in the core layer (`malformedUnitResult`)
+    // so the desktop handler gets it too; the web handler only has to keep the
+    // `units` field the renderer iterates present on every failure path.
     const units = req.units ?? []
     const targetLang = req.targetLang ?? ''
     if (!targetLang) {
       return { ok: false, error: 'ai:translate-batch expected non-empty `targetLang`', units: [] }
     }
-    const settled = await Promise.all(
-      units.map(async (u) => {
+    // The shape guards below mirror the IPC handler in docs-main.ts. They
+    // used to fall through into `buildTranslateSystemPrompt` and answer 500
+    // with `(opts.glossaryCategory).trim is not a function` (or the prompt
+    // itself was built with `Translation rules (auto -> 5)`).
+    if (req.glossaryCategory !== undefined && typeof req.glossaryCategory !== 'string') {
+      return {
+        ok: false,
+        error: 'ai:translate-batch expected `glossaryCategory` to be a string',
+        units,
+      }
+    }
+    if (req.customerName !== undefined && typeof req.customerName !== 'string') {
+      return {
+        ok: false,
+        error: 'ai:translate-batch expected `customerName` to be a string',
+        units,
+      }
+    }
+    // The translate-skill `translate_text` pi tool is single-text, so this
+    // handler fans the units out through it with the same per-unit options the
+    // desktop `translateBatchCore` flow uses (preserveFormat / memoryEnabled /
+    // qualityCheck / glossaryCategory / scene). Dropping them silently
+    // diverged the web build from the desktop build: a renderer that passed
+    // `glossaryCategory: 'KERRITS'` had it ignored here, so the customer
+    // bucket never narrowed the KB.
+    //
+    // Concurrency is bounded: a 500-segment document used to open 500
+    // simultaneous provider requests from one click, which trips per-minute
+    // rate limits and makes every request slower than running them in waves.
+    // The desktop core settles batches 25 at a time; match it.
+    const CONCURRENCY = 25
+    const settled: Array<{
+      ok: boolean
+      unitId: string
+      sourceText: string
+      translatedText: string
+      status?: 'translated' | 'memory-hit' | 'failed'
+      matchedTerms: string[]
+      warnings: string[]
+      errorMessage?: string
+      range: { from?: number; to?: number; scope?: string } | null
+    }> = new Array(units.length)
+    let nextIndex = 0
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const index = nextIndex++
+        // `units` is untyped JSON off the wire, so an element can be null —
+        // and `return`ing on one left a hole in `settled`. Sparse
+        // `Array.prototype.every` skips holes (the batch reported `ok: true`
+        // over an untranslated segment) and `Array.prototype.find` on one
+        // threw "Cannot read properties of undefined (reading 'ok')", which
+        // the transport answered as a 500.
+        const u = units[index] as (typeof units)[number] | null | undefined
+        if (index >= units.length) return
+        // `typeof null` is 'object', so a null element needs its own check.
+        if (!u || typeof u !== 'object') {
+          settled[index] = {
+            ok: false,
+            unitId: '',
+            sourceText: '',
+            translatedText: '',
+            status: 'failed',
+            matchedTerms: [],
+            warnings: ['malformed-unit'],
+            errorMessage: `ai:translate-batch expected unit ${index} to be an object`,
+            range: null,
+          }
+          continue
+        }
+        // A unit that already failed shape-wise (no text) is reported rather
+        // than sent: the provider cannot translate an empty segment, and one
+        // empty unit must not fail the rest of the document.
+        const sourceText = typeof u.sourceText === 'string' ? u.sourceText : ''
+        if (!sourceText.trim()) {
+          settled[index] = {
+            ok: false,
+            unitId: typeof u.unitId === 'string' ? u.unitId : '',
+            sourceText,
+            translatedText: '',
+            status: 'failed',
+            matchedTerms: [],
+            warnings: [typeof u.sourceText === 'string' ? 'empty-source' : 'malformed-unit'],
+            errorMessage:
+              typeof u.sourceText === 'string'
+                ? 'empty source text'
+                : `ai:translate-batch expected unit ${index} \`sourceText\` to be a string`,
+            range: u.range ?? null,
+          }
+          continue
+        }
+        // Memory check first: ai:save-translation-memory writes to this very
+        // TM instance (chat.ts), so the lookup has to run against the same
+        // one. Calling translate_text instead would route through the pi
+        // session's own memory — a different object — and a customer save
+        // would silently fall through to the model for the next read.
+        if (req.memoryEnabled !== false) {
+          await ensureMemoryLoaded()
+          const batchBucket = normalizeBucket(req.glossaryCategory, req.customerName)
+          // `sourceLanguage` is the wire-alias the HTTP transport sends;
+          // `sourceLang` is what the IPC schema has always used. The alias
+          // gets normalised to `req.sourceLang` earlier, so reading the
+          // canonical field is enough here.
+          const hit = translationMemory.lookup(
+            req.sourceLang ?? 'auto',
+            targetLang,
+            sourceText,
+            batchBucket,
+          )
+          if (hit) {
+            settled[index] = {
+              ok: true,
+              unitId: typeof u.unitId === 'string' ? u.unitId : '',
+              sourceText,
+              translatedText: hit.translatedText,
+              status: 'memory-hit',
+              matchedTerms: [],
+              warnings: [],
+              range: u.range ?? null,
+            }
+            continue
+          }
+        }
         const result = (await callTranslateTool('translate_text', {
-          text: u.sourceText ?? '',
-          source_lang: req.sourceLang,
+          text: sourceText,
+          // src/type guards above already narrowed this to a string, but the
+          // forward has to keep the `undefined`-when-missing shape so the
+          // pi tool falls back to its own `auto` default.
+          source_lang: req.sourceLanguage,
           target_lang: targetLang,
+          ...(req.preserveFormat !== undefined ? { preserve_format: req.preserveFormat } : {}),
+          ...(req.memoryEnabled !== undefined ? { memory_enabled: req.memoryEnabled } : {}),
+          ...(req.qualityCheck !== undefined ? { quality_check: req.qualityCheck } : {}),
+          // glossaryCategory and customerName are separate concepts on the
+          // wire, but the KB terms carry both a `category` and a
+          // `customerName`. Forward each under its own name and let the
+          // resolver match either; a renderer that only knows the customer
+          // name still gets the right narrowing.
+          ...(req.glossaryCategory !== undefined ? { glossary_category: req.glossaryCategory } : {}),
+          ...(req.glossaryCategory === undefined && req.customerName !== undefined
+            ? { glossary_category: req.customerName }
+            : {}),
+          ...(req.customerName !== undefined ? { customer_name: req.customerName } : {}),
+          ...(req.scene !== undefined ? { scene: req.scene } : {}),
         })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
         const d = result.details ?? {}
-        return {
-          ok: result.ok,
-          unitId: u.unitId ?? '',
-          translatedText: (d.translated as string) ?? '',
+        const translatedText = (d.translated as string) ?? ''
+        const status = (d.status as 'translated' | 'memory-hit' | 'failed' | undefined) ??
+          (result.ok ? 'translated' : 'failed')
+        // The desktop contract carries `status` / `sourceText` / `range` on
+        // every unit, and the docs renderer filters `status === 'translated'
+        // || 'memory-hit'` before deciding a document pass produced anything.
+        // This handler used to omit all three, so a perfectly translated
+        // document was declared "no usable units" and the panel showed an
+        // empty result over a working translation.
+        settled[index] = {
+          ok: result.ok && status !== 'failed',
+          unitId: typeof u.unitId === 'string' ? u.unitId : '',
+          sourceText,
+          translatedText,
+          status,
           matchedTerms: (d.matchedTerms as string[]) ?? [],
           warnings: (d.warnings as string[]) ?? [],
-          errorMessage: result.error ?? (result.ok ? undefined : result.summary),
+          ...(result.ok && status !== 'failed'
+            ? {}
+            : { errorMessage: result.error ?? result.summary ?? 'translation failed' }),
+          range: u.range ?? null,
         }
-      }),
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.max(1, Math.min(CONCURRENCY, units.length)) }, () => worker()),
     )
-    const allOk = settled.every((s) => s.ok)
+
+    const allOk = settled.every((unit) => unit.ok)
     // A failed batch used to answer `{ ok: false, units: [...] }` with no
     // top-level reason: the per-unit `errorMessage` was the only place the
     // provider message lived, and the docs/sheets bridges that read
     // `response.error` showed an empty failure banner. Mirror the first
     // unit's message so both shapes carry the reason.
-    const firstFailure = settled.find((s) => !s.ok && s.errorMessage)
+    const firstFailure = settled.find((unit) => !unit.ok && unit.errorMessage)
+    // Quality is computed here, not asked of the model: the renderer shows the
+    // score next to the document and used to receive `quality: undefined` on
+    // this path while the desktop build reported a real number.
+    const quality =
+      req.qualityCheck === false || settled.length === 0
+        ? undefined
+        : assessBatchQuality(
+            settled.map((unit) => ({
+              sourceText: unit.sourceText,
+              translatedText: unit.translatedText,
+              warnings: unit.warnings,
+            })),
+          )
+    scheduleMemoryFlush()
     return {
       ok: allOk,
       units: settled,
+      ...(quality ? { quality } : {}),
       ...(firstFailure ? { error: firstFailure.errorMessage } : {}),
     }
   })
-  scheduleMemoryFlush()
 
   registerHandle('ai:save-translation-memory', async (_event: unknown, request: unknown) => {
     const req = (request ?? {}) as {
       scene?: string
       sourceLang?: string
       targetLang?: string
+      /** Glossary / customer scope the translations were produced under. */
+      bucket?: string
+      glossaryCategory?: string
+      customerName?: string
       units?: Array<{ unitId?: string; sourceText?: string; translatedText?: string }>
     }
+    if (req.units !== undefined && !Array.isArray(req.units)) {
+      return { ok: false, savedCount: 0, skippedCount: 0, error: 'units must be an array' }
+    }
+    // A null element used to be dereferenced and threw out of the handler.
+    // Elements that survive but carry no usable text are passed through so
+    // `saveMany` counts them as skipped — dropping them here would report
+    // "saved 1" for a batch of three and hide the two malformed ones.
     const units = (req.units ?? [])
-      .filter((u) => u.sourceText && u.translatedText)
+      .filter((u): u is Record<string, unknown> => Boolean(u) && typeof u === 'object')
       .map((u) => ({
-        unitId: u.unitId ?? '',
-        sourceText: u.sourceText ?? '',
-        translatedText: u.translatedText ?? '',
+        unitId: typeof u.unitId === 'string' ? u.unitId : '',
+        sourceText: typeof u.sourceText === 'string' ? u.sourceText : '',
+        translatedText: typeof u.translatedText === 'string' ? u.translatedText : '',
       }))
+    // Elements rejected before they reached `saveMany` still have to be
+    // reported, or the counts silently disagree with what the caller sent.
+    const rejected = (req.units?.length ?? 0) - units.length
+    // glossaryCategory / customerName become the bucket. All three arrive
+    // straight off the wire, but `bucketFor` / `bucket.trim` are not safe on
+    // a number or array — guard each before falling through to the next.
+    if (req.bucket !== undefined && typeof req.bucket !== 'string') {
+      return { ok: false, savedCount: 0, skippedCount: rejected, error: 'bucket must be a string' }
+    }
+    if (req.glossaryCategory !== undefined && typeof req.glossaryCategory !== 'string') {
+      return { ok: false, savedCount: 0, skippedCount: rejected, error: 'glossaryCategory must be a string' }
+    }
+    if (req.customerName !== undefined && typeof req.customerName !== 'string') {
+      return { ok: false, savedCount: 0, skippedCount: rejected, error: 'customerName must be a string' }
+    }
     await ensureMemoryLoaded()
+    const bucket = req.bucket ?? req.glossaryCategory ?? req.customerName
     const response = translationMemory.saveMany({
       scene: req.scene ?? 'office',
       sourceLang: req.sourceLang ?? 'auto',
       targetLang: req.targetLang ?? 'auto',
+      ...(bucket !== undefined ? { bucket } : {}),
       units,
     })
     await translationMemory.flush()
-    return response
+    return rejected > 0
+      ? { ...response, skippedCount: response.skippedCount + rejected }
+      : response
   })
 
   // home:translate-snippet — quick text-paste translation for the Settings pane.
@@ -776,17 +1097,45 @@ export function registerAiCoreHandlers(): void {
       useDictionary?: boolean
       settings?: AiSettings
     }
+    // Every string-typed field arrives straight off the wire. A number or
+    // array on `.trim()`-using paths used to throw out of the handler and
+    // answer 500; guard up front so the caller sees the shape error it
+    // actually sent.
+    if (req.text !== undefined && typeof req.text !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `text` to be a string' }
+    }
+    if (req.targetLang !== undefined && typeof req.targetLang !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `targetLang` to be a string' }
+    }
+    if (req.sourceLang !== undefined && typeof req.sourceLang !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `sourceLang` to be a string' }
+    }
+    if (req.customerName !== undefined && typeof req.customerName !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `customerName` to be a string' }
+    }
+    if (req.glossaryCategory !== undefined && typeof req.glossaryCategory !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `glossaryCategory` to be a string' }
+    }
+    if (req.dictionaryPath !== undefined && typeof req.dictionaryPath !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `dictionaryPath` to be a string' }
+    }
     const text = (req.text ?? '').trim()
     if (!text) return { ok: false, error: 'home:translate-snippet expected non-empty `text`' }
     if (!req.targetLang) {
       return { ok: false, error: 'home:translate-snippet expected non-empty `targetLang`' }
     }
+    // The bucket the caller is translating for. A dictionary is only valid
+    // within the bucket it was built for; an implicit reuse across buckets is
+    // refused rather than silently applying another customer's wording.
+    const snippetBucket = dictionaryBucket(req.glossaryCategory, req.customerName)
     const dictionary =
       req.useDictionary === false
         ? null
         : req.dictionaryPath
-          ? loadDictionary(req.dictionaryPath)
-          : lastDictionary
+          ? loadDictionary(req.dictionaryPath, snippetBucket)
+          : lastDictionary && lastDictionary.bucket === snippetBucket
+            ? lastDictionary
+            : null
     const dictionaryPairs = dictionary?.pairs ?? []
     const dictionarySources = new Set(dictionaryPairs.map((pair) => pair.source))
 
@@ -810,6 +1159,7 @@ export function registerAiCoreHandlers(): void {
       ...(req.customerName || req.glossaryCategory
         ? { glossary_category: req.glossaryCategory ?? req.customerName }
         : {}),
+      ...(req.customerName !== undefined ? { customer_name: req.customerName } : {}),
       ...(dictionaryPairs.length > 0 ? { dictionary: dictionaryPairs } : {}),
     })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
     if (!result.ok) {
@@ -862,6 +1212,27 @@ export function registerAiCoreHandlers(): void {
       useLlm?: boolean
       settings?: AiSettings
     }
+    // All string-typed fields arrive straight off the wire; guard each before
+    // falling through so `truthy-non-string` values like `42` cannot crash
+    // the downstream tool with `.trim is not a function`.
+    if (req.inputPath !== undefined && typeof req.inputPath !== 'string') {
+      return { ok: false, error: 'ai:translate-build-dictionary expected `inputPath` to be a string' }
+    }
+    if (req.targetLang !== undefined && typeof req.targetLang !== 'string') {
+      return { ok: false, error: 'ai:translate-build-dictionary expected `targetLang` to be a string' }
+    }
+    if (req.sourceLang !== undefined && typeof req.sourceLang !== 'string') {
+      return { ok: false, error: 'ai:translate-build-dictionary expected `sourceLang` to be a string' }
+    }
+    if (req.outputPath !== undefined && typeof req.outputPath !== 'string') {
+      return { ok: false, error: 'ai:translate-build-dictionary expected `outputPath` to be a string' }
+    }
+    if (req.glossaryCategory !== undefined && typeof req.glossaryCategory !== 'string') {
+      return { ok: false, error: 'ai:translate-build-dictionary expected `glossaryCategory` to be a string' }
+    }
+    if (req.customerName !== undefined && typeof req.customerName !== 'string') {
+      return { ok: false, error: 'ai:translate-build-dictionary expected `customerName` to be a string' }
+    }
     if (!req.inputPath) {
       return { ok: false, error: 'ai:translate-build-dictionary expected a non-empty `inputPath`' }
     }
@@ -898,8 +1269,9 @@ export function registerAiCoreHandlers(): void {
       segments: [] as BuildDictionaryResult['segments'],
     }
     // Cache the pairs so a following snippet / file call reuses the same
-    // terminology without a redundant disk read.
-    rememberBuiltDictionary(built)
+    // terminology without a redundant disk read. The bucket travels with it
+    // so the snippet path can tell whose dictionary this is.
+    rememberBuiltDictionary(built, dictionaryBucket(req.glossaryCategory, req.customerName))
     return built
   })
   // user can review or hand-edit a dictionary before spending the file pass.
@@ -918,6 +1290,7 @@ export function registerAiCoreHandlers(): void {
       customerName?: string
       glossaryCategory?: string
       scale?: number
+      timeoutMs?: number
       dictionaryPath?: string
       settings?: AiSettings
     }
@@ -941,6 +1314,13 @@ export function registerAiCoreHandlers(): void {
       target_lang: req.targetLang,
       ...(req.dictionaryPath !== undefined ? { dictionary_path: req.dictionaryPath } : {}),
       ...(req.scale !== undefined ? { scale: req.scale } : {}),
+      ...(req.timeoutMs !== undefined ? { timeout_ms: req.timeoutMs } : {}),
+      // The handler advertised customerName / glossaryCategory but never
+      // forwarded them, so `translate_file` built one unscoped dictionary
+      // per file and applied every customer's KB terms to it. Forward both;
+      // the pi tool unifies them at the resolver.
+      ...(req.customerName !== undefined ? { customer_name: req.customerName } : {}),
+      ...(req.glossaryCategory !== undefined ? { glossary_category: req.glossaryCategory } : {}),
       python_path: location.pythonPath,
       execute: true,
     })) as {
@@ -1016,6 +1396,7 @@ export function registerAiCoreHandlers(): void {
       ...(req.sourceLang !== undefined ? { source_lang: req.sourceLang } : {}),
       ...(req.outputPath !== undefined ? { output_path: req.outputPath } : {}),
       ...(req.maxSegments !== undefined ? { max_pairs: req.maxSegments } : {}),
+      ...(req.minChars !== undefined ? { min_chars: req.minChars } : {}),
       ...(req.customerName !== undefined ? { customer_name: req.customerName } : {}),
       ...(req.glossaryCategory !== undefined ? { glossary_category: req.glossaryCategory } : {}),
     })) as { ok: boolean; details?: Record<string, unknown>; error?: string; summary?: string }
@@ -1028,7 +1409,7 @@ export function registerAiCoreHandlers(): void {
     }
     const d = result.details ?? {}
     if (d.dictionaryPath && typeof d.dictionaryPath === 'string') {
-      loadDictionary(d.dictionaryPath)
+      loadDictionary(d.dictionaryPath, dictionaryBucket(req.glossaryCategory, req.customerName))
     }
     return d
   })
@@ -1106,48 +1487,58 @@ export function registerAiCoreHandlers(): void {
       category?: string
       customerName?: string
     }
-    if (!req.targetLang) {
+    // A non-string here used to fall through `resolve()` into the rendered
+    // prompt block as `Translation rules (auto -> 5)` — a request whose own
+    // language field was never a language. Reject the shape.
+    if (typeof req.targetLang !== 'string' || !req.targetLang.trim()) {
       return { ok: false, error: 'ai:translation-kb-resolve expected non-empty `targetLang`' }
     }
     // Match the legacy sharedKnowledgeBase.resolve() response shape so the
     // TranslationKbPane (and the existing tests) keep working: {terms,
-    // promptBlock, ...stats}. The pi session's kb_list + kb_search tools
-    // give us the same entries; we rebuild the promptBlock from the term
-    // entries only.
-    const result = (await callTranslateTool('kb_list', { limit: 1000 })) as {
-      ok: boolean
-      details?: { entries?: unknown[]; count?: number }
-      summary?: string
-      error?: string
-    }
-    if (!result.ok) {
-      return {
-        ok: false,
-        terms: [],
-        promptBlock: '',
-        error: result.error ?? result.summary ?? 'kb_list failed',
-      }
-    }
-    const all = (result.details?.entries ?? []) as Array<Record<string, unknown>>
+    // promptBlock, ...stats}.
+    //
+    // This used to re-implement the filter inline and got it wrong in two
+    // ways that the pi session's own resolver does not: an entry declaring
+    // no bucket (generic) was dropped as soon as the caller named a
+    // category, and an entry that buckets by `customerName` was invisible to
+    // a caller that only sent `category`. A caller could therefore preview a
+    // term set that did not match what the translator would actually apply.
+    // Delegate to the same resolver so both paths agree by construction.
+    // Re-read from disk rather than trusting the memoised boot-time load:
+    // every mutation goes through the pi session's own KnowledgeBase instance
+    // (`kb_upsert` → `kb.save()`), so this instance is stale the moment the
+    // user adds a term. Without the reload the pane previews a term set that
+    // no longer matches the file.
+    await ensureKbLoaded()
+    // Re-read rather than trusting the memoised boot-time load: mutations go
+    // through the pi session's own `KnowledgeBase` instance (`kb_upsert` →
+    // `kb.save()`), so this instance is stale the moment the user adds a term.
+    // `refresh()` short-circuits on unchanged bytes and keeps the previous
+    // store if the file is unreadable.
+    await sharedKnowledgeBase.refresh().catch(() => false)
     const sourceLang = req.sourceLang ?? 'auto'
-    const targetLang = req.targetLang
-    const terms = all.filter((e) => {
-      if (e.sourceLang && e.sourceLang !== sourceLang && sourceLang !== 'auto') return false
-      if (e.targetLang && e.targetLang !== targetLang) return false
-      if (req.category && e.category !== req.category) return false
-      if (req.customerName && e.customerName !== req.customerName) return false
-      return true
+    const resolved = sharedKnowledgeBase.resolve({
+      sourceLang,
+      targetLang: req.targetLang,
+      ...(req.category !== undefined ? { category: req.category } : {}),
+      ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
     })
-    const termPairs = terms
-      .filter((e) => typeof e.sourceTerm === 'string' && typeof e.targetTerm === 'string')
+    const terms = resolved.terms as unknown as Array<Record<string, unknown>>
+    const termPairs = resolved.terms
+      .filter((e) => e.sourceTerm && e.targetTerm)
       .map((e) => `${e.sourceTerm} → ${e.targetTerm}`)
     const promptBlock =
-      termPairs.length > 0 ? `Use these preferred terms:\n${termPairs.join('\n')}` : ''
+      resolved.promptBlock ||
+      (termPairs.length > 0 ? `Use these preferred terms:\n${termPairs.join('\n')}` : '')
     return {
       ok: true,
       terms,
       promptBlock,
-      total: all.length,
+      forbidden: resolved.forbidden,
+      brands: resolved.brands,
+      styleRules: resolved.styleRules,
+      customerPreferences: resolved.customerPreferences,
+      total: sharedKnowledgeBase.list().length,
       matched: terms.length,
     }
   })
@@ -1227,6 +1618,10 @@ export function registerAiCoreHandlers(): void {
       ...(req.outputPath !== undefined ? { output_path: req.outputPath } : {}),
       dictionary_path: req.dictionaryPath,
       ...(req.scale !== undefined ? { scale: req.scale } : {}),
+      // The rerun path takes a `timeoutMs` and never forwarded it, so a large
+      // PDF that legitimately needs longer than the tool's default was killed
+      // mid-render and reported as a translation failure.
+      ...(req.timeoutMs !== undefined ? { timeout_ms: req.timeoutMs } : {}),
       python_path: location2.pythonPath,
       execute: true,
     })) as { ok: boolean; details?: Record<string, unknown>; error?: string }
@@ -1257,7 +1652,14 @@ export function registerAiCoreHandlers(): void {
   registerHandle('ai:translate-dictionary-status', () => ({
     ok: true,
     dictionary: lastDictionary
-      ? { path: lastDictionary.path, terms: lastDictionary.pairs.length }
+      ? {
+          path: lastDictionary.path,
+          terms: lastDictionary.pairs.length,
+          // Surface the bucket so the pane can say *whose* terminology the
+          // reusable dictionary carries; without it a KERRITS dictionary and
+          // an ACME one were indistinguishable.
+          ...(lastDictionary.bucket ? { bucket: lastDictionary.bucket } : {}),
+        }
       : null,
   }))
 
@@ -1274,9 +1676,13 @@ export function registerAiCoreHandlers(): void {
   })
 
   registerHandle('ai:translate-file-output-path', (_event: unknown, inputPath: unknown) => {
-    const p = String(inputPath ?? '')
-    if (!p) return { ok: false, error: 'expected a non-empty inputPath' }
-    return { ok: true, outputPath: defaultOutputPath(p) }
+    // `String(inputPath)` turned a number into "123" and a boolean into
+    // "true", then answered `ok: true` with "123_translated" — a path the
+    // caller passes straight to the translator. Only a string names a file.
+    if (typeof inputPath !== 'string' || !inputPath.trim()) {
+      return { ok: false, error: 'expected a non-empty inputPath' }
+    }
+    return { ok: true, outputPath: defaultOutputPath(inputPath) }
   })
 
   registerHandle('ai:web-search', async (_event: unknown, query: unknown) => {
@@ -1398,7 +1804,11 @@ export function registerAiCoreHandlers(): void {
    * present, falling back to the server's persisted settings.
    */
   registerHandle('ai:stream', async (event: unknown, request: unknown) => {
-    const req = request as {
+    // `request` is optional on the wire (`{ args = [] }`), so a no-argument
+    // call used to throw "Cannot read properties of undefined (reading
+    // 'requestId')" as a 500. Read through an empty object so the handler
+    // reports the missing fields it actually needs.
+    const req = (request ?? {}) as {
       requestId?: string
       sessionId?: string
       settings?: AiSettings

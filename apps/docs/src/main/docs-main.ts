@@ -3102,6 +3102,7 @@ export function registerAiIpc(): void {
       memoryEnabled?: boolean
       qualityCheck?: boolean
       glossaryCategory?: string
+      customerName?: string
     }
     const provider = loadActiveAiSettings().provider
     const config = resolveTranslateConfig(provider, loadActiveAiSettings())
@@ -3118,6 +3119,9 @@ export function registerAiIpc(): void {
         memoryEnabled: req.memoryEnabled,
         qualityCheck: req.qualityCheck,
         glossaryCategory: req.glossaryCategory,
+        // Parity with the web-server handler: without this the same request
+        // narrowed the KB on web and leaked every customer's terms on desktop.
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
       },
       { provider, config },
     )
@@ -3142,17 +3146,37 @@ export function registerAiIpc(): void {
       memoryEnabled?: boolean
       qualityCheck?: boolean
       glossaryCategory?: string
+      customerName?: string
     }
-    const units = (req.units ?? []).map((u) => ({
-      unitId: u.unitId ?? '',
-      kind: (u.kind ?? 'paragraph') as
-        'paragraph' | 'heading' | 'list-item' | 'table-cell' | 'document',
-      sourceText: u.sourceText ?? '',
-      order: u.order ?? 0,
-      path: u.path,
-      metadata: u.metadata,
-      range: castEditorRange(u.range),
-    }))
+    // Same wire-shape guard the web-server handler has: `units` can be any
+    // JSON value and its elements can be null, and both used to throw out of
+    // the handler instead of reporting a malformed request.
+    if (req.units !== undefined && !Array.isArray(req.units)) {
+      return {
+        ok: false,
+        error: 'ai:translate-batch expected `units` to be an array',
+        units: [],
+      }
+    }
+    // `.filter(u => u && typeof u === 'object')` used to drop malformed
+    // elements, which silently shortened the batch: the renderer maps results
+    // back by `unitId` and a dropped unit simply never appeared, so a partly
+    // broken document looked fully translated. Hand the malformed element
+    // through untouched and let the core layer report it as a failed unit —
+    // it is the one place both this handler and the web handler share.
+    const units = (req.units ?? []).map((u) => {
+      if (!u || typeof u !== 'object') return u
+      return {
+        unitId: typeof u.unitId === 'string' ? u.unitId : '',
+        kind: (u.kind ?? 'paragraph') as
+          'paragraph' | 'heading' | 'list-item' | 'table-cell' | 'document',
+        sourceText: u.sourceText,
+        order: typeof u.order === 'number' ? u.order : 0,
+        path: u.path,
+        metadata: u.metadata,
+        range: castEditorRange(u.range),
+      }
+    })
     const provider = loadActiveAiSettings().provider
     const config = resolveTranslateConfig(provider, loadActiveAiSettings())
     if (!config) {
@@ -3160,7 +3184,7 @@ export function registerAiIpc(): void {
     }
     const result = await translateBatchCore(
       {
-        units,
+        units: units as import('@genoffice/translation-core').TranslationUnit[],
         sourceLang: req.sourceLang,
         targetLang: req.targetLang ?? '',
         preserveFormat: req.preserveFormat,
@@ -3168,6 +3192,11 @@ export function registerAiIpc(): void {
         memoryEnabled: req.memoryEnabled,
         qualityCheck: req.qualityCheck,
         glossaryCategory: req.glossaryCategory,
+        // `customerName` is the confidentiality boundary the KB resolver
+        // keys on, and the web-server batch handler already forwards it. The
+        // desktop handler dropped it, so the same request narrowed the KB on
+        // web and leaked every customer's terms on desktop.
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
       },
       { provider, config },
     )
@@ -3187,22 +3216,55 @@ export function registerAiIpc(): void {
       scene?: string
       sourceLang?: string
       targetLang?: string
+      glossaryCategory?: string
+      customerName?: string
       units?: Array<{ unitId?: string; sourceText?: string; translatedText?: string }>
     }
+    // `units` arrives straight off the IPC wire, so it can be a string or an
+    // object and its elements can be null. Iterating or dereferencing those
+    // threw out of the handler and surfaced as an unhandled rejection rather
+    // than a reported shape error.
+    if (req.units !== undefined && !Array.isArray(req.units)) {
+      return { ok: false, savedCount: 0, skippedCount: 0, error: 'units must be an array' }
+    }
+    // Elements narrowed out here never reach `saveMany`, so they have to be
+    // counted here: silently dropping them reported "saved 1" for a batch of
+    // three and hid the two malformed entries.
     const units = (req.units ?? [])
-      .filter((u) => u.sourceText && u.translatedText)
+      .filter((u): u is Record<string, unknown> => Boolean(u) && typeof u === 'object')
       .map((u) => ({
-        unitId: u.unitId ?? '',
-        sourceText: u.sourceText ?? '',
-        translatedText: u.translatedText ?? '',
+        unitId: typeof u.unitId === 'string' ? u.unitId : '',
+        sourceText: typeof u.sourceText === 'string' ? u.sourceText : '',
+        translatedText: typeof u.translatedText === 'string' ? u.translatedText : '',
       }))
+    const rejected = (req.units?.length ?? 0) - units.length
+    // glossaryCategory / customerName become the bucket. They arrive straight
+    // off IPC and were passed un-checked: `bucketFor` saw `req.glossaryCategory`
+    // as `undefined` when it was a number, so the save landed unscoped and the
+    // document's sentences leaked as cache hits for every customer.
+    if (req.glossaryCategory !== undefined && typeof req.glossaryCategory !== 'string') {
+      return { ok: false, savedCount: 0, skippedCount: rejected, error: 'glossaryCategory must be a string' }
+    }
+    if (req.customerName !== undefined && typeof req.customerName !== 'string') {
+      return { ok: false, savedCount: 0, skippedCount: rejected, error: 'customerName must be a string' }
+    }
+    // Scope the entry to the glossary / customer it was produced under. The
+    // reader path keys on the bucket, so saving unscoped entries here left the
+    // document's sentences available as cache hits for every other customer.
+    const bucket = req.glossaryCategory ?? req.customerName
     const result = coreTranslationMemory.saveMany({
       scene: req.scene ?? 'document',
       sourceLang: req.sourceLang ?? 'auto',
       targetLang: req.targetLang ?? '',
+      ...(bucket !== undefined ? { bucket } : {}),
       units,
     })
-    return { ok: result.ok, savedCount: result.savedCount, skippedCount: result.skippedCount }
+    return {
+      ok: result.ok,
+      savedCount: result.savedCount,
+      skippedCount: result.skippedCount + rejected,
+      ...(result.error ? { error: result.error } : {}),
+    }
   })
 
   // ─── Translation knowledge base + whole-file translation ───────────────
@@ -3613,9 +3675,12 @@ export function registerAiIpc(): void {
   })
 
   ipcMain.handle('ai:translate-file-output-path', (_event, inputPath: unknown) => {
-    const p = String(inputPath ?? '')
-    if (!p) return { ok: false, error: 'expected a non-empty inputPath' }
-    return { ok: true, outputPath: coreDefaultOutputPath(p) }
+    // Same guard as the web-server handler: `String(123)` produced a
+    // believable "123_translated" path for a value that never named a file.
+    if (typeof inputPath !== 'string' || !inputPath.trim()) {
+      return { ok: false, error: 'expected a non-empty inputPath' }
+    }
+    return { ok: true, outputPath: coreDefaultOutputPath(inputPath) }
   })
 
   // home:translate-snippet — quick text-paste translation for the Settings pane.
@@ -3631,6 +3696,9 @@ export function registerAiIpc(): void {
       dictionaryPath?: string
       useDictionary?: boolean
       settings?: AiSettings
+    }
+    if (req.text !== undefined && typeof req.text !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `text` to be a string' }
     }
     const text = (req.text ?? '').trim()
     if (!text) return { ok: false, error: 'home:translate-snippet expected non-empty `text`' }

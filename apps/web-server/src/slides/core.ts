@@ -16,6 +16,7 @@ import { displayMime } from '../../../slides/src/main/media-mime'
 import { neutralizeJpegOrientation } from '../../../slides/src/main/jpeg-orientation'
 import { tiffToPng } from '../../../slides/src/main/tiff-decode'
 import type { OpenedPptx, Slide } from '@genoffice/pptx-engine'
+import { NotFoundError } from '../ai/errors'
 
 /** Mirror of the desktop `deckDefaultFont` in apps/slides/src/main/slides-main.ts:
  *  pull the deck's minor (body) Latin font from theme1.xml so the ribbon font box
@@ -118,7 +119,7 @@ export function registerSlidesCoreHandlers(): void {
 
   registerHandle('slides:open-path', async (_event: unknown, filePath: unknown) => {
     if (!existsSync(filePath as string)) {
-      throw new Error(`File not found: ${filePath}`)
+      throw new NotFoundError('slides:open-path', `File not found: ${String(filePath)}`)
     }
 
     const bytes = readFileSync(filePath as string)

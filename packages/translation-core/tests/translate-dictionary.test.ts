@@ -215,6 +215,50 @@ describe('applyKbRules', () => {
     expect(matchedTerms).toContain('克重')
   })
 
+  it('applies a nested term before the shorter term it contains', () => {
+    // Enforcement rewrites with `split/join`, so `fabric` running before
+    // `fabric weight` consumed the longer mapping's source and turned
+    // "fabric weight spec" into "布料 weight spec". The resolver returns terms
+    // in scope/priority order, which is unrelated to length.
+    const kb = new KnowledgeBase()
+    kb.upsert({
+      id: 'a-fabric',
+      scope: 'company',
+      priority: 5,
+      sourceTerm: 'fabric',
+      targetTerm: '布料',
+    })
+    kb.upsert({
+      id: 'z-fabric-weight',
+      scope: 'company',
+      priority: 1,
+      sourceTerm: 'fabric weight',
+      targetTerm: '克重',
+    })
+    const { text, matchedTerms } = applyKbRules('fabric weight spec', kb, {
+      sourceLang: 'en-US',
+      targetLang: 'zh-CN',
+    })
+    expect(text).toBe('克重 spec')
+    expect(matchedTerms).toEqual(['fabric weight'])
+  })
+
+  it('does not report a term that had nothing left to rewrite', () => {
+    const kb = new KnowledgeBase()
+    kb.upsert({
+      id: 'a-fabric',
+      scope: 'company',
+      priority: 5,
+      sourceTerm: 'fabric',
+      targetTerm: '布料',
+    })
+    const { matchedTerms } = applyKbRules('fabric weight spec', kb, {
+      sourceLang: 'en-US',
+      targetLang: 'zh-CN',
+    })
+    expect(matchedTerms).toContain('fabric')
+  })
+
   // Regression: brand neverTranslate used to append "(brand)" to every
   // translated string when the brand was missing — that polluted every
   // dictionary row that the LLM touched. Fix: only act when the source

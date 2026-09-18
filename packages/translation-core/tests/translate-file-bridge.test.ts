@@ -41,6 +41,23 @@ describe('translate-file bridge', () => {
     expect(defaultOutputPath('/tmp/a.b.docx')).toBe('/tmp/a.b_translated.docx')
   })
 
+  it('answers a non-string path as unsupported instead of throwing', () => {
+    // Both arrive unvalidated off the IPC wire; `.startsWith` on them threw
+    // "pathOrExt.startsWith is not a function", which the transport reported
+    // as a server fault for a plain shape error.
+    for (const value of [123, true, {}, ['a'], null, undefined]) {
+      expect(isSupportedExtension(value), String(value)).toBe(false)
+    }
+  })
+
+  it('derives no output path from a value that cannot name a file', () => {
+    // `String(123)` used to answer "123_translated" — a believable path the
+    // caller then handed to the translator.
+    for (const value of [123, true, {}, ['a'], null, undefined, '']) {
+      expect(defaultOutputPath(value), String(value)).toBe('')
+    }
+  })
+
   it('resolveTranslateSkills honours the explicit override', () => {
     const previous = process.env.GENOFFICE_TRANSLATE_SKILLS_DIR
     const dir = join(__dirname, '..', 'src')

@@ -136,7 +136,8 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
     writeRecoveryCopy: (path: string, data: ArrayBuffer) =>
       t.invoke('docs:write-recovery', path, data),
     onTeardown: (handler) => t.on('docs:teardown', () => handler()),
-    respellKick: () => t.invoke('docs:respell-kick'),
+    respellKick: () =>
+      t.invoke('docs:respell-kick') as unknown as Promise<{ ok: boolean; supported?: boolean }>,
     saveDocxAs:
       overrides.saveDocxAs ??
       ((defaultName: string, data: ArrayBuffer, sourcePath?: string | null) =>
@@ -175,6 +176,7 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
       memoryEnabled?: boolean
       qualityCheck?: boolean
       glossaryCategory?: string
+      customerName?: string
     }) =>
         t.invoke('ai:translate', {
         instruction: request.instruction,
@@ -185,6 +187,7 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
         memoryEnabled: request.memoryEnabled,
         qualityCheck: request.qualityCheck,
         glossaryCategory: request.glossaryCategory,
+        customerName: request.customerName,
       })),
     aiTranslateBatch: overrides.aiTranslateBatch ?? (async (request) => {
       const results = await Promise.all(request.units.map(async (unit) => {
@@ -197,7 +200,12 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
           memoryEnabled: request.memoryEnabled,
           qualityCheck: request.qualityCheck,
           glossaryCategory: request.glossaryCategory,
+          customerName: request.customerName,
         })
+        // Keep the per-unit fields the single call computed: the batch
+        // contract carries `matchedTerms` / `warnings` and the docs renderer
+        // badges off them. This fallback dropped both, so a batch that ran
+        // through it looked warning-free no matter what the provider returned.
         return {
           unitId: unit.unitId,
           sourceText: unit.sourceText,
@@ -205,6 +213,8 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
           status: result.ok ? 'translated' : 'failed',
           errorMessage: result.error,
           range: unit.range,
+          ...(result.matchedTerms ? { matchedTerms: result.matchedTerms } : {}),
+          ...(result.warnings ? { warnings: result.warnings } : {}),
         }
       }))
       return {
@@ -228,6 +238,7 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
             memoryEnabled: request.memoryEnabled,
             qualityCheck: request.qualityCheck,
             glossaryCategory: request.glossaryCategory,
+            customerName: request.customerName,
           })
           return {
             unitId: unit.unitId,
@@ -236,6 +247,8 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
             status: result.ok ? 'translated' : 'failed',
             errorMessage: result.error,
             range: unit.range,
+            ...(result.matchedTerms ? { matchedTerms: result.matchedTerms } : {}),
+            ...(result.warnings ? { warnings: result.warnings } : {}),
           }
         }))
         return {

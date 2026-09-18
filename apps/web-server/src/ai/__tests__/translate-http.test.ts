@@ -111,7 +111,7 @@ test('POST /api/ai/translate — empty units → 400 with PROVIDER_NOT_CONFIGURE
   }
 })
 
-test('POST /api/ai/translate — malformed JSON → 500 with wrapped error', async () => {
+test('POST /api/ai/translate — malformed JSON → 400 with wrapped error', async () => {
   const { port, close } = await makeServer()
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/ai/translate`, {
@@ -119,8 +119,11 @@ test('POST /api/ai/translate — malformed JSON → 500 with wrapped error', asy
       headers: { 'Content-Type': 'application/json' },
       body: '{not valid json',
     })
-    assert.equal(response.status, 500)
-    const body = (await response.json()) as { error?: { message?: string } }
+    // The body is unparseable, so no retry can help; answering 500 made the
+    // Dataflare bridge treat a deterministic client error as a server fault.
+    assert.equal(response.status, 400)
+    const body = (await response.json()) as { error?: { message?: string; code?: string } }
+    assert.equal(body.error?.code, 'INVALID_ARGUMENT')
     assert.ok(body.error?.message)
   } finally {
     close()

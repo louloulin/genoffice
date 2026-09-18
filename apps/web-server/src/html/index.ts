@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { DATA_DIR, registerHandle } from '../common/index'
+import { NotFoundError } from '../ai/errors'
 
 const HTML_DOC_DIR = join(DATA_DIR, 'html')
 const HTML_ASSET_DIR = join(DATA_DIR, 'html-assets')
@@ -78,7 +79,7 @@ export function registerHtmlHandlers(): void {
 
   registerHandle('html:read-file', async (_event: unknown, filePath: unknown) => {
     if (typeof filePath !== 'string' || !existsSync(filePath)) {
-      throw new Error(`File not found: ${String(filePath)}`)
+      throw new NotFoundError('html:read-file', `File not found: ${String(filePath)}`)
     }
     return readFileSync(filePath, 'utf8')
   })

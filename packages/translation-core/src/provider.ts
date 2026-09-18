@@ -12,7 +12,7 @@ import {
   extractTranslationText,
   normalizeSourceLang,
 } from './prompt'
-import { assessBatchQuality, warningsFor } from './quality'
+import { assessBatchQuality, assessQuality, warningsFor } from './quality'
 import { TranslationMemory } from './memory'
 import type { MemoryEntry } from './memory'
 import type { KnowledgeBase } from './knowledge-base'
@@ -44,7 +44,13 @@ import {
 /** Subset of {@link TranslationMemory} the translator actually calls —
  *  the in-memory and persistent implementations both satisfy it. */
 export interface TranslationMemoryLike {
-  lookup(sourceLang: string, targetLang: string, sourceText: string): MemoryEntry | null
+  /** `bucket` scopes the lookup to a glossary / customer; see {@link MemoryEntry.bucket}. */
+  lookup(
+    sourceLang: string,
+    targetLang: string,
+    sourceText: string,
+    bucket?: string | undefined,
+  ): MemoryEntry | null
   save(entry: Omit<MemoryEntry, 'updatedAt'>): void
 }
 
@@ -95,6 +101,15 @@ export async function translateOne(
   request: TranslateRequest,
   opts: TranslateOneOptions,
 ): Promise<TranslateResponse> {
+  // A non-string here used to throw `(request.instruction ?? "").trim is not a
+  // function`, which the transport reported as a 500 and which the UI showed
+  // as a raw JavaScript expression. Reject the shape instead.
+  if (request.instruction !== undefined && typeof request.instruction !== 'string') {
+    return { ok: false, error: 'ai:translate expected `instruction` to be a string' }
+  }
+  if (request.targetLang !== undefined && typeof request.targetLang !== 'string') {
+    return { ok: false, error: 'ai:translate expected `targetLang` to be a string' }
+  }
   const sourceText = (request.instruction ?? '').trim()
   const targetLang = (request.targetLang ?? '').trim()
   if (!sourceText) return { ok: false, error: 'ai:translate expected non-empty `instruction`' }
@@ -130,8 +145,13 @@ export async function translateOne(
   })
   const matchedTerms = matchTermsInSource(sourceText, termPairs)
   const withTerms = matchedTerms.length > 0 ? { matchedTerms } : {}
+  // `TranslateResponse` declares `warnings` and the docs panel surfaces them,
+  // but only the batch path ever filled them in: a selection / snippet
+  // translation that came back truncated looked identical to a good one.
+  const qualityEnabled = request.qualityCheck !== false
 
-  const hit = memory?.lookup(sourceLang, targetLang, sourceText)
+  const bucket = bucketFor(request)
+  const hit = memory?.lookup(sourceLang, targetLang, sourceText, bucket)
   if (hit) {
     return {
       ok: true,
@@ -141,6 +161,7 @@ export async function translateOne(
       targetLang,
       preserveFormat,
       status: 'memory-hit',
+      ...(qualityEnabled ? warningsOption(sourceText, hit.translatedText) : {}),
       ...withTerms,
     }
   }
@@ -149,7 +170,7 @@ export async function translateOne(
   // PersistentTranslationMemory ships this method; the plain TranslationMemory
   // does not, so the lookup stays exact-match for legacy callers.
   if (opts.fuzzyMemoryEnabled && memory && typeof (memory as { fuzzyLookup?: unknown }).fuzzyLookup === 'function') {
-    const fuzzyHit = (memory as unknown as { fuzzyLookup: (s: string, t: string, x: string) => { translatedText: string; confidence: number } | null }).fuzzyLookup(sourceLang, targetLang, sourceText)
+    const fuzzyHit = (memory as unknown as { fuzzyLookup: (s: string, t: string, x: string, b?: string) => { translatedText: string; confidence: number } | null }).fuzzyLookup(sourceLang, targetLang, sourceText, bucket)
     if (fuzzyHit) {
       return {
         ok: true,
@@ -170,11 +191,13 @@ export async function translateOne(
     targetLang,
     preserveFormat,
     glossaryCategory: request.glossaryCategory,
+    ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
     ...(opts.knowledgeBase ? { knowledgeBase: opts.knowledgeBase } : {}),
     ...(dictionaryTerms.length > 0 ? { dictionaryTerms } : {}),
   })
   const metadata: Record<string, string> = {}
   if (request.glossaryCategory) metadata.glossaryCategory = request.glossaryCategory
+  if (request.customerName) metadata.customerName = request.customerName
   if (request.qualityCheck !== undefined) metadata.qualityCheck = String(request.qualityCheck)
 
   // Translation is a deterministic transform, not a reasoning task. Asking the
@@ -201,7 +224,15 @@ export async function translateOne(
   }
   // Enforce the mandatory terms the model may have left in the source language.
   const translated = applyTerminology(extracted, termPairs)
-  if (memory) memory.save({ sourceLang, targetLang, sourceText, translatedText: translated })
+  if (memory) {
+    memory.save({
+      sourceLang,
+      targetLang,
+      sourceText,
+      translatedText: translated,
+      ...(bucket !== undefined ? { bucket } : {}),
+    })
+  }
   return {
     ok: true,
     translated,
@@ -210,8 +241,20 @@ export async function translateOne(
     targetLang,
     preserveFormat,
     status: 'translated',
+    ...(qualityEnabled ? warningsOption(sourceText, translated) : {}),
     ...withTerms,
   }
+}
+
+/**
+ * `warnings` as an optional response field. An empty array is omitted so a
+ * clean translation keeps the exact shape the existing callers/tests expect.
+ */
+function warningsOption(sourceText: string, translated: string | undefined): {
+  warnings?: string[]
+} {
+  const warnings = assessQuality(sourceText, translated).warnings
+  return warnings.length > 0 ? { warnings } : {}
 }
 
 /**
@@ -237,12 +280,21 @@ function resolveTerminology(input: {
           sourceLang,
           targetLang,
           ...(request.glossaryCategory !== undefined ? { category: request.glossaryCategory } : {}),
+          ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
         }),
       )
     : []
   const fromDictionary = opts.dictionary ?? []
   const dictionaryTerms = fromDictionary.filter((pair) => sourceText.includes(pair.source))
-  return { pairs: [...fromKb, ...fromDictionary], dictionaryTerms }
+  // `applyTerminology` rewrites with `split/join` and documents that its input
+  // must already be longest-source-first (`terminologyPairs` sorts the KB that
+  // way). Concatenating the dictionary after the KB broke that invariant
+  // whenever a KB term was a substring of a dictionary term: the KB's `fabric`
+  // ran first and left "布料 weight spec", destroying the `fabric weight`
+  // mapping before it was reached. Re-sort the merge so the invariant holds for
+  // the combined set, not just for each half.
+  const pairs = [...fromKb, ...fromDictionary].sort((a, b) => b.source.length - a.source.length)
+  return { pairs, dictionaryTerms }
 }
 
 /**
@@ -285,19 +337,88 @@ function describeTranslationFailure(result: {
  * is per-unit (see {@link resolveTerminology}); this only needs the pairs used
  * for `matchedTerms` and output enforcement.
  */
+/**
+ * The glossary / customer scope a translation runs under.
+ *
+ * Used as the cache bucket for the translation memory so a term translated
+ * for customer A is never replayed for customer B. `glossaryCategory` and
+ * `customerName` are unified because the renderer paths blur them (docs
+ * sends the customer as `glossaryCategory`).
+ */
+function bucketFor(request: {
+  glossaryCategory?: string | undefined
+  customerName?: string | undefined
+}): string | undefined {
+  const raw = request.glossaryCategory ?? request.customerName
+  if (typeof raw !== 'string') return undefined
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
 function terminologyForBatch(
   request: TranslateBatchRequest,
   opts: TranslateOneOptions,
   sourceLang: string,
   targetLang: string,
 ): TerminologyPair[] {
+  // Pass glossaryCategory through so per-customer / per-domain KB buckets
+  // narrow the term set before matchedTerms is computed. The legacy shape
+  // dropped it and produced empty matchedTerms for any batch that asked
+  // for a customer bucket.
   return resolveTerminology({
-    request: { instruction: '', targetLang },
+    request: {
+      instruction: '',
+      targetLang,
+      ...(request.glossaryCategory !== undefined ? { glossaryCategory: request.glossaryCategory } : {}),
+      ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+    },
     opts,
     sourceText: '',
     sourceLang,
     targetLang,
   }).pairs
+}
+
+/**
+ * Reject a batch element whose shape would otherwise throw.
+ *
+ * `units` is untyped JSON on every wire that reaches this function, so an
+ * element can be null, a bare string, or an object whose `sourceText` is a
+ * number. `matchTermsInSource` reads `sourceText.includes` and
+ * `TranslationMemory.lookup` reads `sourceText.trim`, so a single such element
+ * rejected the whole `Promise.all` — the caller lost the rest of the document
+ * and the transport reported a server fault for its own malformed request.
+ * Report it as the failed unit it is instead.
+ *
+ * Returns null when the element is usable.
+ */
+function malformedUnitResult(
+  index: number,
+  raw: unknown,
+): TranslateBatchUnitResult | null {
+  const unit = raw as { unitId?: unknown; sourceText?: unknown; range?: unknown } | null
+  if (typeof unit?.sourceText === 'string') return null
+  const unitId = typeof unit?.unitId === 'string' ? unit.unitId : ''
+  const range = (unit?.range ?? null) as TranslateBatchUnitResult['range']
+  const reason =
+    unit === null || typeof unit !== 'object'
+      ? `ai:translate-batch expected unit ${index} to be an object`
+      : `ai:translate-batch expected unit ${index} \`sourceText\` to be a string`
+  return {
+    unitId,
+    sourceText: '',
+    translatedText: '',
+    status: 'failed',
+    warnings: ['malformed-unit'],
+    errorMessage: reason,
+    range,
+  }
+}
+
+/** `TranslateBatchUnitResult.unitId` is a string on the wire contract; the
+ *  renderer keys its own map on it, so a non-string must not leak through. */
+function unitIdOf(unit: { unitId?: unknown }): string {
+  return typeof unit.unitId === 'string' ? unit.unitId : ''
 }
 
 /** Translate a batch of units in parallel; preserves order and per-unit status. */
@@ -308,6 +429,9 @@ export async function translateBatch(
   if (!Array.isArray(request.units) || request.units.length === 0) {
     return { ok: false, error: 'ai:translate-batch expected a non-empty `units` array' }
   }
+  if (request.targetLang !== undefined && typeof request.targetLang !== 'string') {
+    return { ok: false, error: 'ai:translate-batch expected `targetLang` to be a string' }
+  }
   const memory = request.memoryEnabled === false
     ? null
     : (opts.memory ?? sharedMemory)
@@ -317,15 +441,19 @@ export async function translateBatch(
   if (!targetLang) return { ok: false, error: 'ai:translate-batch expected non-empty `targetLang`' }
 
   const termPairs = terminologyForBatch(request, opts, sourceLang, targetLang)
+  const batchBucket = bucketFor(request)
 
   const settled = await Promise.all(
-    request.units.map(async (unit): Promise<TranslateBatchUnitResult> => {
-      const matchedTerms = matchTermsInSource(unit.sourceText, termPairs)
-      const hit = memory?.lookup(sourceLang, targetLang, unit.sourceText)
+    request.units.map(async (unit, index): Promise<TranslateBatchUnitResult> => {
+      const malformed = malformedUnitResult(index, unit)
+      if (malformed) return malformed
+      const sourceText = unit.sourceText as string
+      const matchedTerms = matchTermsInSource(sourceText, termPairs)
+      const hit = memory?.lookup(sourceLang, targetLang, sourceText, batchBucket)
       if (hit) {
         return {
-          unitId: unit.unitId,
-          sourceText: unit.sourceText,
+          unitId: unitIdOf(unit),
+          sourceText,
           translatedText: hit.translatedText,
           status: 'memory-hit',
           range: unit.range ?? null,
@@ -334,7 +462,7 @@ export async function translateBatch(
       }
       const res = await translateOne(
         {
-          instruction: unit.sourceText,
+          instruction: sourceText,
           sourceLang,
           targetLang,
           preserveFormat,
@@ -342,14 +470,23 @@ export async function translateBatch(
           memoryEnabled: request.memoryEnabled,
           qualityCheck: request.qualityCheck,
           glossaryCategory: request.glossaryCategory,
+          ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
         },
         opts,
       )
       const status: TranslateBatchUnitResult['status'] = res.ok ? 'translated' : 'failed'
-      const warnings = res.ok ? warningsFor(unit, res.translated) : ['provider-error']
+      // `qualityCheck: false` is a per-request opt-out on the wire contract
+      // (types.ts) and the docs renderer shows the score next to the document,
+      // so a caller that disabled it must not receive a real number back — it
+      // used to be ignored here while the web-server handler honoured it,
+      // which made desktop and web disagree about the same request.
+      const qualityEnabled = request.qualityCheck !== false
+      const warnings = qualityEnabled
+        ? (res.ok ? warningsFor(unit, res.translated) : ['provider-error'])
+        : []
       const result: TranslateBatchUnitResult = {
-        unitId: unit.unitId,
-        sourceText: unit.sourceText,
+        unitId: unitIdOf(unit),
+        sourceText,
         status,
         warnings,
         range: unit.range ?? null,
@@ -362,9 +499,9 @@ export async function translateBatch(
   )
 
   const ok = settled.every((u) => u.status === 'translated' || u.status === 'memory-hit')
-  const quality = assessBatchQuality(settled)
+  const quality = request.qualityCheck === false ? undefined : assessBatchQuality(settled)
   const failed = settled.find((u) => u.status === 'failed')
-  const response: TranslateBatchResponse = { ok, units: settled, quality }
+  const response: TranslateBatchResponse = { ok, units: settled, ...(quality ? { quality } : {}) }
   if (failed?.errorMessage) response.error = failed.errorMessage
   return response
 }
@@ -422,18 +559,28 @@ export async function translateBatchStream(
   const concurrency = Math.max(1, Math.min(streamOpts.concurrency ?? 25, total))
   const settled: TranslateBatchUnitResult[] = new Array(total)
   const termPairs = terminologyForBatch(request, opts, sourceLang, targetLang)
+  const batchBucket = bucketFor(request)
 
   // Build a unit-settler that re-uses the same per-unit logic as translateBatch.
   const settleOne = async (index: number): Promise<void> => {
     const unit = request.units[index]
-    if (!unit) return
-    const matchedTerms = matchTermsInSource(unit.sourceText, termPairs)
-    const hit = memory?.lookup(sourceLang, targetLang, unit.sourceText)
+    // A malformed element used to `return` here, which left a hole in
+    // `settled`: sparse `Array.prototype.every` skips holes (so the batch
+    // reported `ok`) and `find` on one threw. Fill the slot explicitly.
+    const malformed = malformedUnitResult(index, unit)
+    if (malformed) {
+      settled[index] = malformed
+      if (streamOpts.onUnit) await streamOpts.onUnit({ index, total, result: malformed })
+      return
+    }
+    const sourceText = unit.sourceText as string
+    const matchedTerms = matchTermsInSource(sourceText, termPairs)
+    const hit = memory?.lookup(sourceLang, targetLang, sourceText, batchBucket)
     let result: TranslateBatchUnitResult
     if (hit) {
       result = {
-        unitId: unit.unitId,
-        sourceText: unit.sourceText,
+        unitId: unitIdOf(unit),
+        sourceText,
         translatedText: hit.translatedText,
         status: 'memory-hit',
         range: unit.range ?? null,
@@ -442,7 +589,7 @@ export async function translateBatchStream(
     } else {
       const res = await translateOne(
         {
-          instruction: unit.sourceText,
+          instruction: sourceText,
           sourceLang,
           targetLang,
           preserveFormat,
@@ -450,14 +597,19 @@ export async function translateBatchStream(
           memoryEnabled: request.memoryEnabled,
           qualityCheck: request.qualityCheck,
           glossaryCategory: request.glossaryCategory,
+          ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
         },
         opts,
       )
       const status: TranslateBatchUnitResult['status'] = res.ok ? 'translated' : 'failed'
-      const warnings = res.ok ? warningsFor(unit, res.translated) : ['provider-error']
+      // See translateBatch: `qualityCheck: false` must suppress both the
+      // per-unit warnings and the batch score.
+      const warnings = request.qualityCheck === false
+        ? []
+        : (res.ok ? warningsFor(unit, res.translated) : ['provider-error'])
       result = {
-        unitId: unit.unitId,
-        sourceText: unit.sourceText,
+        unitId: unitIdOf(unit),
+        sourceText,
         status,
         warnings,
         range: unit.range ?? null,
@@ -484,9 +636,9 @@ export async function translateBatchStream(
   await Promise.all(workers)
 
   const ok = settled.every((u) => u.status === 'translated' || u.status === 'memory-hit')
-  const quality = assessBatchQuality(settled)
+  const quality = request.qualityCheck === false ? undefined : assessBatchQuality(settled)
   const failed = settled.find((u) => u.status === 'failed')
-  const response: TranslateBatchResponse = { ok, units: settled, quality }
+  const response: TranslateBatchResponse = { ok, units: settled, ...(quality ? { quality } : {}) }
   if (failed?.errorMessage) response.error = failed.errorMessage
   return response
 }

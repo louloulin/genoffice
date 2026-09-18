@@ -45,6 +45,31 @@ describe('translateOne', () => {
     expect(r.error).toMatch(/targetLang/)
   })
 
+  it('rejects a non-string instruction instead of throwing on .trim()', async () => {
+    // `(request.instruction ?? '').trim()` threw a TypeError for a number,
+    // which the transport reported as HTTP 500 and the UI displayed as the
+    // raw expression `(request.instruction ?? "").trim is not a function`.
+    for (const instruction of [123, {}, [], true] as unknown[]) {
+      const r = await translateOne(
+        { instruction: instruction as string, targetLang: 'zh-CN' },
+        { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+      )
+      expect(r.ok).toBe(false)
+      expect(r.error).toBe('ai:translate expected `instruction` to be a string')
+    }
+    expect(mockedCall).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-string targetLang instead of throwing on .trim()', async () => {
+    const r = await translateOne(
+      { instruction: 'hi', targetLang: 42 as unknown as string },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.error).toBe('ai:translate expected `targetLang` to be a string')
+    expect(mockedCall).not.toHaveBeenCalled()
+  })
+
   it('rejects missing API key (non-codex / non-genspark)', async () => {
     const r = await translateOne(
       { instruction: 'hi', targetLang: 'zh-CN' },
@@ -79,6 +104,32 @@ describe('translateOne', () => {
       status: 'translated',
     })
     expect(mockedCall).toHaveBeenCalledOnce()
+  })
+
+  it('reports quality warnings for a truncated single translation', async () => {
+    // `ai:translate` (selection / snippet) shares `TranslateResponse`, which
+    // declares `warnings`, but translateOne never populated it — the single
+    // path had no quality signal at all while the batch path did.
+    mockedCall.mockResolvedValue({ ok: true, content: 'x' })
+    const r = await translateOne(
+      { instruction: 'a fairly long english sentence that will not fit', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.ok).toBe(true)
+    expect(r.warnings).toContain('too-short')
+  })
+
+  it('omits warnings when qualityCheck is false', async () => {
+    mockedCall.mockResolvedValue({ ok: true, content: 'x' })
+    const r = await translateOne(
+      {
+        instruction: 'a fairly long english sentence that will not fit',
+        targetLang: 'zh-CN',
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.warnings).toBeUndefined()
   })
 
   it('strips <think> blocks before returning', async () => {
@@ -230,9 +281,73 @@ describe('translateOne', () => {
 })
 
 describe('translateBatch', () => {
+  it('rejects a non-array `units` and a non-string `targetLang`', async () => {
+    const opts = { provider: 'anthropic' as const, config: { apiKey: 'k', model: 'm' } }
+    for (const units of ['nope', {}, 3, true] as unknown[]) {
+      const r = await translateBatch(
+        { units: units as never, targetLang: 'zh-CN' },
+        opts,
+      )
+      expect(r.ok).toBe(false)
+      expect(r.error).toMatch(/units/)
+    }
+    const bad = await translateBatch(
+      { units: [{ unitId: 'u', kind: 'paragraph', sourceText: 'hi', order: 0 }], targetLang: 42 as unknown as string },
+      opts,
+    )
+    expect(bad.ok).toBe(false)
+    expect(bad.error).toBe('ai:translate-batch expected `targetLang` to be a string')
+    expect(mockedCall).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     mockedCall.mockReset()
     sharedMemory.clear()
+  })
+
+  it('reports a malformed batch element as a failed unit instead of throwing', async () => {
+    // `units` is untyped JSON on every wire that reaches this function. A null
+    // element used to throw out of `matchTermsInSource` / `memory.lookup`, and
+    // a non-string `sourceText` with it — the caller lost the whole document
+    // over one bad element.
+    mockedCall.mockResolvedValue({ ok: true, content: '你好' })
+    const r = await translateBatch(
+      {
+        units: [
+          null,
+          { unitId: 'ok', kind: 'paragraph', sourceText: 'Hello', order: 0 },
+          { unitId: 'bad', kind: 'paragraph', sourceText: 42, order: 1 },
+          'nope',
+        ] as never,
+        targetLang: 'zh-CN',
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.units).toHaveLength(4)
+    // The one usable unit still translated; the three malformed ones are
+    // reported in place with an index-bearing reason.
+    expect(r.units?.[1]?.status).toBe('translated')
+    for (const index of [0, 2, 3]) {
+      expect(r.units?.[index]?.status).toBe('failed')
+      expect(r.units?.[index]?.errorMessage).toMatch(/expected unit \d+/)
+    }
+    expect(r.error).toMatch(/expected unit 0/)
+  })
+
+  it('ignores a non-string unitId rather than leaking it onto the wire', async () => {
+    // The renderer keys its own result map on `unitId`; a number there would
+    // be a key nothing can look up.
+    mockedCall.mockResolvedValue({ ok: true, content: '你好' })
+    const r = await translateBatch(
+      {
+        units: [{ unitId: 7, kind: 'paragraph', sourceText: 'Hello', order: 0 }] as never,
+        targetLang: 'zh-CN',
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.units?.[0]?.unitId).toBe('')
+    expect(r.units?.[0]?.status).toBe('translated')
   })
 
   it('rejects an empty units array', async () => {
@@ -266,6 +381,40 @@ describe('translateBatch', () => {
     expect(r.units?.[1].status).toBe('failed')
     expect(r.units?.[1].errorMessage).toBe('boom')
     expect(r.error).toBe('boom')
+  })
+
+  it('honours qualityCheck=false: no score, no per-unit warnings', async () => {
+    // `qualityCheck` is part of the wire contract (types.ts) and the docs
+    // renderer renders the score next to the document. The batch path used to
+    // ignore it and always return a real number + warnings, so the desktop
+    // build reported a score for a request that explicitly opted out while
+    // the web-server honored the flag — same request, two answers.
+    mockedCall.mockResolvedValue({ ok: true, content: 'x' })
+    const request = {
+      units: [
+        {
+          unitId: 'u1',
+          kind: 'paragraph' as const,
+          sourceText: 'a fairly long english sentence that will not fit in one letter',
+          order: 0,
+        },
+      ],
+      targetLang: 'zh-CN',
+      memoryEnabled: false,
+    }
+    const off = await translateBatch(
+      { ...request, qualityCheck: false },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(off.units?.[0]?.warnings).toEqual([])
+    expect(off.quality).toBeUndefined()
+
+    const on = await translateBatch(request, {
+      provider: 'anthropic',
+      config: { apiKey: 'k', model: 'm' },
+    })
+    expect(on.units?.[0]?.warnings).toContain('too-short')
+    expect(on.quality?.overallScore).toBeGreaterThan(0)
   })
 
   it('marks all units translated when every call succeeds', async () => {
@@ -336,6 +485,44 @@ describe('translateBatchStream', () => {
     expect(r.error).toMatch(/targetLang/)
   })
 
+  it('reports a malformed element as a failed unit and never leaves a hole', async () => {
+    // The stream driver used to `return` on a falsy element, which left a
+    // sparse slot in `settled`: `every` skips holes (the batch reported `ok`
+    // over an untranslated segment) and `find` on one threw
+    // "Cannot read properties of undefined (reading 'ok')".
+    mockedCall.mockResolvedValue({ ok: true, content: '你好' })
+    const seen: Array<{ index: number; total: number; status?: string }> = []
+    const r = await translateBatchStream(
+      {
+        units: [
+          null,
+          { unitId: 'u2', kind: 'paragraph', sourceText: 'Hello', order: 0 },
+          { unitId: 'u3', kind: 'paragraph', sourceText: 9, order: 1 },
+        ] as never,
+        targetLang: 'zh-CN',
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+      {
+        concurrency: 2,
+        onUnit: (event) => {
+          seen.push({ index: event.index, total: event.total, status: event.result.status })
+        },
+      },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.units).toHaveLength(3)
+    // No hole: every index carries a settled result and was reported.
+    for (let index = 0; index < 3; index++) {
+      expect(r.units?.[index], `index ${index}`).toBeDefined()
+      expect(seen.some((event) => event.index === index), `onUnit ${index}`).toBe(true)
+    }
+    expect(r.units?.[1]?.status).toBe('translated')
+    expect(r.units?.[0]?.status).toBe('failed')
+    expect(r.units?.[2]?.status).toBe('failed')
+    expect(r.error).toMatch(/expected unit/)
+  })
+
   it('fires onUnit for every translated unit with stable order payload', async () => {
     mockedCall.mockResolvedValue({ ok: true, content: '<source_text>hi</source_text>译' })
     const units = [
@@ -360,6 +547,28 @@ describe('translateBatchStream', () => {
     expect(events.map((e) => e.total).every((t) => t === 3)).toBe(true)
     const seenUnitIds = new Set(events.map((e) => e.unitId))
     expect(seenUnitIds).toEqual(new Set(['u1', 'u2', 'u3']))
+  })
+
+  it('honours qualityCheck=false on the streaming path too', async () => {
+    mockedCall.mockResolvedValue({ ok: true, content: 'x' })
+    const r = await translateBatchStream(
+      {
+        units: [
+          {
+            unitId: 'u1',
+            kind: 'paragraph' as const,
+            sourceText: 'a fairly long english sentence that will not fit in one letter',
+            order: 0,
+          },
+        ],
+        targetLang: 'zh-CN',
+        memoryEnabled: false,
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+    expect(r.units?.[0]?.warnings).toEqual([])
+    expect(r.quality).toBeUndefined()
   })
 
   it('serves memory hits without calling the provider and emits unit event', async () => {
@@ -522,6 +731,33 @@ describe('translateOne — terminology provenance', () => {
     expect(r.matchedTerms).toEqual(['Oxford cloth'])
     const prompt = mockedCall.mock.calls[0]?.[0]?.systemPrompt ?? ''
     expect(prompt).toContain('Oxford cloth => 牛津布')
+  })
+
+  it('applies the longest term when a KB term is nested inside a dictionary term', async () => {
+    // `applyTerminology` rewrites with `split/join`, so a shorter source
+    // consumed the longer one's text. The KB half is sorted longest-first by
+    // `terminologyPairs` and the dictionary half arrives in whatever order the
+    // generated file has — merging them without re-sorting broke the invariant
+    // and the KB's `fabric` turned "fabric weight spec" into "布料 weight spec".
+    const kb = new KnowledgeBase({ seed: {} })
+    kb.upsert({
+      id: 'kb-fabric',
+      scope: 'company',
+      priority: 5,
+      sourceTerm: 'fabric',
+      targetTerm: '布料',
+    })
+    mockedCall.mockResolvedValue({ ok: true, content: 'fabric weight spec' })
+    const r = await translateOne(
+      { instruction: 'fabric weight spec', targetLang: 'zh-CN', sourceLang: 'en-US' },
+      {
+        provider: 'anthropic',
+        config,
+        knowledgeBase: kb,
+        dictionary: [{ source: 'fabric weight', target: '克重' }],
+      },
+    )
+    expect(r.translated).toBe('克重 spec')
   })
 
   it('does not inject dictionary terms the source text lacks', async () => {

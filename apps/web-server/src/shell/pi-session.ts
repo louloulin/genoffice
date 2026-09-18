@@ -94,8 +94,21 @@ async function buildPiSession(): Promise<OfficeSession> {
   // build_dictionary / kb_search / kb_upsert / kb_remove) become visible
   // to the embedded AgentSession AND to the UI through the home:translate-*
   // IPC handlers registered below. No more `translate-http.ts` bypass.
-  const { createTranslateSkillExtension } =
+  const { createTranslateSkillExtension, setTranslateMemory } =
     await import('@genoffice/agent-skills/extensions/translate-skill')
+  // Hand the translate tools the server's file-backed translation memory.
+  // Without this they fall back to the package-level in-memory TM: the agent
+  // and the UI kept two memories that never met, and every translation the
+  // agent produced was gone on restart — including the ones the UI had just
+  // been told were "saved N ms · cache". Imported lazily because `ai/chat.ts`
+  // already imports this module; a static import would close the cycle.
+  try {
+    const { translationMemory, ensureMemoryLoaded } = await import('../ai/chat')
+    await ensureMemoryLoaded()
+    setTranslateMemory(translationMemory)
+  } catch (error) {
+    console.warn('[translate] persistent memory unavailable; using in-memory TM:', error)
+  }
   const extensionFactories: NonNullable<OfficeSessionOptions['extensionFactories']> = [
     createTranslateSkillExtension(),
   ]

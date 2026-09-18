@@ -45,6 +45,7 @@ import {
   AI_STREAM_SESSIONS,
   runProviderStream,
 } from './ai/index'
+import { classifyWebError, ipcErrorStatus, InvalidArgumentError } from './ai/errors'
 import {
   handleTranslateBatchHttp,
   handleTranslateStreamHttp,
@@ -95,18 +96,58 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
   response.end(JSON.stringify(payload))
 }
 
-function sendIpcError(response: ServerResponse, error: unknown, structuredAware: boolean = true): void {
+function sendSseError(
+  response: ServerResponse,
+  error: unknown,
+  requestId: string | undefined,
+): void {
+  // `writeSseEvent` is defined in `translate-http.ts`; for the chat stream we
+  // inline the two-line shape so this module does not gain a new dependency.
+  // Callers that have already sent the 200 SSE header cannot recover with a
+  // new status code — the only correct way out is a final `error` event and
+  // an end of the chunked stream.
   const errObj: { message: string; code?: string; channel?: string; reason?: string } = {
-    message: (error as Error)?.message ? String((error as Error).message) : String(error),
+    message: error instanceof Error ? error.message : String(error),
+  }
+  const anyErr = error as { code?: unknown; channel?: unknown; reason?: string }
+  if (typeof anyErr?.code === 'string') errObj.code = anyErr.code
+  if (typeof anyErr?.channel === 'string') errObj.channel = anyErr.channel
+  if (typeof anyErr?.reason === 'string') errObj.reason = anyErr.reason
+  const payload = JSON.stringify({
+    type: 'error',
+    error: errObj.message,
+    ...(errObj.code ? { code: errObj.code } : {}),
+    ...(requestId ? { requestId } : {}),
+  })
+  try {
+    response.write(`data: ${payload}\n\n`)
+  } catch {
+    // socket already gone — finally block will close it
+  }
+}
+
+function sendIpcError(
+  response: ServerResponse,
+  error: unknown,
+  structuredAware: boolean = true,
+  channel?: string,
+): void {
+  // Normalise first: a handler that destructured a missing `args` throws a
+  // bare TypeError, which reads as a server fault unless it is classified as
+  // the malformed request it actually is.
+  const classified = channel ? classifyWebError(error, channel) : error
+  const errObj: { message: string; code?: string; channel?: string; reason?: string } = {
+    message: (classified as Error)?.message
+      ? String((classified as Error).message)
+      : String(classified),
   }
   if (structuredAware) {
-    const anyErr = error as { code?: unknown; channel?: unknown; reason?: unknown }
+    const anyErr = classified as { code?: unknown; channel?: unknown; reason?: unknown }
     if (typeof anyErr?.code === 'string') errObj.code = anyErr.code
     if (typeof anyErr?.channel === 'string') errObj.channel = anyErr.channel
     if (typeof anyErr?.reason === 'string') errObj.reason = anyErr.reason
   }
-  const status = errObj.code === 'WEB_UNSUPPORTED' ? 501 : 500
-  sendJson(response, status, { error: errObj })
+  sendJson(response, ipcErrorStatus(errObj.code), { error: errObj })
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -221,10 +262,24 @@ const server = createServer(async (request, response) => {
     }
     const session = request.headers['x-ipc-session'] as string | undefined
 
+    let decodedArgs: unknown[]
     try {
       const body = await readBody(request)
-      const { args = [] } = JSON.parse(body || '{}')
-      const decodedArgs = (args as unknown[]).map((arg) => decodeTransportValue(arg))
+      // A malformed body is the caller's fault, not a server fault. Catch the
+      // SyntaxError here so `sendIpcError` sees a structured INVALID_ARGUMENT
+      // (400) instead of the raw `Unexpected token …` 500 a JSON.parse throw
+      // would otherwise become.
+      let parsed: { args?: unknown[] }
+      try {
+        parsed = JSON.parse(body || '{}') as { args?: unknown[] }
+      } catch {
+        throw new InvalidArgumentError(
+          channel,
+          'request body is not valid JSON',
+        )
+      }
+      const args = parsed.args ?? []
+      decodedArgs = (args as unknown[]).map((arg) => decodeTransportValue(arg))
 
       const handler = getHandler(channel)
       if (handler) {
@@ -250,7 +305,7 @@ const server = createServer(async (request, response) => {
         })
       }
     } catch (error) {
-      sendIpcError(response, error)
+      sendIpcError(response, error, true, channel)
     }
     return
   }
@@ -318,7 +373,7 @@ const server = createServer(async (request, response) => {
     let requestId: string | undefined
     try {
       const body = await readBody(request)
-      const req = JSON.parse(body || '{}') as {
+      let req: {
         requestId?: string
         sessionId?: string
         settings?: AiSettings
@@ -326,6 +381,18 @@ const server = createServer(async (request, response) => {
         messages?: Parameters<typeof runProviderStream>[2]
         tools?: Parameters<typeof runProviderStream>[3]
         maxTokens?: number
+      }
+      try {
+        req = JSON.parse(body || '{}') as typeof req
+      } catch {
+        // Translate the raw SyntaxError into the standard INVALID_ARGUMENT
+        // shape that the rest of the API returns for malformed bodies.
+        // Without this the caller sees `Unexpected token 'o', ... is not
+        // valid JSON` as a 500.
+        throw new InvalidArgumentError(
+          '/api/ai/stream',
+          'request body is not valid JSON',
+        )
       }
       const streamId = req.requestId || `sse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       requestId = streamId
@@ -371,7 +438,20 @@ const server = createServer(async (request, response) => {
         send,
       })
     } catch (error) {
-      sendIpcError(response, error)
+      // Two failure windows exist on this endpoint. Before `writeHead` the
+      // raw JS error must NOT reach the wire — JSON.parse errors look like a
+      // server fault to the caller and should be classified as a 400 with
+      // the same shape every other malformed request uses. After the 200 SSE
+      // header has been flushed, calling `sendIpcError` would attempt to
+      // write another header on a streaming response, raising
+      // ERR_HTTP_HEADERS_SENT and silently hanging the chunked stream. The
+      // only correct teardown in that case is a final `error` SSE event
+      // followed by `end()` (handled by the finally block below).
+      if (response.headersSent) {
+        sendSseError(response, error, requestId)
+      } else {
+        sendIpcError(response, error)
+      }
       sessionAbort?.abort()
     } finally {
       try { response.end() } catch {}
@@ -380,9 +460,17 @@ const server = createServer(async (request, response) => {
   }
 
   if (url.pathname === '/api/ai/stream/cancel' && request.method === 'POST') {
+    let requestId: string | undefined
     try {
       const body = await readBody(request)
-      const { requestId } = JSON.parse(body || '{}') as { requestId?: string }
+      try {
+        ;({ requestId } = JSON.parse(body || '{}') as { requestId?: string })
+      } catch {
+        throw new InvalidArgumentError(
+          '/api/ai/stream/cancel',
+          'request body is not valid JSON',
+        )
+      }
       if (!requestId) {
         sendJson(response, 400, { error: { message: 'requestId required' } })
         return
@@ -556,12 +644,28 @@ ${staticHint}║                                                           ║
 `)
 })
 
-process.on('SIGTERM', () => {
-  server.close(() => process.exit(0))
-})
-process.on('SIGINT', () => {
-  server.close(() => process.exit(0))
-})
+/**
+ * Persist anything the translation memory is still holding before we exit.
+ *
+ * `PersistentTranslationMemory.save()` only marks the language pair dirty and
+ * the handlers flush on a 250 ms debounce, so a translation made in the last
+ * moments before shutdown — or a signal that lands between the save and its
+ * flush timer — was lost. Imported lazily because `ai/chat.ts` is heavy.
+ */
+function flushTranslationMemory(): Promise<void> {
+  return import('./ai/chat')
+    .then((mod) => mod.flushTranslationMemory())
+    .catch(() => undefined)
+}
+
+function shutdown(code = 0): void {
+  void flushTranslationMemory().finally(() => {
+    server.close(() => process.exit(code))
+  })
+}
+
+process.on('SIGTERM', () => shutdown())
+process.on('SIGINT', () => shutdown())
 
 
 /**

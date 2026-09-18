@@ -17,6 +17,7 @@ import {
   saveProjects,
   saveRecentDocs,
 } from '../common/index'
+import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const MAX_PASTED_IMAGE_BYTES = 20 * 1024 * 1024
 const closeState = {
@@ -60,6 +61,16 @@ function toArrayBuffer(bytes: Buffer): ArrayBuffer {
 }
 
 export function registerDocsHandlers(): void {
+  // The desktop main process types one trusted space and the renderer scrubs it
+  // back out (see `apps/docs/src/main/docs-main.ts` docs:respell-kick). The web
+  // renderer cannot deliver a trusted keystroke; a browser-driven input event
+  // is *untrusted* and does not respell Blink anyway. Answering the channel
+  // here turns the caller's swallowed 404 (`IPC_NO_HANDLER`) into an explicit
+  // success so the renderer's idempotent kick just no-ops without logging an
+  // error. Spellcheck will respell as soon as the user types — same final
+  // state as the desktop path, just without the synthetic keystroke.
+  registerHandle('docs:respell-kick', () => ({ ok: true, supported: false }))
+
   registerHandle('docs:view-menu-state', () => ({ ok: true }))
 
   registerHandle('docs:discard-password-intents', (_event: unknown, throughRevision: unknown) => ({
@@ -130,10 +141,10 @@ export function registerDocsHandlers(): void {
 
   registerHandle('docs:open-path', async (_event: unknown, filePath: unknown) => {
     if (typeof filePath !== 'string' || !isManagedDocPath(filePath)) {
-      throw new Error('document path is outside the web storage area')
+      throw new InvalidArgumentError('docs:open-path', 'path is outside the web storage area')
     }
     if (!existsSync(filePath as string)) {
-      throw new Error(`File not found: ${filePath}`)
+      throw new NotFoundError('docs:open-path', `File not found: ${String(filePath)}`)
     }
 
     const original = readFileSync(filePath as string)

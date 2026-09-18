@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { DATA_DIR, registerHandle } from '../common/index'
+import { NotFoundError } from '../ai/errors'
 
 const MARKDOWN_ASSET_DIR = join(DATA_DIR, 'markdown-assets')
 const IMAGE_MIME: Record<string, string> = {
@@ -45,7 +46,7 @@ export function registerMarkdownHandlers(): void {
 
   registerHandle('markdown:read-file', async (_event: unknown, filePath: unknown) => {
     if (typeof filePath !== 'string' || !existsSync(filePath)) {
-      throw new Error(`File not found: ${String(filePath)}`)
+      throw new NotFoundError('markdown:read-file', `File not found: ${String(filePath)}`)
     }
     return readFileSync(filePath, 'utf8')
   })

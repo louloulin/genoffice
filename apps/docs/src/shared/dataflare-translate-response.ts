@@ -48,6 +48,27 @@ function asStringArray(value: unknown): string[] | undefined {
   return value.filter((item): item is string => typeof item === 'string')
 }
 
+/**
+ * Read the human-readable reason out of an error payload.
+ *
+ * The GenOffice web-server answers a failed translate with the Node-style
+ * envelope `{ error: { message, code } }` (`translate-http.ts` does this for
+ * every 4xx/5xx), while the legacy Dataflare backend used the string
+ * `{ msg }`. Reading only the string form dropped the server's message on the
+ * floor: a missing API key surfaced as "Dataflare translation failed (400)"
+ * instead of "AI provider \"openai\" not configured", and every other 4xx/5xx
+ * degraded the same way. Accept both, plus a bare `error` string.
+ */
+function messageOf(value: unknown): string | undefined {
+  if (typeof value === 'string' && value) return value
+  const record = asRecord(value)
+  if (record) {
+    if (typeof record.message === 'string' && record.message) return record.message
+    if (typeof record.error === 'string' && record.error) return record.error
+  }
+  return undefined
+}
+
 function normalizeUnit(raw: unknown): DataflareTranslateUnit | null {
   const unit = asRecord(raw)
   if (!unit) return null
@@ -89,8 +110,8 @@ export function parseDataflareTranslateResponse(body: unknown): DataflareTransla
   const quality = asRecord(payload.quality)
   const message =
     (typeof root.msg === 'string' && root.msg) ||
-    (typeof root.error === 'string' && root.error) ||
-    (typeof payload.error === 'string' && payload.error) ||
+    messageOf(root.error) ||
+    messageOf(payload.error) ||
     undefined
 
   const requestId =

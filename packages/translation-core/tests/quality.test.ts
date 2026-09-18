@@ -36,6 +36,37 @@ describe('assessQuality', () => {
     const r2 = assessQuality('hi', 'a'.repeat(40))
     expect(r2.warnings).toContain('too-long')
   })
+
+  it('does not flag a dense CJK translation as too-short', () => {
+    // Raw character counts made every short Chinese term look truncated:
+    // "Fabric weight" -> "克重" measured 2/13. The Han characters carry the
+    // same information, so the unit must pass.
+    for (const [source, translated] of [
+      ['Fabric weight', '克重'],
+      ['Fabric weight spec', '克重规格'],
+      ['Machine wash cold with like colors', '冷水同色洗涤'],
+      ['WATER REPELLENT FINISH', '防水整理'],
+      ['Size Chart', '尺码表'],
+    ] as const) {
+      const r = assessQuality(source, translated)
+      expect(r.warnings, `${source} -> ${translated}`).not.toContain('too-short')
+    }
+  })
+
+  it('still flags a truncated CJK translation', () => {
+    const r = assessQuality(
+      'Machine wash cold with like colors, tumble dry low, do not bleach',
+      '洗',
+    )
+    expect(r.warnings).toContain('too-short')
+  })
+
+  it('does not flag a verbose Latin translation of a dense CJK source', () => {
+    // The reverse direction: 3 Han characters are worth ~7 Latin letters, so
+    // an 18-character English rendering must not read as 6x too long.
+    const r = assessQuality('尺寸表', 'Size Chart')
+    expect(r.warnings).not.toContain('too-long')
+  })
 })
 
 describe('assessBatchQuality', () => {

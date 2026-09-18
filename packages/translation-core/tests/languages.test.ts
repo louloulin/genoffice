@@ -5,6 +5,7 @@ import {
   dominantScript,
   englishLabelFor,
   getLanguage,
+  informationLength,
   isAlreadyInLanguage,
   scriptOfLanguage,
 } from '../src/languages'
@@ -42,6 +43,24 @@ describe('englishLabelFor', () => {
   it('handles nullish input', () => {
     expect(englishLabelFor(undefined)).toBe('Auto-detect')
     expect(englishLabelFor(null)).toBe('Auto-detect')
+  })
+
+  it('returns Auto-detect for a non-string language', () => {
+    // `value` is typed as a string but arrives straight from IPC / HTTP — a
+    // number or array used to throw `value.indexOf is not a function` out of
+    // `familyOf` and crashed the whole translation. Fall back to Auto-detect
+    // instead, which is the same answer `undefined` / `null` already get.
+    expect(englishLabelFor(7 as unknown as string)).toBe('Auto-detect')
+    expect(englishLabelFor(true as unknown as string)).toBe('Auto-detect')
+    expect(englishLabelFor({} as unknown as string)).toBe('Auto-detect')
+    expect(englishLabelFor([] as unknown as string)).toBe('Auto-detect')
+  })
+
+  it('getLanguage returns null for a non-string value', () => {
+    expect(getLanguage(7 as unknown as string)).toBeNull()
+    expect(getLanguage({} as unknown as string)).toBeNull()
+    expect(getLanguage([] as unknown as string)).toBeNull()
+    expect(getLanguage(true as unknown as string)).toBeNull()
   })
 })
 
@@ -151,5 +170,36 @@ describe('isAlreadyInLanguage', () => {
   it('returns false when the target language is unknown', () => {
     expect(isAlreadyInLanguage('花型有方向性。', 'auto')).toBe(false)
     expect(isAlreadyInLanguage('花型有方向性。', undefined)).toBe(false)
+  })
+})
+
+describe('informationLength', () => {
+  it('counts a Han character as more than a Latin letter', () => {
+    // Two Han characters are worth about five Latin letters; without the
+    // weighting the cross-script ratio in quality.ts read "克重" as 2/13 of
+    // "fabric weight" and flagged every short Chinese term as too-short.
+    expect(informationLength('克')).toBeCloseTo(2.5, 5)
+    expect(informationLength('克重')).toBeCloseTo(5, 5)
+    // the raw-ratio bug: 2 Han characters are not 2/13 of "fabric weight"
+    const ratio = informationLength('克重') / informationLength('fabric weight')
+    expect(ratio).toBeGreaterThan(0.25)
+  })
+
+  it('counts kana and hangul like Han, since they are equally dense', () => {
+    expect(informationLength('図面')).toBeCloseTo(5, 5)
+    expect(informationLength('도면')).toBeCloseTo(5, 5)
+  })
+
+  it('leaves single-weight scripts and punctuation alone', () => {
+    expect(informationLength('fabric weight')).toBe(13)
+    expect(informationLength('Перевести')).toBe(9)
+    // digits and punctuation still occupy a position in the output
+    expect(informationLength('1-2 cm')).toBe(6)
+    expect(informationLength('')).toBe(0)
+  })
+
+  it('mixes scripts additively', () => {
+    // 2 Han (5) + 4 Latin letters (4) + 1 space
+    expect(informationLength('克重 spec')).toBe(10)
   })
 })

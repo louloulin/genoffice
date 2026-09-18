@@ -474,6 +474,13 @@ export interface TranslationKbEntry {
   customerName?: string
   preferenceType?: string
   value?: string
+  /**
+   * Legacy spelling of {@link value}. An early `kb_upsert` shortcut wrote the
+   * preference text here instead of into `value`, so rows with only this field
+   * exist in real KB files. Read-only compatibility: new rows always send
+   * `preferenceType` + `value`.
+   */
+  preference?: string
   /** optional language filter (term / forbidden / customerPreference) */
   sourceLang?: string
   targetLang?: string
