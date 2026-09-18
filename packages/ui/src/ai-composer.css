@@ -1,0 +1,405 @@
+/* ChatComposer extras: the working-mode switch, the `/` command palette, and
+ * the field/leading/toolbar slots added by AiComposer.
+ *
+ * The base box (`.ai-input-box` + textarea + footer) stays themed by each app;
+ * everything here is new chrome introduced by the composer upgrade and uses
+ * design tokens only. Import it from an app's main.tsx alongside the other
+ * `@genoffice/ui/*.css` entries. */
+
+/* Wrapper that gives the palette an anchor. Only rendered when the panel
+ * supplies a command table, so apps without one keep the original markup. */
+.ai-input-field {
+  position: relative;
+  display: block;
+}
+
+/* ------------------------------------------------------------------ modes */
+
+/* Ask / Craft / Plan — segmented pills at the top of the box. The behaviour
+ * is in the system prompt (packages/ui/src/chat/modes.ts); this is only the
+ * affordance that makes the active contract visible before sending. */
+.ai-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 8px 10px 0;
+  padding: 2px;
+  border-radius: var(--radius-8);
+  background: var(--surface-subtle);
+}
+
+.ai-mode-btn {
+  border: none;
+  background: none;
+  padding: 3px 10px;
+  border-radius: var(--radius-6);
+  font-family: inherit;
+  font-size: var(--text-caption);
+  line-height: 1.4;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.ai-mode-btn:hover {
+  color: var(--text);
+}
+
+.ai-mode-btn.on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-btn-hover);
+}
+
+.ai-mode-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------- command palette */
+
+/* Sits directly above the textarea: the composer is always docked at the
+ * bottom of an AI panel, so growing upwards can never run off-screen and
+ * never depends on the panel's scroll containers. */
+.ai-cmd-menu {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 100%;
+  margin-bottom: 6px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-menu);
+  overflow: hidden;
+}
+
+.ai-cmd-query {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-cmd-slash {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ai-cmd-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.ai-cmd-group {
+  padding: 5px 8px 2px;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.ai-cmd-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: var(--radius-6);
+  padding: 5px 8px;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ai-cmd-row.active {
+  background: var(--hover);
+}
+
+.ai-cmd-row:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.ai-cmd-row:disabled.active {
+  background: none;
+}
+
+.ai-cmd-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-cmd-label {
+  font-size: var(--text-caption);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-cmd-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: var(--radius-6);
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.ai-cmd-trigger {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.ai-cmd-desc {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-cmd-mark {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ai-cmd-empty {
+  padding: 10px;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.ai-cmd-foot {
+  padding: 5px 10px 6px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+/* ── voice button (mic) ────────────────────────────────────────────
+ * Mirrors the send button's footprint so the toolbar reads as a single row.
+ * `active` pulses while recognition is running; uses the accent token to
+ * stay themed across every app.
+ */
+.ai-voice-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  margin-left: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated, var(--bg-app));
+  color: var(--text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-family: inherit;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.ai-voice-btn:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+  color: var(--text-primary);
+}
+
+.ai-voice-btn.active {
+  background: var(--accent-soft, rgba(0, 120, 215, 0.12));
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: ai-voice-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes ai-voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft, rgba(0, 120, 215, 0.4)); }
+  50%      { box-shadow: 0 0 0 6px transparent; }
+}
+
+/* ---------------------------------------------------------------- mention */
+
+/* The mention palette reuses `.ai-cmd-menu` for layout and just adds a
+ * leading glyph per row. The at-sign in the query bar swaps in for the
+ * slash so the user can tell which palette is open at a glance. */
+.ai-mention-menu .ai-cmd-slash {
+  color: var(--accent);
+}
+
+.ai-mention-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.ai-mention-menu .ai-cmd-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: start;
+}
+
+.ai-mention-menu .ai-cmd-row.active .ai-mention-kind {
+  color: var(--accent);
+}
+
+/* ----------------------------------------------------------- token counter */
+
+.ai-token-counter {
+  font-size: var(--text-caption, 11px);
+  color: var(--text-tertiary);
+  margin-left: auto;
+  margin-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.ai-token-counter.warn {
+  color: var(--color-warning, #d2932b);
+}
+
+.ai-token-counter.danger {
+  color: var(--color-danger, #d04747);
+  font-weight: 600;
+}
+
+.ai-token-bar {
+  width: 36px;
+  height: 3px;
+  border-radius: var(--radius-3, 3px);
+  background: var(--surface-subtle);
+  position: relative;
+  overflow: hidden;
+}
+
+.ai-token-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease);
+}
+
+.ai-token-counter.warn .ai-token-bar > span { background: var(--color-warning, #d2932b); }
+.ai-token-counter.danger .ai-token-bar > span { background: var(--color-danger, #d04747); }
+
+/* ---------------------------------------------------------- slash trigger */
+
+/* The little `/` chip shown at the leading edge of the textarea when the
+ * composer has commands and the field is empty. Workbuddy / Cursor pattern:
+ * the affordance teaches the user the palette exists without forcing them
+ * to type. Clicking it opens the palette (empty query, first row active). */
+.ai-slash-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-6);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border, transparent);
+  cursor: pointer;
+  transition: background var(--transition-fast, 120ms ease), color var(--transition-fast, 120ms ease);
+}
+
+.ai-slash-trigger:hover {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.ai-slash-trigger.open {
+  background: var(--accent);
+  color: var(--surface);
+  border-color: var(--accent);
+}
+
+/* --------------------------------------------------------- suggestion chips */
+
+/* Follow-up chips shown under an assistant message. Workbuddy / Linear AI
+ * pattern: a horizontally-scrollable row of one-click follow-ups so the
+ * user doesn't have to type the next prompt from scratch. Static set, but
+ * each app supplies the list (context-aware entries are an app concern). */
+.ai-suggestion-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding: 4px 0 8px;
+  margin: 0;
+  scrollbar-width: thin;
+}
+
+.ai-suggestion-chips::-webkit-scrollbar { height: 4px; }
+.ai-suggestion-chips::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.ai-suggestion-chip {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius-6);
+  padding: 4px 10px;
+  font-size: var(--text-caption, 12px);
+  cursor: pointer;
+  transition: background var(--transition-fast, 120ms ease), border-color var(--transition-fast, 120ms ease);
+}
+
+.ai-suggestion-chip:hover {
+  background: var(--surface-subtle);
+  border-color: var(--accent);
+}
+
+.ai-suggestion-chip:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------------------------------------------------------- skill pill row */
+
+/* Wrap for the active skill chip(s). Kept as its own selector so apps that
+ * want to add a second chip (e.g. active scope + active skill) can stack
+ * without each app writing its own grid. */
+.ai-skill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 0;
+}

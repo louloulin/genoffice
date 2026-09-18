@@ -24,9 +24,10 @@
     "check:english-comments": "node tools/check-english-comments.mjs",
     "check:skill-version": "node tools/check-skill-version.mjs",
     "lint": "eslint .",
+    "typecheck": "npm run typecheck -ws --if-present",
     "fixtures": "npm run fixtures -w @genoffice/docx-engine",
-    "test": "npm run test -w @genoffice/i18n && npm run test -w @genoffice/electron-utils && npm run test -w @genoffice/font-metrics && npm run test -w @genoffice/docx-engine && npm run test -w @genoffice/pdf2docx && npm run test -w @genoffice/html2docx && npm run test -w @genoffice/file-parse && npm run test -w @genoffice/pptx-engine && npm run test -w @genoffice/pptx-render && npm run test -w @genoffice/pipelines && npm run test -w @genoffice/ai-search && npm run test -w @genoffice/agent-core && npm run test -w @genoffice/ai-provider && npm run test -w @genoffice/project-store && npm run test -w @genoffice/cli && npm run test -w @genoffice/ui && npm run test -w @genoffice/docs && npm run test -w @genoffice/sheets && npm run test -w @genoffice/shell && npm run test -w @genoffice/slides && npm run test -w @genoffice/pdf && npm run test -w @genoffice/markdown && npm run test -w @genoffice/html",
-    "typecheck": "npm run typecheck -w @genoffice/i18n && npm run typecheck -w @genoffice/electron-utils && npm run typecheck -w @genoffice/font-metrics && npm run typecheck -w @genoffice/docx-engine && npm run typecheck -w @genoffice/pdf2docx && npm run typecheck -w @genoffice/html2docx && npm run typecheck -w @genoffice/file-parse && npm run typecheck -w @genoffice/pptx-engine && npm run typecheck -w @genoffice/xlsx-gateway && npm run typecheck -w @genoffice/pptx-ops && npm run typecheck -w @genoffice/pptx-render && npm run typecheck -w @genoffice/pipelines && npm run typecheck -w @genoffice/ai-search && npm run typecheck -w @genoffice/agent-core && npm run typecheck -w @genoffice/ai-provider && npm run typecheck -w @genoffice/project-store && npm run typecheck -w @genoffice/cli && npm run typecheck -w @genoffice/ui && npm run typecheck -w @genoffice/docs && npm run typecheck -w @genoffice/sheets && npm run typecheck -w @genoffice/shell && npm run typecheck -w @genoffice/slides && npm run typecheck -w @genoffice/pdf && npm run typecheck -w @genoffice/markdown && npm run typecheck -w @genoffice/html",
+    "test": "npm run test -w @genoffice/i18n && npm run test -w @genoffice/electron-utils && npm run test -w @genoffice/font-metrics && npm run test -w @genoffice/docx-engine && npm run test -w @genoffice/pdf2docx && npm run test -w @genoffice/html2docx && npm run test -w @genoffice/file-parse && npm run test -w @genoffice/pptx-engine && npm run test -w @genoffice/pptx-render && npm run test -w @genoffice/pipelines && npm run test -w @genoffice/ai-search && npm run test -w @genoffice/agent-core && npm run test -w @genoffice/ai-provider && npm run test -w @genoffice/ipc-bridge && npm run test -w @genoffice/agent-session && npm run test -w @genoffice/agent-telemetry && npm run test -w @genoffice/agent-runtime && npm run test -w @genoffice/chat-runtime && npm run test -w @genoffice/agent-skills && npm run test -w @genoffice/translation-core && npm run test -w @genoffice/project-store && npm run test -w @genoffice/cli && npm run test -w @genoffice/ui && npm run test -w @genoffice/docs && npm run test -w @genoffice/sheets && npm run test -w @genoffice/shell && npm run test -w @genoffice/slides && npm run test -w @genoffice/pdf && npm run test -w @genoffice/markdown && npm run test -w @genoffice/html && npm run test -w @genoffice/web-server",
+    "typecheck:web-server": "npm run typecheck -w @genoffice/web-server",
     "predev": "node tools/build-stale-preloads.mjs",
     "dev": "concurrently -k -n docs,sheets,slides,pdf,markdown,html,shell -c blue,green,yellow,red,cyan,white,magenta \"npm run dev:renderer -w @genoffice/docs\" \"npm run dev:renderer -w @genoffice/sheets\" \"npm run dev:renderer -w @genoffice/slides\" \"npm run dev:renderer -w @genoffice/pdf\" \"npm run dev:renderer -w @genoffice/markdown\" \"npm run dev:renderer -w @genoffice/html\" \"DOCS_RENDERER_URL=http://localhost:5173 SHEETS_RENDERER_URL=http://localhost:5174 SLIDES_RENDERER_URL=http://localhost:5175 PDF_RENDERER_URL=http://localhost:5176 MARKDOWN_RENDERER_URL=http://localhost:5177 HTML_RENDERER_URL=http://localhost:5178 npm run dev -w @genoffice/shell\"",
     "dev:docs": "npm run dev -w @genoffice/docs",
@@ -38,7 +39,10 @@
     "licenses": "node tools/check-licenses.mjs",
     "dist:mac": "npm run notices && npm run build:all && npm run native:build:universal -w @genoffice/sheets && npm run dist:mac -w @genoffice/shell",
     "dist:win": "npm run notices && npm run build:all && npm run dist:win -w @genoffice/shell",
-    "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @genoffice/shell"
+    "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @genoffice/shell",
+    "dev:web": "npm run build:all && npm run dev -w @genoffice/web-server",
+    "build:web": "npm run build:all && npm run build -w @genoffice/web-server",
+    "start:web": "npm run start -w @genoffice/web-server"
   },
   "dependencies": {
     "ws": "^8.21.1"
@@ -53,11 +57,13 @@
     "concurrently": "^9.2.4",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "fake-indexeddb": "^6.2.5",
     "globals": "^17.8.0",
     "pixelmatch": "^7.2.0",
     "playwright-core": "^1.61.1",
     "pngjs": "^7.0.0",
     "prettier": "^3.9.6",
     "typescript-eslint": "^8.65.0"
-  }
+  },
+  "packageManager": "pnpm@9.13.0+sha512.beb9e2a803db336c10c9af682b58ad7181ca0fbd0d4119f2b33d5f2582e96d6c0d93c85b23869295b765170fbdaa92890c0da6ada457415039769edf3c959efe"
 }

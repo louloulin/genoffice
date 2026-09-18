@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
+import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '../agent-protocol'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
 import { gensparkAttributionHeaders, opencodeSessionHeaders } from '../providers'
@@ -10,6 +10,8 @@ import {
   parseToolInput,
   sseErrorText,
   sseLines,
+  stripThinkTags,
+  ThinkTagFilter,
   throwIfCreditsNotice,
   type StreamCallbacks,
 } from './shared'
@@ -23,12 +25,22 @@ function openAiMessages(
   for (const m of messages) {
     if (m.role === 'user') {
       if (!m.images?.length) {
-        out.push({ role: 'user', content: m.text })
+        out.push({
+          role: 'user',
+          content: m.text || ((m as unknown as { content?: string }).content ?? ''),
+        })
       } else {
         out.push({
           role: 'user',
           content: [
-            ...(m.text ? [{ type: 'text', text: m.text }] : []),
+            ...(m.text || (m as unknown as { content?: string }).content
+              ? [
+                  {
+                    type: 'text',
+                    text: (m.text || (m as unknown as { content?: string }).content) as string,
+                  },
+                ]
+              : []),
             ...m.images.map((img) => ({
               type: 'image_url',
               image_url: { url: `data:${img.mime};base64,${img.base64}` },
@@ -42,7 +54,10 @@ function openAiMessages(
       // compatible proxies drop or reject the follow-up conversation after that.
       out.push({
         role: 'assistant',
-        content: m.text || (hasTools ? null : '(no content)'),
+        content:
+          m.text ||
+          ((m as unknown as { content?: string }).content ?? '') ||
+          (hasTools ? null : '(no content)'),
         ...(echoReasoning && m.reasoning ? { reasoning_content: m.reasoning } : {}),
         ...(hasTools
           ? {
@@ -69,7 +84,11 @@ function emitOpenAiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
     choices?: Array<{
       message?: {
         content?: string | null
+        // OpenAI's standard reasoning field. Older Ollama / ollama-compat
+        // builds emit plain `reasoning` instead. Read both — when both are
+        // present, the standard name wins so we never double-count.
         reasoning_content?: string
+        reasoning?: string
         tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
       }
       finish_reason?: string | null
@@ -84,10 +103,23 @@ function emitOpenAiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
   if (msg.error) throw new Error(sseErrorText(msg.error, 'Model error'))
   const choice = msg.choices?.[0]
   let emitted = false
-  if (choice?.message?.reasoning_content) cb.onReasoningDelta?.(choice.message.reasoning_content)
-  if (choice?.message?.content) {
+  // Some thinking models (Ollama, vLLM with `--reasoning-parser`) return the
+  // entire reply inside `reasoning` while `content` stays empty. For non-
+  // streaming chat completion we have no follow-up turn to recover from a
+  // missing answer, so when no content was emitted we promote the reasoning
+  // payload as the assistant's actual reply.
+  const reasoning = choice?.message?.reasoning_content ?? choice?.message?.reasoning
+  if (reasoning) cb.onReasoningDelta?.(reasoning)
+  // MiniMax M3 and friends inline their chain-of-thought in `content` as well;
+  // the stream path routes that to the reasoning channel, so the JSON path
+  // must drop it from the visible reply too or the two disagree.
+  const content = stripThinkTags(choice?.message?.content ?? '')
+  if (content) {
     emitted = true
-    cb.onDelta(choice.message.content)
+    cb.onDelta(content)
+  } else if (reasoning) {
+    emitted = true
+    cb.onDelta(reasoning)
   }
   const toolCalls: AgentToolCall[] = []
   for (const tc of choice?.message?.tool_calls ?? []) {
@@ -189,6 +221,8 @@ async function openAiCompatibleTurn(
   }
   // tool call arguments stream in fragments keyed by index
   const pendingTools = new Map<number, { id: string; name: string; json: string }>()
+  // Splits an inlined `<think>…</think>` chain-of-thought out of the visible reply.
+  const thinkFilter = new ThinkTagFilter()
   let stopReason: string | undefined
   let abnormalFinish: string | undefined
   let sawFinish = false
@@ -251,8 +285,15 @@ async function openAiCompatibleTurn(
     const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
     if (typeof reasoning === 'string' && reasoning) cb.onReasoningDelta?.(reasoning)
     if (choice.delta?.content) {
-      emitted = true
-      cb.onDelta(choice.delta.content)
+      // Reasoning models that inline their chain-of-thought (MiniMax M3)
+      // stream `<think>…</think>answer`; split the two channels incrementally
+      // so the renderer never receives the private reasoning as the answer.
+      const split = thinkFilter.push(choice.delta.content)
+      if (split.reasoning) cb.onReasoningDelta?.(split.reasoning)
+      if (split.text) {
+        emitted = true
+        cb.onDelta(split.text)
+      }
     }
     for (const tc of choice.delta?.tool_calls ?? []) {
       const pending = pendingTools.get(tc.index) ?? {
@@ -282,6 +323,14 @@ async function openAiCompatibleTurn(
       }
       flushTools()
     }
+  }
+  // Release whatever the filter still held: a trailing partial tag is plain
+  // text, and a reply that ended mid-reasoning stays on the reasoning channel.
+  const tail = thinkFilter.flush()
+  if (tail.reasoning) cb.onReasoningDelta?.(tail.reasoning)
+  if (tail.text) {
+    emitted = true
+    cb.onDelta(tail.text)
   }
   // No finish and no [DONE] with half-received arguments: the connection dropped
   if (!sawFinish && !sawDone) {
@@ -341,16 +390,39 @@ export async function chatOpenAiCompatible(
   // would make response.json() throw; return ok:false instead of leaking a
   // raw SyntaxError to the caller.
   const bodyText = await response.text()
-  let json: { choices?: Array<{ message?: { content?: string } }> }
+  let json: {
+    choices?: Array<{
+      message?: { content?: string; reasoning_content?: string; reasoning?: string }
+    }>
+  }
   try {
-    json = JSON.parse(bodyText) as { choices?: Array<{ message?: { content?: string } }> }
+    json = JSON.parse(bodyText) as {
+      choices?: Array<{
+        message?: { content?: string; reasoning_content?: string; reasoning?: string }
+      }>
+    }
   } catch {
     return {
       ok: false,
       error: `AI returned a non-JSON response: ${httpBodyDetail(bodyText)}`,
     }
   }
-  const content = json.choices?.[0]?.message?.content
-  if (!content) return { ok: false, error: 'AI returned an empty response' }
-  return { ok: true, content }
+  // OpenAI's standard field is `reasoning_content`; Ollama and a few
+  // ollama-compat forks emit the chain-of-thought as plain `reasoning` on
+  // thinking models (e.g. ov_intent_analysis_sft). Read both so a model
+  // whose `content` is empty but whose `reasoning` carries the answer still
+  // surfaces it to the caller.
+  const raw = json.choices?.[0]?.message?.content ?? ''
+  const reasoning =
+    json.choices?.[0]?.message?.reasoning_content ?? json.choices?.[0]?.message?.reasoning
+  const content = stripThinkTags(raw)
+  if (!content) {
+    if (reasoning) {
+      // thinking-only response (no final answer). Surface the reasoning so
+      // callers see why the model stopped, instead of an opaque empty.
+      return { ok: false, error: `AI responded with reasoning only: ${reasoning.slice(0, 200)}` }
+    }
+    return { ok: false, error: 'AI returned an empty response' }
+  }
+  return reasoning ? { ok: true, content, reasoning } : { ok: true, content }
 }

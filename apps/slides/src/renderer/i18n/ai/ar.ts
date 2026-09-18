@@ -18,7 +18,7 @@ export const ar = {
   aiQcStopped: 'تم إيقاف فحص التخطيط',
   aiQcCapped: '{count} صفحة أخرى لم تُفحص (حد لكل تشغيل)',
   aiGskLoginBtn: 'تسجيل الدخول إلى Genspark',
-  aiPanelTitle: 'Genspark',
+  aiPanelTitle: 'AI Assistant',
   aiOpenAssistant: 'فتح مساعد الذكاء الاصطناعي',
   aiFactCheckBtn: 'تدقيق حقائق AI',
   aiFactCheckPrompt:
@@ -62,6 +62,7 @@ export const ar = {
   aiChipShorten: 'اختصار',
   aiChipExpand: 'توسيع',
   aiChipVerify: 'تدقيق الحقائق',
+  aiChipTranslate: 'ترجم',
   aiChipReplaceImage: 'استبدال الصورة',
   aiChipRemoveBg: 'إزالة الخلفية',
   aiChipRecolor: 'ضبط الألوان',
@@ -220,4 +221,8 @@ export const ar = {
   aiSumSaveTemplate: 'حفظ قالب النمط "{name}"',
   aiSumTemplatesEmpty: 'قوالب الأنماط (فارغ)',
   aiSumListTemplates: 'سرد {count} من قوالب الأنماط',
+  aiUnknownError: 'خطأ غير معروف',
+  aiTimeoutError: 'انتهت مهلة طلب الذكاء الاصطناعي: لا توجد استجابة من الشبكة وتم الإيقاف. تحقق من الاتصال وحاول مجددًا',
+  aiOverloadedError: 'خدمة الذكاء الاصطناعي مشغولة حاليًا — يرجى المحاولة مرة أخرى بعد قليل',
+  aiNetworkError: 'مشكلة في الشبكة: تعذّر الوصول إلى خدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا',
 } satisfies Record<keyof typeof zh, string>

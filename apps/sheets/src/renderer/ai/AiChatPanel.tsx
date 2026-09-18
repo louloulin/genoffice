@@ -1,9 +1,81 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  DEFAULT_CHAT_MODE,
+  chatModeDirective,
+  composeSystemSuffix,
+  type ChatMode,
+  type ComposerCommand,
+  type ComposerCommandPick,
+  type ComposerModeOption,
+  type MentionEntry,
+} from '@genoffice/ui'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
-import { GensparkMark } from '../ribbon-icons'
+import { AiRunHeader, AiToolTimeline, AiChangeSummary, AiErrorRecovery } from '@genoffice/ui'
+import { toChatChangePlan, defaultXlsxPreviewRenderer } from './xlsx-change-plan'
+import type { ChatToolCallRecord } from '@genoffice/chat-runtime/types'
+import { GensparkMark, ProviderMark } from '../ribbon-icons'
 import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import { ATTACHMENT_IMAGE_EXTS, type AttachmentMeta } from '../../shared/desktop-api'
-import { useI18n, type TFunc } from '../i18n/locale'
+import { useI18n, type StringKey, type TFunc } from '../i18n/locale'
+import { aiLangDirective } from '../i18n/locale'
+import {
+  SHEETS_QUICK_ACTIONS,
+  buildSheetsComposerCommands,
+  sheetsSkillOptions,
+  skillIdOfCommand,
+} from './composer-commands'
+
+/**
+ * Build the @-mention palette for the sheets panel. The attachments come
+ * first (the user is most likely to @-mention a workbook they just opened),
+ * then the same skills the slash palette exposes.
+ */
+function sheetsMentionEntries(input: {
+  attachments: readonly AttachmentMeta[]
+  skills: ReadonlyArray<{
+    id: string
+    trigger: string
+    labelKey: StringKey
+    descriptionKey: StringKey
+    available: boolean
+  }>
+  t: (key: StringKey) => string
+}): readonly MentionEntry[] {
+  const seen = new Set<string>()
+  const out: MentionEntry[] = []
+  for (const a of input.attachments) {
+    if (seen.has(a.path)) continue
+    seen.add(a.path)
+    const trigger = (a.name || a.path)
+      .toLowerCase()
+      .replace(/\.[a-z0-9]+$/i, '')
+      .replace(/[^\w\u4e00-\u9fff]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 16) || a.path
+    out.push({
+      id: `file-${a.path}`,
+      trigger,
+      label: a.name,
+      description: a.path,
+      group: 'Files',
+      kind: 'file',
+      hint: a.ext ? `.${a.ext}` : undefined,
+    })
+  }
+  for (const s of input.skills) {
+    out.push({
+      id: `skill-${s.id}`,
+      trigger: s.trigger,
+      label: input.t(s.labelKey),
+      description: input.t(s.descriptionKey),
+      group: 'Skills',
+      kind: 'skill',
+      disabled: !s.available,
+      hint: s.id,
+    })
+  }
+  return out
+}
 import { Markdown } from '@genoffice/ui'
 import { SHEET_NAV_SCHEME } from './sheet-nav'
 import sendEnterOn from '../assets/send-enter-on.png'
@@ -282,8 +354,112 @@ export function AiChatPanel({
   readonly onCollapse: () => void
 }): React.JSX.Element {
   const { t, lang } = useI18n()
+  const [provider, setProvider] = useState<string>(() => 'minimax')
+  // Composer working mode (Ask / Craft / Plan) and the picked skill chip.
+  // Both feed the loop's system suffix through `composerSystemSuffix`;
+  // Ask is the safe default for sheets — it answers without mutating.
+  const [mode, setMode] = useState<ChatMode>(DEFAULT_CHAT_MODE)
+  const [activeSkillId, setActiveSkillId] = useState<string | null>(null)
+  const modeRef = useRef<ChatMode>(mode)
+  modeRef.current = mode
+  const activeSkillIdRef = useRef<string | null>(activeSkillId)
+  activeSkillIdRef.current = activeSkillId
+
+  useEffect(() => {
+    let alive = true
+    void window.desktopApi?.getAiSettings?.().then((s) => {
+      if (alive && s && typeof s === 'object' && 'provider' in s) {
+        setProvider((s as { provider?: string }).provider ?? 'minimax')
+      }
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
   // Panel chrome follows the UI language; message text follows its own content (dir=auto below)
   const isRtl = lang === 'ar' || lang === 'he'
+  /** Skills the sheets panel exposes in the `/` palette. */
+  const composerSkills = useMemo(
+    () => sheetsSkillOptions({ imageGenAvailable: true }),
+    [],
+  )
+  const composerSkillsRef = useRef(composerSkills)
+  composerSkillsRef.current = composerSkills
+
+  const modeOptions = useMemo<ComposerModeOption[]>(
+    () => [
+      { id: 'ask', label: t('aiModeAsk'), title: t('aiModeAskHint') },
+      { id: 'craft', label: t('aiModeCraft'), title: t('aiModeCraftHint') },
+      { id: 'plan', label: t('aiModePlan'), title: t('aiModePlanHint') },
+    ],
+    [t],
+  )
+
+  const composerCommands = useMemo<ComposerCommand[]>(
+    () => buildSheetsComposerCommands({ t, skills: composerSkills, quickActions: SHEETS_QUICK_ACTIONS }),
+    [t, composerSkills],
+  )
+
+  /** @-mention palette (Cursor-style picker for files + skills). */
+  const composerMentions = useMemo(
+    () =>
+      sheetsMentionEntries({
+        attachments,
+        skills: composerSkills.map((s) => ({
+          id: s.id,
+          trigger: s.trigger,
+          labelKey: s.labelKey,
+          descriptionKey: s.descriptionKey,
+          available: s.available,
+        })),
+        t,
+      }),
+    [attachments, composerSkills, t],
+  )
+
+  const onComposerMentionPick = useCallback(() => undefined, [])
+
+  /** Optional token-budget badge. 8k is the safe default for sheets —
+   *  the workbook snapshot is held by tools, not by the prompt. */
+  const tokenBudget = 8000
+
+  const activeSkill =
+    activeSkillId === null
+      ? null
+      : (composerSkills.find((skill) => skill.id === activeSkillId) ?? null)
+
+  /** UI-only suffix: language + working mode + picked skill.
+   *  The agent loop reads its own system prefix; this composes the suffix
+   *  App.tsx hands it through `systemSuffix`.
+   */
+  const composerSystemSuffix = useCallback((): string => {
+    const pickedId = activeSkillIdRef.current
+    const picked =
+      pickedId === null
+        ? null
+        : (composerSkillsRef.current.find((skill) => skill.id === pickedId) ?? null)
+    return composeSystemSuffix(
+      aiLangDirective(),
+      chatModeDirective(modeRef.current),
+      picked === null
+        ? ''
+        : t(picked.descriptionKey),
+    )
+  }, [t])
+
+  // Mirror the suffix into a ref App.tsx reads each turn, so the agent loop
+  // picks up mode/skill changes without remounting. If the host does not
+  // subscribe (older builds), the no-op ref keeps the UI side effects safe.
+  const systemSuffixSinkRef = useRef<((suffix: string) => void) | null>(null)
+  useEffect(() => {
+    systemSuffixSinkRef.current?.(composerSystemSuffix())
+  }, [composerSystemSuffix, mode, activeSkillId])
+
+  const onComposerCommandPick = useCallback((pick: ComposerCommandPick) => {
+    const { command } = pick
+    if (command.kind !== 'run') return
+    const skillId = skillIdOfCommand(command.id)
+    if (skillId !== null) setActiveSkillId(skillId)
+  }, [])
+
   const chatRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const stickToBottomRef = useRef(true)
@@ -444,13 +620,21 @@ export function AiChatPanel({
           data-tip={t('aiOpenAssistant')}
           aria-label={t('aiOpenAssistant')}
         >
-          <GensparkMark size={22} />
+          <ProviderMark provider={provider} size={22} />
         </button>
       </aside>
     )
   }
 
+  const [lastError, setLastError] = React.useState<string | null>(null)
   const canSend = prompt.trim().length > 0 && !aiBusy
+
+  // Last error visible in the transcript; surfaced via <AiErrorRecovery>.
+  // Re-derived whenever chat changes (cheap: scan the trailing entries).
+  React.useEffect(() => {
+    const last = [...chat].reverse().find((e) => e.isError)
+    setLastError(last && typeof last.text === 'string' ? last.text : null)
+  }, [chat])
 
   /** [B12](sheetnav://B12) links in answers jump the grid to the cited range */
   const citationNav = { scheme: SHEET_NAV_SCHEME, onNavigate: onCitation }
@@ -513,8 +697,8 @@ export function AiChatPanel({
       />
       <header className="ai-panel-header">
         <span className="ai-panel-title">
-          <GensparkMark size={22} />
-          Genspark
+          <ProviderMark provider={provider} size={22} />
+          {{minimax:'MiniMax',codex:'Codex',anthropic:'Claude',genspark:'Genspark'}[provider as 'minimax'|'codex'|'anthropic'|'genspark'] || 'AI Assistant'}
         </span>
         <div className="ai-panel-header-actions">
           {(chat.length > 0 || historicChat.length > 0) && (
@@ -539,6 +723,36 @@ export function AiChatPanel({
       </header>
 
       <div className="ai-chat" ref={chatRef} onScroll={onChatScroll}>
+        {/* Shared ChatRuntime components (M4). Additive: existing inline UI stays. */}
+        <AiRunHeader status={lastError ? 'error' : aiBusy ? 'running' : 'idle'} model={provider} />
+        {lastError && !aiBusy && (
+          <AiErrorRecovery
+            error={lastError}
+            onEdit={() => inputRef.current?.focus()}
+            onDismiss={() => setLastError(null)}
+          />
+        )}
+        {(() => {
+          const lastAssistant = [...chat].reverse().find(e => e.role === 'assistant')
+          if (!lastAssistant || lastAssistant.tools.length === 0) return null
+          const records: ChatToolCallRecord[] = lastAssistant.tools.map((t, idx) => ({
+            id: `xlsx-${idx}`,
+            name: t.name ?? t.summary,
+            input: {},
+            status: t.running ? 'running' : t.isError ? 'error' : 'executed',
+            output: t.output,
+            isError: t.isError,
+            startedAt: 0,
+            finishedAt: t.running ? undefined : 0,
+          }))
+          return <AiToolTimeline tools={records} />
+        })()}
+        {preview && (
+          <AiChangeSummary
+            plan={toChatChangePlan(preview)}
+            previewRenderer={defaultXlsxPreviewRenderer}
+          />
+        )}
         {/* Past conversation (read-only transcript), shown continuously with the current turn */}
         {historicChat.length > 0 && (
           <>
@@ -694,7 +908,79 @@ export function AiChatPanel({
 
       <div className="ai-composer">
         {attachNotice && <div className="ai-attach-notice">{attachNotice}</div>}
+        {!aiBusy && (
+          <div className="ai-quick-actions" role="toolbar">
+            {SHEETS_QUICK_ACTIONS.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                className="ai-quick-action"
+                data-tip={t(action.labelKey)}
+                onClick={() => {
+                  onPromptChange(t(action.promptKey))
+                  inputRef.current?.focus()
+                }}
+              >
+                <span className="ai-quick-action-icon" aria-hidden>
+                  {action.icon}
+                </span>
+                {t(action.labelKey)}
+              </button>
+            ))}
+          </div>
+        )}
         <AiComposer
+          commands={composerCommands}
+          onCommandPick={onComposerCommandPick}
+          commandMenuLabel={t('aiSlashMenuTitle')}
+          commandMenuEmptyLabel={t('aiSlashMenuEmpty')}
+          commandMenuFootHint={t('aiSlashMenuFoot')}
+          mentions={composerMentions}
+          onMentionPick={onComposerMentionPick}
+          mentionMenuLabel={t('aiMentionMenuTitle')}
+          mentionMenuEmptyLabel={t('aiMentionMenuEmpty')}
+          mentionMenuFootHint={t('aiMentionMenuFoot')}
+          tokenBudget={tokenBudget}
+          slashTriggerTitle={t('aiSlashTriggerTitle')}
+          modes={modeOptions}
+          mode={mode}
+          onModeChange={setMode}
+          modeSwitchLabel={t('aiModeSwitchTitle')}
+          onEditLast={() => {
+            // Walk the chat back to the most recent user entry and load its
+            // text into the textarea so the user can edit-and-resend.
+            const idx = [...chat].reverse().findIndex((e) => e.role === 'user')
+            if (idx < 0) return
+            const real = chat.length - 1 - idx
+            const entry = chat[real]
+            if (!entry || typeof entry.text !== 'string') return
+            onPromptChange(entry.text)
+            inputRef.current?.focus()
+          }}
+          leading={
+            activeSkill !== null && (
+              <div className="ai-skill-row">
+                <span className="ai-skill-chip" data-tip={t(activeSkill.descriptionKey)}>
+                  <span className="ai-skill-chip-label">{t('aiActiveSkill')}</span>
+                  <span className="ai-skill-chip-name">{t(activeSkill.labelKey)}</span>
+                  <button
+                    type="button"
+                    className="ai-skill-chip-clear"
+                    title={t('aiActiveSkillClear')}
+                    aria-label={t('aiActiveSkillClear')}
+                    onClick={() => setActiveSkillId(null)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 32 32" aria-hidden>
+                      <path
+                        d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </span>
+              </div>
+            )
+          }
           header={
             <>
               {/* Only a deliberate multi-cell selection shows here: it tells the

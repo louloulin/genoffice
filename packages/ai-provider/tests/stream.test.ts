@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentToolCall } from '@genoffice/agent-core'
+import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '../src/agent-protocol'
 import { AiCreditsError, sseLines, streamForProvider } from '../src/stream'
 import { jsonBodyInsteadOfSse } from '../src/protocols/shared'
 import { jsonResponse, okResponse, sseStream } from './test-utils'
@@ -12,15 +12,18 @@ function collector() {
   const deltas: string[] = []
   const toolCalls: AgentToolCall[] = []
   const stopReasons: string[] = []
+  const reasoning: string[] = []
   return {
     deltas,
     toolCalls,
     stopReasons,
+    reasoning,
     cb: {
       signal: new AbortController().signal,
       onDelta: (text: string) => deltas.push(text),
       onToolCall: (call: AgentToolCall) => toolCalls.push(call),
       onStopReason: (reason: string) => stopReasons.push(reason),
+      onReasoningDelta: (text: string) => reasoning.push(text),
     },
   }
 }
@@ -1066,6 +1069,65 @@ it('rejects an unknown provider id', async () => {
   await expect(
     streamForProvider('unknown' as never, { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
   ).rejects.toThrow(/Unknown provider/)
+})
+
+describe('streamForProvider: inline chain-of-thought stays out of the reply', () => {
+  // MiniMax M3 emits its reasoning inline in `content` rather than in the
+  // dedicated `reasoning_content` field: the raw stream is
+  // `<think>…reasoning…</think>answer`. It used to reach the renderer as part
+  // of the assistant's answer (the non-streaming path filtered it, the stream
+  // path did not).
+  const turn = (contentDeltas: string[]) =>
+    okResponse(
+      sseStream([
+        ...contentDeltas.map(
+          (text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}`,
+        ),
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'data: [DONE]',
+      ]),
+    )
+
+  it('drops a think block delivered in one delta and keeps the answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(turn(['<think>2+3=5, answer in Chinese</think>\n\n2+3 等于 5。'])),
+    )
+    const { deltas, reasoning, cb } = collector()
+    await streamForProvider('minimax', { apiKey: 'k', model: 'MiniMax-M3' }, 'sys', [], [], 100, cb)
+    expect(deltas.join('')).toBe('2+3 等于 5。')
+    expect(reasoning.join('')).toContain('2+3=5')
+  })
+
+  it('drops a think block split across deltas, including a tag broken mid-token', async () => {
+    // the exact failure mode a per-delta regex cannot handle: `<thi` + `nk>`
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(turn(['<thi', 'nk>hidden reasoning</thi', 'nk>', 'final answer'])),
+    )
+    const { deltas, reasoning, cb } = collector()
+    await streamForProvider('minimax', { apiKey: 'k', model: 'MiniMax-M3' }, 'sys', [], [], 100, cb)
+    expect(deltas.join('')).toBe('final answer')
+    expect(reasoning.join('')).toBe('hidden reasoning')
+  })
+
+  it('forwards plain text that merely contains an angle bracket', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(turn(['a < b and c', ' > d'])))
+    const { deltas, cb } = collector()
+    await streamForProvider('minimax', { apiKey: 'k', model: 'MiniMax-M3' }, 'sys', [], [], 100, cb)
+    expect(deltas.join('')).toBe('a < b and c > d')
+  })
+
+  it('hides the reasoning of a turn truncated mid-think', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(turn(['<think>still reasoning when the budget ran out'])),
+    )
+    const { deltas, reasoning, cb } = collector()
+    await streamForProvider('minimax', { apiKey: 'k', model: 'MiniMax-M3' }, 'sys', [], [], 100, cb)
+    expect(deltas.join('')).toBe('')
+    expect(reasoning.join('')).toBe('still reasoning when the budget ran out')
+  })
 })
 
 describe('streamForProvider: interleaved-thinking reasoning', () => {

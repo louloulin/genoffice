@@ -64,6 +64,8 @@ import {
 } from '@genoffice/docx-engine'
 import type { AiDocContent, AiSettings, OpenDocxResult } from '../shared/ipc'
 import { AI_PROVIDERS } from '../shared/ipc'
+import type { DataflareEmbedCommand, DataflareOfficeContext } from '../shared/embed-bridge'
+import { isEmbeddedInHost, postToEmbedParent } from '../shared/embed-bridge'
 import { ZoteroDocumentController } from './zotero/controller'
 import { AiPanel, AI_REVISION_AUTHOR } from './ai/AiPanel'
 import type { AiCommentsAccess, AiHeaderFooterAccess } from './ai/tools'
@@ -589,6 +591,8 @@ export function App() {
   const [_recent, setRecent] = useState<string[]>([])
   const [settings, setSettings] = useState<AiSettings>(DEFAULT_SETTINGS)
   const [showAi, setShowAi] = useState(() => localStorage.getItem('aidocs.showAi') !== '0')
+  const [hostContext, setHostContext] = useState<DataflareOfficeContext | null>(null)
+  const [hostReadonly, setHostReadonly] = useState(false)
   const [spellcheck, setSpellcheck] = useState(spellcheckEnabled)
   /** Increments on every open/new document: AiPanel remounts by key to reset the conversation and history (save path changes don't bump it, so the session continues) */
   const [aiPanelKey, setAiPanelKey] = useState(0)
@@ -1306,25 +1310,33 @@ export function App() {
           const ch = node.data[after.anchorOffset - 1]
           if (ch === ' ' || ch === '\u00a0') node.deleteData(after.anchorOffset - 1, 1)
         }
-        void window.desktop
+        const kickPromise = window.desktop
           .respellKick()
-          .catch(() => undefined)
-          .then(async () => {
-            // the IPC can resolve before the input pipeline delivers the
-            // keystroke — wait for the shield to see it (or give up quietly:
-            // a kick that never landed left nothing to scrub)
-            const deadline = Date.now() + 800
-            while (!sawKick && Date.now() < deadline) {
-              await new Promise((r) => setTimeout(r, 30))
-            }
-            // Linux/mac Hunspell respells in the keystroke's wake; the Windows
-            // OS spellchecker samples the text asynchronously with throttling,
-            // and a scrub 0.12s after the keystroke erased the mutation before
-            // the service ever saw it (squiggles only
-            // returned when repeated toggles happened to straddle a sampling
-            // window). Let the typed state live long enough to be sampled.
-            if (sawKick && /win/i.test(navigator.platform)) {
-              await new Promise((r) => setTimeout(r, 900))
+          .catch(() => ({ ok: false, supported: false }))
+        void kickPromise.then(async (result) => {
+            // The web build has no `webContents` to deliver a synthetic
+            // keystroke to, so the channel answers `{ok:true, supported:false}`
+            // and the whole wait-for-shield + 900ms sampling delay becomes
+            // dead weight. Branch on the flag instead of waiting 1.7s for a
+            // timer that was never going to fire.
+            const supported = result?.supported !== false
+            if (supported) {
+              // the IPC can resolve before the input pipeline delivers the
+              // keystroke — wait for the shield to see it (or give up quietly:
+              // a kick that never landed left nothing to scrub)
+              const deadline = Date.now() + 800
+              while (!sawKick && Date.now() < deadline) {
+                await new Promise((r) => setTimeout(r, 30))
+              }
+              // Linux/mac Hunspell respells in the keystroke's wake; the Windows
+              // OS spellchecker samples the text asynchronously with throttling,
+              // and a scrub 0.12s after the keystroke erased the mutation before
+              // the service ever saw it (squiggles only
+              // returned when repeated toggles happened to straddle a sampling
+              // window). Let the typed state live long enough to be sampled.
+              if (sawKick && /win/i.test(navigator.platform)) {
+                await new Promise((r) => setTimeout(r, 900))
+              }
             }
             scrub()
             observer.start()
@@ -1414,6 +1426,7 @@ export function App() {
   const writeLocked = !!writeProtection?.hash && !modifyUnlocked
   /** body is read-only (readOnly/forms/comments restriction or write lock) */
   const isProtected =
+    hostReadonly ||
     writeLocked ||
     editRestriction === 'readOnly' ||
     editRestriction === 'forms' ||
@@ -1441,6 +1454,84 @@ export function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [editor, readMode, isProtected, docLoading])
+
+  useEffect(() => {
+    if (!isEmbeddedInHost()) return
+    const onCommand = (event: Event) => {
+      const command = (event as CustomEvent<DataflareEmbedCommand>).detail
+      if (command.type === 'init') {
+        setHostContext(command.context)
+        setHostReadonly(Boolean(command.context.readonly))
+        if (command.context.theme && command.context.theme !== 'system') {
+          document.documentElement.dataset.theme = command.context.theme
+        } else {
+          document.documentElement.removeAttribute('data-theme')
+        }
+        postToEmbedParent({ type: 'ready', capabilities: ['document-context', 'ai-translation', 'ai-assistant', 'host-commands'] })
+      } else if (command.type === 'set-readonly') {
+        setHostReadonly(command.readonly)
+      } else if (command.type === 'focus-ai') {
+        setShowAi(true)
+        if (command.prompt?.trim()) setAiPreset({ text: command.prompt.trim(), nonce: Date.now(), autoRun: true })
+      } else if (command.type === 'translate') {
+        setShowAi(true)
+        window.dispatchEvent(new CustomEvent('dataflare:open-translate', {
+          detail: {
+            scope: command.scope,
+            sourceLanguage: command.sourceLanguage,
+            targetLanguage: command.targetLanguage,
+            preserveFormatting: command.preserveFormatting,
+            memoryEnabled: command.memoryEnabled,
+            qualityCheck: command.qualityCheck,
+            glossaryCategory: command.glossaryCategory,
+          },
+        }))
+        postToEmbedParent({ type: 'ai-progress', status: 'started', progress: 0 })
+      } else if (command.type === 'cancel-translation') {
+        // 通知 AI 面板立即停止：用户从 Dataflare 头部点了"取消翻译"
+        window.dispatchEvent(new CustomEvent('dataflare:cancel-translation'))
+        postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+      } else if (command.type === 'save') {
+        void saveImpl(fileCtxRef.current, false, false).then((ok) => {
+          postToEmbedParent(ok
+            ? { type: 'document-saved', documentId: hostContext?.documentId, revision: window.dataflareOfficeBridge?.getRevision?.() || String(Date.now()) }
+            : { type: 'error', code: 'save-failed', message: '文档保存失败' })
+        })
+      } else if (command.type === 'dispose') {
+        setHostReadonly(true)
+        setHostContext(null)
+      }
+    }
+    window.addEventListener('dataflare:office-command', onCommand)
+    return () => window.removeEventListener('dataflare:office-command', onCommand)
+  }, [editor, hostContext?.documentId])
+
+  useEffect(() => {
+    if (!isEmbeddedInHost()) return
+    const onGlobalState = (event: Event) => {
+      const detail = (event as CustomEvent<{ state: { theme?: 'light' | 'dark' | 'system'; locale?: string; userId?: string; tenantId?: string; readonly?: boolean }; revision?: number }>).detail
+      const nextTheme = detail?.state?.theme
+      if (nextTheme && nextTheme !== 'system') {
+        document.documentElement.dataset.theme = nextTheme
+      } else {
+        document.documentElement.removeAttribute('data-theme')
+      }
+      if (typeof detail?.state?.readonly === 'boolean') {
+        setHostReadonly(detail.state.readonly)
+      }
+    }
+    window.addEventListener('dataflare:office-global-state', onGlobalState)
+    return () => window.removeEventListener('dataflare:office-global-state', onGlobalState)
+  }, [])
+
+  useEffect(() => {
+    if (!isEmbeddedInHost() || !editor) return
+    const notifyDirty = () => postToEmbedParent({ type: 'document-dirty', documentId: hostContext?.documentId })
+    editor.on('update', notifyDirty)
+    return () => {
+      editor.off('update', notifyDirty)
+    }
+  }, [editor, hostContext?.documentId])
 
   // Track Changes: the recorder plugin reads its toggle from extension storage
   useEffect(() => {

@@ -85,7 +85,7 @@ import { AnimationPane } from './components/AnimationPane'
 import { AnimPreviewOverlay } from './components/AnimatedSlide'
 import { EquationDialog, HeaderFooterDialog, LinkDialog } from './components/InsertDialogs'
 import { CutoutDialog } from './components/CutoutDialog'
-import { useAutoSavePref, type AiScopeQuoteData, type WordArtPreset } from '@genoffice/ui'
+import { useAutoSavePref, AiInlineLauncher, type AiInlineAction, type AiInlineLauncherStrings, type AiScopeQuoteData, type WordArtPreset } from '@genoffice/ui'
 import type { ChartPresetDef, IconDef, SmartArtDef } from './insert-presets'
 import { GensparkMark, IconAiBeautify, IconAiFactCheck, IconAiImage } from './components/icons'
 import { ToastHost } from './components/toast'
@@ -303,6 +303,15 @@ function collectRtls(node: RenderNode, out: Set<boolean>) {
   if (node.type === 'shape' || node.type === 'text') collectBodyRtls(node.text, out)
   else if (node.type === 'table') for (const cell of node.cells) collectBodyRtls(cell.text, out)
   else if (node.type === 'group') for (const child of node.children) collectRtls(child, out)
+}
+
+const SLIDES_INLINE_LAUNCHER_STRINGS: AiInlineLauncherStrings = {
+  title: 'Ask AI about selection',
+  polish: 'Polish',
+  expand: 'Expand',
+  shorten: 'Shorten',
+  summarize: 'Summarize',
+  translate: 'Translate',
 }
 
 export function App() {
@@ -593,7 +602,7 @@ export function App() {
         }
         return false
       })
-    return slides.every((s) => !nodesHaveContent(s.nodes))
+    return slides.every((s) => !s || !nodesHaveContent(s.nodes))
   }, [slides])
 
   /** Write the notes draft back to the main process (called on page switch / blur / before save). */
@@ -775,11 +784,12 @@ export function App() {
   }, [hasDoc, fitZoom, rawFit, viewMode])
 
   const applyOpen = useCallback(
-    (result: { path: string; slides: RenderSlide[]; defaultFont?: string } | null) => {
+    (result: { path?: string; slides?: RenderSlide[]; defaultFont?: string } | null) => {
       if (!result) return
-      setSlides(result.slides)
+      const openedSlides = Array.isArray(result.slides) ? result.slides : []
+      setSlides(openedSlides)
       setDefaultFont(result.defaultFont ?? null)
-      setPath(result.path)
+      setPath(result.path ?? null)
       setCurrent(0)
       setSelectedIds([])
       setEditing(null)
@@ -794,7 +804,7 @@ export function App() {
         result.path
           ? t('appStatusOpened', {
               name: result.path.split('/').pop()!,
-              count: result.slides.length,
+              count: openedSlides.length,
             })
           : t('appStatusNewBlank'),
       )
@@ -878,8 +888,9 @@ export function App() {
   useEffect(
     () =>
       window.slidesApi.onDeckChanged?.(({ slides: all }) => {
-        setSlides(all)
-        setCurrent((c) => Math.min(c, Math.max(0, all.length - 1)))
+        const nextSlides = Array.isArray(all) ? all : []
+        setSlides(nextSlides)
+        setCurrent((c) => Math.min(c, Math.max(0, nextSlides.length - 1)))
         // The broadcast also fires for undo back to a clean state — ask the
         // session instead of assuming the change dirtied it
         void window.slidesApi.isDirty?.().then((d) => setDirty(!!d))
@@ -975,9 +986,9 @@ export function App() {
 
   /** Apply the full slides set after undo/redo: page count may change (undoing a new page), clamp current */
   const applyHistoryResult = useCallback((r: RenderSlide[] | null) => {
-    if (!r) return
-    setSlides(r)
-    setCurrent((c) => Math.min(c, r.length - 1))
+    const nextSlides = Array.isArray(r) ? r : []
+    setSlides(nextSlides)
+    setCurrent((c) => Math.min(c, nextSlides.length - 1))
     setSelectedIds([])
     setEditing(null)
     setPasteFloater(null) // The paste the floater refers to may have just been undone
@@ -4193,7 +4204,33 @@ export function App() {
         !cutoutTarget &&
         inkTool === 'select' &&
         selectedIds.length > 0 && (
-          <AiAskTrigger getAnchorRect={getAskTriggerRect} onOpen={openAskPopover} />
+          <>
+            <AiAskTrigger getAnchorRect={getAskTriggerRect} onOpen={openAskPopover} />
+            <AiInlineLauncher
+              getAnchorRect={getAskTriggerRect}
+              strings={SLIDES_INLINE_LAUNCHER_STRINGS}
+              onPick={(action) => {
+                if (action === 'translate') {
+                  void window.slidesApi?.aiTranslate?.({
+                    instruction: askTargets.map((target) => target.id).join(', '),
+                    targetLang: 'zh-CN',
+                    preserveFormat: true,
+                  })
+                  return
+                }
+                const prompt =
+                  action === 'polish'
+                    ? 'Polish the selected text while preserving the original tone and structure.'
+                    : action === 'expand'
+                      ? 'Expand the selected text with more detail and supporting points.'
+                      : action === 'shorten'
+                        ? 'Shorten the selected text while preserving the core meaning.'
+                        : 'Summarize the selected text in two or three sentences.'
+                askClosedAtRef.current = 0
+                commitAsk(prompt)
+              }}
+            />
+          </>
         )}
 
       {askState && askTargets.length > 0 && (
@@ -4201,6 +4238,19 @@ export function App() {
           targets={askTargets}
           getAnchorRect={getAskAnchorRect}
           queueFull={editQueue.length >= EDIT_QUEUE_MAX}
+          onTranslate={async (instruction) => {
+            try {
+              const r = await window.slidesApi?.aiTranslate?.({
+                instruction,
+                targetLang: 'zh-CN',
+                preserveFormat: true,
+              })
+              if (!r?.ok) return null
+              return r.translated ?? null
+            } catch {
+              return null
+            }
+          }}
           onSubmit={(instruction) => {
             askClosedAtRef.current = Date.now()
             commitAsk(instruction)

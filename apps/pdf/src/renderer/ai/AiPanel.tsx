@@ -1,17 +1,51 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import { AgentLoop } from '@genoffice/agent-core'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
-import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
+import {
+  AiComposer,
+  AiScopeQuote,
+  AiTypingIndicator,
+  type AiScopeQuoteData,
+  AiRunHeader,
+  AiToolTimeline,
+  AiErrorRecovery,
+  AiInlineLauncher,
+  type AiInlineAction,
+  type AiInlineLauncherStrings,
+  type ChatMode,
+  type ComposerCommand,
+  type ComposerCommandPick,
+  type ComposerModeOption,
+  type MentionEntry,
+  type MentionPick,
+  DEFAULT_CHAT_MODE,
+  chatModeDirective,
+  composeSystemSuffix,
+  isChatMode,
+  skillDirective,
+} from '@genoffice/ui'
+import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
 import { Markdown } from '@genoffice/ui'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
 import { createPdfSkill } from './pdf-skill'
-import { createElectronTransport } from './transport'
+import { createAiTransport } from './transports'
 import { PDF_NAV_SCHEME, parsePdfNavHref } from './pdf-nav'
 import type { FileOpConfirm, PdfAiDeps, PdfAppDeps } from './tools'
+import {
+  PDF_QUICK_ACTIONS,
+  buildPdfComposerCommands,
+  pdfActionCommandId,
+  pdfMentionEntries,
+  pdfSkillCommandId,
+  pdfSkillIdOfCommand,
+  pdfSkillOptions,
+  type PdfQuickAction,
+  type PdfSkillOption,
+} from './composer-commands'
 
 // Word-parity count (same as docs/markdown): Asian chars one by one + non-Asian words
 const ASIAN_RE =
@@ -64,6 +98,26 @@ interface ChatEntry {
 /** longest selection excerpt echoed on a user bubble */
 const SCOPE_TEXT_MAX = 200
 
+const PDF_INLINE_LAUNCHER_STRINGS: AiInlineLauncherStrings = {
+  title: 'Ask AI about selection',
+  polish: 'Polish',
+  expand: 'Expand',
+  shorten: 'Shorten',
+  summarize: 'Summarize',
+  translate: 'Translate',
+}
+
+function pdfSelectionRect(): { left: number; top: number; right: number; bottom: number } | null {
+  if (typeof window === 'undefined') return null
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return null
+  const range = sel.getRangeAt(0)
+  if (range.collapsed) return null
+  const rect = range.getBoundingClientRect()
+  if (rect.width === 0 && rect.height === 0) return null
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+}
+
 type Phase = 'thinking' | 'replying' | 'working'
 
 interface PendingConfirm {
@@ -95,6 +149,100 @@ export function AiPanel({
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState<Phase>('thinking')
+  // Shared-component state mirror (M4). Additive layer; inline tool chips keep rendering.
+  const [sharedToolTimeline, setSharedToolTimeline] = useState<ChatToolCallRecord[]>([])
+  const [sharedRunStatus, setSharedRunStatus] = useState<ChatRunStatus>('idle')
+  /** Last error from a finished run; consumed by <AiErrorRecovery>. */
+  const [lastError, setLastError] = useState<string | null>(null)
+  /** Composer working mode (Ask/Craft/Plan) — drives the per-turn suffix. */
+  const [mode, setMode] = useState<ChatMode>(DEFAULT_CHAT_MODE)
+  /** Active skill picked from the `/` palette — drives the per-turn skill directive. */
+  const [activeSkillId, setActiveSkillId] = useState<string | null>(null)
+  /** Ref for the composer's textarea so <AiErrorRecovery>'s "Edit prompt" can focus it. */
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  // ── slash-command + mention table for the shared AiComposer ─────────────
+  const modeRef = useRef<ChatMode>(mode)
+  modeRef.current = mode
+  const activeSkillIdRef = useRef<string | null>(activeSkillId)
+  activeSkillIdRef.current = activeSkillId
+  // Declared here (not further down) because composerMentions below reads it
+  // during render; a later declaration puts apiRef in the temporal dead zone
+  // and every PDF tab crashes with "Cannot access 'apiRef' before initialization".
+  const apiRef = useRef(api)
+  apiRef.current = api
+  const composerSkills: readonly PdfSkillOption[] = useMemo(() => pdfSkillOptions(), [])
+  const composerSkillsRef = useRef(composerSkills)
+  composerSkillsRef.current = composerSkills
+  const modeOptions = useMemo<ComposerModeOption[]>(
+    () => [
+      { id: 'ask', label: t('aiModeAsk'), title: t('aiModeAskHint') },
+      { id: 'craft', label: t('aiModeCraft'), title: t('aiModeCraftHint') },
+      { id: 'plan', label: t('aiModePlan'), title: t('aiModePlanHint') },
+    ],
+    [t],
+  )
+  const composerCommands = useMemo<ComposerCommand[]>(
+    () => buildPdfComposerCommands({ t, skills: composerSkills, quickActions: PDF_QUICK_ACTIONS }),
+    [t, composerSkills],
+  )
+  const composerMentions = useMemo<readonly MentionEntry[]>(
+    () =>
+      pdfMentionEntries({
+        fileName: apiRef.current?.fileName?.() ?? 'document.pdf',
+        pageCount: apiRef.current?.pageCount?.() ?? 1,
+        skills: composerSkills,
+        t,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t, composerSkills, filePath],
+  )
+  const composerSystemSuffix = useCallback((): string => {
+    const pickedId = activeSkillIdRef.current
+    const picked =
+      pickedId === null
+        ? null
+        : (composerSkillsRef.current.find((skill) => skill.id === pickedId) ?? null)
+    if (picked === null) return ''
+    return skillDirective({
+      name: t(picked.labelKey),
+      description: t(picked.descriptionKey),
+    })
+  }, [t])
+  const composerSystemSuffixRef = useRef(composerSystemSuffix)
+  composerSystemSuffixRef.current = composerSystemSuffix
+  const onComposerCommandPick = useCallback((pick: ComposerCommandPick) => {
+    const { command } = pick
+    // Skill picks load rules for the next turns; insert-kind picks (actions,
+    // templates) already wrote their prompt into the box, so nothing else.
+    if (command.kind !== 'run') return
+    const skillId = pdfSkillIdOfCommand(command.id)
+    if (skillId !== null) setActiveSkillId(skillId)
+  }, [])
+  const onComposerMentionPick = useCallback((_pick: MentionPick) => {
+    // The composer mutated the textarea value to insert `@label `. Keep the
+    // handler minimal so the input remains the single source of truth.
+  }, [])
+  const activeSkill =
+    activeSkillId === null
+      ? null
+      : (composerSkills.find((skill) => skill.id === activeSkillId) ?? null)
+  const sharedToolSeqRef = useRef(0)
+  function emitSharedToolStart(name: string, input: unknown) {
+    sharedToolSeqRef.current += 1
+    const rec: ChatToolCallRecord = {
+      id: `pdf-${sharedToolSeqRef.current}`,
+      name,
+      input: (input ?? {}) as Record<string, unknown>,
+      status: 'running',
+      startedAt: Date.now(),
+    }
+    setSharedToolTimeline(prev => [...prev, rec])
+    return rec.id
+  }
+  function resetSharedTimeline() {
+    sharedToolSeqRef.current = 0
+    setSharedToolTimeline([])
+  }
   /** the scope chip's expandable preview of the selected text */
   const [scopePreviewOpen, setScopePreviewOpen] = useState(false)
   const chatRef = useRef<HTMLDivElement>(null)
@@ -181,6 +329,8 @@ export function AiPanel({
     segTextRef.current = ''
     runTextsRef.current = []
     runToolsRef.current = []
+    resetSharedTimeline()
+    setSharedRunStatus('running')
     if (texts.length > 0 || tools.length > 0) {
       persistMessage('assistant', texts.join('\n\n'), tools)
     }
@@ -270,8 +420,6 @@ export function AiPanel({
   }, [])
   const langRef = useRef(lang)
   langRef.current = lang
-  const apiRef = useRef(api)
-  apiRef.current = api
   const onRunDoneRef = useRef(onRunDone)
   onRunDoneRef.current = onRunDone
   /** Any tool in the current run reported mutated: true */
@@ -378,23 +526,46 @@ export function AiPanel({
       fetchImage: (url) => apiRef.current.fetchImage(url),
     }
     loopRef.current = new AgentLoop({
-      transport: createElectronTransport(() => settingsRef.current!),
+      transport: createAiTransport(() => settingsRef.current!),
       skill: createPdfSkill(deps),
-      systemSuffix: () => aiLangDirective(langRef.current),
+      systemSuffix: () =>
+        composeSystemSuffix(
+          aiLangDirective(langRef.current),
+          chatModeDirective(modeRef.current),
+          composerSystemSuffixRef.current(),
+        ),
       events: {
         onText: (text) => {
           setPhase('replying')
+          setSharedRunStatus('streaming')
           segTextRef.current = text
           patchLast({ text })
         },
         onToolExecuted: ({ call, execution }) => {
           setPhase('working')
+          setSharedRunStatus('running')
           if (execution.mutated) runMutatedRef.current = true
           runToolsRef.current.push({
             name: call.name,
             summary: execution.summary,
             isError: execution.isError,
             output: execution.output?.slice(0, 2000),
+          })
+          emitSharedToolStart(call.name, call.input)
+          // Mark the freshly-started record as executed immediately (PDF skill doesn't expose onToolStart)
+          setSharedToolTimeline(prev => {
+            const next = prev.slice()
+            const last = next[next.length - 1]
+            if (last && last.status === 'running' && last.name === call.name) {
+              next[next.length - 1] = {
+                ...last,
+                status: execution.isError ? 'error' : 'executed',
+                output: execution.output?.slice(0, 500),
+                finishedAt: Date.now(),
+                isError: !!execution.isError,
+              }
+            }
+            return next
           })
           patchLast((last) => ({
             tools: [
@@ -437,6 +608,7 @@ export function AiPanel({
             streaming: false,
             text: final || (last.tools?.length ? last.text : tGlobal('aiNoReply')),
           }))
+          setSharedRunStatus(cancelled ? 'cancelled' : 'done')
           setBusy(false)
           if (runMutatedRef.current) {
             runMutatedRef.current = false
@@ -444,6 +616,8 @@ export function AiPanel({
           }
         },
         onError: (error) => {
+          setSharedRunStatus('error')
+          setLastError(error)
           setChat((prev) => {
             const next = [...prev]
             // the loop rolled this run's user message out of the model context — surface that
@@ -620,8 +794,8 @@ export function AiPanel({
       />
       <header className="ai-panel-header">
         <span className="ai-panel-title">
-          <GensparkMark size={22} />
-          Genspark
+          <ProviderMark provider={settingsRef.current?.provider} size={22} />
+          {{minimax:'MiniMax',codex:'Codex',anthropic:'Claude',genspark:'Genspark'}[(settingsRef.current?.provider ?? 'minimax') as 'minimax'|'codex'|'anthropic'|'genspark'] || 'AI Assistant'}
         </span>
         <div className="ai-panel-header-actions">
           {chat.length > 0 && (
@@ -651,29 +825,95 @@ export function AiPanel({
       </header>
 
       <div className="ai-chat" ref={chatRef} onScroll={onChatScroll}>
+        {/* Shared ChatRuntime components (M4). Additive layer; inline tool chips keep rendering. */}
+        <AiRunHeader status={sharedRunStatus} model={settingsRef.current?.provider} />
+        <AiToolTimeline tools={sharedToolTimeline} />
+        {sharedRunStatus === 'error' && lastError && (
+          <AiErrorRecovery
+            error={lastError}
+            onEdit={() => inputRef.current?.focus()}
+            onDismiss={() => { setLastError(null); setSharedRunStatus('idle') }}
+          />
+        )}
         {chat.length === 0 && (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-title">{t('aiEmptyTitle')}</div>
             <div className="ai-chat-empty-body">{t('aiEmptyBody')}</div>
+            <AiInlineLauncher
+              getAnchorRect={pdfSelectionRect}
+              strings={PDF_INLINE_LAUNCHER_STRINGS}
+              onPick={async (action: AiInlineAction) => {
+                const instruction = hasScopeSelection && scopeSel?.text ? scopeSel.text : ''
+                if (action === 'translate') {
+                  if (!instruction) {
+                    send(t('aiChipTranslate'))
+                    return
+                  }
+                  const r = await window.pdfApi?.aiTranslate?.({
+                    instruction,
+                    targetLang: 'zh-CN',
+                    preserveFormat: true,
+                  })
+                  if (!r?.ok) {
+                    send(t('aiChipTranslate'))
+                    return
+                  }
+                  setPrompt(r.translated ?? '')
+                  inputRef.current?.focus()
+                  return
+                }
+                const prompt =
+                  action === 'polish'
+                    ? hasScopeSelection
+                      ? 'Polish the selected text while preserving the original wording and structure.'
+                      : 'Polish this document while preserving the original wording and structure.'
+                    : action === 'expand'
+                      ? hasScopeSelection
+                        ? 'Expand the selected text with more detail and supporting points.'
+                        : 'Expand this document with more detail and supporting points.'
+                      : action === 'shorten'
+                        ? hasScopeSelection
+                          ? 'Shorten the selected text while preserving the core meaning.'
+                          : 'Shorten this document while preserving the core meaning.'
+                        : hasScopeSelection
+                          ? 'Summarize the selected text in two or three sentences.'
+                          : 'Summarize this document in two or three sentences.'
+                send(prompt)
+              }}
+            />
             <div className="ai-quick-actions">
-              <button
-                className="ai-quick-btn"
-                onClick={() =>
-                  send(t(hasScopeSelection ? 'aiQuickSummarySelPrompt' : 'aiQuickSummaryPrompt'))
-                }
-              >
-                {t('aiQuickSummary')}
-              </button>
-              <button
-                className="ai-quick-btn"
-                onClick={() =>
-                  send(
-                    t(hasScopeSelection ? 'aiQuickKeyPointsSelPrompt' : 'aiQuickKeyPointsPrompt'),
-                  )
-                }
-              >
-                {t('aiQuickKeyPoints')}
-              </button>
+              {PDF_QUICK_ACTIONS.map((action) => (
+                <button
+                  key={action.id}
+                  className="ai-quick-btn"
+                  title={action.id}
+                  onClick={async () => {
+                    if (action.id === 'translate') {
+                      const instruction = hasScopeSelection && scopeSel?.text ? scopeSel.text : ''
+                      if (!instruction) {
+                        send(t(action.promptKey))
+                        return
+                      }
+                      const r = await window.pdfApi?.aiTranslate?.({
+                        instruction,
+                        targetLang: 'zh-CN',
+                        preserveFormat: true,
+                      })
+                      if (!r?.ok) {
+                        send(t(action.promptKey))
+                        return
+                      }
+                      setPrompt(r.translated ?? '')
+                      inputRef.current?.focus()
+                      return
+                    }
+                    send(t(action.promptKey))
+                  }}
+                >
+                  <span className="ai-quick-btn-icon" aria-hidden>{action.icon}</span>
+                  <span className="ai-quick-btn-label">{t(action.labelKey)}</span>
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -747,6 +987,7 @@ export function AiPanel({
 
       <div className="ai-composer">
         <AiComposer
+          textareaRef={inputRef}
           value={prompt}
           busy={busy}
           header={
@@ -802,6 +1043,55 @@ export function AiPanel({
           hintBusy={t('aiHintBusy')}
           sendLabel={t('aiSend')}
           stopLabel={t('aiStop')}
+          commands={composerCommands}
+          onCommandPick={onComposerCommandPick}
+          commandMenuLabel={t('aiSlashMenuTitle')}
+          commandMenuEmptyLabel={t('aiSlashMenuEmpty')}
+          commandMenuFootHint={t('aiSlashMenuFoot')}
+          mentions={composerMentions}
+          onMentionPick={onComposerMentionPick}
+          mentionMenuLabel={t('aiMentionMenuTitle')}
+          mentionMenuEmptyLabel={t('aiMentionMenuEmpty')}
+          mentionMenuFootHint={t('aiMentionMenuFoot')}
+          tokenBudget={8000}
+          slashTriggerTitle={t('aiSlashTriggerTitle')}
+          modes={modeOptions}
+          mode={mode}
+          onModeChange={(m) => { if (isChatMode(m)) setMode(m) }}
+          modeSwitchLabel={t('aiModeSwitchTitle')}
+          onEditLast={() => {
+            const idx = [...chat].reverse().findIndex((e) => e.role === 'user')
+            if (idx < 0) return
+            const real = chat.length - 1 - idx
+            const entry = chat[real]
+            if (!entry || typeof entry.text !== 'string') return
+            setPrompt(entry.text)
+            inputRef.current?.focus()
+          }}
+          leading={
+            activeSkill !== null && (
+              <div className="ai-skill-row">
+                <span className="ai-skill-chip" data-tip={t(activeSkill.descriptionKey)}>
+                  <span className="ai-skill-chip-label">{t('aiActiveSkill')}</span>
+                  <span className="ai-skill-chip-name">{t(activeSkill.labelKey)}</span>
+                  <button
+                    type="button"
+                    className="ai-skill-chip-clear"
+                    title={t('aiActiveSkillClear')}
+                    aria-label={t('aiActiveSkillClear')}
+                    onClick={() => setActiveSkillId(null)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 32 32" aria-hidden>
+                      <path
+                        d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </span>
+              </div>
+            )
+          }
           iconOnly
           sendIconEnabled={<img src={sendEnterOn} alt="" aria-hidden />}
           sendIconDisabled={<img src={sendEnterOff} alt="" aria-hidden />}
@@ -1016,4 +1306,81 @@ export function GensparkMark({ size = 18 }: { size?: number }): React.JSX.Elemen
       />
     </svg>
   )
+}
+
+
+/** MiniMax brand mark — neutral generative sparkle. */
+export function MiniMaxMark({ size = 22 }: { size?: number }): React.JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      <path
+        d="M12 2.5l2.6 6.4 6.4 2.6-6.4 2.6L12 20.5l-2.6-6.4L3 11.5l6.4-2.6L12 2.5z"
+        fill="currentColor"
+      />
+      <circle cx="19" cy="5" r="1.6" fill="currentColor" opacity="0.7" />
+      <circle cx="5" cy="19" r="1.4" fill="currentColor" opacity="0.55" />
+    </svg>
+  )
+}
+
+/** Codex CLI brand mark — compact square with a stylised `>_` glyph. */
+export function CodexMark({ size = 22 }: { size?: number }): React.JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      <rect x="2" y="2" width="20" height="20" rx="5" fill="currentColor" />
+      <path
+        d="M7.5 9.5l-2 2.5 2 2.5M16.5 9.5l2 2.5-2 2.5M13 8l-2 8"
+        stroke="#fff"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  )
+}
+
+/** Claude brand mark — Anthropic asterisk-style icon. */
+export function ClaudeMark({ size = 22 }: { size?: number }): React.JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      <path
+        d="M12 2c1.6 4.6 2.4 5.4 7 7-4.6 1.6-5.4 2.4-7 7-1.6-4.6-2.4-5.4-7-7 4.6-1.6 5.4-2.4 7-7z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+}
+
+/** Resolves the right brand icon for the active AI provider. Falls back to
+ * MiniMaxMark so the header always matches a real provider instead of
+ * silently lying about the integration. */
+export function ProviderMark({ provider, size = 22 }: { provider?: string; size?: number }): React.JSX.Element {
+  const p = (provider ?? '').toLowerCase()
+  if (p === 'minimax') return <MiniMaxMark size={size} />
+  if (p === 'codex') return <CodexMark size={size} />
+  if (p === 'anthropic') return <ClaudeMark size={size} />
+  if (p === 'genspark') return <GensparkMark size={size} />
+  return <MiniMaxMark size={size} />
 }

@@ -20,10 +20,13 @@ import {
   type FontMetricsProvider,
   type RenderSlide,
 } from '@genoffice/pptx-render'
-import { createSystemFontMetrics, resetFontRegistry } from './fonts'
 import { tiffToPng } from './tiff-decode'
 import { neutralizeJpegOrientation } from './jpeg-orientation'
 import { displayMime } from './media-mime'
+import {
+  getFontMetrics as getFontMetricsShared,
+  resetFontMetrics as resetFontMetricsShared,
+} from './render-helpers'
 
 export interface RuntimePaths {
   preloadPath: string
@@ -355,17 +358,17 @@ export function dialogParent(): BrowserWindow | undefined {
 
 // ── RenderSlide rebuild helpers ─────────────────────────────────────────
 
-/** Precise system-font metrics (lazily built, shared process-wide; unmatched fonts fall back to heuristics per run). */
-let fontMetrics: FontMetricsProvider | null = null
+// `getFontMetrics`, `resetFontMetrics`, and the non-theme-tint path of `buildAllRenderSlides`
+// live in `./render-helpers.ts` so the web server can reuse them without pulling in `electron`.
+// This file keeps the desktop-only `makeMediaResolver` (which retints themed SVGs) and
+// delegates the rest.
 export function getFontMetrics(): FontMetricsProvider {
-  if (!fontMetrics) fontMetrics = createSystemFontMetrics()
-  return fontMetrics
+  return getFontMetricsShared()
 }
 
 /** Drop the cached metrics (and its font registry) after the user font store changes. */
 export function resetFontMetrics(): void {
-  resetFontRegistry()
-  fontMetrics = null
+  resetFontMetricsShared()
 }
 
 export function buildAllRenderSlides(opened: OpenedPptx, fitWidthPx: number): RenderSlide[] {

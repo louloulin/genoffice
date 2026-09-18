@@ -31,3 +31,13 @@ export { createIpcTransport, IPC_STREAM_SILENCE_TIMEOUT_MS } from './electron-tr
 export { streamText } from './stream-text'
 export type { StreamTextOptions, StreamTextOutcome } from './stream-text'
 export type { IpcStreamChunk, IpcStreamStart, IpcTransportOptions } from './electron-transport'
+export { createHttpTransport, httpRequest } from './http-transport'
+export type { HttpStreamChunk, HttpTransportOptions } from './http-transport'
+export {
+  createWebTransport,
+  createWebIpcClient,
+  isWebEnvironment,
+  type WebTransportOptions,
+  type WebAiSettings,
+} from './web-transport'
+export { WebIpcClient } from './web-transport'

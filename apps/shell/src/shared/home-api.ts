@@ -170,6 +170,98 @@ export interface HomeApi {
   openGitHubRepo(): Promise<void>
   /** current stargazer count of the public repo (null while offline / rate-limited) */
   githubStars(): Promise<number | null>
+  /** ordered list of quick-create modules (with enabled flag) — drives the home row */
+  listModules(): Promise<ModuleEntry[]>
+  /** toggle a single module's enabled flag; the order is preserved */
+  setModuleEnabled(id: ModuleKind, enabled: boolean): Promise<ModuleEntry[]>
+  /** persist a new module order; ids missing from `order` are appended in their existing relative order */
+  reorderModules(order: ModuleKind[]): Promise<ModuleEntry[]>
+  /** reset all modules to the factory order and enabled=true */
+  resetModules(): Promise<ModuleEntry[]>
+  /** list all agent skills (built-in + installed from marketplace) */
+  listSkills(): Promise<SkillEntry[]>
+  /** enable or disable a skill; disabled skills are not loaded by pi's ExtensionRunner */
+  toggleSkill(id: SkillKind, enabled: boolean): Promise<SkillEntry[]>
+  /** hot-reload a skill (re-run ExtensionRunner registration) */
+  reloadSkill(id: SkillKind): Promise<SkillEntry[]>
+  /** list marketplace skills (catalog of available 3rd-party skills) */
+  listMarketplaceSkills(): Promise<MarketplaceEntry[]>
+  /** list marketplace plugins */
+  listMarketplacePlugins(): Promise<MarketplaceEntry[]>
+  /** composite: marketplace + installed skills + installed plugins in one call */
+  getMarketplaceAndInstalled(): Promise<{
+    marketplaceSkills: MarketplaceEntry[]
+    marketplacePlugins: MarketplaceEntry[]
+    installedSkills: SkillEntry[]
+    installedPlugins: PluginEntry[]
+  }>
+  /** W32 — full marketplace v2 surface */
+  marketplaceCategories(): Promise<{ categories: MarketplaceCategoryInfo[] }>
+  marketplaceSearch(filters: MarketplaceSearchFilters): Promise<MarketplaceSearchResult>
+  marketplaceDetail(id: string, type: 'skill' | 'plugin'): Promise<{
+    ok: boolean
+    error?: string
+    type?: 'skill' | 'plugin'
+    entry?: MarketplaceEntry
+    installed?: SkillEntry | PluginEntry | null
+    /** Per-entry pi install state (packageDir, mode, hasCode, skillPath, …).
+     *  Shaped by the server's marketplace-detail handler; we only narrow it
+     *  at the call site (renderMpCard + detail drawer) so the renderer can
+     *  stay loose about optional fields the server may add later. */
+    pi?: Record<string, unknown>
+  }>
+  marketplaceUpload(
+    kind: 'skill' | 'plugin',
+    payload: MarketplaceUploadPayload,
+  ): Promise<{
+    ok: boolean
+    error?: string
+    kind?: 'skill' | 'plugin'
+    entry?: MarketplaceEntry
+    message?: string
+    artifact?: MarketplaceArtifactRef | null
+    overwritten?: boolean
+  }>
+  marketplaceListUploads(): Promise<{ uploads: MarketplaceUploadEntry[]; error?: string }>
+  /** Unpublish a marketplace entry by id. Removes its artifact + catalog card
+   *  and uninstalls it locally when the entry is currently installed. */
+  marketplaceDeleteUpload(
+    kind: 'skill' | 'plugin',
+    id: string,
+  ): Promise<{ ok: boolean; error?: string; kind?: 'skill' | 'plugin'; id?: string; uninstalled?: boolean }>
+  /** Real pi resource report: every extension/skill/prompt/theme pi's loader
+   *  would pick up for the current agent dir, plus installed packages. */
+  listPiResources(): Promise<PiResourceReport>
+  marketplaceRate(
+    id: string,
+    kind: 'skill' | 'plugin',
+    rating: number,
+  ): Promise<{
+    ok: boolean
+    error?: string
+    kind?: 'skill' | 'plugin'
+    id?: string
+    ratingCount?: number
+    averageRating?: number
+  }>
+  /** install a skill from the marketplace by id */
+  installSkill(name: string): Promise<{ ok: boolean; error?: string; installed?: SkillEntry; skills?: SkillEntry[]; alreadyInstalled?: boolean }>
+  /** uninstall a marketplace-installed skill (built-in skills cannot be uninstalled) */
+  uninstallSkill(id: SkillKind): Promise<{ ok: boolean; error?: string; skills?: SkillEntry[] }>
+  /** install a plugin from the marketplace by id */
+  installPlugin(id: string): Promise<{ ok: boolean; error?: string; installed?: PluginEntry; plugins?: PluginEntry[]; alreadyInstalled?: boolean }>
+  /** uninstall a marketplace-installed plugin */
+  uninstallPlugin(id: PluginKind): Promise<{ ok: boolean; error?: string; plugins?: PluginEntry[] }>
+  /** reset all skills to factory defaults */
+  resetSkills(): Promise<SkillEntry[]>
+  /** list all plugins (advanced extensions) */
+  listPlugins(): Promise<PluginEntry[]>
+  /** enable or disable a plugin */
+  togglePlugin(id: PluginKind, enabled: boolean): Promise<PluginEntry[]>
+  /** hot-reload a plugin */
+  reloadPlugin(id: PluginKind): Promise<PluginEntry[]>
+  /** reset all plugins to factory defaults */
+  resetPlugins(): Promise<PluginEntry[]>
   /** whether the one-time "star us" prompt should show now (show:true also counts as shown);
    * docOpens personalizes the card copy ("you've opened N documents") */
   starPromptShouldShow(): Promise<StarPromptShow>
@@ -205,6 +297,268 @@ export interface HomeApi {
     provider: AiSearchProviderId
     apiKey: string
   }): Promise<{ ok: boolean; error?: string }>
+  /** Real per-feature availability report from the server. Counts the
+   *  zero-config DuckDuckGo fallback as `available` so the UI does not
+   *  mislead the user into thinking search is broken without a key. */
+  getAiCapabilities(): Promise<AiCapabilitiesReport>
+  /** Translation knowledge base — CRUD + resolution. */
+  listTranslationKb?(input?: TranslationKbListInput): Promise<{ ok: boolean; entries: TranslationKbEntry[] }>
+  upsertTranslationKb?(entry: TranslationKbEntry): Promise<{ ok: boolean; error?: string }>
+  removeTranslationKb?(id: string): Promise<{ ok: boolean; removed: boolean }>
+  getTranslationKbStats?(): Promise<TranslationKbStats>
+  /** Whole-file translation (PDF / XLS(X) / PPTX / DOCX). */
+  getTranslateFileStatus?(): Promise<TranslateFileStatus>
+  /**
+   * The dictionary snippet translation reuses. `null` until a dictionary has
+   * been built in this server process.
+   */
+  getTranslationDictionary?(): Promise<{
+    ok: boolean
+    dictionary: { path: string; terms: number } | null
+  }>
+  /** Native file picker for the translation pane; returns an absolute path. */
+  pickTranslationFile?(title?: string): Promise<TranslateFilePickResult>
+  /** Translate a short text snippet using the active provider + KB + memory. */
+  translateSnippet?(input: {
+    text: string
+    sourceLang?: string
+    targetLang: string
+    customerName?: string
+    /** Reuse a specific generated dictionary. Defaults to the last one built. */
+    dictionaryPath?: string
+    /** Set false to translate without dictionary terminology. Defaults true. */
+    useDictionary?: boolean
+  }): Promise<{
+    ok: boolean
+    translation?: string
+    status?: 'translated' | 'memory-hit' | 'failed'
+    /** KB terms the source text touched (dictionary hits are reported separately). */
+    matchedTerms?: string[]
+    /** Dictionary terms the source text touched. */
+    dictionaryHits?: string[]
+    /** Which dictionary was applied, when one was. */
+    dictionary?: { path: string; terms: number; hits: number } | null
+    sourceLang?: string
+    targetLang?: string
+    elapsedMs?: number
+    error?: string
+  }>
+  /** Build a `--dictionary` from a file using the KB + the active provider. */
+  buildTranslationDictionary?(input: {
+    inputPath: string
+    sourceLang?: string
+    targetLang: string
+    customerName?: string
+    glossaryCategory?: string
+    useLlm?: boolean
+  }): Promise<{
+    ok: boolean
+    dictionaryPath?: string
+    kbEntries?: number
+    llmEntries?: number
+    missed?: string[]
+    totalSegments?: number
+    elapsedMs?: number
+    segments?: { source: string; target: string; origin: 'kb' | 'llm' }[]
+  /** How much of the file the dictionary reaches. `ratio` is 0..1. */
+  coverage?: TranslationCoverage
+    error?: string
+  }>
+  /**
+   * Translate whatever `dictionaryPath` misses and write an extended
+   * dictionary. Only the uncovered segments are sent to the model.
+   */
+  fillTranslationGaps?(input: {
+    inputPath: string
+    sourceLang?: string
+    targetLang: string
+    dictionaryPath?: string
+    outputPath?: string
+  }): Promise<{
+    ok: boolean
+    dictionaryPath?: string
+    added?: number
+    /** The pairs the model produced; lets the UI offer to save them to the KB
+     *  without diffing dictionaries. */
+    addedEntries?: { source: string; target: string }[]
+    stillUncovered?: string[]
+    coverageBefore?: TranslationCoverage
+    coverageAfter?: TranslationCoverage
+    elapsedMs?: number
+    error?: string
+  }>
+  /** Build the dictionary, then translate the file in one call. */
+  translateFileAuto?(input: {
+    inputPath: string
+    outputPath?: string
+    sourceLang?: string
+    targetLang: string
+    customerName?: string
+    glossaryCategory?: string
+    scale?: number
+    /**
+     * Re-run the file pass with this dictionary instead of building a new one.
+     * Pure dictionary rewrite — no model call, so no provider needed.
+     */
+    dictionaryPath?: string
+  }): Promise<TranslateFileResult>
+}
+
+/** one capability entry — see home:ai-capabilities */
+export interface AiCapabilityEntry {
+  /** true when at least one backend can serve the request right now */
+  available: boolean
+  /** primary backend that will be tried first (genspark, duckduckgo, openai, …) */
+  via: string
+  /** secondary backend used when the primary fails */
+  fallback?: string
+  /** true when a keyed provider (or genspark credit balance) is set up;
+   *  false means the only path is the zero-config fallback */
+  configured: boolean
+  /** optional human-readable note shown in the UI */
+  note?: string
+}
+
+/** full capability report from home:ai-capabilities */
+export interface AiCapabilitiesReport {
+  ok: boolean
+  capabilities: {
+    search: AiCapabilityEntry
+    image_search: AiCapabilityEntry
+    image_generation: AiCapabilityEntry
+    media_analysis: AiCapabilityEntry
+  }
+  /** active chat provider id (matches AiSettings.provider) */
+  provider: string
+  /** false when the user has disabled gsk-backed tools globally */
+  gskToolsEnabled: boolean
+}
+
+/** Scope ordering for a translation KB entry — most specific first. */
+export type TranslationKbScope = 'session' | 'customer' | 'project' | 'company' | 'global'
+
+/** The five schemas the translation knowledge base understands. */
+export type TranslationKbSchema =
+  | 'term'
+  | 'forbidden'
+  | 'brand'
+  | 'styleRule'
+  | 'customerPreference'
+
+/**
+ * A single KB row. The backend derives the schema (`trade.translation.*`) from
+ * which fields are present, so `kind` is a UI convenience only — read it back
+ * with a shape check rather than trusting the wire, and never send it.
+ */
+export interface TranslationKbEntry {
+  id: string
+  kind?: TranslationKbSchema
+  scope: TranslationKbScope
+  priority: number
+  /** term */
+  sourceTerm?: string
+  targetTerm?: string
+  category?: string
+  /** forbidden */
+  forbiddenText?: string
+  replacement?: string
+  reason?: string
+  /** brand */
+  word?: string
+  policy?: 'neverTranslate' | 'keep' | 'translateAs'
+  translateAs?: string
+  /** style rule */
+  name?: string
+  description?: string
+  /** customer preference */
+  customerName?: string
+  preferenceType?: string
+  value?: string
+  /**
+   * Legacy spelling of {@link value}. An early `kb_upsert` shortcut wrote the
+   * preference text here instead of into `value`, so rows with only this field
+   * exist in real KB files. Read-only compatibility: new rows always send
+   * `preferenceType` + `value`.
+   */
+  preference?: string
+  /** optional language filter (term / forbidden / customerPreference) */
+  sourceLang?: string
+  targetLang?: string
+}
+
+export interface TranslationKbListInput {
+  schema?: TranslationKbSchema
+  scope?: TranslationKbScope
+  sourceLang?: string
+  targetLang?: string
+}
+
+export interface TranslationKbStats {
+  ok: boolean
+  total: number
+  bySchema: Partial<Record<TranslationKbSchema, number>>
+  dirty: boolean
+}
+
+/** Result of a whole-file translation (PDF / XLS(X) / PPTX / DOCX). */
+/** How much of a file a generated dictionary reaches. */
+export interface TranslationCoverage {
+  /** Segments mined from the file. */
+  total: number
+  /** Segments the dictionary changes (`exact + partial`). */
+  covered: number
+  /** Segments the dictionary rewrites in full. */
+  exact: number
+  /** Segments only rewritten in part — these come out mixed-language. */
+  partial: string[]
+  /** Segments that will stay in the source language. */
+  uncovered: string[]
+  /** `covered / total`, 0..1. */
+  ratio: number
+}
+
+export interface TranslateFileResult {
+  ok: boolean
+  stage?: 'dictionary' | 'translate' | 'done'
+  outputPath?: string
+  bytes?: number
+  elapsedMs?: number
+  error?: string
+  dictionaryPath?: string
+  /** true when the pass reused a dictionary instead of building one */
+  dictionaryReused?: boolean
+  dictionary?: {
+    kbEntries?: number
+    llmEntries?: number
+    missed?: string[]
+    totalSegments?: number
+    elapsedMs?: number
+    segments?: { source: string; target: string; origin: 'kb' | 'llm' }[]
+    /**
+     * Caveats the UI should surface even when the pass succeeded. Today the
+     * only warning is the model returning nothing for every segment — see
+     * `dictionaryWarnings` in @genoffice/translation-core.
+     */
+    warnings?: string[]
+  }
+  /** How much of the file the dictionary reaches. `ratio` is 0..1. */
+  coverage?: TranslationCoverage
+}
+
+export interface TranslateFilePickResult {
+  ok: boolean
+  /** absolute path on the host filesystem; absent when the user cancelled */
+  path?: string
+  canceled?: boolean
+}
+
+export interface TranslateFileStatus {
+  ok: boolean
+  available: boolean
+  source: 'override' | 'bundled' | 'legacy' | 'missing'
+  skillDir: string
+  pythonPath: string
+  supportedExtensions: string[]
 }
 
 export interface AiCatalogEntry extends AiProviderMeta {
@@ -224,6 +578,221 @@ export interface StarPromptShow {
 }
 
 export type CloudProjectKind = 'docs' | 'sheets' | 'slides'
+
+/** Identifier for one of the quick-create modules shown on the home page. */
+export type ModuleKind = 'docx' | 'xlsx' | 'pptx' | 'md' | 'pdf'
+
+/** One module entry shown in the home-page quick-start row and the module manager. */
+export interface ModuleEntry {
+  id: ModuleKind
+  /** i18n key whose value carries the visible label (matches Home.tsx strings). */
+  labelKey: string
+  /** File extension used by the file-icon map (no leading dot). */
+  ext: string
+  /** Subpath under the web origin where the module renders (e.g. '/docs/'). */
+  path: string
+  /** When false the module is hidden from the quick-start row. */
+  enabled: boolean
+}
+
+// ── Skills & Plugins ────────────────────────────────────────
+// Skills 是 GenOffice 的 agent skill extension(plan §2.1)
+// Plugins 是更高级的扩展(multi-agent/audit/local models)
+export type SkillKind =
+  | 'docs-skill'
+  | 'sheets-skill'
+  | 'slides-skill'
+  | 'office-workflow'
+  | 'office-safety'
+  | 'frozen-selection'
+  | 'verify-response'
+  | 'skill-market'
+  // marketplace skills (3rd-party)
+  | 'notion-sync'
+  | 'pdf-ocr-pro'
+  | 'github-integration'
+  | 'jira-bridge'
+  | 'lang-detector'
+  // Allow arbitrary future marketplace ids without per-use casts.
+  | (string & {})
+
+export type PluginKind =
+  | 'agent-team'
+  | 'audit-log'
+  | 'local-models'
+  // marketplace plugins (3rd-party)
+  | 'slack-bridge'
+  | 'gdrive-export'
+  // Allow arbitrary future marketplace ids without per-use casts.
+  | (string & {})
+
+export type SkillStatus = 'enabled' | 'disabled' | 'error'
+
+export interface SkillEntry {
+  id: SkillKind
+  name: string
+  description: string
+  author: string
+  version: string
+  package: string
+  source: string
+  tools: string[]
+  scopes: string[]
+  status: SkillStatus
+  lastLoadedAt: string | null
+  error?: string
+  builtIn: boolean
+}
+
+/** an entry in the marketplace catalog — not yet installed in the local environment */
+export type MarketplaceCategory =
+  | 'productivity'
+  | 'data'
+  | 'dev'
+  | 'media'
+  | 'translation'
+  | 'collaboration'
+  | 'finance'
+  | 'design'
+
+export interface MarketplaceEntry {
+  id: string
+  name: string
+  description: string
+  longDescription?: string
+  author: string
+  version: string
+  package: string
+  source: string
+  tools: string[]
+  scopes: string[]
+  requirements?: string[]
+  category: MarketplaceCategory
+  tags: string[]
+  /** 0-5 stars, one decimal */
+  rating: number
+  /** Total download count */
+  downloads: number
+  /** Featured in the top of the marketplace */
+  featured?: boolean
+  icon?: string
+  homepage?: string
+  /** true when this marketplace entry is already installed locally */
+  installed: boolean
+  /** Artifact the publisher uploaded (real pi extension module or SKILL.md). */
+  artifact?: MarketplaceArtifactRef
+  /** For a plugin: pi package source (`npm:`/`git:`/`https:`). */
+  piPackage?: string
+}
+
+/** A publisher-uploaded file that ships with an entry. The catalog card
+ *  advertises the file, install writes it to disk. */
+export interface MarketplaceArtifactRef {
+  filename: string
+  bytes: number
+  kind: 'extension' | 'skill-md'
+  size?: string
+}
+
+export interface MarketplaceCategoryInfo {
+  id: MarketplaceCategory
+  label: string
+  count: number
+}
+
+export interface MarketplaceSearchFilters {
+  q?: string
+  category?: MarketplaceCategory
+  type?: 'skill' | 'plugin'
+  minRating?: number
+  installed?: boolean | 'all'
+  sort?: 'popular' | 'rating' | 'newest' | 'name'
+}
+
+export interface MarketplaceSearchResult {
+  skills: MarketplaceEntry[]
+  plugins: MarketplaceEntry[]
+  total: number
+  filters?: MarketplaceSearchFilters
+}
+
+export interface MarketplaceUploadPayload {
+  id: string
+  name: string
+  description: string
+  /** Optional rich description shown in the detail drawer (plain text up to
+   *  ~1024 chars). Falls back to `description` in the UI when absent. */
+  longDescription?: string
+  version: string
+  tools: string[]
+  scopes: string[]
+  category: MarketplaceCategory
+  tags?: string[]
+  author?: string
+  requirements?: string[]
+  icon?: string
+  homepage?: string
+  /** Real file the publisher attaches. Skills accept a SKILL.md, plugins
+   *  accept a pi extension module (.ts/.js). Without this the install only
+   *  ships metadata + a synthesized body. */
+  artifact?: { filename: string; content: string }
+  /** For a plugin: a published pi package source (`npm:` / `git:` /
+   *  `https://`). When set the install delegates to pi's package manager
+   *  instead of building a local package. */
+  piPackage?: string
+}
+
+export interface MarketplaceUploadEntry {
+  file: string
+  kind?: 'skill' | 'plugin'
+  id?: string
+  name?: string
+  uploadedAt?: string
+  error?: string
+  reviewStatus?: string
+  artifact?: { filename: string; kind: string; size?: string } | null
+}
+
+export interface PiResourceEntry {
+  path: string
+  /** file name or skill name, for display */
+  name: string
+  /** false when the source is registered but disabled/filtered out */
+  enabled: boolean
+  /** true when the file lives under a GenOffice-managed root */
+  managed: boolean
+}
+
+export interface PiResourceReport {
+  cwd: string
+  agentDir: string
+  settingsPath: string
+  extensions: PiResourceEntry[]
+  skills: PiResourceEntry[]
+  prompts: PiResourceEntry[]
+  themes: PiResourceEntry[]
+  /** Counts of resources that come from the user's own pi setup, not GenOffice. */
+  external: { extensions: number; skills: number; prompts: number; themes: number }
+  packages: Array<{ source: string; scope: string; filtered: boolean; installedPath?: string }>
+  diagnostics: Array<{ type: string; message: string; path?: string }>
+}
+
+export interface PluginEntry {
+  id: PluginKind
+  name: string
+  description: string
+  author: string
+  version: string
+  package: string
+  source: string
+  tools: string[]
+  scopes: string[]
+  requirements: string[]
+  status: SkillStatus
+  lastLoadedAt: string | null
+  error?: string
+  builtIn: boolean
+}
 
 /** a Genspark web project shown in the home cloud section */
 export interface CloudProjectEntry {
@@ -360,6 +929,45 @@ export const HOME_CHANNELS = {
   cloudProjects: 'home:cloud-projects',
   cloudProjectsCached: 'home:cloud-projects-cached',
   openCloudProject: 'home:open-cloud-project',
+  listModules: 'home:list-modules',
+  setModuleEnabled: 'home:set-module-enabled',
+  reorderModules: 'home:reorder-modules',
+  resetModules: 'home:reset-modules',
+  listSkills: 'home:list-skills',
+  toggleSkill: 'home:toggle-skill',
+  reloadSkill: 'home:reload-skill',
+  installSkill: 'home:install-skill',
+  uninstallSkill: 'home:uninstall-skill',
+  resetSkills: 'home:reset-skills',
+  listPlugins: 'home:list-plugins',
+  togglePlugin: 'home:toggle-plugin',
+  reloadPlugin: 'home:reload-plugin',
+  installPlugin: 'home:install-plugin',
+  uninstallPlugin: 'home:uninstall-plugin',
+  resetPlugins: 'home:reset-plugins',
+  listMarketplaceSkills: 'home:list-marketplace-skills',
+  listMarketplacePlugins: 'home:list-marketplace-plugins',
+  getMarketplaceAndInstalled: 'home:get-marketplace-and-installed',
+  marketplaceCategories: 'home:marketplace-categories',
+  marketplaceSearch: 'home:marketplace-search',
+  marketplaceDetail: 'home:marketplace-detail',
+  marketplaceUpload: 'home:marketplace-upload',
+  marketplaceListUploads: 'home:marketplace-list-uploads',
+  marketplaceDeleteUpload: 'home:marketplace-delete-upload',
+  listPiResources: 'home:list-pi-resources',
+  getAiCapabilities: 'home:ai-capabilities',
+  translationKbList: 'ai:translation-kb-list',
+  translationKbUpsert: 'ai:translation-kb-upsert',
+  translationKbRemove: 'ai:translation-kb-remove',
+  translationKbStats: 'ai:translation-kb-stats',
+  translateFileStatus: 'ai:translate-file-status',
+  translateDictionaryStatus: 'ai:translate-dictionary-status',
+  translateBuildDictionary: 'ai:translate-build-dictionary',
+  translateFillGaps: 'ai:translate-fill-gaps',
+  translateFileAuto: 'ai:translate-file-auto',
+  pickTranslationFile: 'home:pick-translation-file',
+  translateSnippet: 'home:translate-snippet',
+  marketplaceRate: 'home:marketplace-rate',
 } as const
 
 export const PROJECT_CHANNELS = {

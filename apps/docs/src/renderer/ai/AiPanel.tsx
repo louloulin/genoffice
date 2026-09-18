@@ -1,4 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+/* Local minimal Web Speech API shape — covers what we use; full DOM lib types
+ * are heavier than this single file needs. */
+interface SpeechRecognitionLike {
+  lang: string
+  interimResults: boolean
+  continuous: boolean
+  onresult: ((ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null  /* event type simplified */
+  onerror: (() => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
 import { AgentLoop, composeSkills, streamText, type AgentImage } from '@genoffice/agent-core'
@@ -20,6 +33,7 @@ import {
   type DocWriteSpec,
 } from './doc-writer'
 import { EditQueueCard } from './EditQueueCard'
+import { createElectronTransport } from './transport'
 import {
   buildQueueInstruction,
   buildQueueSummary,
@@ -33,11 +47,45 @@ import { DOCS_CONTINUE_INSTRUCTION } from './continuation'
 import { waitForFullContent } from '../phased-content'
 import { currentDocGeneration } from '../file-actions'
 import { createFilesSkill } from './files-skill'
-import { createElectronTransport } from './transport'
+import { createAiTransport, isWebMode } from './transports'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
 import { Markdown } from '@genoffice/ui'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
-import { GensparkMark } from '../components/icons'
+import {
+  DEFAULT_CHAT_MODE,
+  chatModeDirective,
+  composeSystemSuffix,
+  skillDirective,
+  type ChatMode,
+  type ComposerCommand,
+  type ComposerCommandPick,
+  type ComposerModeOption,
+} from '@genoffice/ui'
+import {
+  DOCS_QUICK_ACTIONS,
+  buildDocsComposerCommands,
+  docsSkillOptions,
+  skillIdOfCommand,
+} from './composer-commands'
+import { docsMentionFiles, docsMentionSkills } from './composer-mentions'
+import {
+  AiRunHeader,
+  AiToolTimeline,
+  AiErrorRecovery,
+  AiInlineLauncher,
+  TranslateDialog,
+  ChangeMarker,
+  type AiInlineLauncherAnchorRect,
+  type TranslateLanguageOption,
+  type TranslateDialogStrings,
+  type AiInlineLauncherStrings,
+} from '@genoffice/ui'
+import { classifyError } from '@genoffice/chat-runtime/errors'
+import { postToEmbedParent } from '../../shared/embed-bridge'
+import { useChatRuntime } from '@genoffice/chat-runtime/react'
+import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
+import type { AgentSkill } from '@genoffice/agent-core'
+import { GensparkMark, ProviderMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -331,8 +379,108 @@ export function AiPanel({
   const isRtl = lang === 'ar' || lang === 'he'
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  // Composer working mode (Ask / Craft / Plan) and the skill picked through
+  // the `/` palette. Both reach the model through the loop's system suffix.
+  const [mode, setMode] = useState<ChatMode>(DEFAULT_CHAT_MODE)
+  /** Web Speech API bridge — only present in Chromium/Safari with a secure
+   *  context. The hook owns the recognizer; AiPanel just hands the active
+   *  state to AiComposer as the `voice` prop. Interim transcripts flow
+   *  through `setPrompt` so the user sees words land as they speak. */
+  const [voiceActive, setVoiceActive] = useState(false)
+  const voiceBaseRef = useRef('')
+  const voiceRef = useRef<{ recog: unknown; base: string } | null>(null)
+  const voiceAvailable =
+    typeof window !== 'undefined' &&
+    Boolean((window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition)
+  const startVoice = useCallback(() => {
+    if (voiceRef.current) return
+    const w = window as unknown as {
+      SpeechRecognition?: new () => SpeechRecognitionLike
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike
+    }
+    const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition
+    if (!Ctor) return
+    const recog = new Ctor()
+    recog.lang = (typeof navigator !== 'undefined' && navigator.language) || 'zh-CN'
+    recog.interimResults = true
+    recog.continuous = true
+    const base = voiceBaseRef.current
+    recog.onresult = (ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => {
+      let interim = ''
+      let finalText = ''
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r = ev.results[i] as { isFinal: boolean; 0: { transcript: string } }
+        const txt = r[0].transcript
+        if (r.isFinal) finalText += txt
+        else interim += txt
+      }
+      const merged = base + (finalText || interim)
+      voiceBaseRef.current = merged
+      setInput(merged)
+      if (finalText) voiceRef.current && (voiceRef.current.base = base + finalText)
+    }
+    recog.onerror = () => setVoiceActive(false)
+    recog.onend = () => setVoiceActive(false)
+    recog.start()
+    voiceRef.current = { recog, base }
+    setVoiceActive(true)
+  }, [])
+  const stopVoice = useCallback(() => {
+    const v = voiceRef.current
+    if (!v) return
+    try { (v.recog as { stop?: () => void }).stop?.() } catch { /* ignore */ }
+    voiceRef.current = null
+    setVoiceActive(false)
+  }, [])
+  const voice = useMemo(
+    () => (voiceAvailable
+      ? { available: true as const, active: voiceActive, label: t('aiVoiceInput'), onStart: startVoice, onStop: stopVoice }
+      : undefined),
+    [voiceAvailable, voiceActive, t, startVoice, stopVoice],
+  )
+  const [activeSkillId, setActiveSkillId] = useState<string | null>(null)
   /** Wall-clock start of the current run, drives the elapsed badge */
   const runStartedAtRef = useRef(0)
+  // Shared-component state mirror: ChatRuntime-fed timeline / run header.
+  // Kept additive so the existing inline tool cards keep rendering untouched;
+  // the shared components read from this state without touching AgentLoop.
+  const [sharedToolTimeline, setSharedToolTimeline] = useState<ChatToolCallRecord[]>([])
+  const [sharedRunStatus, setSharedRunStatus] = useState<ChatRunStatus>('idle')
+  /** Last error from a finished run; consumed by <AiErrorRecovery>. */
+  const [lastError, setLastError] = useState<string | null>(null)
+  const sharedToolSeqRef = useRef(0)
+  function emitSharedToolStart(name: string, input: unknown) {
+    sharedToolSeqRef.current += 1
+    const rec: ChatToolCallRecord = {
+      id: `tool-${sharedToolSeqRef.current}`,
+      name,
+      input: (input ?? {}) as Record<string, unknown>,
+      status: 'running',
+      startedAt: Date.now(),
+    }
+    setSharedToolTimeline((prev) => [...prev, rec])
+    return rec.id
+  }
+  function emitSharedToolExecuted(id: string, output: string, isError: boolean) {
+    setSharedToolTimeline((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              status: isError ? 'error' : 'executed',
+              output,
+              finishedAt: Date.now(),
+              isError,
+            }
+          : t,
+      ),
+    )
+  }
+  function resetSharedTimeline() {
+    sharedToolSeqRef.current = 0
+    setSharedToolTimeline([])
+  }
   /** a send waiting on a phased open's tail; Stop / New chat abort it before it runs */
   const pendingSendRef = useRef<{ aborted: boolean } | null>(null)
   const [chat, setChat] = useState<ChatEntry[]>([])
@@ -441,7 +589,7 @@ export function AiPanel({
     [],
   )
   // bumped on selection/doc changes so the scope hint & quick actions stay fresh
-  const [, setScopeTick] = useState(0)
+  const [scopeTick, setScopeTick] = useState(0)
   /** the scope chip's expandable preview of the selected text */
   const [scopePreviewOpen, setScopePreviewOpen] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
@@ -719,6 +867,119 @@ export function AiPanel({
     decidePartial(false)
   }
 
+  // ── composer command table + working mode ───────────────────────────────
+  // One table drives both the quick-action chips and the `/` palette; the
+  // skills it lists are the ones this panel's loop actually composes.
+  const composerSkills = useMemo(
+    () =>
+      docsSkillOptions({
+        imageGenAvailable: imageGenerationAvailable(settingsRef.current, gskLoggedInRef.current),
+      }),
+    [settings],
+  )
+  const composerSkillsRef = useRef(composerSkills)
+  composerSkillsRef.current = composerSkills
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const activeSkillIdRef = useRef(activeSkillId)
+  activeSkillIdRef.current = activeSkillId
+
+  const modeOptions = useMemo<ComposerModeOption[]>(
+    () => [
+      { id: 'ask', label: t('aiModeAsk'), title: t('aiModeAskHint') },
+      { id: 'craft', label: t('aiModeCraft'), title: t('aiModeCraftHint') },
+      { id: 'plan', label: t('aiModePlan'), title: t('aiModePlanHint') },
+    ],
+    [t],
+  )
+
+  const quickActions = useMemo(
+    () =>
+      DOCS_QUICK_ACTIONS.map((action) => ({
+        ...action,
+        label: t(action.labelKey),
+        prompt: t(action.promptKey),
+      })),
+    [t],
+  )
+
+  const composerCommands = useMemo<ComposerCommand[]>(
+    () =>
+      buildDocsComposerCommands({ t, skills: composerSkills, quickActions: DOCS_QUICK_ACTIONS }),
+    [t, composerSkills],
+  )
+
+  /**
+   * @-mention palette. Built every render so attachment removals show up
+   * immediately; cheap because the input is bounded (≤ 8 files + 5 skills).
+   */
+  const composerMentions = useMemo(
+    () => [
+      ...docsMentionFiles({
+        attachments,
+        recent: chat.flatMap((e) => e.attachments ?? []).slice(-3),
+      }),
+      ...docsMentionSkills(
+        composerSkills.map((s) => ({
+          id: s.id,
+          trigger: s.trigger,
+          label: t(s.labelKey),
+          description: t(s.descriptionKey),
+          available: s.available,
+        })),
+      ),
+    ],
+    [attachments, chat, composerSkills, t],
+  )
+
+  const onComposerMentionPick = useCallback((pick: { entry: { id: string }; value: string; caret: number }) => {
+    // The composer already mutated the value to insert `@label `. We just
+    // log the pick so future host code (e.g. resolveMentionTokens) can hook
+    // in without touching this file. Keep the handler minimal so the
+    // textarea state stays the single source of truth.
+    void pick
+  }, [])
+
+  /** Optional token-budget badge — shows how full the prompt is. The model
+   *  context window changes per provider; 8k is a safe default for the docs
+   *  panel because we keep the document in a separate tool call, not in the
+   *  prompt. */
+  const tokenBudget = 8000
+
+  const activeSkill =
+    activeSkillId === null
+      ? null
+      : (composerSkills.find((skill) => skill.id === activeSkillId) ?? null)
+
+  /** The loop's per-turn suffix: UI language + working mode + picked skill. */
+  const composerSystemSuffix = useCallback((): string => {
+    const pickedId = activeSkillIdRef.current
+    const picked =
+      pickedId === null
+        ? null
+        : (composerSkillsRef.current.find((skill) => skill.id === pickedId) ?? null)
+    return composeSystemSuffix(
+      aiLangDirective(),
+      chatModeDirective(modeRef.current),
+      picked === null
+        ? ''
+        : skillDirective({
+            name: t(picked.labelKey),
+            description: t(picked.descriptionKey),
+            instructions: picked.instructions,
+          }),
+    )
+  }, [t])
+
+  const onComposerCommandPick = useCallback((pick: ComposerCommandPick) => {
+    const { command } = pick
+    // A skill loads its rules for the following turns; an action or a template
+    // has already written its text into the box and needs nothing more.
+    if (command.kind !== 'run') return
+    const skillId = skillIdOfCommand(command.id)
+    if (skillId !== null) setActiveSkillId(skillId)
+  }, [])
+
   const loopRef = useRef<AgentLoop<PmNode> | null>(null)
   if (!loopRef.current) {
     const numIds = (): NumIds => ({
@@ -726,8 +987,8 @@ export function AiPanel({
       ordered: findNumId(blocksRef.current, 'ordered') ?? numIdFallbackRef.current?.ordered ?? null,
     })
     loopRef.current = new AgentLoop<PmNode>({
-      transport: transportRef.current,
-      systemSuffix: aiLangDirective,
+      transport: createAiTransport(() => settingsRef.current),
+      systemSuffix: composerSystemSuffix,
       skill: composeSkills('docs+files', '', [
         createDocsSkill(
           () => editorRef.current,
@@ -744,7 +1005,10 @@ export function AiPanel({
       ]),
       captureSnapshot: () => editorRef.current.getJSON() as PmNode,
       events: {
-        onText: (text) => patchLastAssistant({ text }),
+        onText: (text) => {
+          patchLastAssistant({ text })
+          setSharedRunStatus('streaming')
+        },
         onToolStart: (call) => {
           // Live "running" chip: replaced in place by onToolExecuted
           patchLastAssistant((last) => ({
@@ -753,6 +1017,7 @@ export function AiPanel({
               { name: call.name, summary: call.name.replace(/[_-]+/g, ' '), running: true },
             ],
           }))
+          emitSharedToolStart(call.name, call.input)
         },
         onToolExecuted: ({ call, execution, snapshotBefore }) => {
           // The run's first pre-edit state wins so one roll-back undoes the whole run
@@ -770,6 +1035,24 @@ export function AiPanel({
             output: execution.output
               ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
               : undefined,
+          })
+          // Mirror to shared timeline (find the running record by tool name + recency).
+          setSharedToolTimeline((prev) => {
+            const idx = [...prev]
+              .reverse()
+              .findIndex((t) => t.status === 'running' && t.name === call.name)
+            if (idx < 0) return prev
+            const realIdx = prev.length - 1 - idx
+            const target = prev[realIdx]
+            const next = prev.slice()
+            next[realIdx] = {
+              ...target,
+              status: execution.isError ? 'error' : 'executed',
+              output: execution.output ? String(execution.output).slice(0, 500) : target.output,
+              finishedAt: Date.now(),
+              isError: !!execution.isError,
+            }
+            return next
           })
           patchLastAssistant((last) => {
             // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
@@ -799,6 +1082,7 @@ export function AiPanel({
           const baseText = turnLimit
             ? [text, tModule('aiTurnLimit')].filter(Boolean).join('\n\n')
             : text || (cancelled ? tModule('aiStopped') : '')
+          setSharedRunStatus(cancelled ? 'cancelled' : 'done')
           const finalText = truncated
             ? [baseText, tModule('aiTruncatedNote')].filter(Boolean).join('\n\n')
             : baseText
@@ -821,6 +1105,8 @@ export function AiPanel({
           }
         },
         onError: (error) => {
+          setSharedRunStatus('error')
+          setLastError(error)
           setChat((prev) => {
             const next = [...prev]
             const last = next.at(-1)
@@ -887,6 +1173,499 @@ export function AiPanel({
     ? ''
     : editor.state.doc.textBetween(liveSelection.from, liveSelection.to, '\n', ' ').trim()
   const hasScopeSelection = selectionText.length > 0
+
+  // ─── M2 — inline launcher (selection-anchored quick chips) ───
+  const [inlineOpen, setInlineOpen] = useState(false)
+  const [translateOpen, setTranslateOpen] = useState(false)
+  const [translatedText, setTranslatedText] = useState<string | null>(null)
+  const [translateBusy, setTranslateBusy] = useState(false)
+  const [translateError, setTranslateError] = useState<string | null>(null)
+  const [translateScope, setTranslateScope] = useState<'selection' | 'document'>('selection')
+  const [documentTranslationUnits, setDocumentTranslationUnits] = useState<
+    Array<{
+      id: string
+      kind: string
+      order: number
+      sourceText: string
+      translatedText?: string
+      status?: string
+      matchedTerms?: string[]
+      warnings?: string[]
+      range: { from: number; to: number; scope?: string }
+    }>
+  >([])
+  const [documentTranslationQuality, setDocumentTranslationQuality] = useState<{
+    overallScore?: number
+    warnings?: string[]
+  }>()
+  const translationCancelledRef = useRef(false)
+
+  useEffect(() => {
+    const openEmbeddedTranslation = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          scope?: 'selection' | 'document'
+          sourceLanguage?: string
+          targetLanguage?: string
+          preserveFormatting?: boolean
+          memoryEnabled?: boolean
+          qualityCheck?: boolean
+          glossaryCategory?: string
+        }>
+      ).detail
+      setTranslateScope(detail.scope || 'selection')
+      setSourceLang(detail.sourceLanguage?.trim() || 'auto')
+      if (detail.targetLanguage?.trim()) setTargetLang(detail.targetLanguage.trim())
+      setPreserveFormat(detail.preserveFormatting !== false)
+      setMemoryEnabled(detail.memoryEnabled !== false)
+      setQualityCheck(detail.qualityCheck !== false)
+      setGlossaryCategory(detail.glossaryCategory?.trim() || 'general')
+      setTranslatedText(null)
+      setTranslateError(null)
+      setDocumentTranslationUnits([])
+      setDocumentTranslationQuality(undefined)
+      setTranslateOpen(true)
+    }
+    window.addEventListener('dataflare:open-translate', openEmbeddedTranslation)
+    const onCancelEmbeddedTranslation = () => cancelTranslation()
+    window.addEventListener('dataflare:cancel-translation', onCancelEmbeddedTranslation)
+    return () => {
+      window.removeEventListener('dataflare:open-translate', openEmbeddedTranslation)
+      window.removeEventListener('dataflare:cancel-translation', onCancelEmbeddedTranslation)
+    }
+  }, [])
+  const [targetLang, setTargetLang] = useState<string>(() => {
+    // UI language → BCP-47 (best effort)
+    const map: Record<string, string> = {
+      zh: 'zh-CN',
+      'zh-TW': 'zh-TW',
+      en: 'en-US',
+      ja: 'ja-JP',
+      ko: 'ko-KR',
+      fr: 'fr-FR',
+      de: 'de-DE',
+      es: 'es-ES',
+      it: 'it-IT',
+      pt: 'pt-PT',
+      ru: 'ru-RU',
+      ar: 'ar-SA',
+      hi: 'hi-IN',
+      th: 'th-TH',
+      id: 'id-ID',
+      ms: 'ms-MY',
+      nl: 'nl-NL',
+      pl: 'pl-PL',
+      cs: 'cs-CZ',
+      he: 'he-IL',
+    }
+    return map[lang] ?? 'en-US'
+  })
+  const [sourceLang, setSourceLang] = useState<string>('auto')
+  const [preserveFormat, setPreserveFormat] = useState<boolean>(true)
+  const [memoryEnabled, setMemoryEnabled] = useState<boolean>(true)
+  const [qualityCheck, setQualityCheck] = useState<boolean>(true)
+  const [glossaryCategory, setGlossaryCategory] = useState<string>('general')
+  const [lastChangePlan, setLastChangePlan] = useState<
+    import('@genoffice/chat-runtime/types').ChatChangePlan | null
+  >(null)
+
+  const getSelectionAnchorRect = useCallback((): AiInlineLauncherAnchorRect | null => {
+    const ed = editor
+    if (!ed || ed.state.selection.empty) return null
+    const view = ed.view
+    const from = view.coordsAtPos(ed.state.selection.from)
+    const to = view.coordsAtPos(ed.state.selection.to)
+    return {
+      left: Math.min(from.left, to.left),
+      top: Math.min(from.top, to.top),
+      right: Math.max(from.right, to.right),
+      bottom: Math.max(from.bottom, to.bottom),
+      viewTop: 0,
+      viewBottom: window.innerHeight,
+    }
+  }, [editor])
+
+  const inlineLauncherStrings: AiInlineLauncherStrings = useMemo(
+    () => ({
+      title: t('aiInlineLauncherTitle'),
+      polish: t('aiInlineLauncherPolish'),
+      expand: t('aiInlineLauncherExpand'),
+      shorten: t('aiInlineLauncherShorten'),
+      summarize: t('aiInlineLauncherSummarize'),
+      translate: t('aiInlineLauncherTranslate'),
+    }),
+    [t],
+  )
+
+  const TRANSLATE_LANGS: TranslateLanguageOption[] = useMemo(
+    () => [
+      { value: 'zh-CN', label: '简体中文' },
+      { value: 'zh-TW', label: '繁體中文' },
+      { value: 'en-US', label: 'English' },
+      { value: 'ja-JP', label: '日本語' },
+      { value: 'ko-KR', label: '한국어' },
+      { value: 'fr-FR', label: 'Français' },
+      { value: 'de-DE', label: 'Deutsch' },
+      { value: 'es-ES', label: 'Español' },
+      { value: 'it-IT', label: 'Italiano' },
+      { value: 'pt-PT', label: 'Português' },
+      { value: 'ru-RU', label: 'Русский' },
+      { value: 'ar-SA', label: 'العربية' },
+      { value: 'hi-IN', label: 'हिन्दी' },
+      { value: 'th-TH', label: 'ไทย' },
+    ],
+    [],
+  )
+
+  const translateDialogStrings: TranslateDialogStrings = useMemo(
+    () => ({
+      title: t('aiTranslateDialogTitle'),
+      targetLang: t('aiTranslateTargetLang'),
+      sourceLang: t('aiTranslateSourceLang'),
+      preserveFormat: t('aiTranslatePreserveFormat'),
+      swapLanguages: t('aiTranslateSwapLanguages'),
+      start: t('aiTranslateStart'),
+      original: t('aiTranslateOriginal'),
+      translated: t('aiTranslateTranslated'),
+      previewTitle: t('aiTranslatePreviewTitle'),
+      previewLoading: t('aiTranslatePreviewLoading'),
+      cancel: 'Cancel',
+      unsupported: t('aiTranslateUnsupported'),
+    }),
+    [t],
+  )
+
+  const handleInlinePick = useCallback(
+    (action: 'polish' | 'expand' | 'shorten' | 'summarize' | 'translate') => {
+      if (action === 'translate') {
+        setTranslatedText(null)
+        setTranslateError(null)
+        setTranslateOpen(true)
+        return
+      }
+      // For other actions, pre-fill the composer with the relevant prompt (existing behavior).
+      const map: Record<string, string> = {
+        polish: 'aiPolishSelectionPrompt',
+        expand: 'aiExpandPrompt',
+        shorten: 'aiShortenPrompt',
+        summarize: 'aiSummarizeSelectionPrompt',
+      }
+      const key = map[action]
+      const prompt = key ? t(key as Parameters<typeof t>[0]) : ''
+      if (prompt) setInput(prompt)
+      inputRef.current?.focus()
+    },
+    [t, setInput],
+  )
+
+  const runTranslate = useCallback(async (): Promise<string | null> => {
+    const sourceText =
+      translateScope === 'document'
+        ? editor.state.doc.textBetween(1, editor.state.doc.content.size, '\n', ' ').trim()
+        : selectionText
+    if (!sourceText) return null
+    setTranslateBusy(true)
+    setTranslateError(null)
+    translationCancelledRef.current = false
+    try {
+      if (translateScope === 'document') {
+        const units: Array<{
+          unitId: string
+          kind: string
+          sourceText: string
+          order: number
+          range: { from: number; to: number; scope: string }
+        }> = []
+        let order = 0
+        editor.state.doc.descendants((node, pos) => {
+          const sourceText = node.textBetween(0, node.content.size, '\n', '\ufffc')
+          if (!node.isTextblock || !sourceText.trim()) return true
+          const range = { from: pos + 1, to: pos + 1 + node.content.size, scope: 'document' }
+          units.push({
+            unitId: `paragraph-${order}`,
+            kind: node.type.name,
+            sourceText,
+            order,
+            range,
+          })
+          order += 1
+          return true
+        })
+        if (units.length === 0) return null
+        const translatedUnits: typeof documentTranslationUnits = []
+        const batches: (typeof units)[] = []
+        let currentBatch: typeof units = []
+        let currentChars = 0
+        for (const unit of units) {
+          const wouldExceed =
+            currentBatch.length >= 80 || currentChars + unit.sourceText.length > 90_000
+          if (wouldExceed && currentBatch.length > 0) {
+            batches.push(currentBatch)
+            currentBatch = []
+            currentChars = 0
+          }
+          currentBatch.push(unit)
+          currentChars += unit.sourceText.length
+        }
+        if (currentBatch.length > 0) batches.push(currentBatch)
+        const qualityScores: number[] = []
+        const qualityWarnings = new Set<string>()
+        for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+          if (translationCancelledRef.current) {
+            postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+            return null
+          }
+          const batch = batches[batchIndex]
+          const streamOrBatch =
+            window.desktop.aiTranslateBatchStream ?? window.desktop.aiTranslateBatch
+          const result = await streamOrBatch({
+            units: batch,
+            sourceLang,
+            targetLang,
+            preserveFormat,
+            scene: 'document',
+            memoryEnabled,
+            qualityCheck,
+            glossaryCategory,
+          })
+          if (!result.ok && !result.units?.length)
+            throw new Error(result.error || 'Document translation failed')
+          for (const unit of result.units || []) {
+            const source = units.find((input) => input.unitId === unit.unitId)
+            if (!source) continue
+            translatedUnits.push({
+              id: unit.unitId,
+              kind: source.kind,
+              order: source.order,
+              sourceText: source.sourceText,
+              translatedText: unit.translatedText,
+              status: unit.status,
+              matchedTerms: unit.matchedTerms,
+              warnings: [
+                ...(unit.warnings || []),
+                ...(unit.errorMessage ? [unit.errorMessage] : []),
+              ],
+              range: source.range,
+            })
+          }
+          if (result.quality) {
+            if (typeof result.quality.overallScore === 'number')
+              qualityScores.push(result.quality.overallScore)
+            for (const warning of result.quality.warnings || []) qualityWarnings.add(warning)
+          }
+          postToEmbedParent({
+            type: 'ai-progress',
+            status: 'running',
+            progress: Math.min(0.99, (batchIndex + 1) / batches.length),
+          })
+        }
+        const successful = translatedUnits.filter(
+          (unit) => unit.status === 'translated' || unit.status === 'memory-hit',
+        )
+        if (successful.length === 0)
+          throw new Error('Document translation returned no usable units')
+        setDocumentTranslationUnits(translatedUnits)
+        setDocumentTranslationQuality({
+          overallScore:
+            qualityScores.length > 0
+              ? qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length
+              : undefined,
+          warnings: [...qualityWarnings],
+        })
+        postToEmbedParent({ type: 'ai-progress', status: 'completed', progress: 1 })
+        return successful.map((unit) => unit.translatedText || '').join('\n')
+      }
+      const res = await window.desktop.aiTranslate({
+        instruction: sourceText,
+        sourceLang,
+        targetLang,
+        preserveFormat,
+        range: { from: liveSelection.from, to: liveSelection.to, scope: 'selection' },
+        memoryEnabled,
+        qualityCheck,
+        glossaryCategory,
+      })
+      const r = res as { ok?: boolean; translated?: string; error?: string }
+      if (!r?.ok) {
+        const err = r?.error ?? 'Translation failed'
+        setTranslateError(err)
+        // throw so the dialog's catch branch surfaces the real provider error
+        throw new Error(err)
+      }
+      setTranslatedText(r.translated ?? '')
+      return r.translated ?? ''
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e)
+      if (translationCancelledRef.current) return null
+      setTranslateError(err)
+      if (translateScope === 'document')
+        postToEmbedParent({ type: 'ai-progress', status: 'failed', progress: 0 })
+      // re-throw so TranslateDialog catches and shows the real provider error
+      throw e
+    } finally {
+      setTranslateBusy(false)
+    }
+  }, [
+    editor,
+    selectionText,
+    sourceLang,
+    targetLang,
+    preserveFormat,
+    liveSelection,
+    translateScope,
+    documentTranslationUnits,
+  ])
+
+  const cancelTranslation = useCallback(() => {
+    translationCancelledRef.current = true
+    setTranslateBusy(false)
+    setTranslateOpen(false)
+    postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+  }, [])
+
+  const retryDocumentUnit = useCallback(
+    async (unitId: string) => {
+      const unit = documentTranslationUnits.find((candidate) => candidate.id === unitId)
+      if (!unit) throw new Error('Translation unit is no longer available')
+      const streamOrBatch = window.desktop.aiTranslateBatchStream ?? window.desktop.aiTranslateBatch
+      const result = await streamOrBatch({
+        units: [
+          {
+            unitId: unit.id,
+            kind: unit.kind,
+            sourceText: unit.sourceText,
+            order: unit.order,
+            range: unit.range,
+          },
+        ],
+        sourceLang,
+        targetLang,
+        preserveFormat,
+        scene: 'document',
+        memoryEnabled,
+        qualityCheck,
+        glossaryCategory,
+      })
+      const next = result.units?.[0]
+      if (!result.ok || !next?.translatedText)
+        throw new Error(next?.errorMessage || result.error || 'Translation retry failed')
+      setDocumentTranslationUnits((current) =>
+        current.map((candidate) =>
+          candidate.id === unitId
+            ? {
+                ...candidate,
+                translatedText: next.translatedText,
+                status: next.status,
+                matchedTerms: next.matchedTerms,
+                warnings: next.warnings,
+              }
+            : candidate,
+        ),
+      )
+    },
+    [documentTranslationUnits, sourceLang, targetLang, preserveFormat],
+  )
+
+  const saveTranslationMemory = useCallback(
+    async (request: {
+      sourceLang: string
+      targetLang: string
+      units: Array<{ unitId: string; sourceText: string; translatedText: string }>
+    }) => {
+      const result = await window.desktop.saveTranslationMemory({
+        requestId: `memory-${Date.now().toString(36)}`,
+        documentId: undefined,
+        scene: translateScope,
+        sourceLang: request.sourceLang,
+        targetLang: request.targetLang,
+        // The glossary the panel is translating under has to travel with the
+        // entry. Saving it unscoped made one customer's sentence a cache hit
+        // for every other customer on the next run — the same cross-customer
+        // leak the reader-side bucket key was added to prevent.
+        ...(glossaryCategory ? { glossaryCategory } : {}),
+        units: request.units,
+      })
+      if (!result.ok) throw new Error(result.error || 'Failed to save translation memory')
+      return { savedCount: result.savedCount, skippedCount: result.skippedCount }
+    },
+    [translateScope, glossaryCategory],
+  )
+
+  type TranslationItem = {
+    sourceText: string
+    targetText: string
+    targetLang: string
+    preserveFormat?: boolean
+    range?: { from: number; to: number; scope?: string } | null
+  }
+  const applyTranslate = useCallback(
+    (plan: import('@genoffice/chat-runtime/types').ChatChangePlan) => {
+      const op = plan.ops[0]
+      if (op?.kind !== 'translate') return
+      const item = op.ops[0]
+      if (!item) return
+      const ed = editor
+      if (!ed) return
+      // The plan stamps the range captured at translate-time (see TranslateDialog);
+      // we deliberately don't read `liveSelection` here — by the time the user
+      // hits Apply the selection may have wandered to a different paragraph.
+      const items: TranslationItem[] = op.ops as TranslationItem[]
+      const orderedItems = [...items].sort((a, b) => (b.range?.from || 0) - (a.range?.from || 0))
+      const docSize = ed.state.doc.content.size
+      const appliedItems = orderedItems.filter((entry) => entry.range && entry.targetText)
+      if (appliedItems.length === 0) return
+      for (const entry of appliedItems) {
+        const currentText = ed.state.doc.textBetween(
+          entry.range!.from,
+          entry.range!.to,
+          '\n',
+          '\ufffc',
+        )
+        if (currentText !== entry.sourceText) {
+          setTranslateError('文档内容已发生变化，请重新翻译后再应用')
+          return
+        }
+      }
+      let chain = ed.chain().focus()
+      for (const entry of appliedItems) {
+        const from = Math.max(1, Math.min(entry.range!.from, docSize))
+        const to = Math.max(from, Math.min(entry.range!.to, docSize))
+        chain = chain.insertContentAt({ from, to }, entry.targetText)
+      }
+      chain.run()
+      setLastChangePlan({
+        ...plan,
+        ops: [{ kind: 'translate', description: op.description, ops: appliedItems }],
+      })
+      setTranslateOpen(false)
+      setInlineOpen(false)
+    },
+    [editor],
+  )
+
+  const undoChange = useCallback(
+    (p: import('@genoffice/chat-runtime/types').ChatChangePlan) => {
+      const op = p.ops[0]
+      if (op?.kind !== 'translate') return
+      const items = op.ops
+      if (!items.length) return
+      const ed = editor
+      if (!ed) return
+      // True restore: rewrite the translated range back to the original source text.
+      // The plan-stamped range points at the post-translate span (since apply
+      // kept it untouched in the op). Fall back to live selection if missing.
+      const docSize = ed.state.doc.content.size
+      let chain = ed.chain().focus()
+      for (const item of [...items].sort((a, b) => (b.range?.from || 0) - (a.range?.from || 0))) {
+        const from = Math.max(1, Math.min(item.range?.from ?? 1, docSize))
+        const to = Math.max(from, Math.min(from + item.targetText.length, docSize))
+        if (from !== to) chain = chain.insertContentAt({ from, to }, item.sourceText)
+      }
+      chain.run()
+      setLastChangePlan(null)
+    },
+    [editor],
+  )
 
   /** the × on the scope chip: collapse the selection so the run targets the whole document */
   const clearScopeSelection = () => {
@@ -1002,6 +1781,8 @@ export function AiPanel({
     runToolsRef.current = []
     runSnapshotRef.current = null
     stickToBottomRef.current = true
+    resetSharedTimeline()
+    setSharedRunStatus('running')
     setChat((prev) => [
       ...prev,
       {
@@ -1223,7 +2004,7 @@ export function AiPanel({
         aria-label={t('appExpandAiPanel')}
         onClick={onExpand}
       >
-        <GensparkMark size={22} />
+        <ProviderMark provider={settingsRef.current.provider} size={22} />
       </button>
     )
   }
@@ -1255,7 +2036,7 @@ export function AiPanel({
       />
       <div className="ai-panel-header">
         <span className="ai-panel-title">
-          <GensparkMark size={22} />
+          <ProviderMark provider={settingsRef.current.provider} size={22} />
           {t('aiPanelTitle')}
         </span>
         <div className="ai-panel-header-actions">
@@ -1283,6 +2064,23 @@ export function AiPanel({
       </div>
 
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
+        {/* Shared ChatRuntime components (M4). Additive: existing inline UI stays. */}
+        <AiRunHeader
+          status={sharedRunStatus}
+          model={settingsRef.current.provider}
+          onStop={undefined}
+        />
+        <AiToolTimeline tools={sharedToolTimeline} />
+        {sharedRunStatus === 'error' && lastError && (
+          <AiErrorRecovery
+            error={lastError}
+            onEdit={() => inputRef.current?.focus()}
+            onDismiss={() => {
+              setLastError(null)
+              setSharedRunStatus('idle')
+            }}
+          />
+        )}
         {/* past conversation (read-only transcript, not fed to the model), shown continuously with the current turn */}
         {historicChat.length > 0 && (
           <>
@@ -1460,6 +2258,64 @@ export function AiPanel({
             </div>
           )
         })}
+        <AiInlineLauncher
+          getAnchorRect={getSelectionAnchorRect}
+          strings={inlineLauncherStrings}
+          onPick={handleInlinePick}
+          revision={scopeTick}
+        />
+
+        <TranslateDialog
+          open={translateOpen}
+          sourceText={
+            translateScope === 'document'
+              ? editor.state.doc.textBetween(1, editor.state.doc.content.size, '\n', ' ').trim()
+              : selectionText
+          }
+          sourceRange={
+            translateScope === 'document'
+              ? { from: 1, to: editor.state.doc.content.size }
+              : hasScopeSelection
+                ? { from: liveSelection.from, to: liveSelection.to }
+                : null
+          }
+          previewItems={documentTranslationUnits.length > 0 ? documentTranslationUnits : undefined}
+          previewQuality={documentTranslationQuality}
+          onRetryUnit={translateScope === 'document' ? retryDocumentUnit : undefined}
+          onSaveMemory={
+            window.dataflareOfficeBridge?.isEmbedded ? saveTranslationMemory : undefined
+          }
+          defaultSourceLang={sourceLang === 'auto' ? undefined : sourceLang}
+          defaultTargetLang={targetLang}
+          languages={TRANSLATE_LANGS}
+          strings={translateDialogStrings}
+          onTranslate={async () => {
+            const result = await runTranslate()
+            if (result === null) {
+              if (translationCancelledRef.current) return null
+              throw new Error(translateError ?? 'Translation failed')
+            }
+            return result
+          }}
+          onApply={applyTranslate}
+          onCancel={cancelTranslation}
+          app="docs"
+        />
+
+        {lastChangePlan && (
+          <div style={{ position: 'sticky', top: 0, padding: '8px 16px', zIndex: 5 }}>
+            <ChangeMarker
+              plan={lastChangePlan}
+              strings={{
+                original: t('aiTranslateOriginal'),
+                translated: t('aiTranslateTranslated'),
+                undo: t('aiTranslateUndo'),
+                undoFailed: t('aiTranslateUndoFailed'),
+              }}
+              onUndo={undoChange}
+            />
+          </div>
+        )}
       </div>
 
       <div className="ai-composer">
@@ -1496,7 +2352,80 @@ export function AiPanel({
           onSend={sendQueue}
           onFocus={(qid) => onQueueFocus?.(qid)}
         />
+        {!busy && (
+          <div className="ai-quick-actions" role="toolbar">
+            {quickActions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                className="ai-quick-action"
+                data-tip={action.label}
+                onClick={() => {
+                  setInput(action.prompt)
+                  inputRef.current?.focus()
+                }}
+              >
+                <span className="ai-quick-action-icon" aria-hidden>
+                  {action.icon}
+                </span>
+                {action.label}
+              </button>
+            ))}
+          </div>
+        )}
         <AiComposer
+          commands={composerCommands}
+          onCommandPick={onComposerCommandPick}
+          commandMenuLabel={t('aiSlashMenuTitle')}
+          commandMenuEmptyLabel={t('aiSlashMenuEmpty')}
+          commandMenuFootHint={t('aiSlashMenuFoot')}
+          mentions={composerMentions}
+          onMentionPick={onComposerMentionPick}
+          mentionMenuLabel={t('aiMentionMenuTitle')}
+          mentionMenuEmptyLabel={t('aiMentionMenuEmpty')}
+          mentionMenuFootHint={t('aiMentionMenuFoot')}
+          tokenBudget={tokenBudget}
+          slashTriggerTitle={t('aiSlashTriggerTitle')}
+          modes={modeOptions}
+          mode={mode}
+          onModeChange={setMode}
+          modeSwitchLabel={t('aiModeSwitchTitle')}
+          voice={voice}
+          onEditLast={() => {
+            // Walk the chat back to the most recent user entry and load its
+            // text into the textarea so the user can edit-and-resend.
+            const idx = [...chat].reverse().findIndex((e) => e.role === 'user')
+            if (idx < 0) return
+            const real = chat.length - 1 - idx
+            const entry = chat[real]
+            if (!entry || typeof entry.text !== 'string') return
+            setInput(entry.text)
+            inputRef.current?.focus()
+          }}
+          leading={
+            activeSkill !== null && (
+              <div className="ai-skill-row">
+                <span className="ai-skill-chip" data-tip={t(activeSkill.descriptionKey)}>
+                  <span className="ai-skill-chip-label">{t('aiActiveSkill')}</span>
+                  <span className="ai-skill-chip-name">{t(activeSkill.labelKey)}</span>
+                  <button
+                    type="button"
+                    className="ai-skill-chip-clear"
+                    title={t('aiActiveSkillClear')}
+                    aria-label={t('aiActiveSkillClear')}
+                    onClick={() => setActiveSkillId(null)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 32 32" aria-hidden>
+                      <path
+                        d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </span>
+              </div>
+            )
+          }
           header={
             (hasScopeSelection || attachments.length > 0) && (
               <>

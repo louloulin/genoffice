@@ -18,7 +18,7 @@ export const it = {
   aiQcStopped: 'Controllo del layout interrotto',
   aiQcCapped: 'Altre {count} pagina/e non controllate (limite per esecuzione)',
   aiGskLoginBtn: 'Accedi a Genspark',
-  aiPanelTitle: 'Genspark',
+  aiPanelTitle: 'AI Assistant',
   aiOpenAssistant: "Apri l'assistente IA",
   aiFactCheckBtn: 'Fact-check IA',
   aiFactCheckPrompt:
@@ -64,6 +64,7 @@ export const it = {
   aiChipShorten: 'Accorcia',
   aiChipExpand: 'Amplia',
   aiChipVerify: 'Verifica i fatti',
+  aiChipTranslate: 'Traduci',
   aiChipReplaceImage: "Sostituisci l'immagine",
   aiChipRemoveBg: 'Rimuovi lo sfondo',
   aiChipRecolor: 'Regola i colori',
@@ -224,4 +225,8 @@ export const it = {
   aiSumSaveTemplate: 'Modello di stile "{name}" salvato',
   aiSumTemplatesEmpty: 'Modelli di stile (vuoto)',
   aiSumListTemplates: '{count} modelli di stile elencati',
+  aiUnknownError: 'Errore sconosciuto',
+  aiTimeoutError: 'Richiesta IA scaduta: nessuna risposta dalla rete, esecuzione interrotta. Controlla la connessione e riprova',
+  aiOverloadedError: 'Il servizio IA è momentaneamente sovraccarico — riprova tra poco',
+  aiNetworkError: 'Problema di rete: impossibile raggiungere il servizio IA. Controlla la connessione e riprova',
 } satisfies Record<keyof typeof zh, string>

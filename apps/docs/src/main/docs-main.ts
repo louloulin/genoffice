@@ -22,6 +22,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { resolve } from 'node:path'
 import {
   BrowserWindow,
   Menu,
@@ -57,6 +58,7 @@ import {
   rendererUrl,
 } from '@genoffice/electron-utils'
 import { configureMetricsCache, familyVerticalMetrics } from '@genoffice/font-metrics'
+import { installHttpIpcBridge } from '@genoffice/ipc-bridge'
 import { createI18n, getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
 import { ProjectStore } from '@genoffice/project-store'
 import type {
@@ -74,12 +76,15 @@ import {
   AiTimeoutError,
   isAiNetworkError,
   isAiOverloadedError,
+  isAiQuotaExhaustedError,
   chatForProvider,
   defaultAiSettings,
   activeProvider,
   testMediaProvider,
+  type AiProviderConfig,
   type AiMediaProviderConfig,
   type AiMediaProviderId,
+  type AiProviderId,
   type AiSearchProviderId,
   resolveAiSettings,
   maxOutputTokensOf,
@@ -104,6 +109,26 @@ import {
   webSearchTool,
   imageSearchTool,
 } from '@genoffice/ai-search'
+import {
+  sharedMemory as coreTranslationMemory,
+  translateBatch as translateBatchCore,
+  translateOne as translateOneCore,
+  assessFileCoverage as coreAssessFileCoverage,
+  buildDictionary as coreBuildDictionary,
+  defaultOutputPath as coreDefaultOutputPath,
+  fillDictionaryGaps as coreFillDictionaryGaps,
+  isSupportedExtension as coreIsSupportedExtension,
+  KnowledgeBase as CoreKnowledgeBase,
+  PersistentTranslationMemory as CorePersistentTranslationMemory,
+  resolveTranslateSkills as coreResolveTranslateSkills,
+  SUPPORTED_EXTENSIONS as CORE_SUPPORTED_EXTENSIONS,
+  translateBatch as coreTranslateBatch,
+  translateFile as coreTranslateFile,
+  translateOne as coreTranslateOne,
+  type KBEntry as CoreKBEntry,
+  type KBListFilters as CoreKBListFilters,
+  type TerminologyPair as CoreTerminologyPair,
+} from '@genoffice/translation-core'
 import type {
   AiDocContent,
   AttachmentAddResult,
@@ -2883,7 +2908,7 @@ export function registerAiIpc(): void {
           error: err instanceof Error ? err.message : String(err),
           ...(err instanceof AiTimeoutError
             ? { errorCode: 'timeout' as const }
-            : err instanceof AiCreditsError
+            : err instanceof AiCreditsError || isAiQuotaExhaustedError(err)
               ? { errorCode: 'credits' as const }
               : isAiNetworkError(err)
                 ? { errorCode: 'network' as const }
@@ -3006,6 +3031,797 @@ export function registerAiIpc(): void {
       return result
     } catch (err) {
       return { ok: false, error: isAiOverloadedError(err) ? tm('errAiBusy') : String(err) }
+    }
+  })
+
+  // load the live AI settings + provider id from disk; this is the same path
+  // the renderer uses via `ai:get-settings`, so the desktop TranslateDialog runs
+  // against the provider the user has actually configured.
+  function loadActiveAiSettings(): AiSettings {
+    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
+    return resolveAiSettings(stored, defaultAiSettings())
+  }
+
+  // shared helper for the ai:translate / ai:translate-batch handlers above
+  function castEditorRange(raw: unknown): import('@genoffice/translation-core').EditorRange | null {
+    if (!raw || typeof raw !== 'object') return null
+    const r = raw as { from?: number; to?: number; scope?: string }
+    const scope =
+      r.scope === 'selection' ||
+      r.scope === 'document' ||
+      r.scope === 'paragraph' ||
+      r.scope === 'cell' ||
+      r.scope === 'table'
+        ? r.scope
+        : undefined
+    return { from: r.from, to: r.to, scope }
+  }
+
+  function resolveTranslateConfig(
+    provider: AiProviderId,
+    settings: AiSettings,
+  ): import('@genoffice/ai-provider').AiProviderConfig | null {
+    let config = settings.providers?.[provider]
+    if (!config) return null
+    if (provider === 'genspark' && !config.apiKey) {
+      config = { ...config, apiKey: gskApiKey() }
+    }
+    return config
+  }
+
+  function localizeTranslateError<T extends { ok: boolean; error?: string }>(
+    result: T,
+    provider: AiProviderId,
+  ): T {
+    if (!result.error) return result
+    return { ...result, error: localizeErrorString(result.error, provider) }
+  }
+
+  function localizeErrorString(error: string, provider?: AiProviderId): string {
+    if (isAiOverloadedError(error)) return tm('errAiBusy')
+    // surface the gsk-not-logged-in / missing-api-key messages in the right locale
+    if (provider === 'genspark' && /genspark/i.test(error) && /api[_-]?key/i.test(error)) {
+      return tm('errGskNotLoggedIn')
+    }
+    return error
+  }
+
+  // ai:translate / ai:translate-batch — one-shot translate through the active
+  // provider. The docs renderer's TranslateDialog dispatches both; desktop
+  // builds were silently failing before because no main-process handler
+  // existed. Delegates to @genoffice/translation-core so the web build, the
+  // Dataflare bridge and the desktop Electron app share one source of truth
+  // for prompts, language handling and the in-memory translation memory.
+  ipcMain.handle('ai:translate', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      instruction?: string
+      sourceLang?: string
+      targetLang?: string
+      preserveFormat?: boolean
+      range?: { from?: number; to?: number; scope?: string } | null
+      memoryEnabled?: boolean
+      qualityCheck?: boolean
+      glossaryCategory?: string
+      customerName?: string
+    }
+    const provider = loadActiveAiSettings().provider
+    const config = resolveTranslateConfig(provider, loadActiveAiSettings())
+    if (!config) {
+      return { ok: false, error: `AI provider "${provider}" not configured` }
+    }
+    const result = await translateOneCore(
+      {
+        instruction: req.instruction ?? '',
+        sourceLang: req.sourceLang,
+        targetLang: req.targetLang ?? '',
+        preserveFormat: req.preserveFormat,
+        range: castEditorRange(req.range),
+        memoryEnabled: req.memoryEnabled,
+        qualityCheck: req.qualityCheck,
+        glossaryCategory: req.glossaryCategory,
+        // Parity with the web-server handler: without this the same request
+        // narrowed the KB on web and leaked every customer's terms on desktop.
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
+      },
+      { provider, config },
+    )
+    return localizeTranslateError(result, provider)
+  })
+
+  ipcMain.handle('ai:translate-batch', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      units?: Array<{
+        unitId?: string
+        kind?: string
+        sourceText?: string
+        order?: number
+        path?: string
+        metadata?: Record<string, unknown>
+        range?: { from?: number; to?: number; scope?: string } | null
+      }>
+      sourceLang?: string
+      targetLang?: string
+      preserveFormat?: boolean
+      scene?: string
+      memoryEnabled?: boolean
+      qualityCheck?: boolean
+      glossaryCategory?: string
+      customerName?: string
+    }
+    // Same wire-shape guard the web-server handler has: `units` can be any
+    // JSON value and its elements can be null, and both used to throw out of
+    // the handler instead of reporting a malformed request.
+    if (req.units !== undefined && !Array.isArray(req.units)) {
+      return {
+        ok: false,
+        error: 'ai:translate-batch expected `units` to be an array',
+        units: [],
+      }
+    }
+    // `.filter(u => u && typeof u === 'object')` used to drop malformed
+    // elements, which silently shortened the batch: the renderer maps results
+    // back by `unitId` and a dropped unit simply never appeared, so a partly
+    // broken document looked fully translated. Hand the malformed element
+    // through untouched and let the core layer report it as a failed unit —
+    // it is the one place both this handler and the web handler share.
+    const units = (req.units ?? []).map((u) => {
+      if (!u || typeof u !== 'object') return u
+      return {
+        unitId: typeof u.unitId === 'string' ? u.unitId : '',
+        kind: (u.kind ?? 'paragraph') as
+          'paragraph' | 'heading' | 'list-item' | 'table-cell' | 'document',
+        sourceText: u.sourceText,
+        order: typeof u.order === 'number' ? u.order : 0,
+        path: u.path,
+        metadata: u.metadata,
+        range: castEditorRange(u.range),
+      }
+    })
+    const provider = loadActiveAiSettings().provider
+    const config = resolveTranslateConfig(provider, loadActiveAiSettings())
+    if (!config) {
+      return { ok: false, error: `AI provider "${provider}" not configured` }
+    }
+    const result = await translateBatchCore(
+      {
+        units: units as import('@genoffice/translation-core').TranslationUnit[],
+        sourceLang: req.sourceLang,
+        targetLang: req.targetLang ?? '',
+        preserveFormat: req.preserveFormat,
+        scene: req.scene,
+        memoryEnabled: req.memoryEnabled,
+        qualityCheck: req.qualityCheck,
+        glossaryCategory: req.glossaryCategory,
+        // `customerName` is the confidentiality boundary the KB resolver
+        // keys on, and the web-server batch handler already forwards it. The
+        // desktop handler dropped it, so the same request narrowed the KB on
+        // web and leaked every customer's terms on desktop.
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
+      },
+      { provider, config },
+    )
+    if (result.error) {
+      return { ...result, error: localizeErrorString(result.error) }
+    }
+    return result
+  })
+
+  // ai:save-translation-memory — desktop fallback. The Dataflare bridge
+  // (when wired) is the source of truth for cross-device memory; in pure
+  // desktop mode we save into the shared in-memory TM so subsequent
+  // retranslations hit the cache instead of the provider. Always succeeds
+  // when there is anything to save.
+  ipcMain.handle('ai:save-translation-memory', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      scene?: string
+      sourceLang?: string
+      targetLang?: string
+      glossaryCategory?: string
+      customerName?: string
+      units?: Array<{ unitId?: string; sourceText?: string; translatedText?: string }>
+    }
+    // `units` arrives straight off the IPC wire, so it can be a string or an
+    // object and its elements can be null. Iterating or dereferencing those
+    // threw out of the handler and surfaced as an unhandled rejection rather
+    // than a reported shape error.
+    if (req.units !== undefined && !Array.isArray(req.units)) {
+      return { ok: false, savedCount: 0, skippedCount: 0, error: 'units must be an array' }
+    }
+    // Elements narrowed out here never reach `saveMany`, so they have to be
+    // counted here: silently dropping them reported "saved 1" for a batch of
+    // three and hid the two malformed entries.
+    const units = (req.units ?? [])
+      .filter((u): u is Record<string, unknown> => Boolean(u) && typeof u === 'object')
+      .map((u) => ({
+        unitId: typeof u.unitId === 'string' ? u.unitId : '',
+        sourceText: typeof u.sourceText === 'string' ? u.sourceText : '',
+        translatedText: typeof u.translatedText === 'string' ? u.translatedText : '',
+      }))
+    const rejected = (req.units?.length ?? 0) - units.length
+    // glossaryCategory / customerName become the bucket. They arrive straight
+    // off IPC and were passed un-checked: `bucketFor` saw `req.glossaryCategory`
+    // as `undefined` when it was a number, so the save landed unscoped and the
+    // document's sentences leaked as cache hits for every customer.
+    if (req.glossaryCategory !== undefined && typeof req.glossaryCategory !== 'string') {
+      return { ok: false, savedCount: 0, skippedCount: rejected, error: 'glossaryCategory must be a string' }
+    }
+    if (req.customerName !== undefined && typeof req.customerName !== 'string') {
+      return { ok: false, savedCount: 0, skippedCount: rejected, error: 'customerName must be a string' }
+    }
+    // Scope the entry to the glossary / customer it was produced under. The
+    // reader path keys on the bucket, so saving unscoped entries here left the
+    // document's sentences available as cache hits for every other customer.
+    const bucket = req.glossaryCategory ?? req.customerName
+    const result = coreTranslationMemory.saveMany({
+      scene: req.scene ?? 'document',
+      sourceLang: req.sourceLang ?? 'auto',
+      targetLang: req.targetLang ?? '',
+      ...(bucket !== undefined ? { bucket } : {}),
+      units,
+    })
+    return {
+      ok: result.ok,
+      savedCount: result.savedCount,
+      skippedCount: result.skippedCount + rejected,
+      ...(result.error ? { error: result.error } : {}),
+    }
+  })
+
+  // ─── Translation knowledge base + whole-file translation ───────────────
+  //
+  // The Settings → AI → Translation KB pane talks to these channels, and so
+  // does the snippet paste box. The shell main delegates to `registerAiIpc()`
+  // exactly once for every window type, so registering the handlers here also
+  // covers Electron shell mode (where this file used to be silent — every
+  // listTranslationKb() / buildTranslationDictionary() call returned
+  // "no handler registered" and the pane sat empty).
+
+  // KB + persistent TM are singletons so memory hits survive across calls and
+  // the in-memory store is never clobbered by an out-of-order load() racing an
+  // upsert. The translation-core default locations
+  // (`~/.genoffice/translation-kb.json` and `~/.genoffice/translation-memory/`)
+  // are exactly where the web-server writes too, so the user's KB edits show
+  // up in both runtimes.
+  const sharedKnowledgeBase = new CoreKnowledgeBase()
+  const translationMemory = new CorePersistentTranslationMemory()
+  let kbLoadPromise: Promise<void> | null = null
+  let tmLoadPromise: Promise<void> | null = null
+  function ensureKbLoaded(): Promise<void> {
+    if (!kbLoadPromise) {
+      kbLoadPromise = sharedKnowledgeBase.load().catch((err: unknown) => {
+        console.warn('[translation-kb] load failed:', err)
+      })
+    }
+    return kbLoadPromise
+  }
+  function ensureMemoryLoaded(): Promise<void> {
+    if (!tmLoadPromise) {
+      tmLoadPromise = translationMemory.load().catch((err: unknown) => {
+        console.warn('[translation-memory] load failed:', err)
+      })
+    }
+    return tmLoadPromise
+  }
+  let memoryFlushTimer: NodeJS.Timeout | null = null
+  function scheduleMemoryFlush(delayMs = 250): void {
+    if (memoryFlushTimer) return
+    memoryFlushTimer = setTimeout(() => {
+      memoryFlushTimer = null
+      void translationMemory.flush().catch((err: unknown) => {
+        console.warn('[translation-memory] flush failed:', err)
+      })
+    }, delayMs)
+  }
+
+  // Most recently generated `--dictionary`. The snippet path reuses it so the
+  // paste box and the file pipeline agree on terminology, and we cache it by
+  // path so repeated snippet calls are free.
+  interface LoadedDictionary { path: string; pairs: CoreTerminologyPair[] }
+  let lastDictionary: LoadedDictionary | null = null
+  function loadDictionary(path: string): LoadedDictionary | null {
+    if (lastDictionary?.path === path) return lastDictionary
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+      const pairs: CoreTerminologyPair[] = []
+      for (const [source, target] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof target !== 'string') continue
+        if (!source.trim() || !target.trim()) continue
+        pairs.push({ source, target })
+      }
+      if (pairs.length === 0) return null
+      pairs.sort((a, b) => b.source.length - a.source.length)
+      lastDictionary = { path, pairs }
+      return lastDictionary
+    } catch {
+      return null
+    }
+  }
+
+  ipcMain.handle('ai:translation-kb-list', async (_event, filters: unknown) => {
+    await ensureKbLoaded()
+    const f = (filters ?? {}) as CoreKBListFilters
+    return { ok: true, entries: sharedKnowledgeBase.list(f) }
+  })
+
+  ipcMain.handle('ai:translation-kb-upsert', async (_event, entry: unknown) => {
+    await ensureKbLoaded()
+    if (!entry || typeof entry !== 'object') {
+      return { ok: false, error: 'ai:translation-kb-upsert expected a KB entry object' }
+    }
+    const candidate = entry as Partial<CoreKBEntry> & { id?: string }
+    if (!candidate.id || typeof candidate.id !== 'string') {
+      return { ok: false, error: 'KB entry must include a string `id`' }
+    }
+    try {
+      sharedKnowledgeBase.upsert(candidate as CoreKBEntry)
+      await sharedKnowledgeBase.save()
+      return { ok: true, entry: candidate }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('ai:translation-kb-remove', async (_event, id: unknown) => {
+    await ensureKbLoaded()
+    const targetId = String(id ?? '').trim()
+    if (!targetId) return { ok: false, error: 'ai:translation-kb-remove expected a non-empty id' }
+    const removed = sharedKnowledgeBase.remove(targetId)
+    if (removed) await sharedKnowledgeBase.save()
+    return { ok: true, removed }
+  })
+
+  ipcMain.handle('ai:translation-kb-stats', async () => {
+    await ensureKbLoaded()
+    const all = sharedKnowledgeBase.list()
+    const bySchema: Record<string, number> = {}
+    for (const entry of all) {
+      const key =
+        'sourceTerm' in entry && 'targetTerm' in entry ? 'term'
+          : 'forbiddenText' in entry ? 'forbidden'
+            : 'policy' in entry ? 'brand'
+              : 'description' in entry && 'name' in entry ? 'styleRule'
+                : 'customerPreference'
+      bySchema[key] = (bySchema[key] ?? 0) + 1
+    }
+    return { ok: true, total: all.length, bySchema, dirty: sharedKnowledgeBase.isDirty() }
+  })
+
+  // ai:translate-build-dictionary — KB + LLM produce the `--dictionary` the
+  // upstream file handlers consume, so the user never hand-writes one.
+  ipcMain.handle('ai:translate-build-dictionary', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      inputPath?: string
+      sourceLang?: string
+      targetLang?: string
+      outputPath?: string
+      maxSegments?: number
+      minChars?: number
+      customerName?: string
+      glossaryCategory?: string
+      useLlm?: boolean
+      settings?: AiSettings
+    }
+    if (!req.inputPath) {
+      return { ok: false, error: 'ai:translate-build-dictionary expected a non-empty `inputPath`' }
+    }
+    if (!req.targetLang) {
+      return { ok: false, error: 'ai:translate-build-dictionary expected a non-empty `targetLang`' }
+    }
+    const incoming = req.settings || loadActiveAiSettings()
+    const provider = incoming.provider
+    const config = resolveTranslateConfig(provider, incoming)
+    const wantsLlm = req.useLlm !== false
+    if (wantsLlm && !config) {
+      return { ok: false, error: `AI provider "${provider}" not configured` }
+    }
+    await ensureKbLoaded()
+    await ensureMemoryLoaded()
+    const built = await coreBuildDictionary(
+      {
+        inputPath: req.inputPath,
+        sourceLang: req.sourceLang ?? 'auto',
+        targetLang: req.targetLang,
+        ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
+        ...(req.maxSegments !== undefined ? { maxSegments: req.maxSegments } : {}),
+        ...(req.minChars !== undefined ? { minChars: req.minChars } : {}),
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
+        ...(req.glossaryCategory !== undefined ? { glossaryCategory: req.glossaryCategory } : {}),
+        ...(req.useLlm !== undefined ? { useLlm: req.useLlm } : {}),
+        dataDir: app.getPath('userData'),
+      },
+      {
+        translateBatch: async (input) => {
+          if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
+          return coreTranslateBatch(input, {
+            provider,
+            config: config as AiProviderConfig,
+            memory: translationMemory,
+            knowledgeBase: sharedKnowledgeBase,
+          })
+        },
+      },
+    )
+    if (built.ok && built.dictionaryPath) {
+      lastDictionary = { path: built.dictionaryPath, pairs: [] }
+    }
+    return built
+  })
+
+  // ai:translate-file-auto — build the dictionary, then translate in one call.
+  // Same flow the Settings pane's "Build + Translate" button triggers.
+  ipcMain.handle('ai:translate-file-auto', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      inputPath?: string
+      outputPath?: string
+      sourceLang?: string
+      targetLang?: string
+      customerName?: string
+      glossaryCategory?: string
+      scale?: number
+      dictionaryPath?: string
+      settings?: AiSettings
+    }
+    if (!req.inputPath) {
+      return { ok: false, error: 'ai:translate-file-auto expected a non-empty `inputPath`' }
+    }
+    if (!req.targetLang) {
+      return { ok: false, error: 'ai:translate-file-auto expected a non-empty `targetLang`' }
+    }
+    if (!coreIsSupportedExtension(req.inputPath)) {
+      return {
+        ok: false,
+        error: `Unsupported file type; expected one of ${CORE_SUPPORTED_EXTENSIONS.join(', ')}`,
+      }
+    }
+    // Re-run path: caller already has a dictionary (typically from a previous
+    // buildDictionary pass) and does not want it rebuilt.
+    if (req.dictionaryPath) {
+      const scored = await coreAssessFileCoverage({
+        inputPath: req.inputPath,
+        dictionaryPath: req.dictionaryPath,
+      })
+      if (!scored.ok) {
+        return { ok: false, stage: 'dictionary', error: scored.error ?? 'dictionary unreadable' }
+      }
+      const fileResult = await coreTranslateFile({
+        inputPath: req.inputPath,
+        ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
+        dictionaryPath: req.dictionaryPath,
+        ...(req.scale !== undefined ? { scale: req.scale } : {}),
+      })
+      scheduleMemoryFlush()
+      return {
+        ...fileResult,
+        stage: fileResult.ok ? 'done' : 'translate',
+        dictionaryPath: req.dictionaryPath,
+        dictionaryReused: true,
+        coverage: scored.coverage,
+      }
+    }
+
+    const incoming = req.settings || loadActiveAiSettings()
+    const provider = incoming.provider
+    const config = resolveTranslateConfig(provider, incoming)
+    if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
+    await ensureKbLoaded()
+    await ensureMemoryLoaded()
+
+    const dict = await coreBuildDictionary(
+      {
+        inputPath: req.inputPath,
+        sourceLang: req.sourceLang ?? 'auto',
+        targetLang: req.targetLang,
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
+        ...(req.glossaryCategory !== undefined ? { glossaryCategory: req.glossaryCategory } : {}),
+        dataDir: app.getPath('userData'),
+      },
+      {
+        translateBatch: async (input) =>
+          coreTranslateBatch(input, {
+            provider,
+            config: config as AiProviderConfig,
+            memory: translationMemory,
+            knowledgeBase: sharedKnowledgeBase,
+          }),
+      },
+    )
+    if (!dict.ok || !dict.dictionaryPath) {
+      return { ok: false, stage: 'dictionary', error: dict.error ?? 'dictionary build failed' }
+    }
+    if (dict.dictionaryPath) {
+      lastDictionary = { path: dict.dictionaryPath, pairs: [] }
+    }
+
+    const fileResult = await coreTranslateFile({
+      inputPath: req.inputPath,
+      ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
+      dictionaryPath: dict.dictionaryPath,
+      ...(req.scale !== undefined ? { scale: req.scale } : {}),
+    })
+    scheduleMemoryFlush()
+    return {
+      ...fileResult,
+      stage: fileResult.ok ? 'done' : 'translate',
+      dictionaryPath: dict.dictionaryPath,
+      dictionary: {
+        kbEntries: dict.kbEntries,
+        llmEntries: dict.llmEntries,
+        missed: dict.missed,
+        totalSegments: dict.totalSegments,
+        elapsedMs: dict.elapsedMs,
+        segments: dict.segments,
+        warnings: dict.warnings,
+      },
+      coverage: dict.coverage,
+    }
+  })
+
+  // ai:translate-fill-gaps — translate whatever the dictionary missed and write
+  // an extended dictionary. Only the uncovered segments are sent to the model
+  // so the cost is proportional to the gap, not the file size.
+  ipcMain.handle('ai:translate-fill-gaps', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      inputPath?: string
+      sourceLang?: string
+      targetLang?: string
+      dictionaryPath?: string
+      outputPath?: string
+      maxSegments?: number
+      minChars?: number
+      customerName?: string
+      glossaryCategory?: string
+      settings?: AiSettings
+    }
+    if (!req.inputPath) {
+      return { ok: false, error: 'ai:translate-fill-gaps expected a non-empty `inputPath`' }
+    }
+    if (!req.targetLang) {
+      return { ok: false, error: 'ai:translate-fill-gaps expected a non-empty `targetLang`' }
+    }
+    const dictionaryPath = req.dictionaryPath ?? lastDictionary?.path
+    if (!dictionaryPath) {
+      return {
+        ok: false,
+        error: 'ai:translate-fill-gaps found no dictionary to extend; build one first',
+      }
+    }
+    const incoming = req.settings || loadActiveAiSettings()
+    const provider = incoming.provider
+    const config = resolveTranslateConfig(provider, incoming)
+    if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
+    await ensureKbLoaded()
+    await ensureMemoryLoaded()
+
+    const gaps = await coreFillDictionaryGaps(
+      {
+        inputPath: req.inputPath,
+        sourceLang: req.sourceLang ?? 'auto',
+        targetLang: req.targetLang,
+        dictionaryPath,
+        ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
+        ...(req.maxSegments !== undefined ? { maxSegments: req.maxSegments } : {}),
+        ...(req.minChars !== undefined ? { minChars: req.minChars } : {}),
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
+        ...(req.glossaryCategory !== undefined ? { glossaryCategory: req.glossaryCategory } : {}),
+        dataDir: app.getPath('userData'),
+      },
+      {
+        translateBatch: async (input: import('@genoffice/translation-core').TranslateBatchRequest) =>
+          coreTranslateBatch(input, {
+            provider,
+            config: config as AiProviderConfig,
+            memory: translationMemory,
+            knowledgeBase: sharedKnowledgeBase,
+          }),
+      },
+    )
+    if (gaps.ok && gaps.dictionaryPath) {
+      lastDictionary = { path: gaps.dictionaryPath, pairs: [] }
+    }
+    scheduleMemoryFlush()
+    return gaps
+  })
+
+  // ai:translate-file — pure rewrite from an existing dictionary. The two-
+  // pass UI flow uses this for the "translate" half after the user has
+  // reviewed or extended the dictionary.
+  ipcMain.handle('ai:translate-file', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      inputPath?: string
+      outputPath?: string
+      dictionaryPath?: string
+      scale?: number
+      timeoutMs?: number
+    }
+    if (!req.inputPath) {
+      return { ok: false, error: 'ai:translate-file expected a non-empty `inputPath`' }
+    }
+    if (!coreIsSupportedExtension(req.inputPath)) {
+      return {
+        ok: false,
+        error: `Unsupported file type; expected one of ${CORE_SUPPORTED_EXTENSIONS.join(', ')}`,
+      }
+    }
+    return coreTranslateFile({
+      inputPath: req.inputPath,
+      ...(req.outputPath !== undefined ? { outputPath: req.outputPath } : {}),
+      ...(req.dictionaryPath !== undefined ? { dictionaryPath: req.dictionaryPath } : {}),
+      ...(req.scale !== undefined ? { scale: req.scale } : {}),
+      ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+    })
+  })
+
+  // ai:translate-dictionary-status — which dictionary snippet translation will
+  // reuse. Without this the UI would show a bare "reuse dictionary" toggle and
+  // the user could not tell which file it refers to.
+  ipcMain.handle('ai:translate-dictionary-status', () => ({
+    ok: true,
+    dictionary: lastDictionary
+      ? { path: lastDictionary.path, terms: lastDictionary.pairs.length }
+      : null,
+  }))
+
+  ipcMain.handle('ai:translate-file-status', () => {
+    const location = coreResolveTranslateSkills()
+    return {
+      ok: true,
+      available: location.source !== 'missing',
+      source: location.source,
+      skillDir: location.skillDir,
+      pythonPath: location.pythonPath,
+      supportedExtensions: [...CORE_SUPPORTED_EXTENSIONS],
+    }
+  })
+
+  ipcMain.handle('ai:translate-file-output-path', (_event, inputPath: unknown) => {
+    // Same guard as the web-server handler: `String(123)` produced a
+    // believable "123_translated" path for a value that never named a file.
+    if (typeof inputPath !== 'string' || !inputPath.trim()) {
+      return { ok: false, error: 'expected a non-empty inputPath' }
+    }
+    return { ok: true, outputPath: coreDefaultOutputPath(inputPath) }
+  })
+
+  // home:translate-snippet — quick text-paste translation for the Settings pane.
+  // Wraps translateOne with a string input instead of an editor range, and
+  // forwards the customer's translation memory so memory-hit responses are
+  // surfaced to the UI for the "saved N ms · cache" badge.
+  ipcMain.handle('home:translate-snippet', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      text?: string
+      sourceLang?: string
+      targetLang?: string
+      customerName?: string
+      dictionaryPath?: string
+      useDictionary?: boolean
+      settings?: AiSettings
+    }
+    if (req.text !== undefined && typeof req.text !== 'string') {
+      return { ok: false, error: 'home:translate-snippet expected `text` to be a string' }
+    }
+    const text = (req.text ?? '').trim()
+    if (!text) return { ok: false, error: 'home:translate-snippet expected non-empty `text`' }
+    if (!req.targetLang) {
+      return { ok: false, error: 'home:translate-snippet expected non-empty `targetLang`' }
+    }
+    const incoming = req.settings || loadActiveAiSettings()
+    const provider = incoming.provider
+    const config = resolveTranslateConfig(provider, incoming)
+    if (!config) return { ok: false, error: `AI provider "${provider}" not configured` }
+    await ensureKbLoaded()
+    await ensureMemoryLoaded()
+
+    const dictionary =
+      req.useDictionary === false
+        ? null
+        : req.dictionaryPath
+          ? loadDictionary(req.dictionaryPath)
+          : lastDictionary
+    const dictionaryPairs = dictionary?.pairs ?? []
+    const dictionarySources = new Set(dictionaryPairs.map((pair) => pair.source))
+
+    const started = Date.now()
+    const result = await coreTranslateOne(
+      {
+        instruction: text,
+        sourceLang: req.sourceLang,
+        targetLang: req.targetLang,
+        ...(req.customerName ? { glossaryCategory: req.customerName } : {}),
+      },
+      {
+        provider,
+        config: config as AiProviderConfig,
+        memory: translationMemory,
+        knowledgeBase: sharedKnowledgeBase,
+        ...(dictionaryPairs.length > 0 ? { dictionary: dictionaryPairs } : {}),
+      },
+    )
+    scheduleMemoryFlush()
+    const allTerms = result.matchedTerms ?? []
+    const dictionaryHits = allTerms.filter((term) => dictionarySources.has(term))
+    const kbTerms = allTerms.filter((term) => !dictionarySources.has(term))
+    return {
+      ok: result.ok,
+      translation: result.translated ?? '',
+      status: result.status,
+      matchedTerms: kbTerms,
+      dictionaryHits,
+      dictionary: dictionary
+        ? { path: dictionary.path, terms: dictionaryPairs.length, hits: dictionaryHits.length }
+        : null,
+      sourceLang: req.sourceLang,
+      targetLang: req.targetLang,
+      elapsedMs: Date.now() - started,
+      error: result.error,
+    }
+  })
+
+  // home:ai-capabilities — report per-feature availability so the Settings
+  // pane's capability badges show an honest picture (keyed provider if the
+  // user supplied a key, DuckDuckGo as the zero-config fallback).
+  ipcMain.handle('home:ai-capabilities', () => {
+    const settings = loadActiveAiSettings()
+    type CapabilityReport = {
+      available: boolean
+      via: string
+      fallback?: string
+      configured: boolean
+      note?: string
+    }
+    const report: Record<string, CapabilityReport> = {}
+
+    const searchSettings = settings.search
+    const searchProvider = searchSettings?.provider ?? 'genspark'
+    const searchKeyed =
+      searchProvider !== 'genspark' &&
+      !!searchSettings?.providers?.[searchProvider as 'serper' | 'tavily']?.apiKey
+    report.search = {
+      available: true,
+      via: searchKeyed ? searchProvider : 'duckduckgo',
+      fallback: searchKeyed ? 'duckduckgo' : undefined,
+      configured: searchKeyed || settings.gskToolsEnabled !== false,
+      note: searchKeyed
+        ? undefined
+        : 'DuckDuckGo HTML endpoint works without a key; install a Serper/Tavily key for richer results.',
+    }
+    report.image_search = {
+      available: true,
+      via: searchKeyed ? searchProvider : 'duckduckgo',
+      fallback: searchKeyed ? 'duckduckgo' : undefined,
+      configured: searchKeyed || settings.gskToolsEnabled !== false,
+      note: searchKeyed ? undefined : 'DuckDuckGo image endpoint works without a key.',
+    }
+    const mediaSettings = settings.media
+    const imageProvider = mediaSettings?.imageProvider ?? 'genspark'
+    const imageKeyed =
+      imageProvider !== 'genspark' &&
+      !!mediaSettings?.providers?.[imageProvider]?.apiKey
+    report.image_generation = {
+      available: imageKeyed || settings.gskToolsEnabled !== false,
+      via: imageKeyed ? imageProvider : settings.gskToolsEnabled === false ? 'none' : 'genspark',
+      configured: imageKeyed || settings.gskToolsEnabled !== false,
+      note: imageKeyed ? undefined : 'Add a key for OpenAI/Gemini/Doubao/etc. to generate images.',
+    }
+    const analysisProvider = mediaSettings?.analysisProvider ?? 'genspark'
+    const analysisKeyed =
+      analysisProvider !== 'genspark' &&
+      !!mediaSettings?.providers?.[analysisProvider]?.apiKey
+    report.media_analysis = {
+      available: analysisKeyed || settings.gskToolsEnabled !== false,
+      via: analysisKeyed
+        ? analysisProvider
+        : settings.gskToolsEnabled === false
+          ? 'none'
+          : 'genspark',
+      configured: analysisKeyed || settings.gskToolsEnabled !== false,
+      note: analysisKeyed ? undefined : 'Add a key for OpenAI/Gemini/Claude/etc. to analyze images and video.',
+    }
+    return {
+      ok: true,
+      capabilities: report,
+      provider: settings.provider,
+      gskToolsEnabled: settings.gskToolsEnabled !== false,
     }
   })
 }
@@ -3246,6 +4062,11 @@ export function registerDocsIpc(): void {
   })
 
   ipcMain.handle('docs:open-path', (event, filePath: string) => loadDocx(filePath, event.sender.id))
+  ipcMain.handle('docs:read-path', async (_event, filePath: string) => {
+    if (typeof filePath !== 'string' || !/\.docx$/i.test(filePath)) return null
+    const bytes = await readFile(filePath)
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  })
 
   // w:altChunk HTML: the same html2docx chain as the HTML app's export, in a
   // hidden window; the renderer parses the result and shows its blocks
@@ -4640,6 +5461,31 @@ export function startDocsStandalone(): void {
     openExternalDocx(findDocxPath(argv))
     mainWindow?.show()
     mainWindow?.focus()
+  })
+
+  // Web dual-protocol: intercepts every registration below, so it must come
+  // first; loopback-only and disabled silently when the port is taken.
+  installHttpIpcBridge({
+    ipcMain,
+    port: Number(process.env.DOCS_IPC_PORT) || 5273,
+    staticDir: resolve(__dirname, '../renderer'),
+    // Every channel below now has a browser equivalent in the app's
+    // renderer web-bridge (file pickers, downloads, print, clipboard, fonts,
+    // fullscreen, tabs), so nothing is blocked over HTTP anymore.
+    nativeOnlyChannels: [
+      'docs:open',
+      'docs:pick-image',
+      'docs:save-as',
+      'docs:print',
+      'docs:print-pdf-buffer',
+      'docs:export-pdf',
+      'docs:copy-image-to-clipboard',
+      'docs:font-metrics',
+      'files:pick',
+      'win:new',
+      'win:list',
+      'win:focus',
+    ],
   })
 
   registerAiIpc()

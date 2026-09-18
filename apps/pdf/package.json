@@ -38,5 +38,9 @@
     "vite-plugin-static-copy": "^3.0.0",
     "vitest": "^4.1.11"
   },
-  "author": "GenOffice"
+  "author": "GenOffice",
+  "dependencies": {
+    "@genoffice/ipc-bridge": "*",
+    "@genoffice/chat-runtime": "*"
+  }
 }

@@ -7308,12 +7308,104 @@ body.docs-crop-active
   background: var(--color-bg-page);
 }
 
+/* Quick-action chips above the input: clickable prompts that fill the composer.
+ * Hidden while the AI is busy so users don't queue mid-stream. */
+.ai-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.ai-quick-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-30);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-page);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.ai-quick-action:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-subtle);
+}
+
+.ai-quick-action:active {
+  filter: brightness(0.88);
+  transform: scale(0.98);
+}
+
+.ai-quick-action-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-text-secondary);
+}
+
 .ai-composer-top {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
   margin-bottom: 7px;
+}
+
+/* Active skill picked through the `/` palette: stays for the following turns
+ * until cleared, so it must be visible above the input. */
+.ai-skill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 12px 0;
+}
+
+.ai-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 9px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-30);
+  background: var(--accent-soft);
+  font-size: var(--text-caption);
+  line-height: 1.4;
+  color: var(--color-text-primary);
+}
+
+.ai-skill-chip-label {
+  color: var(--color-text-tertiary);
+}
+
+.ai-skill-chip-name {
+  font-weight: 600;
+}
+
+.ai-skill-chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.ai-skill-chip-clear:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
 }
 
 /* scope chip — guidance accent (blue is reserved for guidance/onboarding) */

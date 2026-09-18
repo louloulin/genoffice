@@ -1,4 +1,38 @@
-export { AiComposer } from './AiComposer'
+export {
+  AiComposer,
+  type ComposerCommandPick,
+  type ComposerModeOption,
+} from './AiComposer'
+export { AiComposerMenu, type AiComposerMenuProps } from './AiComposerMenu'
+// Chat composer primitives: the slash-command model and the Ask/Craft/Plan
+// mode directives. Pure logic, so apps can also unit-test their command tables.
+export {
+  activeSlashQuery,
+  applyComposerCommand,
+  filterComposerCommands,
+  firstEnabledIndex,
+  flattenComposerGroups,
+  groupComposerCommands,
+  nextEnabledIndex,
+  type ComposerCommand,
+  type ComposerCommandGroup,
+  type ComposerCommandKind,
+  type SlashQuery,
+} from './chat/composer-commands'
+export {
+  CHAT_MODES,
+  CHAT_MODE_SPECS,
+  DEFAULT_CHAT_MODE,
+  chatModeDirective,
+  chatModeSpec,
+  composeSystemSuffix,
+  isChatMode,
+  isReadOnlyMode,
+  normalizeChatMode,
+  skillDirective,
+  type ChatMode,
+  type ChatModeSpec,
+} from './chat/modes'
 export { AiScopeQuote, type AiScopeQuoteData } from './AiScopeQuote'
 export {
   AI_CUSTOM_FONT_MAX_PX,
@@ -49,7 +83,7 @@ export {
   type RibbonCollapseLabels,
 } from './ribbon-collapse'
 export { AiTypingIndicator } from './AiTypingIndicator'
-export { IconSend, IconStop, type IconProps } from './icons'
+export { IconMic, IconSend, IconStop, type IconProps } from './icons'
 export { Markdown, type MarkdownNav } from './Markdown'
 export { isSymbolFontFamily } from './symbol-fonts'
 export { BUILTIN_FONT_FAMILIES, fontFamiliesFor } from './font-list'
@@ -92,3 +126,100 @@ export {
   type AutoSaveDefault,
   type AutoSaveDefaultApi,
 } from './auto-save-pref'
+
+// M3 — shared AI runtime primitives (replaces per-app inline copies of
+// run headers, tool timelines, change-plan summaries, error recovery,
+// attachment strips, and provider badges).
+export {
+  AiRunHeader,
+  type AiRunHeaderProps,
+} from './AiRunHeader'
+export {
+  AiProviderBadge,
+  type AiProviderBadgeProps,
+} from './AiProviderBadge'
+export {
+  AiAttachmentStrip,
+  type AiAttachmentStripProps,
+} from './AiAttachmentStrip'
+export {
+  AiToolTimeline,
+  type AiToolTimelineProps,
+} from './AiToolTimeline'
+export {
+  AiChangeSummary,
+  type AiChangeSummaryProps,
+} from './AiChangeSummary'
+export {
+  AiErrorRecovery,
+  type AiErrorRecoveryProps,
+} from './AiErrorRecovery'
+
+// Inline AI primitives (selection-anchored launcher, translate dialog, change marker)
+export {
+  AiInlineLauncher,
+  type AiInlineLauncherProps,
+  type AiInlineLauncherStrings,
+  type AiInlineLauncherAnchorRect,
+  type AiInlineAction,
+} from './AiInlineLauncher'
+export {
+  TranslateDialog,
+  type TranslateDialogProps,
+  type TranslateDialogStrings,
+  type TranslateLanguageOption,
+} from './TranslateDialog'
+export { ChangeMarker, type ChangeMarkerProps } from './ChangeMarker'
+
+// Extended icon set used by the runtime primitives.
+export {
+  IconAttachment,
+  IconCheck,
+  IconClose,
+  IconEdit,
+  IconRetry,
+  IconSparkle,
+  IconStopFilled,
+  IconTool,
+  IconWarning,
+} from './icons'
+
+// ── @-mention picker (Cursor-style) ──────────────────────────────────────
+export {
+  AiMentionMenu,
+  type AiMentionMenuProps,
+} from './AiMentionMenu'
+export {
+  activeMentionQuery,
+  applyMentionPick,
+  filterMentionEntries,
+  flattenMentionGroups,
+  indexOfMention,
+  isVoiceInputAvailable,
+  mentionInsertText,
+  nextEnabledMentionIndex,
+  parseMentionTokens,
+  useEditLast,
+  useVoiceInput,
+  findLastUserText,
+  computeTokenCounter,
+  estimateTokens,
+  type MentionEntry,
+  type MentionFilterResult,
+  type MentionGroup,
+  type MentionKind,
+  type MentionPick,
+  type MentionQuery,
+  type MentionToken,
+  type CounterTone,
+  type TokenCounter,
+  type TokenCounterOptions,
+  type UseVoiceInputOptions,
+  type UseVoiceInputReturn,
+  type UseEditLastOptions,
+  type UseEditLastReturn,
+  type EditLastEntry,
+} from './chat/index'
+
+// ── Follow-up suggestion chips (under assistant message) ────────────────
+export { SuggestionChips, type Suggestion, type SuggestionChipsProps } from './SuggestionChips'

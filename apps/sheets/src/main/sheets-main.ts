@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import { basename, dirname, isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 import {
   app,
@@ -55,6 +55,7 @@ import {
 } from '@genoffice/electron-utils'
 import { createI18n, getUiLang, type Lang, normalizeLang, setUiLang } from '@genoffice/i18n'
 import { ProjectStore } from '@genoffice/project-store'
+import { installHttpIpcBridge } from '@genoffice/ipc-bridge'
 
 import {
   AiCreditsError,
@@ -76,6 +77,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
+import { translateOne as translateOneCore } from '@genoffice/translation-core'
 import {
   csvToXlsxBuffer,
   decodeCsvBuffer,
@@ -1541,7 +1543,8 @@ export function setSheetsShellWindow(win: BrowserWindow | null): void {
 }
 
 interface SheetsTabSession {
-  readonly webContents: WebContents
+  /** Real tab webContents; absent for the HTTP bridge's virtual sender. */
+  readonly webContents?: WebContents
   readonly client: XlsxSidecarClient
   readonly sessions: Map<string, SessionInfo>
   readonly aiStreams: Map<string, AbortController>
@@ -1566,8 +1569,22 @@ function startPastedTempCleanup(): void {
 }
 
 function sessionFor(event: IpcMainInvokeEvent): SheetsTabSession {
-  const entry = sheetsTabs.get(event.sender.id)
-  if (!entry) throw new Error('Untrusted IPC sender.')
+  const senderId = event.sender.id
+  let entry = sheetsTabs.get(senderId)
+  if (!entry) {
+    // Web dual-protocol: the HTTP bridge's virtual sender (id -1) has no real
+    // webContents, so it never went through registerSheetsSession. Give it a
+    // session backed by the shared sidecar so the web version can open, edit
+    // and save workbooks exactly like a desktop tab.
+    if (senderId !== -1 || !sidecar) throw new Error('Untrusted IPC sender.')
+    entry = {
+      client: sidecar,
+      sessions: new Map(),
+      aiStreams: new Map(),
+      saveTransfers: new SaveEditsTransferStore(),
+    }
+    sheetsTabs.set(senderId, entry)
+  }
   return entry
 }
 
@@ -1584,7 +1601,11 @@ function resolveTransferredEdits(
 }
 
 function dialogParent(event: IpcMainInvokeEvent): BrowserWindow | undefined {
-  return sheetsShellWindow ?? BrowserWindow.fromWebContents(event.sender) ?? undefined
+  if (sheetsShellWindow) return sheetsShellWindow
+  // Web dual-protocol: the HTTP bridge's virtual sender is not a real
+  // WebContents — Electron's fromWebContents would probe it and throw.
+  if (event.sender.id === -1) return undefined
+  return BrowserWindow.fromWebContents(event.sender) ?? undefined
 }
 
 async function openFileDialog(event: IpcMainInvokeEvent, options: OpenDialogOptions) {
@@ -2279,6 +2300,25 @@ export function registerSheetsIpc(): void {
   if (coreIpcRegistered) return
   coreIpcRegistered = true
 
+  // Web dual-protocol: intercepts every registration below, so it must come
+  // first; loopback-only and disabled silently when the port is taken.
+  void installHttpIpcBridge({
+    ipcMain,
+    port: Number(process.env.SHEETS_IPC_PORT) || 5274,
+    staticDir: resolve(__dirname, '../renderer'),
+    // Every channel below now has a browser equivalent in the app's
+    // renderer web-bridge (file pickers, downloads, print, clipboard, fonts,
+    // fullscreen, tabs), so nothing is blocked over HTTP anymore.
+    nativeOnlyChannels: [
+      'workbook:select',
+      'workbook:select-for-merge',
+      'workbook:csv-save-confirm',
+      'sheets:files-pick',
+      'sheets:capture-screen-sources',
+      'sheets:capture-screen-source',
+    ],
+  })
+
   // Registered here (not in registerSheetsAiIpc, skipped in shell mode):
   // slides' ai:generate-image only exists once a slides view opens, so sheets
   // owns its channel the way pdf does.
@@ -2290,6 +2330,65 @@ export function registerSheetsIpc(): void {
         ...(op?.aspectRatio ? { aspectRatio: String(op.aspectRatio) } : {}),
       }),
   )
+
+  function castTranslateRange(
+    raw: unknown,
+  ): import('@genoffice/translation-core').EditorRange | null {
+    if (!raw || typeof raw !== 'object') return null
+    const r = raw as { from?: number; to?: number; scope?: string }
+    const scope =
+      r.scope === 'selection' ||
+      r.scope === 'document' ||
+      r.scope === 'paragraph' ||
+      r.scope === 'cell' ||
+      r.scope === 'table'
+        ? r.scope
+        : undefined
+    return { from: r.from, to: r.to, scope }
+  }
+
+  // ai:translate — one-shot translate for the sheets selection assistant.
+  // Sheets previously declared `IPC_CHANNELS.aiTranslate` but never registered
+  // a main-process handler; the renderer's `window.desktopApi?.aiTranslate?.({...})`
+  // silently no-op'd. Real implementation lives in @genoffice/translation-core
+  // so docs / sheets / slides / web-server share the same prompt + memory.
+  ipcMain.handle('ai:translate', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      instruction?: string
+      sourceLang?: string
+      targetLang?: string
+      preserveFormat?: boolean
+      range?: { from?: number; to?: number; scope?: string } | null
+    }
+    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
+    const settings = resolveAiSettings(stored, defaultAiSettings())
+    settings.provider = activeProvider(settings)
+    const provider: AiProviderId = settings.provider
+    let config = settings.providers?.[provider]
+    if (provider === 'genspark' && config && !config.apiKey) {
+      // genspark key lives in the gsk login state, not the settings file
+      try {
+        const gskMod = await import('@genoffice/ai-search')
+        config = { ...config, apiKey: gskMod.gskApiKey() }
+      } catch {
+        // fall through with empty key — translateOne returns a clean error
+      }
+    }
+    const result = await translateOneCore(
+      {
+        instruction: req.instruction ?? '',
+        sourceLang: req.sourceLang,
+        targetLang: req.targetLang ?? '',
+        preserveFormat: req.preserveFormat,
+        range: castTranslateRange(req.range),
+      },
+      { provider, config: config ?? { apiKey: '', model: '' } },
+    )
+    if (result.error && isAiOverloadedError(result.error)) {
+      return { ...result, error: 'AI service is busy — please retry shortly.' }
+    }
+    return result
+  })
 
   ipcMain.on(IPC_CHANNELS.recoveryPromptReply, (event, restore: unknown) => {
     recoveryPromptWaiters.get(event.sender.id)?.(restore === true ? 'restore' : 'discard')
@@ -2425,6 +2524,47 @@ export function registerSheetsIpc(): void {
       failHeadlessExport(event.sender.id, `the input workbook did not open (${String(err)})`)
       throw err
     }
+  })
+
+  // Web dual-protocol: the browser cannot show a native open dialog, so the
+  // web bridge uploads the picked file to a temp path and opens it here.
+  ipcMain.handle('workbook:open-path', async (event, path: unknown) => {
+    if (typeof path !== 'string' || !path) return null
+    const entry = sessionFor(event)
+    const prepared = await prepareWorkbookForOpen(
+      entry.client,
+      path,
+      event.sender,
+      dialogParent(event),
+    )
+    if (event.sender.isDestroyed()) {
+      if (prepared.importTempDir !== undefined) {
+        await cleanupImportTempDirectory(app.getPath('temp'), prepared.importTempDir)
+      }
+      return null
+    }
+    const result = await openWorkbookSession(entry.client, prepared.openPath, entry.sessions, {
+      suggestSaveAs: prepared.suggestSaveAs,
+      csvImport: prepared.csvImport,
+      csvSourcePath: prepared.csvSourcePath,
+      importTempDir: prepared.importTempDir,
+      restoreTarget: prepared.restoreTarget,
+    })
+    if (event.sender.isDestroyed()) {
+      const session = entry.sessions.get(result.sessionId)
+      entry.sessions.delete(result.sessionId)
+      if (session !== undefined) {
+        await cleanupSessionResources({
+          tempRoot: app.getPath('temp'),
+          snapshotPath: session.snapshotPath,
+          importTempDir: session.importTempDir,
+          closeSidecar: () => entry.client.close(result.sessionId),
+        })
+      }
+      return null
+    }
+    workbookOpenedHook?.(event.sender, path)
+    return result
   })
 
   // Merge sources: same open pipeline as selectWorkbook, but multi-select,

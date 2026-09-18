@@ -18,7 +18,7 @@ export const ru = {
   aiQcStopped: 'Проверка макета остановлена',
   aiQcCapped: 'Ещё {count} стр. не проверено (лимит за один запуск)',
   aiGskLoginBtn: 'Войти в Genspark',
-  aiPanelTitle: 'Genspark',
+  aiPanelTitle: 'AI Assistant',
   aiOpenAssistant: 'Открыть ИИ-помощника',
   aiFactCheckBtn: 'ИИ-фактчекинг',
   aiFactCheckPrompt:
@@ -64,6 +64,7 @@ export const ru = {
   aiChipShorten: 'Сократить',
   aiChipExpand: 'Расширить',
   aiChipVerify: 'Проверить факты',
+  aiChipTranslate: 'Перевести',
   aiChipReplaceImage: 'Заменить изображение',
   aiChipRemoveBg: 'Убрать фон',
   aiChipRecolor: 'Изменить цвета',
@@ -223,4 +224,8 @@ export const ru = {
   aiSumSaveTemplate: 'Сохранён шаблон стиля «{name}»',
   aiSumTemplatesEmpty: 'Шаблоны стиля (пусто)',
   aiSumListTemplates: 'Показано шаблонов стиля: {count}',
+  aiUnknownError: 'Неизвестная ошибка',
+  aiTimeoutError: 'Тайм-аут запроса ИИ: сеть не отвечает, выполнение остановлено. Проверьте подключение и повторите попытку',
+  aiOverloadedError: 'Сервис ИИ сейчас перегружен — повторите попытку чуть позже',
+  aiNetworkError: 'Проблема с сетью: не удалось подключиться к сервису ИИ. Проверьте подключение и повторите попытку',
 } satisfies Record<keyof typeof zh, string>

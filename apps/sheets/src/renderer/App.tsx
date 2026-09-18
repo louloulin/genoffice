@@ -138,7 +138,7 @@ import {
   type CrossHighlightHandle,
 } from './cross-highlight'
 import type { ApplyOutcome, ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
-import { createElectronTransport } from './ai/transport'
+import { createAiTransport } from './ai/transports'
 import {
   MAX_READ_RANGE_CELLS,
   type ActiveSheetInfo,
@@ -1113,7 +1113,7 @@ export function App(): React.JSX.Element {
   const agentLoopRef = useRef<AgentLoop | null>(null)
   if (!agentLoopRef.current) {
     agentLoopRef.current = new AgentLoop({
-      transport: createElectronTransport(() => aiSettingsRef.current!),
+      transport: createAiTransport(() => aiSettingsRef.current!),
       systemSuffix: aiLangDirective,
       skill: composeSkills('sheets+files', '', [
         createWorkbookSkill(sheetsSkillDeps()),
@@ -4230,6 +4230,19 @@ export function App(): React.JSX.Element {
         aiScopeLocked={aiScopeChip.locked}
         aiSelectionAskAnchor={aiSelectionAskAnchor}
         onAiSelectionAskDismiss={() => setAiSelectionAskAnchor(null)}
+        onAiSelectionAskTranslate={async (instruction) => {
+          try {
+            const r = await window.desktopApi?.aiTranslate?.({
+              instruction,
+              targetLang: 'zh-CN',
+              preserveFormat: true,
+            })
+            if (!r?.ok) return null
+            return r.translated ?? null
+          } catch {
+            return null
+          }
+        }}
         onAiScopeDismiss={() => {
           setAiScopeDismissed(true)
           setAiSelectionAskAnchor(null)
