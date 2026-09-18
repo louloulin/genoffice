@@ -77,11 +77,13 @@ export function registerSheetsHandlers(): void {
   // the Electron main process owns); the empty fallback only fires if the
   // sidecar is unreachable or the session expired.
   registerHandle('workbook:read-range', async (_event: unknown, request: unknown) => {
-    const req = request as {
-      sessionId?: string
-      sheetId?: string
-      range?: { startRow: number; endRow: number; startColumn: number; endColumn: number }
-    } | undefined
+    const req = request as
+      | {
+          sessionId?: string
+          sheetId?: string
+          range?: { startRow: number; endRow: number; startColumn: number; endColumn: number }
+        }
+      | undefined
     const range = req?.range
     const rows = range ? range.endRow - range.startRow + 1 : 0
     if (!req?.sessionId || !req.sheetId || !range) {
@@ -111,22 +113,37 @@ export function registerSheetsHandlers(): void {
     webp: 'image/webp',
   }
   registerHandle('sheets:files-add', (_event: unknown, paths: unknown) => {
-    const values = Array.isArray(paths) ? paths.filter((path): path is string => typeof path === 'string') : []
+    const values = Array.isArray(paths)
+      ? paths.filter((path): path is string => typeof path === 'string')
+      : []
     return values.map((path) => {
       if (!existsSync(path)) return { path, ok: false, error: 'file not found' }
       const info = statSync(path)
       return { path, ok: info.isFile(), name: basename(path), sizeBytes: info.size }
     })
   })
-  registerHandle('sheets:files-read', (_event: unknown, path: unknown, offset: unknown, maxChars: unknown) => {
-    if (typeof path !== 'string' || !existsSync(path)) return { ok: false, error: 'file not found' }
-    const ext = extname(path).slice(1).toLowerCase()
-    if (imageMime[ext]) return { ok: false, error: 'image has no text' }
-    const text = readFileSync(path, 'utf8')
-    const start = Math.max(0, Number.isFinite(Number(offset)) ? Math.floor(Number(offset)) : 0)
-    const size = Math.min(48000, Math.max(1, Number.isFinite(Number(maxChars)) ? Math.floor(Number(maxChars)) : 1))
-    return { ok: true, name: basename(path), totalChars: text.length, offset: start, text: text.slice(start, start + size) }
-  })
+  registerHandle(
+    'sheets:files-read',
+    (_event: unknown, path: unknown, offset: unknown, maxChars: unknown) => {
+      if (typeof path !== 'string' || !existsSync(path))
+        return { ok: false, error: 'file not found' }
+      const ext = extname(path).slice(1).toLowerCase()
+      if (imageMime[ext]) return { ok: false, error: 'image has no text' }
+      const text = readFileSync(path, 'utf8')
+      const start = Math.max(0, Number.isFinite(Number(offset)) ? Math.floor(Number(offset)) : 0)
+      const size = Math.min(
+        48000,
+        Math.max(1, Number.isFinite(Number(maxChars)) ? Math.floor(Number(maxChars)) : 1),
+      )
+      return {
+        ok: true,
+        name: basename(path),
+        totalChars: text.length,
+        offset: start,
+        text: text.slice(start, start + size),
+      }
+    },
+  )
   registerHandle('sheets:files-read-image', (_event: unknown, path: unknown) => {
     if (typeof path !== 'string' || !existsSync(path)) return { ok: false, error: 'file not found' }
     const ext = extname(path).slice(1).toLowerCase()
@@ -136,15 +153,24 @@ export function registerSheetsHandlers(): void {
     if (bytes.length > 5 * 1024 * 1024) return { ok: false, error: 'image is too large' }
     return { ok: true, base64: bytes.toString('base64'), mime }
   })
-  registerHandle('sheets:files-add-pasted-image', (_event: unknown, data: unknown, ext: unknown) => {
-    const cleanExt = typeof ext === 'string' ? ext.toLowerCase().replace(/^\./, '') : ''
-    const bytes = data instanceof ArrayBuffer ? Buffer.from(data) : ArrayBuffer.isView(data) ? Buffer.from(data.buffer, data.byteOffset, data.byteLength) : null
-    if (!bytes || !imageMime[cleanExt] || bytes.length === 0 || bytes.length > 20 * 1024 * 1024) return { accepted: [], rejected: ['invalid image'] }
-    const name = `pasted-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${cleanExt}`
-    const path = join(FILES_DIR, name)
-    writeFileSync(path, bytes)
-    return { accepted: [{ path, name, ext: cleanExt, sizeBytes: bytes.length }], rejected: [] }
-  })
+  registerHandle(
+    'sheets:files-add-pasted-image',
+    (_event: unknown, data: unknown, ext: unknown) => {
+      const cleanExt = typeof ext === 'string' ? ext.toLowerCase().replace(/^\./, '') : ''
+      const bytes =
+        data instanceof ArrayBuffer
+          ? Buffer.from(data)
+          : ArrayBuffer.isView(data)
+            ? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+            : null
+      if (!bytes || !imageMime[cleanExt] || bytes.length === 0 || bytes.length > 20 * 1024 * 1024)
+        return { accepted: [], rejected: ['invalid image'] }
+      const name = `pasted-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${cleanExt}`
+      const path = join(FILES_DIR, name)
+      writeFileSync(path, bytes)
+      return { accepted: [{ path, name, ext: cleanExt, sizeBytes: bytes.length }], rejected: [] }
+    },
+  )
 
   registerHandle('workbook:open-for-merge', (_event: unknown, paths: unknown) => {
     if (!Array.isArray(paths) || paths.length === 0 || paths.length > 20) {
@@ -154,13 +180,56 @@ export function registerSheetsHandlers(): void {
       if (typeof path !== 'string' || !existsSync(path)) {
         // A caller-supplied path that does not exist is a 404, not a server
         // fault: the renderer shows "file moved or deleted" for this case.
-        throw new NotFoundError('workbook:open-for-merge', `Merge source not found: ${String(path)}`)
+        throw new NotFoundError(
+          'workbook:open-for-merge',
+          `Merge source not found: ${String(path)}`,
+        )
       }
       return { path, name: basename(path) }
     })
   })
-}
 
+  // ----- Save (web-build stubs) ---------------------------------------------
+  //
+  // The desktop flow applies workbook edits through the Rust xlsx-sidecar
+  // (sheets-main.ts:3005 ipcMain.handle('workbook:save', ...)) — the sidecar
+  // reads the .xlsx, applies the JSON editsJson patch, and writes the file
+  // back. The web build's `WebSheetsSidecar` (sheets/sidecar.ts) only wraps
+  // `open` and `read_range` because the save path needs a `save` command
+  // that doesn't exist in the web sidecar's protocol yet.
+  //
+  // Until the sidecar grows that command, register these channels as honest
+  // stubs: returning `IPC_NO_HANDLER` would silently swallow the save click
+  // in the renderer. An explicit `WEB_UNSUPPORTED` lets the renderer show a
+  // real "save is not available in the web build yet" message instead of
+  // pretending the save succeeded.
+  const WEB_SAVE_UNSUPPORTED =
+    'WEB_UNSUPPORTED: workbook edits require the Rust xlsx-sidecar save command (web build limitation)'
+
+  registerHandle('workbook:save', () => ({
+    ok: false,
+    canceled: true,
+    error: WEB_SAVE_UNSUPPORTED,
+  }))
+
+  registerHandle('workbook:save-as', () => ({
+    ok: false,
+    canceled: true,
+    error: WEB_SAVE_UNSUPPORTED,
+  }))
+
+  registerHandle('workbook:save-edits-begin', () => ({ ok: false, error: WEB_SAVE_UNSUPPORTED }))
+  registerHandle('workbook:save-edits-chunk', () => ({ ok: false, error: WEB_SAVE_UNSUPPORTED }))
+  registerHandle('workbook:save-edits-abort', () => ({ ok: true, aborted: true }))
+
+  // write-recovery-copy is the renderer's auto-save snapshot: drop it on the
+  // floor rather than promise a recovery we cannot honour without the sidecar.
+  registerHandle('workbook:write-recovery', () => ({ ok: false, error: WEB_SAVE_UNSUPPORTED }))
+
+  // auto-rename keeps a fresh filename in sync with edits; without save it
+  // can't make sense either.
+  registerHandle('workbook:auto-rename', () => null)
+}
 
 function emptyRange(endRow: number, rows: number): Record<string, unknown> {
   return {
@@ -185,7 +254,10 @@ function emptyRange(endRow: number, rows: number): Record<string, unknown> {
   }
 }
 
-function normalizeRangeResult(result: Record<string, unknown>, endRow: number): Record<string, unknown> {
+function normalizeRangeResult(
+  result: Record<string, unknown>,
+  endRow: number,
+): Record<string, unknown> {
   // The xlsx-sidecar returns rows / cells / merges / hyperlinks / etc. directly
   // in the WorkbookRangeResult shape (workbookRangeResultSchema). Forward as-is
   // and only fill in missing pagination markers the renderer expects.

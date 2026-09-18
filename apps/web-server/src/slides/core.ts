@@ -3,14 +3,11 @@
  * save, save-as, export-pdf, consume-pending-open, font-download/install,
  * insert-model3d. Persistence uses `slides-recent.json`.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { FILES_DIR, loadRecentSlides, registerHandle, saveRecentSlides } from '../common/index'
 import { openPptx } from '@genoffice/pptx-engine'
-import {
-  buildRenderSlide,
-  HeuristicMetrics,
-} from '@genoffice/pptx-render'
+import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
 import { parseTheme } from '@genoffice/pptx-engine'
 import { displayMime } from '../../../slides/src/main/media-mime'
 import { neutralizeJpegOrientation } from '../../../slides/src/main/jpeg-orientation'
@@ -148,8 +145,13 @@ export function registerSlidesCoreHandlers(): void {
 
   registerHandle(
     'slides:save',
-    async (_event: unknown, id?: unknown, path?: unknown, data?: unknown) => {
+    async (_event: unknown, _id?: unknown, path?: unknown, data?: unknown) => {
       if (data && typeof path === 'string') {
+        // Re-create the parent before each write so an rm -rf of DATA_DIR
+        // does not ENOENT the first save. The renderer is expected to keep
+        // passing a FILES_DIR-resident path (set by slides:save-as) so the
+        // existing bytes are overwritten in place.
+        mkdirSync(dirname(path), { recursive: true })
         writeFileSync(path, Buffer.from(data as ArrayBuffer))
       }
       return { ok: true, path: typeof path === 'string' ? path : undefined }
@@ -164,6 +166,7 @@ export function registerSlidesCoreHandlers(): void {
       const path = join(FILES_DIR, `${id}.pptx`)
 
       if (data) {
+        mkdirSync(FILES_DIR, { recursive: true })
         writeFileSync(path, Buffer.from(data as ArrayBuffer))
       }
 

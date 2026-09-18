@@ -2,7 +2,7 @@
  * Markdown channels — single channel for reading markdown asset files.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { DATA_DIR, registerHandle } from '../common/index'
 import { NotFoundError } from '../ai/errors'
 
@@ -41,7 +41,10 @@ export function registerMarkdownHandlers(): void {
     if (typeof src !== 'string') return null
     const path = safeAssetPath(src.split('/').pop() ?? '')
     if (!path || !existsSync(path)) return null
-    return { base64: readFileSync(path).toString('base64'), mime: IMAGE_MIME[extname(path).slice(1).toLowerCase()] }
+    return {
+      base64: readFileSync(path).toString('base64'),
+      mime: IMAGE_MIME[extname(path).slice(1).toLowerCase()],
+    }
   })
 
   registerHandle('markdown:read-file', async (_event: unknown, filePath: unknown) => {
@@ -51,22 +54,35 @@ export function registerMarkdownHandlers(): void {
     return readFileSync(filePath, 'utf8')
   })
 
-
   // markdown:save mirrors the desktop `markdown-main` save channel so the
   // markdown renderer can persist edits in the web build. The web-bridge
   // tracks the current document path (from `?open=` or the last save) and
   // passes it as `request.path`; here we either overwrite atomically or
   // allocate a new managed file under DATA_DIR.
   registerHandle('markdown:save', (_event: unknown, request: unknown) => {
-    const value = request as { text?: unknown; mode?: unknown; suggestedName?: unknown; path?: unknown } | null
-    if (!value || typeof value.text !== 'string') return { ok: false, error: 'markdown: bad save request' }
+    const value = request as {
+      text?: unknown
+      mode?: unknown
+      suggestedName?: unknown
+      path?: unknown
+    } | null
+    if (!value || typeof value.text !== 'string')
+      return { ok: false, error: 'markdown: bad save request' }
     const target = resolveMarkdownTarget(value.path, value.suggestedName)
     if (!target) return { ok: false, error: 'markdown: no save target' }
     try {
+      // DATA_DIR is created at module load, but a `rm -rf` between boot and
+      // first save would otherwise ENOENT on the atomic tmp write. The
+      // recursive mkdir is a no-op when the directory already exists.
+      mkdirSync(dirname(target), { recursive: true })
       const tmp = `${target}.tmp-${Date.now()}`
       writeFileSync(tmp, value.text, 'utf8')
       writeFileSync(target, value.text, 'utf8')
-      try { require('node:fs').unlinkSync(tmp) } catch { /* tmp already gone */ }
+      try {
+        require('node:fs').unlinkSync(tmp)
+      } catch {
+        /* tmp already gone */
+      }
       return { ok: true, path: target }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
@@ -101,9 +117,9 @@ function resolveMarkdownTarget(path: unknown, suggested: unknown): string | null
     if (path === join(DATA_DIR, safe)) return path
     if (path.endsWith(safe)) return path
   }
-  const base = typeof suggested === 'string' && suggested.trim()
-    ? safeMarkdownName(suggested.trim().replace(/\.md$/i, '') + '.md')
-    : `Untitled-${Date.now()}.md`
+  const base =
+    typeof suggested === 'string' && suggested.trim()
+      ? safeMarkdownName(suggested.trim().replace(/\.md$/i, '') + '.md')
+      : `Untitled-${Date.now()}.md`
   return join(DATA_DIR, base)
 }
-

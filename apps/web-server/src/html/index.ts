@@ -10,7 +10,7 @@
  * the server.
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { DATA_DIR, registerHandle } from '../common/index'
 import { NotFoundError } from '../ai/errors'
 
@@ -27,21 +27,42 @@ const IMAGE_MIME: Record<string, 'image/png' | 'image/jpeg' | 'image/gif'> = {
 }
 
 const ATTACHMENT_EXTS = new Set([
-  'png', 'jpg', 'jpeg', 'gif', 'webp',
-  'txt', 'md', 'json', 'xml', 'csv', 'log',
-  'doc', 'docx', 'pdf', 'pptx', 'ppt', 'xlsx', 'xlsm', 'xls',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'txt',
+  'md',
+  'json',
+  'xml',
+  'csv',
+  'log',
+  'doc',
+  'docx',
+  'pdf',
+  'pptx',
+  'ppt',
+  'xlsx',
+  'xlsm',
+  'xls',
 ])
 const ATTACHMENT_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 const ATTACHMENT_IMAGE_MIME: Record<string, string> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
 }
 const ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
 const ATTACHMENT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 // preview buffer store: id -> last pushed HTML. Set by html:preview-update,
 // read by the HTTP GET route in apps/web-server/src/index.ts.
-const PREVIEW_BUFFERS: Map<string, string> = (globalThis as { __HTML_PREVIEW__?: Map<string, string> }).__HTML_PREVIEW__
-  ??= new Map<string, string>()
+const PREVIEW_BUFFERS: Map<string, string> = ((
+  globalThis as { __HTML_PREVIEW__?: Map<string, string> }
+).__HTML_PREVIEW__ ??= new Map<string, string>())
 
 export function getHtmlPreviewBuffer(id: string): string | null {
   return PREVIEW_BUFFERS.get(id) ?? null
@@ -51,7 +72,11 @@ function safeAssetName(name: string): string {
   return basename(name).replace(/[^\w.\- ]+/g, '_') || `image-${Date.now()}`
 }
 
-function statAttachment(filePath: string): { ok: true; path: string; name: string; ext: string; sizeBytes: number } | { ok: false; error: string } {
+function statAttachment(
+  filePath: string,
+):
+  | { ok: true; path: string; name: string; ext: string; sizeBytes: number }
+  | { ok: false; error: string } {
   const name = basename(filePath)
   const ext = name.split('.').pop()?.toLowerCase() ?? ''
   if (!ATTACHMENT_EXTS.has(ext)) return { ok: false, error: `${name}: unsupported extension` }
@@ -70,7 +95,8 @@ function statAttachment(filePath: string): { ok: true; path: string; name: strin
 
 function bytesFrom(value: unknown): Buffer | null {
   if (value instanceof ArrayBuffer) return Buffer.from(value)
-  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+  if (ArrayBuffer.isView(value))
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength)
   return null
 }
 
@@ -101,16 +127,34 @@ export function registerHtmlHandlers(): void {
   // area we overwrite atomically; otherwise allocate a new file under
   // HTML_DOC_DIR.
   registerHandle('html:save', async (_event: unknown, request: unknown) => {
-    const value = request as { text?: unknown; mode?: unknown; suggestedName?: unknown; path?: unknown } | null
-    if (!value || typeof value.text !== 'string') return { ok: false, error: 'html: bad save request' }
+    const value = request as {
+      text?: unknown
+      mode?: unknown
+      suggestedName?: unknown
+      path?: unknown
+    } | null
+    if (!value || typeof value.text !== 'string')
+      return { ok: false, error: 'html: bad save request' }
     const target = resolveHtmlSaveTarget(value.path, value.suggestedName)
     if (!target) return { ok: false, error: 'html: no save target' }
     try {
+      // Same rm -rf hardening as the docs/markdown handlers: re-create the
+      // parent before each save so an out-of-band wipe of DATA_DIR does not
+      // ENOENT the first atomic write.
+      mkdirSync(dirname(target), { recursive: true })
       const tmp = `${target}.tmp-${Date.now()}`
       writeFileSync(tmp, value.text, 'utf8')
       writeFileSync(target, value.text, 'utf8')
-      try { readFileSync(tmp); } catch { /* ignore */ }
-      try { require('node:fs').unlinkSync(tmp) } catch { /* ignore */ }
+      try {
+        readFileSync(tmp)
+      } catch {
+        /* ignore */
+      }
+      try {
+        require('node:fs').unlinkSync(tmp)
+      } catch {
+        /* ignore */
+      }
       return { ok: true, path: target }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
@@ -145,7 +189,9 @@ export function registerHtmlHandlers(): void {
     if (!IMAGE_MIME[ext] || !base64) return null
     const bytes = Buffer.from(base64, 'base64')
     if (bytes.length === 0 || bytes.length > 20 * 1024 * 1024) return null
-    const name = safeAssetName(`image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`)
+    const name = safeAssetName(
+      `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`,
+    )
     writeFileSync(join(HTML_ASSET_DIR, name), bytes)
     return `html-assets/${name}`
   })
@@ -156,7 +202,10 @@ export function registerHtmlHandlers(): void {
     const path = join(HTML_ASSET_DIR, name)
     if (!existsSync(path)) return null
     const bytes = readFileSync(path)
-    return { base64: bytes.toString('base64'), mime: IMAGE_MIME[extname(name).slice(1).toLowerCase()] }
+    return {
+      base64: bytes.toString('base64'),
+      mime: IMAGE_MIME[extname(name).slice(1).toLowerCase()],
+    }
   })
   registerHandle('html:fetch-image', async (_event: unknown, url: unknown) => {
     if (typeof url !== 'string' || !/^https?:/i.test(url)) return null
@@ -196,7 +245,9 @@ export function registerHtmlHandlers(): void {
   // renderer query per-file meta and read image attachments.
   registerHandle('html:files-pick', () => null)
   registerHandle('html:files-add', (_event: unknown, paths: unknown) => {
-    const values = Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : []
+    const values = Array.isArray(paths)
+      ? paths.filter((p): p is string => typeof p === 'string')
+      : []
     const accepted: Array<{ path: string; name: string; ext: string; sizeBytes: number }> = []
     const rejected: string[] = []
     for (const p of values) {
@@ -209,26 +260,52 @@ export function registerHtmlHandlers(): void {
   registerHandle('html:files-add-pasted-image', (_event: unknown, data: unknown, ext: unknown) => {
     const cleanExt = typeof ext === 'string' ? ext.toLowerCase() : ''
     const bytes = bytesFrom(data)
-    if (!bytes || !ATTACHMENT_IMAGE_MIME[cleanExt] || bytes.length === 0 || bytes.length > 20 * 1024 * 1024) {
+    if (
+      !bytes ||
+      !ATTACHMENT_IMAGE_MIME[cleanExt] ||
+      bytes.length === 0 ||
+      bytes.length > 20 * 1024 * 1024
+    ) {
       return { accepted: [], rejected: ['invalid image'] }
     }
     const name = `pasted-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${cleanExt}`
     const path = join(HTML_ASSET_DIR, name)
     writeFileSync(path, bytes)
-    return { accepted: [{ path, name: `${name}`, ext: cleanExt, sizeBytes: bytes.length }], rejected: [] }
+    return {
+      accepted: [{ path, name: `${name}`, ext: cleanExt, sizeBytes: bytes.length }],
+      rejected: [],
+    }
   })
-  registerHandle('html:files-read', (_event: unknown, filePath: unknown, offset: unknown, maxChars: unknown) => {
-    if (typeof filePath !== 'string' || !existsSync(filePath)) return { ok: false, error: 'file not found' }
-    const ext = extname(filePath).slice(1).toLowerCase()
-    if (ATTACHMENT_IMAGE_EXTS.has(ext)) return { ok: false, error: 'image has no text' }
-    let text: string
-    try { text = readFileSync(filePath, 'utf8') } catch (e) { return { ok: false, error: (e as Error).message } }
-    const start = Math.max(0, Number.isFinite(Number(offset)) ? Math.floor(Number(offset)) : 0)
-    const size = Math.min(48_000, Math.max(1, Number.isFinite(Number(maxChars)) ? Math.floor(Number(maxChars)) : 1))
-    return { ok: true, name: basename(filePath), totalChars: text.length, offset: start, text: text.slice(start, start + size) }
-  })
+  registerHandle(
+    'html:files-read',
+    (_event: unknown, filePath: unknown, offset: unknown, maxChars: unknown) => {
+      if (typeof filePath !== 'string' || !existsSync(filePath))
+        return { ok: false, error: 'file not found' }
+      const ext = extname(filePath).slice(1).toLowerCase()
+      if (ATTACHMENT_IMAGE_EXTS.has(ext)) return { ok: false, error: 'image has no text' }
+      let text: string
+      try {
+        text = readFileSync(filePath, 'utf8')
+      } catch (e) {
+        return { ok: false, error: (e as Error).message }
+      }
+      const start = Math.max(0, Number.isFinite(Number(offset)) ? Math.floor(Number(offset)) : 0)
+      const size = Math.min(
+        48_000,
+        Math.max(1, Number.isFinite(Number(maxChars)) ? Math.floor(Number(maxChars)) : 1),
+      )
+      return {
+        ok: true,
+        name: basename(filePath),
+        totalChars: text.length,
+        offset: start,
+        text: text.slice(start, start + size),
+      }
+    },
+  )
   registerHandle('html:files-read-image', (_event: unknown, filePath: unknown) => {
-    if (typeof filePath !== 'string' || !existsSync(filePath)) return { ok: false, error: 'file not found' }
+    if (typeof filePath !== 'string' || !existsSync(filePath))
+      return { ok: false, error: 'file not found' }
     const ext = extname(filePath).slice(1).toLowerCase()
     const mime = ATTACHMENT_IMAGE_MIME[ext]
     if (!mime) return { ok: false, error: 'not an image' }
@@ -242,11 +319,32 @@ export function registerHtmlHandlers(): void {
   })
 
   // export helpers — the web-bridge overrides exportDocx/Pdf/Html with
-   // browser downloads, but leave a server-side stub so a stray invoke
-   // resolves cleanly.
-  registerHandle('html:export-docx', () => ({ ok: false, error: 'WEB_UNSUPPORTED: html export to docx is handled by the web bridge' } as { ok: false; error: string }))
-  registerHandle('html:export-pdf', () => ({ ok: false, error: 'WEB_UNSUPPORTED: html export to pdf is handled by the web bridge' } as { ok: false; error: string }))
-  registerHandle('html:export-html', () => ({ ok: false, error: 'WEB_UNSUPPORTED: html export is handled by the web bridge' } as { ok: false; error: string }))
+  // browser downloads, but leave a server-side stub so a stray invoke
+  // resolves cleanly.
+  registerHandle(
+    'html:export-docx',
+    () =>
+      ({
+        ok: false,
+        error: 'WEB_UNSUPPORTED: html export to docx is handled by the web bridge',
+      }) as { ok: false; error: string },
+  )
+  registerHandle(
+    'html:export-pdf',
+    () =>
+      ({
+        ok: false,
+        error: 'WEB_UNSUPPORTED: html export to pdf is handled by the web bridge',
+      }) as { ok: false; error: string },
+  )
+  registerHandle(
+    'html:export-html',
+    () =>
+      ({ ok: false, error: 'WEB_UNSUPPORTED: html export is handled by the web bridge' }) as {
+        ok: false
+        error: string
+      },
+  )
 }
 
 function resolveHtmlSaveTarget(path: unknown, suggested: unknown): string | null {
@@ -258,8 +356,9 @@ function resolveHtmlSaveTarget(path: unknown, suggested: unknown): string | null
       return path
     }
   }
-  const base = typeof suggested === 'string' && suggested.trim()
-    ? safeAssetName(suggested.trim()).replace(/\.html$/i, '') + '.html'
-    : `Untitled-${Date.now()}.html`
+  const base =
+    typeof suggested === 'string' && suggested.trim()
+      ? safeAssetName(suggested.trim()).replace(/\.html$/i, '') + '.html'
+      : `Untitled-${Date.now()}.html`
   return join(HTML_DOC_DIR, base)
 }
