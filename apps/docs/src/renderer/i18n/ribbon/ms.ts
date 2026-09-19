@@ -206,6 +206,8 @@ export const ms = {
   ribbonPicture: 'Gambar',
   ribbonPictureTip: 'Sisipkan gambar',
   ribbonPictureLabel: 'Gambar ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'Carta',
   ribbonChartTip: 'Sisipkan carta (bar/garis/pai)',
   ribbonShapes: 'Bentuk',

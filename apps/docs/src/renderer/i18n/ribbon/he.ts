@@ -203,6 +203,8 @@ export const he = {
   ribbonPicture: 'תמונה',
   ribbonPictureTip: 'הוסף תמונה',
   ribbonPictureLabel: 'תמונה ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'תרשים',
   ribbonChartTip: 'הוסף תרשים (עמודות/קו/עוגה)',
   ribbonShapes: 'צורות',

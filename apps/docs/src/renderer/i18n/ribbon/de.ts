@@ -207,6 +207,8 @@ export const de = {
   ribbonPicture: 'Bild',
   ribbonPictureTip: 'Bild einfügen',
   ribbonPictureLabel: 'Bild ({name})',
+  ribbonUpload: 'Hochladen',
+  ribbonUploadTip: 'Eine Datei auf den Webserver hochladen',
   ribbonChart: 'Diagramm',
   ribbonChartTip: 'Diagramm einfügen (Säulen/Linien/Kreis)',
   ribbonShapes: 'Formen',

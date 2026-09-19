@@ -276,6 +276,10 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
     aiGenerateImage: (op: { prompt: string; aspectRatio?: string }) =>
       t.invoke('docs:ai-generate-image', op),
     pickAttachments: overrides.pickAttachments ?? (() => t.invoke('files:pick')),
+    // Web-only feature: the base implementation returns null because the
+    // factory has no DOM access for a file picker. The web-bridge.ts override
+    // wires it to pickFileBytes + web:save-file.
+    uploadFile: overrides.uploadFile ?? (() => Promise.resolve(null)),
     addAttachmentPaths: (paths: string[]) => t.invoke('files:add', paths),
     addPastedImage: (data: ArrayBuffer, ext: string) =>
       t.invoke('files:add-pasted-image', data, ext),

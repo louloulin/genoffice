@@ -208,6 +208,8 @@ export const nl = {
   ribbonPicture: 'Afbeelding',
   ribbonPictureTip: 'Een afbeelding invoegen',
   ribbonPictureLabel: 'Afbeelding ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'Grafiek',
   ribbonChartTip: 'Een grafiek invoegen (kolom/lijn/cirkel)',
   ribbonShapes: 'Vormen',

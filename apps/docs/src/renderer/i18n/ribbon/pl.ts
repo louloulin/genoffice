@@ -206,6 +206,8 @@ export const pl = {
   ribbonPicture: 'Obraz',
   ribbonPictureTip: 'Wstaw obraz',
   ribbonPictureLabel: 'Obraz ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'Wykres',
   ribbonChartTip: 'Wstaw wykres (kolumnowy/liniowy/kołowy)',
   ribbonShapes: 'Kształty',

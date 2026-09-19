@@ -205,6 +205,8 @@ export const id = {
   ribbonPicture: 'Gambar',
   ribbonPictureTip: 'Sisipkan gambar',
   ribbonPictureLabel: 'Gambar ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'Bagan',
   ribbonChartTip: 'Sisipkan bagan (kolom/garis/pai)',
   ribbonShapes: 'Bentuk',

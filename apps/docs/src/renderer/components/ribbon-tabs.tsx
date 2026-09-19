@@ -326,6 +326,20 @@ export async function insertImageViaDialog(editor: Editor): Promise<void> {
   )
 }
 
+/**
+ * Web-native upload: open a browser file picker and land the chosen file in
+ * FILES_DIR via `web:save-file`. Returns the new managed path so the caller
+ * can insert a link or surface a toast.
+ *
+ * Returns null when the user cancels OR when the runtime does not support
+ * browser file pickers (desktop Electron — drag-drop or the native dialog
+ * covers the same need, so the button is hidden there).
+ */
+export async function pickAndUploadFile(): Promise<{ id: string; path: string; name: string } | null> {
+  if (!window.desktop.uploadFile) return null
+  return await window.desktop.uploadFile()
+}
+
 /** 5 cm × 3 cm default textbox size in EMU (1 cm = 360000 EMU) */
 const TEXTBOX_WIDTH_EMU = 1800000
 const TEXTBOX_HEIGHT_EMU = 1080000

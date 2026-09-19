@@ -213,6 +213,8 @@ export const zh = {
   ribbonPicture: '图片',
   ribbonPictureTip: '插入图片',
   ribbonPictureLabel: '图片({name})',
+  ribbonUpload: '上传文件',
+  ribbonUploadTip: '将文件上传到 Web 服务器',
   ribbonChart: '图表',
   ribbonChartTip: '插入图表(柱形/折线/饼图)',
   ribbonShapes: '形状',

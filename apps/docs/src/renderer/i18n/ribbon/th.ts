@@ -204,6 +204,8 @@ export const th = {
   ribbonPicture: 'รูปภาพ',
   ribbonPictureTip: 'แทรกรูปภาพ',
   ribbonPictureLabel: 'รูปภาพ ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'แผนภูมิ',
   ribbonChartTip: 'แทรกแผนภูมิ (คอลัมน์/เส้น/วงกลม)',
   ribbonShapes: 'รูปร่าง',

@@ -205,6 +205,8 @@ export const cs = {
   ribbonPicture: 'Obrázek',
   ribbonPictureTip: 'Vložit obrázek',
   ribbonPictureLabel: 'Obrázek ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'Graf',
   ribbonChartTip: 'Vložit graf (sloupcový/spojnicový/výsečový)',
   ribbonShapes: 'Obrazce',

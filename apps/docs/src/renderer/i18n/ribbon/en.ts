@@ -204,6 +204,8 @@ export const en = {
   ribbonPicture: 'Picture',
   ribbonPictureTip: 'Insert a picture',
   ribbonPictureLabel: 'Picture ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'Chart',
   ribbonChartTip: 'Insert a chart (bar/line/pie)',
   ribbonShapes: 'Shapes',

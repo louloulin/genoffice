@@ -483,6 +483,11 @@ export interface DesktopApi {
   }): Promise<{ url?: string; error?: string }>
   /** file picker for chat attachments (multi-select) */
   pickAttachments(): Promise<AttachmentAddResult | null>
+  /** web-native file upload: pick one file and land it in FILES_DIR via
+   * `web:save-file`. Returns null when the user cancels. Web-only — on
+   * Electron the answer is always null and callers should fall back to the
+   * native file picker. */
+  uploadFile(): Promise<{ id: string; path: string; name: string } | null>
   /** validate dropped paths and return attachment metadata */
   addAttachmentPaths(paths: string[]): Promise<AttachmentAddResult>
   /** persist a pasted clipboard image (no local path) to a temp file and add it as an attachment */

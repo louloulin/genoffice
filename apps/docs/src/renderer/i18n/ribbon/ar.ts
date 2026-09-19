@@ -203,6 +203,8 @@ export const ar = {
   ribbonPicture: 'صورة',
   ribbonPictureTip: 'إدراج صورة',
   ribbonPictureLabel: 'صورة ({name})',
+  ribbonUpload: 'تحميل',
+  ribbonUploadTip: 'تحميل ملف إلى خادم الويب',
   ribbonChart: 'مخطط',
   ribbonChartTip: 'إدراج مخطط (أعمدة/خطي/دائري)',
   ribbonShapes: 'أشكال',

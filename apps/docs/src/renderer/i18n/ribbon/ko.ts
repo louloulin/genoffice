@@ -214,6 +214,8 @@ export const ko = {
   ribbonPicture: '그림',
   ribbonPictureTip: '그림 삽입',
   ribbonPictureLabel: '그림({name})',
+  ribbonUpload: '파일 업로드',
+  ribbonUploadTip: '파일을 웹 서버에 업로드',
   ribbonChart: '차트',
   ribbonChartTip: '차트 삽입(막대형/꺾은선형/원형)',
   ribbonShapes: '도형',

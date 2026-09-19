@@ -206,6 +206,8 @@ export const ru = {
   ribbonPicture: 'Рисунок',
   ribbonPictureTip: 'Вставить рисунок',
   ribbonPictureLabel: 'Рисунок ({name})',
+  ribbonUpload: 'Загрузить',
+  ribbonUploadTip: 'Загрузить файл на веб-сервер',
   ribbonChart: 'Диаграмма',
   ribbonChartTip: 'Вставить диаграмму (гистограмма/график/круговая)',
   ribbonShapes: 'Фигуры',

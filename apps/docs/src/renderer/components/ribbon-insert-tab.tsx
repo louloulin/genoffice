@@ -22,6 +22,7 @@ import {
   IconFooter,
   IconHeader,
   IconLink,
+  IconPaperclip,
   IconPageBreak,
   IconPageNumber,
   IconChart,
@@ -47,6 +48,7 @@ import {
   insertTextboxAt,
   insertTopLevelBlockAtSelection,
   insertWordArtAt,
+  pickAndUploadFile,
   MAX_TABLE_COLS,
   MAX_TABLE_ROWS,
   setParaAttrs,
@@ -861,6 +863,17 @@ export function InsertTab({
 
       <div className="ribbon-group">
         <div className="ribbon-group-items">
+          <button
+            className="rb-big"
+            disabled={!hasDoc || typeof window === 'undefined' || !window.desktop?.uploadFile}
+            data-tip={t('ribbonUploadTip')}
+            onClick={() => void pickAndUploadFile()}
+          >
+            <span className="rb-big-icon">
+              <IconPaperclip size={BIG} />
+            </span>
+            <span>{t('ribbonUpload')}</span>
+          </button>
           <button
             className="rb-big"
             disabled={!hasDoc}

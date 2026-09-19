@@ -206,6 +206,8 @@ export const hi = {
   ribbonPicture: 'चित्र',
   ribbonPictureTip: 'चित्र सम्मिलित करें',
   ribbonPictureLabel: 'चित्र ({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: 'चार्ट',
   ribbonChartTip: 'चार्ट सम्मिलित करें (स्तंभ/रेखा/पाई)',
   ribbonShapes: 'आकृतियाँ',

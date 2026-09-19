@@ -206,6 +206,8 @@ export const pt = {
   ribbonPicture: 'Imagem',
   ribbonPictureTip: 'Inserir uma imagem',
   ribbonPictureLabel: 'Imagem ({name})',
+  ribbonUpload: 'Carregar',
+  ribbonUploadTip: 'Carregar um arquivo para o servidor web',
   ribbonChart: 'Gráfico',
   ribbonChartTip: 'Inserir um gráfico (colunas/linhas/pizza)',
   ribbonShapes: 'Formas',

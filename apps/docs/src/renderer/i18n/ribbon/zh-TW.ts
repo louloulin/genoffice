@@ -202,6 +202,8 @@ export const zhTW = {
   ribbonPicture: '圖片',
   ribbonPictureTip: '插入圖片',
   ribbonPictureLabel: '圖片({name})',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
   ribbonChart: '圖表',
   ribbonChartTip: '插入圖表(直條圖/折線圖/圓形圖)',
   ribbonShapes: '圖案',

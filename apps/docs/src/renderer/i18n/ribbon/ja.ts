@@ -216,6 +216,8 @@ export const ja = {
   ribbonPicture: '画像',
   ribbonPictureTip: '画像を挿入',
   ribbonPictureLabel: '画像({name})',
+  ribbonUpload: 'アップロード',
+  ribbonUploadTip: 'ファイルを Web サーバーにアップロード',
   ribbonChart: 'グラフ',
   ribbonChartTip: 'グラフを挿入(縦棒/折れ線/円)',
   ribbonShapes: '図形',
