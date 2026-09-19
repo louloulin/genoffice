@@ -357,10 +357,14 @@ test.describe('real-launch web version — all six apps (dev servers already run
       expect(rendered.status).toBe(200)
       expect(Array.isArray(rendered.body.result)).toBe(true)
 
-      // save the deck (untitled first save lands in the drafts folder)
+      // Save is honest about the web build's limits: the web server holds no
+      // deck model (the renderer's edit ops land as no-ops), so it must refuse
+      // the save instead of reporting a success that wrote nothing.
       const saved = await invokeHttp('slides', 'slides:save')
       expect(saved.status).toBe(200)
-      expect((saved.body.result as { ok?: boolean }).ok).toBe(true)
+      const saveResult = saved.body.result as { ok?: boolean; error?: string }
+      expect(saveResult.ok).toBe(false)
+      expect(saveResult.error).toContain('WEB_UNSUPPORTED')
 
       // web-native export overrides: pickExportDir returns a temp dir, and
       // exportImages writes PNGs the browser downloads

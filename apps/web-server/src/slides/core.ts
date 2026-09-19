@@ -4,7 +4,7 @@
  * insert-model3d. Persistence uses `slides-recent.json`.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { FILES_DIR, loadRecentSlides, registerHandle, saveRecentSlides } from '../common/index'
 import { openPptx } from '@genoffice/pptx-engine'
 import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
@@ -143,18 +143,36 @@ export function registerSlidesCoreHandlers(): void {
     }
   })
 
+  // ── Save ───────────────────────────────────────────────────────────────
+  // The desktop main process is the authority for a deck: the renderer streams
+  // `slides:apply-txn` ops and main mutates the parsed `OpenedPptx`, so
+  // `savePptxToFile` can serialize the user's edits from that model. The web
+  // build has no such model — the element/edit channels are acknowledged as
+  // no-ops and the renderer never hands over pptx bytes — so a save here cannot
+  // serialize anything.
+  //
+  // The handlers below still accept bytes for a future renderer-side
+  // serialization, but answer honestly when none arrive. Previously they
+  // reported `{ ok: true }` while writing nothing (showing a "已保存" toast and
+  // silently discarding the deck), and `slides:save-as` replied without an `ok`
+  // field at all, so the renderer classified a save-as as neither success nor
+  // failure and did nothing whatsoever.
+  const WEB_SAVE_UNSUPPORTED =
+    'WEB_UNSUPPORTED: web 版暂不支持保存编辑后的 PPTX（渲染层编辑尚未同步到服务器模型）'
+
   registerHandle(
     'slides:save',
     async (_event: unknown, _id?: unknown, path?: unknown, data?: unknown) => {
-      if (data && typeof path === 'string') {
+      if (typeof path === 'string' && data) {
         // Re-create the parent before each write so an rm -rf of DATA_DIR
         // does not ENOENT the first save. The renderer is expected to keep
         // passing a FILES_DIR-resident path (set by slides:save-as) so the
         // existing bytes are overwritten in place.
         mkdirSync(dirname(path), { recursive: true })
         writeFileSync(path, Buffer.from(data as ArrayBuffer))
+        return { ok: true, path }
       }
-      return { ok: true, path: typeof path === 'string' ? path : undefined }
+      return { ok: false, canceled: true, error: WEB_SAVE_UNSUPPORTED }
     },
   )
 
@@ -168,11 +186,51 @@ export function registerSlidesCoreHandlers(): void {
       if (data) {
         mkdirSync(FILES_DIR, { recursive: true })
         writeFileSync(path, Buffer.from(data as ArrayBuffer))
+        return { id, name, ok: true, path }
       }
-
-      return { id, path, name }
+      return { id, name, ok: false, canceled: true, error: WEB_SAVE_UNSUPPORTED }
     },
   )
+
+  // ── Export images ──────────────────────────────────────────────────────
+  // The renderer rasterizes each visible slide to a base64 PNG in-browser (it
+  // owns the canvas) and ships the batch here, so this channel needs no deck
+  // model and is fully supported in the web build. Desktop parity:
+  // `slides:export-images` in apps/slides/src/main/slides-main.ts. This channel
+  // used to be unregistered, which made the renderer's export click 404.
+  registerHandle('slides:export-images', async (_event: unknown, op: unknown) => {
+    const request = (op || {}) as { dir?: unknown; baseName?: unknown; pngsBase64?: unknown }
+    if (typeof request.dir !== 'string' || !Array.isArray(request.pngsBase64)) {
+      return { ok: false, error: 'slides:export-images expects { dir, baseName, pngsBase64 }' }
+    }
+    const rawBase = typeof request.baseName === 'string' && request.baseName ? request.baseName : 'slide'
+    // baseName reaches us straight from the deck's file name; strip separators,
+    // traversal runs and leading dots so a crafted name cannot escape the
+    // export dir (the resolve/prefix check below is the hard backstop).
+    const safeBase =
+      rawBase
+        .replace(/\.\.+/g, '_')
+        .replace(/[/\\:*?"<>|]+/g, '_')
+        .replace(/^[.\s]+/, '') || 'slide'
+    try {
+      const root = resolve(request.dir)
+      mkdirSync(root, { recursive: true })
+      // Zero-padding width follows the total page count (3 digits for ≥100 pages).
+      const pad = request.pngsBase64.length >= 100 ? 3 : 2
+      const paths: string[] = []
+      for (let i = 0; i < request.pngsBase64.length; i++) {
+        const target = resolve(root, `${safeBase}-${String(i + 1).padStart(pad, '0')}.png`)
+        if (!target.startsWith(root + sep)) {
+          return { ok: false, error: 'slides:export-images: target escapes the export dir' }
+        }
+        writeFileSync(target, Buffer.from(String(request.pngsBase64[i]), 'base64'))
+        paths.push(target)
+      }
+      return { ok: true, paths }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
 
   registerHandle('slides:export-pdf', () => ({
     ok: true,
