@@ -149,7 +149,9 @@ export async function ensureLumosSkillsRegistered(): Promise<{ registered: strin
   let newestMtime = 0
   for (const entry of readdirSync(bundledRoot)) {
     const candidate = join(bundledRoot, entry)
-    let mtime = 0
+    // no initializer: the catch below continues, so mtime is read only after
+    // the statSync assignment succeeds
+    let mtime: number
     try {
       mtime = statSync(candidate).mtimeMs
     } catch {

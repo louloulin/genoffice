@@ -53,8 +53,11 @@ export function registerSheetsHandlers(): void {
       const result = (await sheetsSidecar.open(filePath as string)) as Record<string, unknown>
       workbook = { ...result }
     } catch (err) {
+      // keep the sidecar failure attached as `cause` so the spawn/parse error
+      // is not reduced to a stringified message in the server log
       throw new Error(
         `Failed to parse workbook: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       )
     }
 

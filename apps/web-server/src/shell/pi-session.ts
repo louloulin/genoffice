@@ -24,7 +24,6 @@
  * on demand after a settings change.
  */
 
-import { join } from 'node:path'
 import {
   ReactUIAdapter,
   createOfficeSession,
@@ -32,7 +31,7 @@ import {
   type OfficeSessionOptions,
 } from '@genoffice/agent-runtime'
 
-import { DATA_DIR, registerHandle } from '../common/index'
+import { registerHandle } from '../common/index'
 import { createWebSearchExtension } from '@genoffice/agent-skills/extensions/web-search-skill'
 import { createImageSearchExtension } from '@genoffice/agent-skills/extensions/image-search-skill'
 import { createOcrExtension } from '@genoffice/agent-skills/extensions/ocr-skill'
@@ -42,7 +41,6 @@ import { installLocalModels } from '@genoffice/agent-skills/extensions/local-mod
 import { getEnabledBuiltinIds } from './skills'
 import {
   PI_AGENT_DIR,
-  PI_PLUGIN_DIR,
   PI_SKILLS_DIR,
   PI_CWD,
   LUMOS_SKILLS_WRAPPER_DIR,
@@ -164,6 +162,10 @@ export async function callTranslateTool(name: string, args: unknown): Promise<un
   // object, unwrap it. If they passed an array of positional args, take the
   // first one as the params object.
   const params = Array.isArray(args) ? (args.length > 0 ? args[0] : {}) : (args ?? {})
+  // SAFETY: `tool` is a pi AgentToolDef read out of the live session registry.
+  // Its public type stops at name/label/schema, but every registered tool
+  // object also carries the `execute(id, params, signal)` method the agent loop
+  // invokes; we narrow to exactly that method and call it on the next line.
   const result = await (
     tool as unknown as {
       execute: (
@@ -207,6 +209,9 @@ export function registerPiSessionHandlers(): void {
         name: s.name,
         description: s.description,
         filePath: s.filePath,
+        // SAFETY: `LoadedSkill`'s public shape omits the optional `source`
+        // marker (builtin vs marketplace install); the runtime object carries
+        // it when known, and `?? null` keeps the field absent-able.
         source: (s as unknown as { source?: string }).source ?? null,
       }))
       const diagnostics = (loaded.diagnostics ?? []).map((d) => ({
@@ -247,6 +252,9 @@ export function registerPiSessionHandlers(): void {
         ready: true,
         skills,
         toolCount: tools.length,
+        // SAFETY: `OfficeSession` does not surface the pi `sessionId`; the
+        // underlying AgentSession stores one, and `?? null` tolerates a build
+        // that has not assigned it yet.
         sessionId: (session as unknown as { sessionId?: string }).sessionId ?? null,
       }
     } catch (err) {

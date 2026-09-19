@@ -156,7 +156,10 @@ export function registerChangeTrackingHandlers(): void {
 
 export function registerConflictHandlers(): void {
   registerHandle('collab:conflict-detect', (_event: unknown, args: unknown) => {
-    const { docId, baseVersion, changes } = args as {
+    // `changes` (the client's pending edits) is accepted but not diffed: conflict
+    // detection here is version-based only — `baseVersion` against the session's
+    // change count. A real three-way merge needs the CRDT layer.
+    const { docId, baseVersion, changes: _changes } = args as {
       docId: string
       baseVersion: number
       changes: unknown[]

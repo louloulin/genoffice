@@ -334,7 +334,9 @@ export async function handleTranslateStreamHttp(
   response: ServerResponse,
 ): Promise<void> {
   const requestId = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  let body: TranslateBatchHttpRequest = {}
+  // no initializer: the catch below returns, so body is read only after the
+  // JSON parse assignment succeeds
+  let body: TranslateBatchHttpRequest
   try {
     const raw = await readBody(request)
     body = (raw ? JSON.parse(raw) : {}) as TranslateBatchHttpRequest
@@ -447,7 +449,7 @@ export async function handleTranslateStreamHttp(
       { provider, config, ...storage },
       {
         concurrency: 25,
-        onUnit: ({ index, total, result }) => {
+        onUnit: ({ total, result }) => {
           if (abort.signal.aborted) return
           completed += 1
           if (result.status === 'translated') okCount += 1

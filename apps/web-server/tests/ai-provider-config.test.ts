@@ -13,7 +13,7 @@
  * file, which is why this must stay a single shared resolver rather than an
  * ad-hoc patch at one call site.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -17,7 +17,12 @@ export function registerAuthHandlers(): void {
   })
 
   registerHandle('auth:sso-callback', async (_event: unknown, args: unknown) => {
-    const { code, state } = (args || {}) as { code: string; state: string }
+    // NOTE (placeholder): a real OIDC implementation must validate `state`
+    // against the value minted by `auth:sso-login` (CSRF protection) and
+    // exchange `code` at the provider's token endpoint. This stub does neither —
+    // it hands back a fixed bearer token — so both fields stay deliberately
+    // unused rather than read and quietly ignored.
+    const { code: _code, state: _state } = (args || {}) as { code: string; state: string }
     return {
       ok: true,
       accessToken: `token-${Date.now()}`,

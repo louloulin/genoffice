@@ -30,7 +30,7 @@ process.env.LUMOS_HOME = join(homedir(), '.lumos')
 
 // Dynamic import so DATA_DIR is wired before module load.
 const piSessionMod = await import('../src/shell/pi-session')
-const { registerPiSessionHandlers, getPiSession, invalidatePiSession } = piSessionMod
+const { registerPiSessionHandlers, invalidatePiSession } = piSessionMod
 const commonMod = await import('../src/common/index')
 commonMod.registerHandle('home:test-noop', async () => ({ ok: true }))
 registerPiSessionHandlers()
@@ -158,11 +158,7 @@ describe('translate-skill agent multi-step e2e', () => {
       })
     })
 
-    try {
-      await agent.prompt('Add fabric code to the KB and verify it is searchable.')
-    } catch (err) {
-      throw err
-    }
+    await agent.prompt('Add fabric code to the KB and verify it is searchable.')
     await Promise.race([
       finished,
       new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout waiting for agent_settled')), 15_000)),

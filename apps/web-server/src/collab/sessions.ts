@@ -7,7 +7,10 @@ import { COLLAB_SESSIONS, PRESENCE, registerHandle } from '../common/index'
 
 export function registerCollabSessionHandlers(): void {
   registerHandle('collab:join', (_event: unknown, args: unknown) => {
-    const { docId, userId, userName } = args as { docId: string; userId: string; userName?: string }
+    const { docId, userId, userName: _userName } = args as { docId: string; userId: string; userName?: string }
+    // `userName` is intentionally not consumed here: the session tracks member
+    // ids only, and the display name travels on the separate
+    // `collab:presence-update` channel that populates PRESENCE.
     const sessionId = `${docId}:${userId}`
 
     if (!COLLAB_SESSIONS.has(docId)) {
@@ -41,7 +44,9 @@ export function registerCollabSessionHandlers(): void {
   })
 
   registerHandle('collab:sync', (_event: unknown, args: unknown) => {
-    const { docId, userId } = args as { docId: string; changes: unknown; userId: string }
+    const { docId, userId: _userId } = args as { docId: string; changes: unknown; userId: string }
+    // `userId` is accepted so the wire shape matches `collab:sync` on the client,
+    // but this ack path is per-document and does not attribute the batch.
     const session = COLLAB_SESSIONS.get(docId)
     if (session) {
       session.lastActivity = Date.now()

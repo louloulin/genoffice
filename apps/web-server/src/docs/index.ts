@@ -244,6 +244,9 @@ export function registerDocsHandlers(): void {
     const type = value?.type
     const title =
       String(value?.title ?? 'Untitled')
+        // Matching the C0 control-character range is the point here: the title
+        // becomes a file name, so control characters must be stripped.
+        // eslint-disable-next-line no-control-regex
         .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
         .trim()
         .slice(0, 80) || 'Untitled'
