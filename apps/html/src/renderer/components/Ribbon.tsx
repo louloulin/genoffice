@@ -249,7 +249,7 @@ export function Ribbon(p: Props) {
           className="qa-btn"
           data-tip={t('uploadTip')}
           aria-label={t('uploadTip')}
-          disabled={off || !window.htmlApi?.uploadFile}
+          disabled={!window.htmlApi?.uploadFile}
           onMouseDown={(e) => e.preventDefault()}
           onClick={p.onUploadFile}
         >
