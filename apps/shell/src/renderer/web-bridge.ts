@@ -143,6 +143,20 @@ if (!isElectronRuntime()) {
         }
       }
     }
+    if (e.data?.type === 'focus-request') {
+      // The shell home tab asked us to take focus because the user clicked
+      // on a recent entry for a path this tab already owns. Bring the window
+      // forward so the user lands on the file, not the home tab.
+      const myId = asTabIdHost(window).__genofficeTabId
+      if (typeof myId === 'string' && myId === e.data.id) {
+        try {
+          window.focus()
+        } catch {
+          /* focus() can throw under strict CSP in some sandboxes; safe to
+             ignore since the user can still click the TabBar entry. */
+        }
+      }
+    }
   }
 
   // as a child window: announce ourselves on load and clean up on unload
@@ -167,6 +181,17 @@ if (!isElectronRuntime()) {
     module: 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html',
     path?: string,
   ) => {
+    // Dedupe: if a tab is already open for this exact path, ask it to focus
+    // itself rather than opening a duplicate. Recents clicks fire often and a
+    // new window.open per click would leave the user with N tabs of the same
+    // file and the TabBar unable to keep them in sync.
+    if (path) {
+      const existing = tabsCache.find((t) => t.kind === module && t.title === moduleFileName(path))
+      if (existing) {
+        tabChannel.postMessage({ type: 'focus-request', id: existing.id })
+        return null
+      }
+    }
     const tab = openBlankTab()
     if (!tab) return null
     registerTab(module, path, tab)
