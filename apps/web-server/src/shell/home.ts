@@ -215,7 +215,13 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:new-markdown', () => {
     const id = `md-${Date.now()}`
-    return { id, path: join(DATA_DIR, `${id}.md`) }
+    const path = join(DATA_DIR, `${id}.md`)
+    // Pre-seed recents so the home page lists the empty new tab even
+    // before the renderer writes the first byte. `missing` flag flips
+    // off the moment web:save-file lands bytes at this path.
+    DOCS_RECENT.set(path, { id, path, name: `${id}.md`, openedAt: Date.now(), modified: false })
+    saveRecentDocs([...DOCS_RECENT.values()])
+    return { id, path }
   })
 
   registerHandle('home:new-pdf', () => {
@@ -265,6 +271,8 @@ export function registerHomeHandlers(): void {
 </html>
 `
     writeFileSync(path, html, 'utf-8')
+    DOCS_RECENT.set(path, { id, path, name: `${id}.html`, openedAt: Date.now(), modified: false })
+    saveRecentDocs([...DOCS_RECENT.values()])
     return { id, path }
   })
 
