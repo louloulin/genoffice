@@ -13,7 +13,6 @@
  */
 import type { MentionEntry } from '@genoffice/ui'
 import type { AttachmentMeta } from '../../shared/ipc'
-import type { DocsSkillOption } from './composer-commands'
 
 /** A file the user can `@`-mention. May be the active upload or a recent one. */
 export interface DocsMentionFile {

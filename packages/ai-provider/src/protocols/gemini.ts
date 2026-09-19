@@ -1,4 +1,4 @@
-import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '../agent-protocol'
+import type { AgentMessage, AgentToolDef } from '../agent-protocol'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
 import { gensparkAttributionHeaders, opencodeSessionHeaders } from '../providers'

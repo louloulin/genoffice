@@ -38,12 +38,9 @@ import type { FileOpConfirm, PdfAiDeps, PdfAppDeps } from './tools'
 import {
   PDF_QUICK_ACTIONS,
   buildPdfComposerCommands,
-  pdfActionCommandId,
   pdfMentionEntries,
-  pdfSkillCommandId,
   pdfSkillIdOfCommand,
   pdfSkillOptions,
-  type PdfQuickAction,
   type PdfSkillOption,
 } from './composer-commands'
 

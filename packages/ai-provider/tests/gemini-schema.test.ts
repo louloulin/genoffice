@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '../src/agent-protocol'
+import type { AgentToolDef } from '../src/agent-protocol'
 import { toGeminiSchema } from '../src/protocols/gemini-schema'
 import { streamForProvider } from '../src/stream'
 import { okResponse, sseStream } from './test-utils'

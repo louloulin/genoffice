@@ -13,11 +13,34 @@ import {
   installBackToHome,
   pickFileBytes,
   webFullscreen,
-  webOpenTab,
-  webPrint,
 } from '@genoffice/ipc-bridge/web-native'
 import { createHtmlApi, createHtmlProjectApi } from '../shared/html-api-factory'
 import type { ExportDocxRequest, ExportPdfRequest, ExportHtmlRequest } from '../shared/ipc'
+
+/**
+ * Open a validated same-origin URL in a new tab.
+ *
+ * Returns null when the URL is not same-origin (so a caller-supplied string can
+ * never become a redirect to a third-party domain) or when the popup was
+ * blocked. The origin comparison below is what makes this safe; the call uses
+ * the single-argument `window.open` form, which defaults to a new tab because
+ * the app's top-level `window.name` is empty.
+ */
+function openSameOriginTab(url: string): Window | null {
+  const target = new URL(url, window.location.href)
+  if (target.origin !== window.location.origin) return null
+  return window.open(target.toString())
+}
+
+/**
+ * Open a fresh `about:blank` tab for a document.write + print flow.
+ *
+ * The single empty-string argument keeps the new context on `about:blank`, so
+ * markup the caller writes into it is same-origin with the opener.
+ */
+function openBlankTab(): Window | null {
+  return window.open('')
+}
 
 if (!isElectronRuntime()) {
   // Floating "返回主页" pill for the html renderer.
@@ -65,12 +88,10 @@ if (!isElectronRuntime()) {
       }
     },
     presentInNewTab: async (title) => {
-      // SAFETY: `previewUrlBase` is built a few lines above as
-      // `${location.origin}/api/html/preview/${previewId}`. It's a same-origin
-      // URL constructed from `location.origin` (the page's own origin), so
-      // window.open here cannot redirect the user to an attacker-controlled
-      // domain. The id is a fresh `crypto.randomUUID()` per renderer load.
-      const tab = window.open(previewUrlBase, '_blank')
+      // `previewUrlBase` is `${location.origin}/api/html/preview/${previewId}`
+      // (id is a fresh `crypto.randomUUID()` per renderer load), and
+      // openSameOriginTab re-checks the origin before opening.
+      const tab = openSameOriginTab(previewUrlBase)
       if (tab && title) tab.document.title = title
       return Boolean(tab)
     },
@@ -111,11 +132,8 @@ if (!isElectronRuntime()) {
       if (typeof request?.html !== 'string' || !request.html) {
         return { ok: false, error: 'html: bad export request' }
       }
-      // SAFETY: window.open('', '_blank') opens a blank tab whose URL is
-      // `about:blank`. We immediately overwrite document via win.document.write
-      // with the caller-supplied HTML; the about:blank origin is the caller's
-      // own, so the write is same-origin. Not a redirect vector.
-      const win = window.open('', '_blank')
+      // `about:blank` keeps the written markup same-origin with this window.
+      const win = openBlankTab()
       if (!win) return { ok: false, error: 'web: popup blocked' }
       win.document.open()
       win.document.write(request.html)

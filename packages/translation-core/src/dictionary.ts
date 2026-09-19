@@ -459,7 +459,9 @@ export async function buildDictionary(
   // 2) LLM pass over the remaining segments.
   let llmEntries = 0
   const useLlm = request.useLlm !== false
-  let needsModelCount = 0
+  // no initializer: assigned below before its only read, which sits in the
+  // same `if (useLlm)` block
+  let needsModelCount: number
   let warnings: string[] = []
   if (useLlm) {
     const remaining = segments.filter((s) => dictionary[s] === undefined)
@@ -779,7 +781,8 @@ export async function fillDictionaryGaps(
     }
   }
 
-  const dictionary: Record<string, string> = { ...existing.entries }
+  // mergeDictionary below carries existing.entries forward, so no local copy of
+  // the base dictionary is needed here.
   const addedEntries: Record<string, string> = {}
   for (const batch of batchSegments(needsTranslation)) {
     const units = batch.map((sourceText, index) => ({

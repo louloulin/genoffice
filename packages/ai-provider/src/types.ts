@@ -1,4 +1,4 @@
-import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from './agent-protocol'
+import type { AgentMessage, AgentToolCall, AgentToolDef } from './agent-protocol'
 
 export type AiProviderId =
   | 'genspark'

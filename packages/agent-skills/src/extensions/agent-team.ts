@@ -165,7 +165,6 @@ export function createRequestReviewTool(
 			params: RequestReviewArgs,
 			_signal,
 			_onUpdate,
-			ctx,
 		) {
 			const role = roles[params.role];
 			if (!role) {
@@ -220,6 +219,11 @@ export function installAgentTeam(pi: ExtensionAPI, opts: InstallAgentTeamOptions
 		roles: merged,
 		deliveredAs: opts.deliveredAs,
 		sendUserMessage: (content, options) =>
+			// SAFETY: pi's `ExtensionAPI.sendUserMessage` resolves to an
+			// implementation-specific ack value that this extension never reads
+			// (the only call site is `await sendUserMessage(...)`), while
+			// `AgentTeamOptions.sendUserMessage` is declared `Promise<void>`. The
+			// narrowing therefore cannot hide a value anyone consumes.
 			pi.sendUserMessage(content, options ?? undefined) as unknown as Promise<void>,
 	});
 	pi.registerTool(tool);

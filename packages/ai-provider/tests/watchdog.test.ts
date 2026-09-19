@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '../src/agent-protocol'
+import type { AgentToolCall } from '../src/agent-protocol'
 import { streamForProvider } from '../src/stream'
 import {
   AI_CONNECT_TIMEOUT_MS,

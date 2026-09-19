@@ -1,3 +1,6 @@
+/* global window -- `window` is referenced only inside page.evaluate()
+   callbacks, whose bodies execute in the page's browser context rather than in
+   this Node script, so the global is legitimately in scope there. */
 import { chromium } from 'playwright';
 const browser = await chromium.launch({ channel: 'chrome' });
 const page = await browser.newPage();

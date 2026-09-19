@@ -29,8 +29,6 @@ import {
 import { createI18n, getUiLang } from '@genoffice/i18n'
 import { generateImageTool } from '@genoffice/ai-search'
 import { installHttpIpcBridge } from '@genoffice/ipc-bridge'
-import { gskGenerateImage, hasGskAuth } from '@genoffice/ai-search'
-import { cloudToolsEnabled, type AiSettings } from '@genoffice/ai-provider'
 import { PDF_CHANNELS } from '../shared/ipc'
 import type {
   ExportImagesRequest,

@@ -264,7 +264,6 @@ export function createSlidesSkillExtension(opts: SlidesSkillOptions) {
     if (enabled.has("execute_slide_script")) pi.registerTool(createExecuteSlideScriptTool({ uiAdapter }));
     if (enabled.has("regenerate_slide")) pi.registerTool(createRegenerateSlideTool({ uiAdapter }));
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (pi as any).on("before_agent_start", async () => ({
       systemPromptAppend:
         "\n## Slide Editing Rules\n- Slide indices are 0-based.\n- Use read_slide first to understand the current content and layout.\n- plan_deck replaces/creates the whole deck outline; use it for new decks, regenerate_slide for individual edits.",

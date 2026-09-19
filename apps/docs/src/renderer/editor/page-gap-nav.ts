@@ -285,9 +285,9 @@ export const PageGapNavExtension = Extension.create({
               : gapPos <= pending.head && gapPos > selection.head,
           )
           if (crossed.length <= 1) return null
-          // eslint-disable-next-line no-console -- deliberate breadcrumb: the
-          // clamp firing means a native jump crossed 2+ page boundaries; when
-          // a user reports a jump we can ask for this line from their console
+          // Deliberate breadcrumb: the clamp firing means a native jump crossed
+          // 2+ page boundaries; when a user reports a jump we can ask for this
+          // line from their console.
           console.warn('[gap-nav] clamped a multi-boundary native jump', {
             from: pending.head,
             to: selection.head,

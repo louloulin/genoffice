@@ -40,7 +40,7 @@ import {
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { AiScopeQuote, Markdown, useAiPanelPrefs, type AiScopeQuoteData, AiRunHeader, AiToolTimeline, AiErrorRecovery } from '@genoffice/ui'
 import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
-import { GensparkMark, ProviderMark } from '../components/icons'
+import { ProviderMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'

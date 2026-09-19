@@ -94,7 +94,13 @@ if (!isElectronRuntime()) {
         name,
       })
     },
-    insertModel3d: async (slideIndex, fitWidthPx) => {
+    // `fitWidthPx` is deliberately not honoured for 3D models: the desktop
+    // handler sizes an embedded model as a square half the deck height
+    // (`apps/slides/src/main/slides-main.ts:3627` — `cy = deckSize.cy * 0.5`,
+    // `cx = cy`) and ignores the argument identically. Keeping the web bridge in
+    // step with that behaviour matters more than honouring FIT_WIDTH here, so
+    // the mismatch is documented rather than fixed on one side only.
+    insertModel3d: async (slideIndex, _fitWidthPx) => {
       const picked = await pickFileBytes('.glb,.gltf')
       if (!picked) return null
       const { name, bytes } = picked[0]

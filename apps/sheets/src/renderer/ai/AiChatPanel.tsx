@@ -13,7 +13,7 @@ import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } fr
 import { AiRunHeader, AiToolTimeline, AiChangeSummary, AiErrorRecovery } from '@genoffice/ui'
 import { toChatChangePlan, defaultXlsxPreviewRenderer } from './xlsx-change-plan'
 import type { ChatToolCallRecord } from '@genoffice/chat-runtime/types'
-import { GensparkMark, ProviderMark } from '../ribbon-icons'
+import { ProviderMark } from '../ribbon-icons'
 import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import { ATTACHMENT_IMAGE_EXTS, type AttachmentMeta } from '../../shared/desktop-api'
 import { useI18n, type StringKey, type TFunc } from '../i18n/locale'
@@ -611,6 +611,18 @@ export function AiChatPanel({
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
   }
 
+  // Both hooks must run on every render: the collapsed branch below returns
+  // early, and calling them after that return made the hook count depend on
+  // isOpen, which React rejects with "Rendered fewer hooks than expected".
+  const [lastError, setLastError] = React.useState<string | null>(null)
+
+  // Last error visible in the transcript; surfaced via <AiErrorRecovery>.
+  // Re-derived whenever chat changes (cheap: scan the trailing entries).
+  React.useEffect(() => {
+    const last = [...chat].reverse().find((e) => e.isError)
+    setLastError(last && typeof last.text === 'string' ? last.text : null)
+  }, [chat])
+
   if (!isOpen) {
     return (
       <aside className="copilot collapsed">
@@ -626,15 +638,7 @@ export function AiChatPanel({
     )
   }
 
-  const [lastError, setLastError] = React.useState<string | null>(null)
   const canSend = prompt.trim().length > 0 && !aiBusy
-
-  // Last error visible in the transcript; surfaced via <AiErrorRecovery>.
-  // Re-derived whenever chat changes (cheap: scan the trailing entries).
-  React.useEffect(() => {
-    const last = [...chat].reverse().find((e) => e.isError)
-    setLastError(last && typeof last.text === 'string' ? last.text : null)
-  }, [chat])
 
   /** [B12](sheetnav://B12) links in answers jump the grid to the cited range */
   const citationNav = { scheme: SHEET_NAV_SCHEME, onNavigate: onCitation }

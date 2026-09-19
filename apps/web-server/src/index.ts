@@ -304,7 +304,9 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname.startsWith('/api/html/preview/') && request.method === 'GET') {
     const rawId = url.pathname.slice('/api/html/preview/'.length).split('/')[0]
-    let id = ''
+    // no initializer: every path either assigns below or returns from the
+    // catch, matching the channel decode just below this block
+    let id: string
     try {
       id = rawId ? decodeURIComponent(rawId) : ''
     } catch {
@@ -799,7 +801,9 @@ async function handlePiPromptStreamHttp(
     invalidatePiSession: () => void
   }
 
-  let promptText = ''
+  // no initializers: the catch below returns before either is read, and each
+  // is read only after its assignment in the streaming try block
+  let promptText: string
   let dropped = false
   try {
     const body = await readBody(request)
@@ -833,7 +837,7 @@ async function handlePiPromptStreamHttp(
     }
   }
 
-  let officeSession: Awaited<ReturnType<typeof getPiSession>> | null = null
+  let officeSession: Awaited<ReturnType<typeof getPiSession>>
   let unsubscribe: (() => void) | null = null
 
   const teardown = () => {

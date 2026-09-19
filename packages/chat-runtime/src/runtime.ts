@@ -15,7 +15,6 @@ import { loadOrCreateSession, appendMessage } from './session'
 import { startRun } from './run'
 import type { RunBridge } from './run'
 import type {
-  ChatCapability,
   ChatChangePlan,
   ChatEvent,
   ChatEventListener,

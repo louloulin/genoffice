@@ -1,4 +1,4 @@
-import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '../agent-protocol'
+import type { AgentToolCall } from '../agent-protocol'
 
 // ---- streaming (SSE line splitting shared by all providers) ----
 

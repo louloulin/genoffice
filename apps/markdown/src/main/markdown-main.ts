@@ -30,8 +30,6 @@ import {
 import { createI18n, getUiLang } from '@genoffice/i18n'
 import { generateImageTool } from '@genoffice/ai-search'
 import { installHttpIpcBridge } from '@genoffice/ipc-bridge'
-import { cloudToolsEnabled, type AiSettings } from '@genoffice/ai-provider'
-import { gskGenerateImage, hasGskAuth } from '@genoffice/ai-search'
 import { atomicWriteFile } from './atomic-write'
 import {
   copyImageIntoOwnedAssets,

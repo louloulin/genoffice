@@ -371,20 +371,9 @@ function AiModelPane({ t }: { t: TFunc }) {
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
-  const [capabilities, setCapabilities] = useState<{
-    search: { available: boolean; via: string; configured: boolean; fallback?: string }
-    image_search: { available: boolean; via: string; configured: boolean; fallback?: string }
-    image_generation: { available: boolean; via: string; configured: boolean }
-    media_analysis: { available: boolean; via: string; configured: boolean }
-  } | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    void window.aiOffice.getAiCapabilities?.().then((c) => {
-      if (alive && c) setCapabilities(c.capabilities)
-    })
-    return () => { alive = false }
-  }, [])
+  // No capability state in this pane: it renders no capability rows, so the
+  // fetch below used to spend an IPC round trip on every mount and discard the
+  // result. AiMediaPane owns the rendered capability table.
   /** free-typed value of the output-cap field; committed (and clamped) on blur */
   const [maxTokensDraft, setMaxTokensDraft] = useState<string | null>(null)
 
@@ -1364,7 +1353,9 @@ function TranslationKbPane({ t }: { t: TFunc }) {
       scope,
       priority,
     }
-    let entry: TranslationKbEntry | null = null
+    // no initializer: every branch below either returns early or assigns entry
+    // before the single upsert call that reads it
+    let entry: TranslationKbEntry | null
     if (schema === 'term') {
       if (!get('sourceTerm') || !get('targetTerm')) return
       entry = {
@@ -2445,7 +2436,6 @@ function SkillsPluginsPane({ t }: { t: TFunc }) {
   const [uploadKind, setUploadKind] = useState<'skill' | 'plugin'>('skill')
   const [uploadUploads, setUploadUploads] = useState<MarketplaceUploadEntry[]>([])
   const [uploadArtifact, setUploadArtifact] = useState<{ filename: string; content: string; size: number } | null>(null)
-  const [uploadStatus, setUploadStatus] = useState<string | null>(null)
   const [uploadForm, setUploadForm] = useState({
     id: '',
     name: '',
@@ -2599,7 +2589,13 @@ function SkillsPluginsPane({ t }: { t: TFunc }) {
     if (!trimmed) return
     setRecentSearches((prev) => {
       const next = [trimmed, ...prev.filter((x) => x.toLowerCase() !== trimmed.toLowerCase())].slice(0, 5)
-      try { window.localStorage.setItem('genoffice.mp.recent', JSON.stringify(next)) } catch {}
+      try {
+        window.localStorage.setItem('genoffice.mp.recent', JSON.stringify(next))
+      } catch {
+        /* best effort — localStorage throws when the quota is exceeded or storage
+           is blocked (private mode / cookies disabled). The in-memory list is the
+           source of truth, so a failed persist only costs history across reloads. */
+      }
       return next
     })
   }, [])
@@ -3242,7 +3238,11 @@ function SkillsPluginsPane({ t }: { t: TFunc }) {
               className="set-mp-recent-clear"
               onClick={() => {
                 setRecentSearches([])
-                try { window.localStorage.removeItem('genoffice.mp.recent') } catch {}
+                try {
+                  window.localStorage.removeItem('genoffice.mp.recent')
+                } catch {
+                  /* best effort — a blocked localStorage must not stop the clear */
+                }
               }}
               aria-label="Clear recent searches"
             >
@@ -3877,7 +3877,9 @@ function ModulesPane({ t }: { t: TFunc }) {
     dragIndexRef.current = index
     e.dataTransfer.effectAllowed = 'move'
   }
-  const onDragOver = (index: number) => (e: React.DragEvent) => {
+  // `_index` is unused (drag-over only needs to allow the drop), but the curried
+  // shape is what the call site uses: onDragOver={onDragOver(idx)}.
+  const onDragOver = (_index: number) => (e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
   }

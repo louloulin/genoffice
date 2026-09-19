@@ -8,11 +8,9 @@
 /// transport differs, which is what makes both versions behave the same.
 import type {
   AiChatRequest,
-  AiPanelPrefs,
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
-  AutoSaveDefault,
   DesktopApi,
   MenuCommand,
   UiTheme,

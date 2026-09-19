@@ -61,9 +61,7 @@ describe('installOfficeSafety', () => {
     expect(captured.before_agent_start.length).toBe(1)
 
     // Drive session_start — frozen selection should land in customData
-    const editor = new MockEditor()
-    await captured.session_start[0]!(
-      { type: 'session_start', reason: 'startup' } as SessionStartEvent,
+    await captured.session_start[0]!(      { type: 'session_start', reason: 'startup' } as SessionStartEvent,
       ctx,
     )
     expect((ctx.ui as ReactUIAdapter).getCustomData('frozenSelection')).toBeDefined()

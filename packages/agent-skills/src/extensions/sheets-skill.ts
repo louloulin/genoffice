@@ -286,7 +286,6 @@ export function createSheetsSkillExtension(opts: SheetsSkillOptions) {
     if (enabled.has("find_cells")) pi.registerTool(createFindCellsTool({ uiAdapter }));
     if (enabled.has("create_document")) pi.registerTool(createCreateSheetTool({ uiAdapter }));
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (pi as any).on("before_agent_start", async () => ({
       systemPromptAppend:
         "\n## Spreadsheet Editing Rules\n- Sheet names are case-sensitive. Always call get_workbook_context first if you don't know them.\n- Cell coordinates are 0-based in tool args but 1-based in display (R1C1 = first cell).\n- read_range returns TSV (tab-separated); use it to understand data before mutating.",

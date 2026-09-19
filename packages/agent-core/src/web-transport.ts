@@ -13,8 +13,6 @@ import type {
   AgentStreamHandle,
   AgentStreamCallbacks,
   AgentToolCall,
-  AgentMessage,
-  AgentToolDef,
 } from './types'
 
 export interface WebTransportOptions {
@@ -24,15 +22,20 @@ export interface WebTransportOptions {
   apiKey?: string | undefined
   /** Request timeout in ms */
   timeout?: number | undefined
-  /** SSE reconnect attempts */
+  /**
+   * SSE reconnect attempts. Accepted for API parity with the desktop transport;
+   * the web transport does not currently reconnect, so passing this has no
+   * effect yet (see the note on the stream implementation below).
+   */
   reconnectAttempts?: number | undefined
-  /** SSE reconnect delay in ms */
+  /**
+   * SSE reconnect delay in ms. Accepted for API parity with the desktop
+   * transport; not yet honoured by the web transport.
+   */
   reconnectDelay?: number | undefined
 }
 
 const DEFAULT_TIMEOUT = 120_000
-const DEFAULT_RECONNECT_ATTEMPTS = 3
-const DEFAULT_RECONNECT_DELAY = 1000
 
 /**
  * Web 环境检测
@@ -48,13 +51,12 @@ export function isWebEnvironment(): boolean {
  * 使用 SSE 进行流式响应
  */
 export function createWebTransport(options: WebTransportOptions): AgentTransport {
-  const {
-    baseUrl,
-    apiKey,
-    timeout = DEFAULT_TIMEOUT,
-    reconnectAttempts = DEFAULT_RECONNECT_ATTEMPTS,
-    reconnectDelay = DEFAULT_RECONNECT_DELAY,
-  } = options
+  // reconnectAttempts / reconnectDelay are deliberately not destructured: the
+  // stream implementation below is a single fetch + AbortController read loop
+  // with no retry path, so reading them would only suggest a guarantee that
+  // does not exist. They stay on the options type for parity with the desktop
+  // transport.
+  const { baseUrl, apiKey, timeout = DEFAULT_TIMEOUT } = options
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -62,9 +64,6 @@ export function createWebTransport(options: WebTransportOptions): AgentTransport
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`
   }
-
-  let eventSource: EventSource | null = null
-  let reconnectCount = 0
 
   return {
     stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks): AgentStreamHandle {
@@ -296,7 +295,11 @@ export interface WebAiSettings {
  */
 export function createWebAgentTransport(
   settings: () => WebAiSettings,
-  errorTexts: {
+  // Callers pass localized error text for parity with the desktop transport, but
+  // this transport surfaces raw errors (e.g. 'Request timeout', `HTTP <status>`)
+  // rather than mapping them through this table. Kept in the signature so the
+  // call shape matches the desktop factory; prefix marks the gap as deliberate.
+  _errorTexts: {
     unknown: string
     timeout?: string
     credits?: string

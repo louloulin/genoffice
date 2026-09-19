@@ -9,7 +9,6 @@ import {
   __setTranslateOneForTests,
   __setTranslateBatchForTests,
   aiSettingsCandidates,
-  __setChatForProviderForTests,
   __resetKbForTests,
 } from "../src/extensions/translate-skill"
 import type { AiSettings } from "@genoffice/ai-provider"
@@ -65,7 +64,6 @@ describe("translate-skill", () => {
   afterEach(() => {
     __setReadSettingsForTests(null)
     __setTranslateOneForTests(null)
-    __setChatForProviderForTests(null)
     __setTranslateBatchForTests(null)
     __resetKbForTests()
   })
@@ -357,7 +355,6 @@ describe("kb_upsert shortcut fields", () => {
   afterEach(() => {
     __setReadSettingsForTests(null)
     __setTranslateOneForTests(null)
-    __setChatForProviderForTests(null)
     __setTranslateBatchForTests(null)
     __resetKbForTests()
   })

@@ -20,7 +20,6 @@ import type { ComposerCommand } from '../src/chat/composer-commands'
 import type { ChatMode } from '../src/chat/modes'
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true

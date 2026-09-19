@@ -1,4 +1,4 @@
-import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from './agent-protocol'
+import type { AgentMessage, AgentToolDef } from './agent-protocol'
 import { withOutputCapFallback } from './output-cap'
 import { streamAnthropic } from './protocols/anthropic'
 import { streamGemini } from './protocols/gemini'

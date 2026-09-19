@@ -5,12 +5,13 @@
  * Strategy: mount the components against a real ReactUIAdapter inside a
  * PiSessionProvider, drive the adapter from "below" (push dialogs / notify),
  * and assert against the rendered DOM. No external testing-library — we use
- * react-dom/client + container.querySelector + vi.waitFor.
+ * react-dom/client + container.querySelector, wrapping every state push in
+ * `act()` and flushing microtasks with a `setTimeout(0)` await.
  *
  * jsdom is required: see vitest.config.ts environmentMatchGlobs.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react'
 import { PiDialogHost, NotificationToaster, PiStatusBar } from '../src/components'

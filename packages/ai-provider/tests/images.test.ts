@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '../src/agent-protocol'
+import type { AgentMessage } from '../src/agent-protocol'
 import { streamForProvider } from '../src/stream'
 import { okResponse, sseStream } from './test-utils'
 

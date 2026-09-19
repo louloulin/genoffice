@@ -10,14 +10,13 @@ import type {
   AgentStreamRequest,
   AgentStreamCallbacks,
   AgentTransport,
-  ToolExecution,
 } from '@genoffice/agent-core'
 
 import { ChatRuntime } from '../src/runtime.js'
 import { classifyError, AIError } from '../src/errors.js'
 import { normalizeChangePlan } from '../src/change-plan.js'
 import { startRun } from '../src/run.js'
-import type { ChatRun, ChatSession } from '../src/types.js'
+import type { ChatSession } from '../src/types.js'
 
 function fakeSkill(): AgentSkill {
   return {

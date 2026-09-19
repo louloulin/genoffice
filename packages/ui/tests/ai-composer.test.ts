@@ -70,7 +70,6 @@ describe('AiComposer backward compatibility', () => {
         '<div class="ai-input-footer">' +
         '<span class="ai-input-hint">Enter to send</span>' +
         '<button class="ai-send-btn" title="Send" aria-label="Send">' +
-        // eslint-disable-next-line no-useless-concat
         '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true">' +
         '<path d="M2.2 8 13.8 2.6 11 13.4 7.6 9.6z" stroke-linejoin="round"></path>' +
         '<path d="M7.6 9.6 13.8 2.6"></path></svg>Send</button></div></div>',

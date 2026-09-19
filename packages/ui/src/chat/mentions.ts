@@ -115,7 +115,7 @@ export function activeMentionQuery(
   if (!isMentionBoundary(value[i - 1])) return null
   const query = chunk.slice(1)
   // allow a-z 0-9 _ - / . and CJK; reject punctuation that means "this is not a mention"
-  if (query !== '' && !/^[\w\-\/. \u4e00-\u9fff]+$/.test(query)) return null
+  if (query !== '' && !/^[\w\-/. \u4e00-\u9fff]+$/.test(query)) return null
   return { query, start: i, end: caret }
 }
 
@@ -167,7 +167,7 @@ export function filterMentionEntries(
     .filter((x) => x.s > 0)
   const groupOrder: string[] = []
   const groupMap = new Map<string, MentionEntry[]>()
-  for (const { entry, s } of scored) {
+  for (const { entry } of scored) {
     const g = entry.group ?? ''
     if (!groupMap.has(g)) {
       groupMap.set(g, [])
@@ -256,7 +256,7 @@ export interface MentionToken {
 export function parseMentionTokens(value: string, known: readonly MentionEntry[]): MentionToken[] {
   const tokens: MentionToken[] = []
   // simple regex: `@<word-or-CJK-or-dash>` — stops at whitespace/punctuation
-  const re = /@([\w\-\.\u4e00-\u9fff]+)/g
+  const re = /@([\w\-.\u4e00-\u9fff]+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(value)) !== null) {
     const start = m.index

@@ -9,7 +9,6 @@
  */
 
 import {
-  AgentLoop,
   type AgentLoopEvents,
   type AgentRunResult,
   type AgentSkill,
@@ -29,6 +28,14 @@ export interface RunHandle {
   run: ChatRun
   cancel(): void
   snapshot(): unknown | undefined
+  /**
+   * Sink for the AgentLoop-shaped callbacks that advance this run's state
+   * (`onText`, `onToolStart`, …). `startRun` deliberately does not construct an
+   * `AgentLoop` itself: the driver lives outside this package (the renderer
+   * bridge / IPC layer). Without a driver wired to this sink the run stays in
+   * its initial `queued` status.
+   */
+  events: AgentLoopEvents<unknown>
 }
 
 export interface StartRunOptions {
@@ -152,7 +159,7 @@ export function startRun(opts: StartRunOptions): RunHandle {
     error: (runState as { error?: unknown }).error as ChatRun['error'],
   })
 
-  let loopCancel: { fn?: () => void } = {}
+  const loopCancel: { fn?: () => void } = {}
 
   emit()
 
@@ -169,6 +176,7 @@ export function startRun(opts: StartRunOptions): RunHandle {
     snapshot() {
       return snapshotBeforeFirstTool
     },
+    events,
   }
 }
 

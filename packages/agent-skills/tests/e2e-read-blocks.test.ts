@@ -35,7 +35,6 @@ function makeRealisticDoc(): DocsEditor & { replacedHtml?: string } {
   ]
   let replacedHtml: string | undefined
   let selectionHtml: string | undefined = '<p>placeholder selection</p>'
-  let lastOps: { ops: ReadonlyArray<unknown>; dryRun: boolean } | null = null
   return {
     getBlockCount: () => blocks.length,
     getBlock: (i) => blocks[i]!,
@@ -62,7 +61,6 @@ function makeRealisticDoc(): DocsEditor & { replacedHtml?: string } {
       return { replaced: true }
     },
     applyOps: (ops, dryRun) => {
-      lastOps = { ops, dryRun }
       return { applied: ops.length, dryRun }
     },
     markDocSeen: () => {},

@@ -100,13 +100,13 @@ export function useUiAdapter(): ReactUIAdapter {
 // Subscriptions via useSyncExternalStore (concurrent-safe, no re-render churn)
 // ---------------------------------------------------------------------------
 
-function subscribeToAdapter<T>(subscribe: (cb: () => void) => () => void, get: () => T): T {
+function useSubscribeToAdapter<T>(subscribe: (cb: () => void) => () => void, get: () => T): T {
   return useSyncExternalStore(subscribe, get, get);
 }
 
 export function usePiDialogs(): readonly DialogRequest[] {
   const adapter = useUiAdapter();
-  return subscribeToAdapter(
+  return useSubscribeToAdapter(
     (cb) => adapter.onDialogs(() => cb()),
     () => adapter.dialogs,
   );
@@ -114,7 +114,7 @@ export function usePiDialogs(): readonly DialogRequest[] {
 
 export function usePiNotifications(): readonly NotificationItem[] {
   const adapter = useUiAdapter();
-  return subscribeToAdapter(
+  return useSubscribeToAdapter(
     (cb) => adapter.onNotifications(() => cb()),
     () => adapter.notifications,
   );
@@ -122,7 +122,7 @@ export function usePiNotifications(): readonly NotificationItem[] {
 
 export function usePiStatuses(): ReadonlyMap<string, string | undefined> {
   const adapter = useUiAdapter();
-  return subscribeToAdapter(
+  return useSubscribeToAdapter(
     (cb) => adapter.onStatuses(() => cb()),
     () => adapter.statuses,
   );

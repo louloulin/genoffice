@@ -75,7 +75,10 @@ export function AiInlineLauncher(props: AiInlineLauncherProps): React.JSX.Elemen
 
   // Re-measure on every render via a tick prop; parents bump it when the
   // underlying selection / viewport state they care about changes.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // SAFETY: `props` is the closed prop union this component's own call sites
+  // build; the cast only reads the optional `revision` (never writes through
+  // it), and an absent value leaving `_tick` undefined is the intended no-bump
+  // case.
   const _tick = (props as unknown as { revision?: number }).revision
   useLayoutEffect(() => {
     const update = () => {
@@ -106,7 +109,6 @@ export function AiInlineLauncher(props: AiInlineLauncherProps): React.JSX.Elemen
       window.removeEventListener('scroll', onScroll, { capture: true })
       window.removeEventListener('resize', onScroll)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getAnchorRect, _tick])
 
   useEffect(() => {

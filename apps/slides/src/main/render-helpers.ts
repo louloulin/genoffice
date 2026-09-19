@@ -4,7 +4,6 @@
 import {
   materializeSlide,
   type OpenedPptx,
-  type Slide,
 } from '@genoffice/pptx-engine'
 import {
   buildRenderSlide,
@@ -27,7 +26,11 @@ export function resetFontMetrics(): void {
   fontMetrics = null
 }
 
-export function makeMediaResolver(opened: OpenedPptx, slidePath?: string) {
+// `_slidePath` is accepted but unused here: this headless copy resolves media
+// without theme retinting. The desktop copy in session-state.ts uses the slide
+// path to retint themed SVGs; keeping the same signature lets both call sites
+// stay interchangeable.
+export function makeMediaResolver(opened: OpenedPptx, _slidePath?: string) {
   const cache = new Map<string, string | undefined>()
   return (mediaRef: string): string | undefined => {
     if (cache.has(mediaRef)) return cache.get(mediaRef)
@@ -39,7 +42,7 @@ export function makeMediaResolver(opened: OpenedPptx, slidePath?: string) {
         const decoded = tiffToPng(bytes)
         if (decoded) url = `data:image/png;base64,${Buffer.from(decoded.png).toString('base64')}`
       } else if (mime === 'image/svg+xml') {
-        let text = Buffer.from(bytes).toString('utf8')
+        const text = Buffer.from(bytes).toString('utf8')
         // Theme-tinted SVG rewrite is desktop-only (needs retintThemedSvg from session-state).
         // The web renderer can still display the raw SVG inline; theme tints are a visual nicety.
         url = `data:${mime};base64,${Buffer.from(text, 'utf8').toString('base64')}`

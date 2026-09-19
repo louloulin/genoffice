@@ -31,25 +31,20 @@
 
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import Type from "typebox"
-import { basename, extname, join } from "node:path"
+import { extname, join } from "node:path"
 import { accessSync, constants as fsConstants, existsSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile } from "node:fs/promises"
 
 import {
   assessFileCoverage,
   buildDictionary,
-  buildTranslationPrompt,
-  buildTranslateSystemPrompt,
   defaultOutputPath,
-  extractTranslationText,
   fillDictionaryGaps,
-  isSupportedExtension,
   KnowledgeBase,
   resolveTranslateSkills,
   sharedMemory,
   translateBatch,
-  translateFile,
   translateOne,
   type BuildDictionaryRequest,
   type BuildDictionaryResult,
@@ -61,7 +56,6 @@ import {
   type TranslationMemoryLike,
 } from "@genoffice/translation-core"
 import {
-  chatForProvider,
   type AiSettings,
   type AiProviderId,
   type AiProviderConfig,
@@ -172,12 +166,6 @@ export type TranslateOneFn = typeof translateOne
 let translateOneOverride: TranslateOneFn | null = null
 export function __setTranslateOneForTests(fn: TranslateOneFn | null): void {
   translateOneOverride = fn
-}
-
-export type ChatForProviderFn = typeof chatForProvider
-let chatForProviderOverride: ChatForProviderFn | null = null
-export function __setChatForProviderForTests(fn: ChatForProviderFn | null): void {
-  chatForProviderOverride = fn
 }
 
 /**
@@ -647,7 +635,6 @@ async function executeFileTranslation(args: {
 }): Promise<{ ok: boolean; stdout: string; stderr: string; code: number; elapsedMs: number; bytes?: number; error?: string }> {
   const start = Date.now()
   const pythonBin = resolvePython(args.pythonPath)
-  const dict = args.dictionaryPath ? ` --dictionary "${args.dictionaryPath}"` : ""
   // Only the PDF path renders a bitmap, so `--scale` is meaningful — and
   // accepted — there alone. The unified `translate.py` takes the flag and
   // forwards it to the PDF handler; the format siblings
@@ -658,8 +645,6 @@ async function executeFileTranslation(args: {
     args.scale !== undefined && extname(args.inputPath).toLowerCase() === ".pdf"
       ? args.scale
       : undefined
-  const scaleArg = scale !== undefined ? ` --scale ${scale}` : ""
-  const cmd = `${pythonBin} "${args.script}" "${args.inputPath}" "${args.outputPath}"${dict}${scaleArg}`
   return await new Promise((resolve) => {
     try {
       const proc = nodeSpawn(pythonBin, [
@@ -697,7 +682,6 @@ async function executeFileTranslation(args: {
         // helper to throw — a stat failure is fine.
         let bytes: number | undefined
         try {
-          const { statSync } = require("node:fs")
           bytes = statSync(args.outputPath).size
         } catch {
           bytes = undefined
@@ -1019,37 +1003,6 @@ interface BuildDictResult {
   coverage?: CoverageReport
   sourceTerms?: string[]
   error?: string
-}
-
-async function callProviderForDict(
-  prompt: string,
-  provider: AiProviderId,
-  config: AiProviderConfig,
-): Promise<string> {
-  const fn = chatForProviderOverride ?? chatForProvider
-  const out = await fn(
-    provider,
-    config,
-    "You are a translation KB builder. Output one `source: target` pair per line, no commentary.",
-    prompt,
-  )
-  return out.content ?? ""
-}
-
-function parseDictionaryFromLlm(raw: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const line of raw.split(/\r?\n/)) {
-    const m = line.match(/^\s*([^:][^:]*?)\s*[:=>]\s*(.+?)\s*$/)
-    if (!m) continue
-    const src = m[1].trim().replace(/^['"`]+|['"`]+$/g, "")
-    const tgt = m[2].trim().replace(/^['"`]+|['"`]+$/g, "")
-    if (src && tgt && src !== tgt) out[src] = tgt
-  }
-  return out
-}
-
-function pairCountOf(pairs: Record<string, string>): number {
-  return Object.keys(pairs).length
 }
 
 function createBuildDictionaryTool() {
@@ -1593,7 +1546,7 @@ function createFillDictionaryGapsTool() {
         })
         return {
           content: [{ type: "text" as const, text: `fill_dictionary_gaps → ok=${result.ok}, added=${result.added ?? 0}, dictionaryPath=${result.dictionaryPath ?? "(none)"}` }],
-          details: result as unknown as FillGapsResult,
+          details: result,
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)

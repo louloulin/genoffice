@@ -47,7 +47,7 @@ import { DOCS_CONTINUE_INSTRUCTION } from './continuation'
 import { waitForFullContent } from '../phased-content'
 import { currentDocGeneration } from '../file-actions'
 import { createFilesSkill } from './files-skill'
-import { createAiTransport, isWebMode } from './transports'
+import { createAiTransport } from './transports'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
 import { Markdown } from '@genoffice/ui'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
@@ -80,12 +80,9 @@ import {
   type TranslateDialogStrings,
   type AiInlineLauncherStrings,
 } from '@genoffice/ui'
-import { classifyError } from '@genoffice/chat-runtime/errors'
 import { postToEmbedParent } from '../../shared/embed-bridge'
-import { useChatRuntime } from '@genoffice/chat-runtime/react'
 import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
-import type { AgentSkill } from '@genoffice/agent-core'
-import { GensparkMark, ProviderMark } from '../components/icons'
+import { ProviderMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -463,21 +460,6 @@ export function AiPanel({
     }
     setSharedToolTimeline((prev) => [...prev, rec])
     return rec.id
-  }
-  function emitSharedToolExecuted(id: string, output: string, isError: boolean) {
-    setSharedToolTimeline((prev) =>
-      prev.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              status: isError ? 'error' : 'executed',
-              output,
-              finishedAt: Date.now(),
-              isError,
-            }
-          : t,
-      ),
-    )
   }
   function resetSharedTimeline() {
     sharedToolSeqRef.current = 0
@@ -1177,10 +1159,10 @@ export function AiPanel({
   const hasScopeSelection = selectionText.length > 0
 
   // ─── M2 — inline launcher (selection-anchored quick chips) ───
-  const [inlineOpen, setInlineOpen] = useState(false)
+  // AiInlineLauncher anchors itself to the selection and TranslateDialog owns its
+  // own busy flag and result text, so this panel only tracks the dialog's
+  // open/error state.
   const [translateOpen, setTranslateOpen] = useState(false)
-  const [translatedText, setTranslatedText] = useState<string | null>(null)
-  const [translateBusy, setTranslateBusy] = useState(false)
   const [translateError, setTranslateError] = useState<string | null>(null)
   const [translateScope, setTranslateScope] = useState<'selection' | 'document'>('selection')
   const [documentTranslationUnits, setDocumentTranslationUnits] = useState<
@@ -1222,7 +1204,6 @@ export function AiPanel({
       setMemoryEnabled(detail.memoryEnabled !== false)
       setQualityCheck(detail.qualityCheck !== false)
       setGlossaryCategory(detail.glossaryCategory?.trim() || 'general')
-      setTranslatedText(null)
       setTranslateError(null)
       setDocumentTranslationUnits([])
       setDocumentTranslationQuality(undefined)
@@ -1340,7 +1321,6 @@ export function AiPanel({
   const handleInlinePick = useCallback(
     (action: 'polish' | 'expand' | 'shorten' | 'summarize' | 'translate') => {
       if (action === 'translate') {
-        setTranslatedText(null)
         setTranslateError(null)
         setTranslateOpen(true)
         return
@@ -1366,7 +1346,6 @@ export function AiPanel({
         ? editor.state.doc.textBetween(1, editor.state.doc.content.size, '\n', ' ').trim()
         : selectionText
     if (!sourceText) return null
-    setTranslateBusy(true)
     setTranslateError(null)
     translationCancelledRef.current = false
     try {
@@ -1494,7 +1473,6 @@ export function AiPanel({
         // throw so the dialog's catch branch surfaces the real provider error
         throw new Error(err)
       }
-      setTranslatedText(r.translated ?? '')
       return r.translated ?? ''
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e)
@@ -1504,8 +1482,6 @@ export function AiPanel({
         postToEmbedParent({ type: 'ai-progress', status: 'failed', progress: 0 })
       // re-throw so TranslateDialog catches and shows the real provider error
       throw e
-    } finally {
-      setTranslateBusy(false)
     }
   }, [
     editor,
@@ -1520,7 +1496,6 @@ export function AiPanel({
 
   const cancelTranslation = useCallback(() => {
     translationCancelledRef.current = true
-    setTranslateBusy(false)
     setTranslateOpen(false)
     postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
   }, [])
@@ -1640,7 +1615,6 @@ export function AiPanel({
         ops: [{ kind: 'translate', description: op.description, ops: appliedItems }],
       })
       setTranslateOpen(false)
-      setInlineOpen(false)
     },
     [editor],
   )

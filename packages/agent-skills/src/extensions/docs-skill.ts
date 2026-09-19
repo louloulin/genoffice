@@ -318,7 +318,6 @@ export function createDocsSkillExtension(opts: DocsSkillOptions) {
         "- Use replace_document sparingly — prefer targeted tools like replace_blocks or insert_content.\n" +
         "- replace_selection requires an active text selection; for whole blocks use replace_blocks.",
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (pi as any).on("before_agent_start", beforeAgentStart);
   };
 }

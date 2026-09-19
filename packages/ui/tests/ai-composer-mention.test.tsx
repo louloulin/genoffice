@@ -13,7 +13,6 @@ import { AiComposer } from '../src/AiComposer'
 import type { MentionEntry, MentionPick } from '../src/chat/mentions'
 
 declare global {
-  // eslint-disable-next-line no-var
   var IS_REACT_ACT_ENVIRONMENT: boolean
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -33,7 +32,6 @@ interface Harness {
 
 let container: HTMLDivElement
 let root: Root
-let currentHarness: Harness
 
 function mount(): Harness {
   const picks: MentionPick[] = []
@@ -42,7 +40,6 @@ function mount(): Harness {
     setValue: () => undefined,
     getValue: () => '',
   }
-  currentHarness = harness
   function Inner(): React.JSX.Element {
     const [v, setV] = useState('')
     harness.setValue = setV

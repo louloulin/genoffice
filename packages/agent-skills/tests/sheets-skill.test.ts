@@ -2,7 +2,7 @@
  * Tests for sheets-skill (W7 deliverable).
  */
 
-import { describe, expect, it, beforeEach, vi } from 'vitest'
+import { describe, expect, it, beforeEach } from 'vitest'
 import { ReactUIAdapter } from '@genoffice/agent-runtime'
 import {
   createSheetsSkillExtension,

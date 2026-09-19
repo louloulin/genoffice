@@ -134,7 +134,7 @@ describe('frozen-selection extension', () => {
   it('is a no-op when the editor has no selection', async () => {
     const editor = new MockEditor(['para 1'], null)
     const ext = createFrozenSelectionExtension({ getEditor: () => editor })
-    const { api, captured, fire } = makeHarness(adapter)
+    const { api, fire } = makeHarness(adapter)
     ext(api)
 
     await fire('session_start', { type: 'session_start', reason: 'startup' })
@@ -143,7 +143,7 @@ describe('frozen-selection extension', () => {
 
   it('is a no-op when the editor is not available', async () => {
     const ext = createFrozenSelectionExtension({ getEditor: () => null })
-    const { api, captured, fire } = makeHarness(adapter)
+    const { api, fire } = makeHarness(adapter)
     ext(api)
 
     await fire('session_start', { type: 'session_start', reason: 'startup' })
@@ -157,7 +157,7 @@ describe('frozen-selection extension', () => {
       customDataKey: 'docs:frozen',
       fingerprint: (e) => `units=${e.getUnitCount()}`,
     })
-    const { api, captured, fire } = makeHarness(adapter)
+    const { api, fire } = makeHarness(adapter)
     ext(api)
 
     await fire('session_start', { type: 'session_start', reason: 'startup' })
@@ -174,7 +174,7 @@ describe('frozen-selection extension', () => {
   it('refreshes the snapshot on subsequent session_start events', async () => {
     const editor = new MockEditor(['x', 'y'], { from: 0, to: 1 })
     const ext = createFrozenSelectionExtension({ getEditor: () => editor })
-    const { api, captured, fire } = makeHarness(adapter)
+    const { api, fire } = makeHarness(adapter)
     ext(api)
 
     await fire('session_start', { type: 'session_start', reason: 'new' })
