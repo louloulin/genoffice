@@ -1,26 +1,45 @@
 /**
  * GenOffice Web Server 功能测试脚本
- * 
+ *
  * 对标 Electron IPC 功能，验证 Web Server 的功能完整性
- * 
+ *
  * 运行方式:
  *   node scripts/test-web-server.mjs
  */
 
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
-const BASE_URL = process.env.WEB_SERVER_URL || 'http://localhost:8080'
+// Fixtures must live inside managed storage. The server refuses every
+// renderer-supplied path outside DATA_DIR ∪ WEB_TEMP_ROOT (see
+// apps/web-server/src/common/paths.ts), so a probe handing it /tmp/foo.docx now
+// gets the same 400 a real attacker would — the probe would report a working
+// channel as broken. Mirrors the server's own env chain (common/state.ts).
+const DATA_DIR =
+  process.env.DATA_DIR ||
+  process.env.GENOFFICE_DATA_DIR ||
+  process.env.GENOFFICE_WEB_DATA_DIR ||
+  '/tmp/genoffice-data'
+const FILES_DIR = join(DATA_DIR, 'files')
+mkdirSync(FILES_DIR, { recursive: true })
+
+/** Write a minimal fixture into managed storage and return its path. */
+function managedFixture(name, bytes) {
+  const target = join(FILES_DIR, name)
+  writeFileSync(target, Buffer.from(bytes))
+  return target
+}
+
+// 18081 is the server's own default (apps/web-server/src/common/paths.ts).
+// 127.0.0.1 rather than localhost: the default HOST binds 0.0.0.0 (IPv4 only),
+// so a dual-stack resolver that prefers ::1 can fail to connect.
+const BASE_URL = process.env.WEB_SERVER_URL || 'http://127.0.0.1:18081'
 
 // Electron IPC 通道分类
 const ELECTRON_CHANNELS = {
   // 基础应用通道
-  app: [
-    'app:get-language',
-    'app:get-version',
-    'app:get-platform',
-    'app:get-theme',
-  ],
-  
+  app: ['app:get-language', 'app:get-version', 'app:get-platform', 'app:get-theme'],
+
   // AI 功能通道
   ai: [
     'ai:chat',
@@ -33,14 +52,10 @@ const ELECTRON_CHANNELS = {
     'ai:gsk-login',
     'ai:log-run-failure',
   ],
-  
+
   // 协作功能通道
-  collab: [
-    'collab:join',
-    'collab:leave',
-    'collab:sync',
-  ],
-  
+  collab: ['collab:join', 'collab:leave', 'collab:sync'],
+
   // 文档功能通道
   docs: [
     'docs:open',
@@ -57,14 +72,10 @@ const ELECTRON_CHANNELS = {
     'docs:write-recovery',
     'docs:password-intent-revision',
   ],
-  
+
   // 表格功能通道
-  sheets: [
-    'sheets:new-blank',
-    'sheets:has-queued-workbook',
-    'workbook:open-path',
-  ],
-  
+  sheets: ['sheets:new-blank', 'sheets:has-queued-workbook', 'workbook:open-path'],
+
   // 幻灯片功能通道
   slides: [
     'slides:new-blank',
@@ -88,12 +99,10 @@ const ELECTRON_CHANNELS = {
     'slides:redo',
     'slides:get-render-slides',
   ],
-  
+
   // PDF 功能通道
-  pdf: [
-    'pdf:open-path',
-  ],
-  
+  pdf: ['pdf:open-path'],
+
   // 项目功能通道
   project: [
     'project:list',
@@ -104,27 +113,15 @@ const ELECTRON_CHANNELS = {
     'project:moveFile',
     'project:timeline',
   ],
-  
+
   // 文件功能通道
-  files: [
-    'files:pick',
-    'files:add',
-    'files:read-image',
-  ],
-  
+  files: ['files:pick', 'files:add', 'files:read-image'],
+
   // 窗口功能通道
-  win: [
-    'win:new',
-    'win:list',
-    'win:focus',
-  ],
-  
+  win: ['win:new', 'win:list', 'win:focus'],
+
   // 剪贴板功能通道
-  clipboard: [
-    'clipboard:copy',
-    'clipboard:cut',
-    'clipboard:paste',
-  ],
+  clipboard: ['clipboard:copy', 'clipboard:cut', 'clipboard:paste'],
 }
 
 // Web Server 已实现的通道
@@ -342,6 +339,10 @@ const WEB_SERVER_IMPLEMENTED = [
   'web:save-file',
 ]
 
+// 这两个通道的夹具是 4 字节的最小文件头，解析器必然拒绝它；服务端对此回
+// 422 CORRUPT（损坏文件属客户端问题，而非服务端故障），所以 422 是正确结果。
+const CORRUPT_FIXTURE_CHANNELS = new Set(['workbook:open-path', 'slides:open-path'])
+
 // 测试结果收集
 const results = {
   passed: [],
@@ -355,50 +356,61 @@ async function testChannel(channel) {
   let body = { args: [] }
   if (channel === 'project:create') {
     body = { args: [{ name: 'Test Project' }] }
-  } else if (channel === 'project:files' || channel === 'project:rename' || channel === 'project:delete' || channel === 'project:timeline' || channel === 'project:moveFile') {
+  } else if (
+    channel === 'project:files' ||
+    channel === 'project:rename' ||
+    channel === 'project:delete' ||
+    channel === 'project:timeline' ||
+    channel === 'project:moveFile'
+  ) {
     body = { args: [{ id: 'test-id' }] }
   } else if (channel === 'docs:font-metrics') {
     body = { args: ['sans-serif'] }
   } else if (channel === 'ai:chat') {
-    body = { args: [{ message: 'Hello' }] }
+    // The handler validates the exact shape; without a configured provider it
+    // answers 200 with { ok: false, error } — an honest refusal, not a 400.
+    body = {
+      args: [{ settings: { provider: 'genspark', providers: {} }, system: '', user: 'Hello' }],
+    }
   } else if (channel === 'ai:stream') {
     body = { args: [{ message: 'Hello', sessionId: `test-${Date.now()}` }] }
+  } else if (channel === 'ai:set-settings') {
+    body = { args: [{}] }
   } else if (channel === 'files:add') {
     body = { args: [] }
   } else if (channel === 'collab:join' || channel === 'collab:leave' || channel === 'collab:sync') {
     body = { args: [{ docId: 'test-doc', userId: 'test-user' }] }
   } else if (channel === 'docs:open-path' || channel === 'docs:read-path') {
-    // 创建临时测试文件
-    const docxPath = '/tmp/genoffice-test.docx'
-    writeFileSync(docxPath, Buffer.from('PK\x03\x04')) // 最小 DOCX 头
-    body = { args: [docxPath] }
+    // 最小 DOCX 头，写在受管目录内
+    body = { args: [managedFixture('probe-test.docx', 'PK\x03\x04')] }
   } else if (channel === 'workbook:open-path') {
-    const xlsxPath = '/tmp/genoffice-test.xlsx'
-    writeFileSync(xlsxPath, Buffer.from('PK\x03\x04'))
-    body = { args: [xlsxPath] }
+    body = { args: [managedFixture('probe-test.xlsx', 'PK\x03\x04')] }
   } else if (channel === 'slides:open-path') {
-    const pptxPath = '/tmp/genoffice-test.pptx'
-    writeFileSync(pptxPath, Buffer.from('PK\x03\x04'))
-    body = { args: [pptxPath] }
+    body = { args: [managedFixture('probe-test.pptx', 'PK\x03\x04')] }
   } else if (channel === 'pdf:open-path') {
-    const pdfPath = '/tmp/genoffice-test.pdf'
-    writeFileSync(pdfPath, Buffer.from('%PDF-1.4'))
-    body = { args: [pdfPath] }
-  } else if (channel === 'docs:save-new' || channel === 'slides:save' || channel === 'slides:save-as') {
+    body = { args: [managedFixture('probe-test.pdf', '%PDF-1.4')] }
+  } else if (
+    channel === 'docs:save-new' ||
+    channel === 'slides:save' ||
+    channel === 'slides:save-as'
+  ) {
     body = { args: [{ defaultName: 'test.docx' }] }
   }
-  
+
   try {
     const response = await fetch(`${BASE_URL}/api/ipc/${channel}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-    
+
     if (response.ok) {
       return { status: 'passed', data: await response.json() }
     } else if (response.status === 404) {
       return { status: 'unimplemented' }
+    } else if (response.status === 422 && CORRUPT_FIXTURE_CHANNELS.has(channel)) {
+      // 夹具本身损坏 → 422 即为正确契约（见上方注释）
+      return { status: 'passed', data: await response.json() }
     } else {
       return { status: 'failed', error: `HTTP ${response.status}` }
     }
@@ -435,7 +447,7 @@ async function runTests() {
   for (const [category, channels] of Object.entries(ELECTRON_CHANNELS)) {
     console.log(`\n📂 ${category.toUpperCase()} 功能测试`)
     console.log('─'.repeat(60))
-    
+
     for (const channel of channels) {
       const implemented = WEB_SERVER_IMPLEMENTED.includes(channel)
       if (!implemented) {
@@ -443,9 +455,9 @@ async function runTests() {
         console.log(`   ⏭️  ${channel.padEnd(40)} (未实现)`)
         continue
       }
-      
+
       const result = await testChannel(channel)
-      
+
       if (result.status === 'passed') {
         results.passed.push({ category, channel, data: result.data })
         console.log(`   ✅ ${channel.padEnd(40)} → ${JSON.stringify(result.data).slice(0, 40)}`)
@@ -479,18 +491,22 @@ ${Object.entries(
     if (!acc[category]) acc[category] = []
     acc[category].push(channel)
     return acc
-  }, {})
-).map(([cat, channels]) => `
+  }, {}),
+)
+  .map(
+    ([cat, channels]) => `
 【${cat}】
-${channels.map(ch => `  - ${ch}`).join('\n')}
-`).join('\n')}
+${channels.map((ch) => `  - ${ch}`).join('\n')}
+`,
+  )
+  .join('\n')}
 `)
 
     // 计算实现度
     const totalElectron = Object.values(ELECTRON_CHANNELS).flat().length
     const implementedCount = totalElectron - results.unimplemented.length
     const percentage = ((implementedCount / totalElectron) * 100).toFixed(1)
-    
+
     console.log(`\n📊 Electron 功能实现度: ${implementedCount}/${totalElectron} (${percentage}%)`)
   }
 
@@ -513,10 +529,12 @@ ${results.passed.map(({ channel, data }) => `  - ${channel}: ${JSON.stringify(da
 }
 
 // 运行测试
-runTests().then((results) => {
-  const exitCode = results.failed.length > 0 ? 1 : 0
-  process.exit(exitCode)
-}).catch((error) => {
-  console.error('测试失败:', error)
-  process.exit(1)
-})
+runTests()
+  .then((results) => {
+    const exitCode = results.failed.length > 0 ? 1 : 0
+    process.exit(exitCode)
+  })
+  .catch((error) => {
+    console.error('测试失败:', error)
+    process.exit(1)
+  })
