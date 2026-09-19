@@ -47,6 +47,7 @@ import {
   handleTranslateStreamHttp,
   handleTranslateStreamCancelHttp,
 } from './ai/translate-http'
+import { handleLanguagesHttp } from './ai/languages-http'
 import type { AiSettings, AiStreamChunk } from '@genoffice/ai-provider'
 import { registerProjectHandlers } from './projects/index'
 import { registerDocsHandlers } from './docs/index'
@@ -577,6 +578,14 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       sendIpcError(response, error)
     }
+    return
+  }
+
+  // GET /api/ai/languages — canonical translation language catalogue shared
+  //   with Dataflarework (the static list lives in @genoffice/translation-core;
+  //   see apps/web-server/src/ai/languages-http.ts for the design rationale).
+  if (url.pathname === '/api/ai/languages') {
+    handleLanguagesHttp(request, response)
     return
   }
 
