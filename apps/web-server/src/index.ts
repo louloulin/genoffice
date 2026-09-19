@@ -606,6 +606,21 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  // /favicon.ico — the browser always asks for it; serve the bundled app
+  // icon so the console stops logging a 404 every page load. The icon lives
+  // at apps/shell/build/icon.png relative to STATIC_ROOT.
+  if (url.pathname === '/favicon.ico') {
+    const faviconPath = resolve(STATIC_ROOT, 'shell', 'build', 'icon.png')
+    if (existsSync(faviconPath)) {
+      response.writeHead(200, { 'Content-Type': 'image/png' })
+      createReadStream(faviconPath).pipe(response)
+      return
+    }
+    response.writeHead(204)
+    response.end()
+    return
+  }
+
   // ----- static / SPA fallback ---------------------------------------------
   const pathMatch = url.pathname.match(
     /^\/(docs|sheets|slides|pdf|markdown|html|shell)(?:\/(.*))?$/,
