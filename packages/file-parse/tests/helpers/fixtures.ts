@@ -110,6 +110,16 @@ export async function buildPptxFixture(): Promise<Uint8Array> {
       '<a:r><a:t xml:space="preserve"> of 10</a:t></a:r>\n  ' +
       '</a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>',
   )
+  // Entities. fast-xml-parser decodes named references once (`&amp;amp;` becomes
+  // `&amp;`, not `&`), but leaves numeric references literal — they reach the
+  // walker as raw `&#...;` text and the parser has to decode them itself.
+  zip.file(
+    'ppt/slides/slide4.xml',
+    slideXml([
+      ['AT&amp;amp;T'],
+      ['It&#8217;s &#x2014; &#29289; 100% &lt;ok&gt;'],
+    ]),
+  )
   zip.file('ppt/slides/slide10.xml', slideXml([['Summary Slide']]))
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }

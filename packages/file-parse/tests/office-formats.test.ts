@@ -84,6 +84,22 @@ describe('parseFileToText: pptx', () => {
     // and the comment the slide carries is markup, not text
     expect(result.text).not.toContain('authoring note')
   })
+
+  it('decodes numeric character references and never double-decodes named ones', async () => {
+    const path = writeFixture('deck.pptx', await buildPptxFixture())
+    const result = await parseFileToText(path)
+    // `&#8217;` `&#x2014;` `&#29289;` arrive literal (decimal, hex and CJK) because the
+    // XML parser is run with preserveOrder and does not touch numeric references;
+    // `&lt;ok&gt;` is a named reference and is decoded by that parser instead.
+    expect(result.text).toContain('It\u2019s \u2014 \u7269 100% <ok>')
+    // No reference may survive into the extracted text, in either notation.
+    expect(result.text).not.toMatch(/&#(x[0-9a-fA-F]+|[0-9]+);/)
+    // `AT&amp;amp;T` in the XML means the author wrote the escaped form: the parser
+    // must yield `AT&amp;T`. Decoding named references a second time would corrupt
+    // it to `AT&T`, and not decoding at all would leave `AT&amp;amp;T`.
+    expect(result.text).toContain('AT&amp;T')
+    expect(result.text).not.toContain('AT&T')
+  })
 })
 
 describe('parseFileToText: xlsx', () => {

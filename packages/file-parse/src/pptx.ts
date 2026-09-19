@@ -7,10 +7,25 @@ import { XMLParser } from 'fast-xml-parser'
 // tag name they lose that position, and a deck's soft breaks and field text land in the wrong place.
 const NUMERIC_REF = /&#(\d+);/g
 const HEX_REF = /&#x([0-9a-fA-F]+);/g
-function decodeXmlEntities(value: string): string {
+/**
+ * Decode numeric character references (`&#29289;` → `物`, `&#x2019;` → `’`).
+ *
+ * fast-xml-parser decodes the five named XML entities but leaves numeric
+ * character references untouched, and PowerPoint writes those for anything
+ * outside the ASCII comfortable range — typographic punctuation, and every CJK
+ * glyph. Undecoded, `物` reaches the paragraph as the literal `&#29289;`, so
+ * downstream segmentation sees no letters (the same failure the xlsx reader
+ * documents for `&#29289;` cells).
+ *
+ * Deliberately numeric-only: re-decoding `&amp;` here would double-decode a run
+ * the file escaped twice (`&amp;amp;` is the literal text `&amp;`), and the
+ * parser has already collapsed the named entities.
+ */
+function decodeNumericCharRefs(value: string): string {
   return value
     .replace(NUMERIC_REF, (_match, code: string) => {
       const n = Number(code)
+      // Codepoints above the BMP need a surrogate pair.
       return n > 0xffff
         ? String.fromCodePoint(n)
         : String.fromCharCode(n)
@@ -21,11 +36,6 @@ function decodeXmlEntities(value: string): string {
         ? String.fromCodePoint(n)
         : String.fromCharCode(n)
     })
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
 }
 
 const parser = new XMLParser({
@@ -33,8 +43,11 @@ const parser = new XMLParser({
   trimValues: false,
   parseTagValue: false,
   preserveOrder: true,
-  // preserveOrder returns an array of positional entries; textNodeTransform is
-  // called for each text node and the returned value lands back in the array.
+  // preserveOrder returns an array of positional entries keyed by tag name, so
+  // collectText below walks them to keep <a:br> / <a:fld> in document order.
+  // Note: textNodeTransform does NOT fire for these text nodes under
+  // preserveOrder, so numeric character references are decoded at the push site
+  // instead (see decodeNumericCharRefs).
 })
 
 function slideNumber(path: string): number {
@@ -52,7 +65,8 @@ function collectText(nodes: readonly unknown[], out: string[], isText = false): 
     if (node == null || typeof node !== 'object') continue
     for (const [key, value] of Object.entries(node)) {
       if (key === '#text') {
-        if (isText) out.push(String(value))
+        // Numeric character references are the parser's blind spot here.
+        if (isText) out.push(decodeNumericCharRefs(String(value)))
       } else if (key === 'a:br') {
         out.push('\n')
       } else if (Array.isArray(value)) {
