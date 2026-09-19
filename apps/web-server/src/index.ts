@@ -634,7 +634,7 @@ const server = createServer(async (request, response) => {
 
   if (!filePath || !existsSync(filePath)) {
     const docsCandidate = resolveRendererFile('docs', relativePath)
-    if (docsCandidate) filePath = docsCandidate
+    if (docsCandidate && existsSync(docsCandidate)) filePath = docsCandidate
   }
 
   // SPA sub-routes such as /marketplace/ and /skills/ are rendered by the
@@ -646,7 +646,7 @@ const server = createServer(async (request, response) => {
   // leading route segment stripped so the module is served with its real
   // MIME type. Only files are accepted so a stripped path can never resolve
   // to a renderer directory.
-  if (!filePath) {
+  if (!filePath || !existsSync(filePath)) {
     const stripped = relativePath.replace(/^[^/]+\//, '')
     if (stripped && stripped !== relativePath) {
       for (const candidateApp of APPS) {
@@ -659,7 +659,7 @@ const server = createServer(async (request, response) => {
     }
   }
 
-  if (!filePath && relativePath.startsWith('assets/')) {
+  if ((!filePath || !existsSync(filePath)) && relativePath.startsWith('assets/')) {
     for (const candidateApp of APPS) {
       const candidatePath = resolveRendererFile(candidateApp, relativePath)
       if (candidatePath && existsSync(candidatePath)) {

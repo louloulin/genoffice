@@ -293,7 +293,7 @@ export function installBackToHome(options: { label?: string } = {}): void {
   button.style.cssText = [
     'position:fixed',
     'top:12px',
-    'left:12px',
+    'right:12px',
     'z-index:2147483646',
     'display:inline-flex',
     'align-items:center',
