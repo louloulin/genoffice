@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { AI_STREAMS, DATA_DIR, registerHandle } from '../common/index'
+import { DATA_DIR, registerHandle } from '../common/index'
 import {
   AiCreditsError,
   AiTimeoutError,
@@ -42,8 +42,6 @@ import { parseDuckDuckGo, parseDuckDuckGoImages } from '@genoffice/agent-skills'
 import { callTranslateTool } from '../shell/pi-session'
 import {
   assessBatchQuality,
-  assessFileCoverage,
-  buildDictionary,
   type BuildDictionaryResult,
   buildTranslationPrompt,
   buildTranslateSystemPrompt,
@@ -52,12 +50,8 @@ import {
   isSupportedExtension,
   KnowledgeBase,
   resolveTranslateSkills,
-  sharedMemory,
   PersistentTranslationMemory,
   SUPPORTED_EXTENSIONS,
-  translateOne,
-  type KBEntry,
-  type KBListFilters,
   type TerminologyPair,
 } from '@genoffice/translation-core'
 
@@ -685,21 +679,12 @@ export function registerAiCoreHandlers(): void {
    *
    * Unlike the per-app skills (`ai:doc-write-*`, `ai:sheets-*`, `ai:slides-*`)
    * translate is real on the web build — the active LLM does the work.
+   *
+   * The `range` field is read straight off the request in the handler below;
+   * the `castEditorRange` helper that used to sit here was dropped along with
+   * the legacy code path when this handler was unified on the pi translate_text
+   * tool.
    */
-  function castEditorRange(raw: unknown): import('@genoffice/translation-core').EditorRange | null {
-    if (!raw || typeof raw !== 'object') return null
-    const r = raw as { from?: number; to?: number; scope?: string }
-    const scope =
-      r.scope === 'selection' ||
-      r.scope === 'document' ||
-      r.scope === 'paragraph' ||
-      r.scope === 'cell' ||
-      r.scope === 'table'
-        ? r.scope
-        : undefined
-    return { from: r.from, to: r.to, scope }
-  }
-
   // UNIFIED ON PI+SKILLS: the agent and the UI hit the same translate_text
   // tool. The pi session owns settings, KB, and memory; we just unwrap the
   // request, call the tool, and re-shape the result so existing callers
@@ -1523,6 +1508,10 @@ export function registerAiCoreHandlers(): void {
       ...(req.category !== undefined ? { category: req.category } : {}),
       ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
     })
+    // SAFETY: `resolved.terms` is the knowledge base's domain-typed term list;
+    // this cast only widens it to plain JSON records so the IPC transport can
+    // serialize it. No field is added or dropped and the value is never written
+    // back into the knowledge base.
     const terms = resolved.terms as unknown as Array<Record<string, unknown>>
     const termPairs = resolved.terms
       .filter((e) => e.sourceTerm && e.targetTerm)
@@ -1830,7 +1819,10 @@ export function registerAiCoreHandlers(): void {
     }
 
     const session = { abort: new AbortController(), chunks: 0 }
-    AI_STREAMS.set(requestId, session as unknown as { chunks: string[]; abort: AbortController })
+    // `AI_STREAM_SESSIONS` is the only stream registry with a reader (the abort
+    // route looks a session up by requestId). The parallel write into the
+    // vestigial `AI_STREAMS` map is gone together with its `chunks: string[]`
+    // cast, which misdescribed this `chunks` counter as an emitted-chunk buffer.
     AI_STREAM_SESSIONS.set(requestId, session)
 
     try {
@@ -1844,7 +1836,6 @@ export function registerAiCoreHandlers(): void {
         },
       })
     } finally {
-      AI_STREAMS.delete(requestId)
       AI_STREAM_SESSIONS.delete(requestId)
     }
     return { id: requestId }

@@ -29,8 +29,6 @@ export {
   SLIDES_RECENT_FILE,
   loadRecentSlides,
   saveRecentSlides,
-  AI_STREAMS,
-  ACTIVE_STREAMS,
   COLLAB_SESSIONS,
   PRESENCE,
   DOC_PERMISSIONS,

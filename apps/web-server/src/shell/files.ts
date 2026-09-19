@@ -4,7 +4,7 @@
  */
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, extname } from 'node:path'
-import { FILES_INDEX, FILES_DIR, MIME_TYPES, registerHandle } from '../common/index'
+import { FILES_INDEX, FILES_DIR, MIME_TYPES, loadProjects, registerHandle, saveProjects } from '../common/index'
 import type { FileInfo } from '../common/index'
 
 export function registerFilesHandlers(): void {
@@ -77,6 +77,19 @@ export function registerFilesHandlers(): void {
       updatedAt: Date.now(),
     }
     FILES_INDEX.set(fileId, fileInfo)
+
+    // Attach to the requesting project the same way `web:save-file` does, so a
+    // caller that passes `projectId` gets the file listed in that project
+    // instead of it being created and then silently orphaned.
+    if (projectId) {
+      const projects = loadProjects()
+      const project = projects.find((p) => p.id === projectId)
+      if (project && !project.files.includes(fileId)) {
+        project.files.push(fileId)
+        project.updatedAt = Date.now()
+        saveProjects(projects)
+      }
+    }
 
     return fileInfo
   })

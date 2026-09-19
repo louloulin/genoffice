@@ -21,6 +21,10 @@ export function registerMailHandlers(): void {
       tenantId: 'default',
       from: { name: 'GenOffice', email: 'noreply@genoffice.ai' },
       to: to || [],
+      // Carry cc/bcc through: the wire payload advertises them, and dropping
+      // them here silently lost the recipients on every send.
+      ...(cc && cc.length > 0 ? { cc } : {}),
+      ...(bcc && bcc.length > 0 ? { bcc } : {}),
       subject,
       body,
       attachments: attachments || [],

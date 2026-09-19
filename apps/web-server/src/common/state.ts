@@ -125,7 +125,10 @@ export function initRecentState(): void {
     for (const d of loadRecentDocs()) {
       DOCS_RECENT.set(d.path, d)
     }
-  } catch {}
+  } catch {
+    /* A corrupt/unreadable docs-recent.json must not abort the boot path —
+     * the other two caches below still get seeded. */
+  }
   try {
     for (const p of loadRecentSheets()) {
       // SheetInfo has a slightly different shape; we keep path-only entries
@@ -138,7 +141,10 @@ export function initRecentState(): void {
         modified: false,
       })
     }
-  } catch {}
+  } catch {
+    /* Same fail-open as above: a bad sheets-recent.json only costs the sheets
+     * entries, not the whole recent list. */
+  }
   try {
     for (const p of loadRecentSlides()) {
       DOCS_RECENT.set(p.path, {
@@ -149,7 +155,10 @@ export function initRecentState(): void {
         modified: false,
       })
     }
-  } catch {}
+  } catch {
+    /* Same fail-open for slides-recent.json; the disk sweep below is
+     * independent of all three JSON caches. */
+  }
   /* ── Sweep disk for pdf/md/html artifacts ─────────────────────────────
    * The other modules persist their own recents JSON; html/pdf/md currently
    * don't, so a fresh boot would leave the home page's PDF/Markdown/HTML
@@ -231,23 +240,6 @@ export function loadRecentSlides(): SlideInfo[] {
 export function saveRecentSlides(slides: SlideInfo[]): void {
   writeFileSync(SLIDES_RECENT_FILE, JSON.stringify(slides.slice(0, 10), null, 2))
 }
-
-// ----- AI streaming state ---------------------------------------------------
-export const AI_STREAMS: Map<
-  string,
-  {
-    chunks: unknown[]
-    abort: AbortController
-  }
-> = new Map()
-
-export const ACTIVE_STREAMS: Map<
-  string,
-  {
-    controller: ReadableStreamDefaultController
-    aborted: boolean
-  }
-> = new Map()
 
 // ----- Collab state ---------------------------------------------------------
 export const COLLAB_SESSIONS: Map<
@@ -448,6 +440,10 @@ export interface MailRecord {
   tenantId: string
   from: { name: string; email: string }
   to: Array<{ name: string; email: string }>
+  /** Carbon-copy recipients; absent when the sender passed none. */
+  cc?: Array<{ name: string; email: string }>
+  /** Blind carbon-copy recipients; absent when the sender passed none. */
+  bcc?: Array<{ name: string; email: string }>
   subject: string
   body: string
   attachments: Array<{ name: string; size: number }>
