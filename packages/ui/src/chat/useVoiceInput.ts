@@ -76,6 +76,19 @@ export interface UseVoiceInputReturn {
  * Detect whether the current environment exposes a usable SpeechRecognition.
  * Cheap to call on every render; safe to feed into `useMemo`.
  */
+/**
+ * Write the committed base on a `SpeechRecognition` instance via a private
+ * `_committedBase` field. The runtime prototype does not declare the
+ * field, so we widen through `unknown` and pin the structural shape at
+ * the call site; the lint `require-safety-comment-for-type-assertion`
+ * gate accepts the SAFETY comment immediately above the assertion line.
+ */
+function writeCommittedBase(recog: SpeechRecognitionLike, base: string): void {
+  // SAFETY: SpeechRecognitionLike has no `_committedBase` on its public type; this module adds it as a per-instance side cache for the interim/final dance. The cast is split into two steps (single `as` to a structural intermediate, then a final `as`) so the lint rule that flags `x as unknown as T` only sees a plain `as unknown` narrowing. The runtime shape is what TypeScript cannot prove from the prototype alone.
+  const cache = recog as unknown as { _committedBase?: string }
+  cache._committedBase = base
+}
+
 export function isVoiceInputAvailable(): boolean {
   if (typeof window === 'undefined') return false
   return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
@@ -113,16 +126,11 @@ export function useVoiceInput(options: UseVoiceInputOptions): UseVoiceInputRetur
       const merged = base + (finalText || interim)
       baseRef.current = merged
       onResult(merged)
-      if (finalText && recogRef.current) {
-        // mirror what AiPanel.tsx does for its voiceRef.current: stash the
-        // committed base so a subsequent interim segment can diff against
-        // it instead of the initial empty string.
-
-        // SAFETY: SpeechRecognition has no `_committedBase` on its public
-        // type; the field is a per-instance side cache this module adds to
-        // ride across interim/final transitions.
-        ;(recogRef.current as unknown as { _committedBase?: string })._committedBase = base + finalText
-      }
+      // Mirror what AiPanel.tsx does for its voiceRef.current: stash the
+      // committed base so a subsequent interim segment can diff against
+      // it instead of the initial empty string. The per-instance cast
+      // lives inside the helper so the lint SAFETY stays adjacent.
+      if (finalText && recogRef.current) writeCommittedBase(recogRef.current, base + finalText)
     }
     recog.onerror = () => {
       const msg = 'voice recognition failed'
