@@ -67,10 +67,11 @@ export function registerWebHandlers(): void {
     writeFileSync(filePath, Buffer.from(bytes))
 
     // Mirror the save into the home page recents list so the upload shows
-    // up immediately on the shell home tab. We unconditionally overwrite the
-    // map entry by path (keys are paths in DOCS_RECENT) and persist with
-    // saveRecentDocs. The recents list is deduped by path on read so a
-    // re-upload of the same logical file collapses to one row.
+    // up immediately on the shell home tab. Keys are paths and the FILES_DIR
+    // name embeds a timestamp, so every upload gets its own row: re-uploading
+    // the same logical file adds a newer row instead of replacing the older
+    // one. That is intentional — recents is a history, and the older row still
+    // points at bytes that really are on disk.
     DOCS_RECENT.set(filePath, {
       id: basename(fileId, extname(fileId)),
       path: filePath,

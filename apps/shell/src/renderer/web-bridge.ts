@@ -9,7 +9,11 @@
 /// has already exposed the IPC-backed APIs and this module leaves them
 /// untouched.
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
-import { createWebFileBridge, pickFileBytes } from '@genoffice/ipc-bridge/web-native'
+import {
+  createWebFileBridge,
+  pickFileBytes,
+  uploadFileToServer,
+} from '@genoffice/ipc-bridge/web-native'
 import {
   createShellHomeApi,
   createShellProjectApi,
@@ -19,7 +23,23 @@ import {
 if (!isElectronRuntime()) {
   const transport = createHttpIpcTransport()
   const files = createWebFileBridge(transport)
+  // SAFETY: lib.dom's Window declares no aiOffice / aiOfficeProject /
+  // aiOfficeTabs fields. This module is the sole writer of those three keys
+  // (they are assigned at the bottom of this file) and the renderer reads them
+  // back through window.aiOffice*, so modelling Window as a bag holding exactly
+  // the values we install is correct at runtime even though TypeScript cannot
+  // prove it from the lib.dom types alone.
   const bridgedWindow = window as unknown as Record<string, unknown>
+
+  /** The per-tab id the shell stamps on a child window; not part of lib.dom. */
+  interface TabIdHost {
+    __genofficeTabId?: string
+  }
+  // SAFETY: lib.dom's Window declares no __genofficeTabId. This module is its
+  // only writer (registerTab, below) and every reader goes through
+  // asTabIdHost, so at runtime the field is either the string we set or absent
+  // — never another type — which is exactly what the optional field claims.
+  const asTabIdHost = (win: Window): TabIdHost => win as unknown as TabIdHost
 
   /* ── Web-native tab tracking ─────────────────────────────────────────
    * The Electron shell tracks tabs as WebContentsViews owned by the main
@@ -52,7 +72,10 @@ if (!isElectronRuntime()) {
   const saveTabs = (tabs: WebTab[]): void => {
     try {
       localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(tabs))
-    } catch {}
+    } catch {
+      /* quota exceeded or storage disabled: the in-memory cache stays correct
+         for this shell, and the next broadcast re-attempts the persist. */
+    }
   }
   let tabsCache = loadTabs()
   const broadcast = (): void => {
@@ -90,19 +113,16 @@ if (!isElectronRuntime()) {
     if (win) {
       // stash the tab id on the child window so it can self-close
       try {
-        ;(win as unknown as Record<string, unknown>).__genofficeTabId = id
-      } catch {}
+        asTabIdHost(win).__genofficeTabId = id
+      } catch {
+        /* cross-origin window: not one of ours, so nothing to stamp */
+      }
     }
     return tab
   }
   const unregisterTabById = (id: string): void => {
     tabsCache = tabsCache.filter((t) => t.id !== id)
     broadcast()
-  }
-  const unregisterTabByWindow = (win: Window | null): void => {
-    if (!win) return
-    const id = (win as unknown as Record<string, unknown>).__genofficeTabId
-    if (typeof id === 'string') unregisterTabById(id)
   }
   // listen for cross-window sync (other shells' broadcasts)
   tabChannel.onmessage = (e: MessageEvent) => {
@@ -113,18 +133,20 @@ if (!isElectronRuntime()) {
     }
     if (e.data?.type === 'close-request') {
       // if this is the child window being asked to close, honour it
-      const myId = (window as unknown as Record<string, unknown>).__genofficeTabId
+      const myId = asTabIdHost(window).__genofficeTabId
       if (typeof myId === 'string' && myId === e.data.id) {
         try {
           window.close()
-        } catch {}
+        } catch {
+          /* the browser refuses window.close() for a tab the script did not
+             open; the entry is already gone from tabsCache either way. */
+        }
       }
     }
   }
 
   // as a child window: announce ourselves on load and clean up on unload
-  const myTabId = (window as unknown as Record<string, unknown>).__genofficeTabId as
-    string | undefined
+  const myTabId = asTabIdHost(window).__genofficeTabId
   if (myTabId) {
     const cleanup = (): void => {
       unregisterTabById(myTabId)
@@ -133,24 +155,19 @@ if (!isElectronRuntime()) {
     // also broadcast periodically so other shells re-discover us after refresh
     setTimeout(broadcast, 100)
   }
-  // every few seconds, sweep any tabs whose window no longer exists
-  setInterval(() => {
-    let changed = false
-    const next: WebTab[] = []
-    for (const t of tabsCache) {
-      // we can't reliably probe window existence from another origin, but
-      // BroadcastChannel fires when other tabs close; rely on that + a
-      // periodic safety sweep on this origin
-      next.push(t)
-    }
-    if (changed) broadcast()
-  }, 5000)
+
+  /* Every URL this module opens is a same-origin path it builds itself
+   * (`/${module}/...`), never anything a caller supplies. The two async callers
+   * (newPdf, newHtml) must still create the window inside the click handler and
+   * navigate it only after their IPC round-trip resolves, so they open it blank
+   * first; window.open's single-argument form already defaults to a new tab. */
+  const openBlankTab = (): Window | null => window.open('')
 
   const openModule = (
     module: 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html',
     path?: string,
   ) => {
-    const tab = window.open('', '_blank')
+    const tab = openBlankTab()
     if (!tab) return null
     registerTab(module, path, tab)
     const base = `/${module}/?mode=tab`
@@ -184,6 +201,48 @@ if (!isElectronRuntime()) {
     if (module) openModule(module, path)
   }
 
+  /* ── Web-native upload ─────────────────────────────────────────────────
+   * Both the "打开本地文件" card and drag-and-drop must put the bytes in
+   * FILES_DIR rather than TMPDIR. The old browse() wrote a temp file: the
+   * file opened, but it was gone after the next server restart and never
+   * joined the recents list the user was looking at, which is exactly what
+   * reads as "this build cannot upload". web:save-file is the persistent
+   * path (and it mirrors the entry into the recents map server-side), so
+   * both entry points funnel through it and fall back to temp only if
+   * storage itself rejects the write. */
+  const uploadPicked = async (name: string, bytes: ArrayBuffer): Promise<string> => {
+    try {
+      const uploaded = await uploadFileToServer(transport, name, bytes)
+      window.dispatchEvent(new Event('genoffice:recents-changed'))
+      return uploaded.path
+    } catch {
+      return await files.writeTempFile(name, bytes)
+    }
+  }
+  // The Electron build gets this from installDropOpenBridge in the preload;
+  // without it the web home page showed its drop overlay and then did nothing.
+  window.addEventListener('dragover', (ev) => {
+    if (ev.dataTransfer?.types.includes('Files')) ev.preventDefault()
+  })
+  window.addEventListener('drop', (ev) => {
+    if (!ev.dataTransfer?.types.includes('Files')) return
+    ev.preventDefault()
+    const dropped = Array.from(ev.dataTransfer.files)
+    if (dropped.length === 0) return
+    void (async () => {
+      let first: string | null = null
+      for (const file of dropped) {
+        try {
+          // one unreadable file must not abort the rest of the drop
+          first ??= await uploadPicked(file.name, await file.arrayBuffer())
+        } catch {
+          /* unreadable or rejected file: skip it and keep uploading the rest */
+        }
+      }
+      if (first) openPathInModule(first)
+    })()
+  })
+
   bridgedWindow.aiOffice = createShellHomeApi(transport, {
     // Browser equivalent of the Electron picker: upload the chosen bytes to the
     // host's temp dir and hand back that path, which is what the translate
@@ -200,8 +259,7 @@ if (!isElectronRuntime()) {
       if (!picked) return
       const file = picked[0]
       if (!file) return
-      const path = await files.writeTempFile(file.name, file.bytes)
-      openPathInModule(path)
+      openPathInModule(await uploadPicked(file.name, file.bytes))
     },
     openPath: async (path) => {
       openPathInModule(path)
@@ -219,7 +277,7 @@ if (!isElectronRuntime()) {
       openModule('markdown')
     },
     newPdf: async () => {
-      const tab = window.open('', '_blank')
+      const tab = openBlankTab()
       if (!tab) return
       const result = (await transport.invoke('home:new-pdf')) as { path?: unknown }
       const path = typeof result?.path === 'string' ? result.path : ''
@@ -229,7 +287,7 @@ if (!isElectronRuntime()) {
       registerTab('pdf', path || undefined, tab)
     },
     newHtml: async () => {
-      const tab = window.open('', '_blank')
+      const tab = openBlankTab()
       if (!tab) return
       const result = (await transport.invoke('home:new-html')) as { path?: unknown }
       const path = typeof result?.path === 'string' ? result.path : ''

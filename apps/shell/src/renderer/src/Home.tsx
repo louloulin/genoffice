@@ -1264,8 +1264,19 @@ export function Home() {
       reloadRef.current(true)
       setProjectTick((n) => n + 1)
     }
+    // The shell web bridge uploads a picked or dropped file straight into
+    // FILES_DIR and then fires this event. Without it the new entry would only
+    // appear if the user happened to refocus the window (the focus listener
+    // above is what covers the desktop build, which has no such event).
+    const onRecentsChanged = () => {
+      reloadRef.current(true)
+    }
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
+    window.addEventListener('genoffice:recents-changed', onRecentsChanged)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('genoffice:recents-changed', onRecentsChanged)
+    }
   }, [])
 
   const hasMore = entries.length < listTotal
@@ -1521,7 +1532,6 @@ export function Home() {
       window.alert('Translate is not available (update web-server)')
       return
     }
-    const ext = (entry.ext || '').toLowerCase()
     const outputPath = entry.path.replace(/\.([^.]+)$/, '_translated.$1')
     setTranslating((m) => ({ ...m, [entry.path]: true }))
     try {
