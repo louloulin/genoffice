@@ -89,8 +89,33 @@ function readBlankTemplate(ext: 'docx' | 'xlsx' | 'pptx'): Buffer | null {
   }
 }
 
+/* Renderer-supplied id lets the web bridge `window.open` the editor URL
+ * synchronously inside the click handler (so the popup grant window is
+ * still open and the navigate is not silently dropped). Trust the
+ * renderer's id only if it matches the expected prefix and a safe
+ * character set; otherwise fall back to the timestamp so a misbehaving
+ * caller cannot write outside FILES_DIR / DATA_DIR. */
+function pickRendererId(args: unknown, prefix: string): string {
+  const candidate =
+    args && typeof args === 'object' && typeof (args as { id?: unknown }).id === 'string'
+      ? (args as { id: string }).id
+      : ''
+  if (candidate && new RegExp(`^${prefix}-[A-Za-z0-9._-]+$`).test(candidate)) {
+    return candidate
+  }
+  return `${prefix}-${Date.now()}`
+}
+
 export function registerHomeHandlers(): void {
   registerHandle('home:get-app-version', () => '1.0.0')
+
+  /* Expose the resolved data / file roots so the web renderer can predict
+   * the exact path of a freshly-created blank file in a single synchronous
+   * window.open(url) call. Without this, the quick-start cards have to
+   * open an about:blank tab and navigate it after awaiting IPC, which
+   * browsers silently drop because the navigate happens outside the user
+   * gesture stack and after the popup grant window has already closed. */
+  registerHandle('home:get-data-paths', () => ({ dataDir: DATA_DIR, filesDir: FILES_DIR }))
 
   registerHandle('home:get-theme', () => 'light')
   registerHandle('home:set-theme', (_event: unknown, theme: unknown) => ({ ok: true, theme }))
@@ -213,8 +238,8 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:open-trash', () => ({ ok: true }))
 
-  registerHandle('home:new-doc', () => {
-    const id = `doc-${Date.now()}`
+  registerHandle('home:new-doc', (_event: unknown, args: unknown) => {
+    const id = pickRendererId(args, 'doc')
     const path = join(FILES_DIR, `${id}.docx`)
     /* Drop a known-good minimal docx on disk so docs:open-path can parse
      * it on the first IPC round-trip. Without this write the docs app's
@@ -230,8 +255,8 @@ export function registerHomeHandlers(): void {
     return { id, path }
   })
 
-  registerHandle('home:new-sheet', () => {
-    const id = `sheet-${Date.now()}`
+  registerHandle('home:new-sheet', (_event: unknown, args: unknown) => {
+    const id = pickRendererId(args, 'sheet')
     const path = join(FILES_DIR, `${id}.xlsx`)
     /* Pre-write a known-good minimal xlsx so workbook:open-path's xlsx
      * sidecar parses it on the first try. The sheets app has no
@@ -246,8 +271,8 @@ export function registerHomeHandlers(): void {
     return { id, path }
   })
 
-  registerHandle('home:new-slide', () => {
-    const id = `slide-${Date.now()}`
+  registerHandle('home:new-slide', (_event: unknown, args: unknown) => {
+    const id = pickRendererId(args, 'slide')
     const path = join(FILES_DIR, `${id}.pptx`)
     /* Pre-write a known-good minimal pptx so the slides renderer boots
      * onto a real empty deck (consistent with new-pdf / new-html). */
@@ -260,8 +285,8 @@ export function registerHomeHandlers(): void {
     return { id, path }
   })
 
-  registerHandle('home:new-markdown', () => {
-    const id = `md-${Date.now()}`
+  registerHandle('home:new-markdown', (_event: unknown, args: unknown) => {
+    const id = pickRendererId(args, 'md')
     const path = join(DATA_DIR, `${id}.md`)
     // Markdown is plain text, so an actual empty file on disk is safe to
     // open (parseDocText returns an empty envelope). Without this write,
@@ -273,8 +298,8 @@ export function registerHomeHandlers(): void {
     return { id, path }
   })
 
-  registerHandle('home:new-pdf', () => {
-    const id = `pdf-${Date.now()}`
+  registerHandle('home:new-pdf', (_event: unknown, args: unknown) => {
+    const id = pickRendererId(args, 'pdf')
     const path = join(FILES_DIR, `${id}.pdf`)
     const objects = [
       '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
@@ -298,8 +323,8 @@ export function registerHomeHandlers(): void {
     return { id, path }
   })
 
-  registerHandle('home:new-html', () => {
-    const id = `html-${Date.now()}`
+  registerHandle('home:new-html', (_event: unknown, args: unknown) => {
+    const id = pickRendererId(args, 'html')
     const path = join(DATA_DIR, `${id}.html`)
     const html = `<!doctype html>
 <html lang="zh-CN">

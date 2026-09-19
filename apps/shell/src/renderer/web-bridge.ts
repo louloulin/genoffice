@@ -268,6 +268,103 @@ if (!isElectronRuntime()) {
     })()
   })
 
+  /* Map a kind to its (channel, prefix, ext, server dir, url-style). The
+   * server dir decides whether the file lives under FILES_DIR (binary
+   * formats) or DATA_DIR (plain text). pdf/html pass the open path as
+   * #fragment because their index.html reads window.location.hash instead
+   * of the ?open= query string. */
+  const NEW_MODULE_SPECS: Readonly<
+    Record<
+      'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html',
+      {
+        channel: string
+        prefix: string
+        ext: 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'md' | 'html'
+        serverDir: 'FILES_DIR' | 'DATA_DIR'
+        urlStyle: 'query' | 'hash'
+      }
+    >
+  > = {
+    docs: { channel: 'home:new-doc', prefix: 'doc', ext: 'docx', serverDir: 'FILES_DIR', urlStyle: 'query' },
+    sheets: { channel: 'home:new-sheet', prefix: 'sheet', ext: 'xlsx', serverDir: 'FILES_DIR', urlStyle: 'query' },
+    slides: { channel: 'home:new-slide', prefix: 'slide', ext: 'pptx', serverDir: 'FILES_DIR', urlStyle: 'query' },
+    pdf: { channel: 'home:new-pdf', prefix: 'pdf', ext: 'pdf', serverDir: 'FILES_DIR', urlStyle: 'hash' },
+    markdown: { channel: 'home:new-markdown', prefix: 'md', ext: 'md', serverDir: 'DATA_DIR', urlStyle: 'query' },
+    html: { channel: 'home:new-html', prefix: 'html', ext: 'html', serverDir: 'DATA_DIR', urlStyle: 'hash' },
+  }
+
+  /* The default DATA_DIR the server resolves to when no env var overrides it
+   * (see apps/web-server/src/common/state.ts -> resolveDataDir). When the
+   * home:get-data-paths round trip hasn't returned yet (it usually hasn't on
+   * the very first click), predicting this default keeps the tab opening
+   * correctly; the server-side handler then either re-uses the renderer-
+   * supplied id verbatim (and writes the same path) or falls back to its
+   * own timestamp id. The only failure mode is a stale default pointing at
+   * a dir the server has been redirected away from — the editor surfaces a
+   * parse error and the user can click the card again once the IPC has
+   * resolved. */
+  const DEFAULT_DATA_DIR = '/tmp/genoffice-data'
+  const DEFAULT_FILES_DIR = DEFAULT_DATA_DIR + '/files'
+
+  let bridgeFilesDir: string | null = null
+  let bridgeDataDir: string | null = null
+  void transport
+    .invoke('home:get-data-paths')
+    .then((r: unknown) => {
+      if (r && typeof r === 'object') {
+        const obj = r as { filesDir?: unknown; dataDir?: unknown }
+        if (typeof obj.filesDir === 'string') bridgeFilesDir = obj.filesDir
+        if (typeof obj.dataDir === 'string') bridgeDataDir = obj.dataDir
+      }
+    })
+    .catch(() => {
+      /* keep the defaults; the editor surfaces a friendly parse error if the
+       * guessed path misses the real FILES_DIR */
+    })
+
+  const effectiveDir = (serverDir: 'FILES_DIR' | 'DATA_DIR'): string => {
+    if (serverDir === 'FILES_DIR') return bridgeFilesDir ?? DEFAULT_FILES_DIR
+    return bridgeDataDir ?? DEFAULT_DATA_DIR
+  }
+
+  const openNewTab = (
+    kind: 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html',
+    projectId?: string,
+  ): void => {
+    const spec = NEW_MODULE_SPECS[kind]
+    /* Suffix the id with a short random tag so two clicks fired in the same
+     * millisecond don't collide on the same FILES_DIR path. The prefix +
+     * suffix together stay inside the safe regex the server validates. */
+    const id = `${spec.prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const path = `${effectiveDir(spec.serverDir)}/${id}.${spec.ext}`
+    const encoded = encodeURIComponent(path)
+    const base = `/${kind}/?mode=tab`
+    const url =
+      spec.urlStyle === 'hash'
+        ? path
+          ? `${base}#open=${encoded}`
+          : base
+        : path
+          ? `${base}&open=${encoded}`
+          : base
+    const tab = window.open(url, '_blank')
+    if (!tab) return
+    registerTab(kind, path, tab)
+    /* Fire-and-forget: the server handler materialises the file and
+     * appends it to DOCS_RECENT. If the renderer predicted the wrong
+     * FILES_DIR (because home:get-data-paths hadn't returned), the server
+     * falls back to its own timestamp id, the user still gets a working
+     * empty document, and the recents row will simply point at a slightly
+     * different path than the editor opened. */
+    void transport
+      .invoke(spec.channel, { id, projectId })
+      .catch((cause: unknown) => {
+        console.warn(`[web-bridge] ${spec.channel} failed:`, cause)
+      })
+  }
+
+
+
   bridgedWindow.aiOffice = createShellHomeApi(transport, {
     // Browser equivalent of the Electron picker: upload the chosen bytes to the
     // host's temp dir and hand back that path, which is what the translate
@@ -289,73 +386,33 @@ if (!isElectronRuntime()) {
     openPath: async (path) => {
       openPathInModule(path)
     },
-    /* The 4 "new blank tab" buttons below all follow the same shape as the
-     * pdf/html ones above: ask the main process for a freshly-created managed
-     * path (which also seeds the recents list server-side), open a blank tab
-     * synchronously, then navigate it to the new file once the IPC returns.
-     * Without the home:new-* round-trip the renderer opened the editor with
-     * no path at all, which produced an "untitled" document that never
-     * landed in FILES_DIR or in the home recents — i.e. the "I clicked AI
-     * Docs and nothing happened" bug. */
-    newDoc: async () => {
-      const tab = openBlankTab()
-      if (!tab) return
-      const result = (await transport.invoke('home:new-doc')) as { path?: unknown }
-      const path = typeof result?.path === 'string' ? result.path : ''
-      tab.location.href = path
-        ? `/docs/?mode=tab&open=${encodeURIComponent(path)}`
-        : '/docs/?mode=tab'
-      registerTab('docs', path || undefined, tab)
+    /* Sync single-shot creator. Pre-builds the path the editor URL needs,
+     * calls window.open inside the click handler (the only place the user
+     * gesture stack is alive and the popup grant window is open), and then
+     * fire-and-forget asks the server to materialise the file + register
+     * it in recents. Without this, the previous design opened an about:blank
+     * tab and tried to navigate it after awaiting IPC — browsers silently
+     * drop that navigate because it leaves the user gesture stack and the
+     * popup grant window has already closed, leaving a pile of dead
+     * about:blank tabs (the exact "click AI Docs and nothing happens"
+     * symptom). */
+    newDoc: async (opts?: { projectId?: string }): Promise<void> => {
+      openNewTab('docs', opts?.projectId)
     },
-    newSheet: async () => {
-      const tab = openBlankTab()
-      if (!tab) return
-      const result = (await transport.invoke('home:new-sheet')) as { path?: unknown }
-      const path = typeof result?.path === 'string' ? result.path : ''
-      tab.location.href = path
-        ? `/sheets/?mode=tab&open=${encodeURIComponent(path)}`
-        : '/sheets/?mode=tab'
-      registerTab('sheets', path || undefined, tab)
+    newSheet: async (opts?: { projectId?: string }): Promise<void> => {
+      openNewTab('sheets', opts?.projectId)
     },
-    newSlide: async () => {
-      const tab = openBlankTab()
-      if (!tab) return
-      const result = (await transport.invoke('home:new-slide')) as { path?: unknown }
-      const path = typeof result?.path === 'string' ? result.path : ''
-      tab.location.href = path
-        ? `/slides/?mode=tab&open=${encodeURIComponent(path)}`
-        : '/slides/?mode=tab'
-      registerTab('slides', path || undefined, tab)
+    newSlide: async (opts?: { projectId?: string }): Promise<void> => {
+      openNewTab('slides', opts?.projectId)
     },
-    newMarkdown: async () => {
-      const tab = openBlankTab()
-      if (!tab) return
-      const result = (await transport.invoke('home:new-markdown')) as { path?: unknown }
-      const path = typeof result?.path === 'string' ? result.path : ''
-      tab.location.href = path
-        ? `/markdown/?mode=tab&open=${encodeURIComponent(path)}`
-        : '/markdown/?mode=tab'
-      registerTab('markdown', path || undefined, tab)
+    newMarkdown: async (opts?: { projectId?: string }): Promise<void> => {
+      openNewTab('markdown', opts?.projectId)
     },
-    newPdf: async () => {
-      const tab = openBlankTab()
-      if (!tab) return
-      const result = (await transport.invoke('home:new-pdf')) as { path?: unknown }
-      const path = typeof result?.path === 'string' ? result.path : ''
-      tab.location.href = path
-        ? `/pdf/?mode=tab#open=${encodeURIComponent(path)}`
-        : '/pdf/?mode=tab'
-      registerTab('pdf', path || undefined, tab)
+    newPdf: async (opts?: { projectId?: string }): Promise<void> => {
+      openNewTab('pdf', opts?.projectId)
     },
-    newHtml: async () => {
-      const tab = openBlankTab()
-      if (!tab) return
-      const result = (await transport.invoke('home:new-html')) as { path?: unknown }
-      const path = typeof result?.path === 'string' ? result.path : ''
-      tab.location.href = path
-        ? `/html/?mode=tab#open=${encodeURIComponent(path)}`
-        : '/html/?mode=tab'
-      registerTab('html', path || undefined, tab)
+    newHtml: async (opts?: { projectId?: string }): Promise<void> => {
+      openNewTab('html', opts?.projectId)
     },
     pickDefaultSaveDir: async () => null,
     revealPath: async () => {},
