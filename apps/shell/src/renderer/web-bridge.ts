@@ -264,17 +264,53 @@ if (!isElectronRuntime()) {
     openPath: async (path) => {
       openPathInModule(path)
     },
+    /* The 4 "new blank tab" buttons below all follow the same shape as the
+     * pdf/html ones above: ask the main process for a freshly-created managed
+     * path (which also seeds the recents list server-side), open a blank tab
+     * synchronously, then navigate it to the new file once the IPC returns.
+     * Without the home:new-* round-trip the renderer opened the editor with
+     * no path at all, which produced an "untitled" document that never
+     * landed in FILES_DIR or in the home recents — i.e. the "I clicked AI
+     * Docs and nothing happened" bug. */
     newDoc: async () => {
-      openModule('docs')
+      const tab = openBlankTab()
+      if (!tab) return
+      const result = (await transport.invoke('home:new-doc')) as { path?: unknown }
+      const path = typeof result?.path === 'string' ? result.path : ''
+      tab.location.href = path
+        ? `/docs/?mode=tab&open=${encodeURIComponent(path)}`
+        : '/docs/?mode=tab'
+      registerTab('docs', path || undefined, tab)
     },
     newSheet: async () => {
-      openModule('sheets')
+      const tab = openBlankTab()
+      if (!tab) return
+      const result = (await transport.invoke('home:new-sheet')) as { path?: unknown }
+      const path = typeof result?.path === 'string' ? result.path : ''
+      tab.location.href = path
+        ? `/sheets/?mode=tab&open=${encodeURIComponent(path)}`
+        : '/sheets/?mode=tab'
+      registerTab('sheets', path || undefined, tab)
     },
     newSlide: async () => {
-      openModule('slides')
+      const tab = openBlankTab()
+      if (!tab) return
+      const result = (await transport.invoke('home:new-slide')) as { path?: unknown }
+      const path = typeof result?.path === 'string' ? result.path : ''
+      tab.location.href = path
+        ? `/slides/?mode=tab&open=${encodeURIComponent(path)}`
+        : '/slides/?mode=tab'
+      registerTab('slides', path || undefined, tab)
     },
     newMarkdown: async () => {
-      openModule('markdown')
+      const tab = openBlankTab()
+      if (!tab) return
+      const result = (await transport.invoke('home:new-markdown')) as { path?: unknown }
+      const path = typeof result?.path === 'string' ? result.path : ''
+      tab.location.href = path
+        ? `/markdown/?mode=tab&open=${encodeURIComponent(path)}`
+        : '/markdown/?mode=tab'
+      registerTab('markdown', path || undefined, tab)
     },
     newPdf: async () => {
       const tab = openBlankTab()

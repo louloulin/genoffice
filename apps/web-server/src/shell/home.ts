@@ -65,6 +65,30 @@ import {
   saveRecentDocs,
 } from '../common/index'
 
+/* ── Blank file templates ────────────────────────────────────────────
+ * A new docx/xlsx/pptx must round-trip through the matching renderer before
+ * the user types anything, and each renderer validates the zip magic +
+ * Content_Types on open. An empty file or a fresh `home:new-*` path that
+ * never existed on disk used to land the renderer on a parse error
+ * (markdown) or an empty grid (sheets), neither of which matched the
+ * recents entry the renderer was just handed. Writing a known-good
+ * minimal zip from an embedded template makes the recents entry
+ * accurate and the first paint a real empty document. */
+const BLANK_TEMPLATES: Readonly<Record<'docx' | 'xlsx' | 'pptx', string>> = {
+  docx: 'UEsDBBQAAAAIAPi8M13XeYTq8QAAALgBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2QzU7DMBCE730Ky9cqccoBIZSkB36OwKE8wMreJFb9J69b2rdn00KREOVozXwz62nXB+/EHjPZGDq5qhspMOhobBg7+b55ru6koALBgIsBO3lEkut+0W6OCUkwHKiTUynpXinSE3qgOiYMrAwxeyj8zKNKoLcworppmlulYygYSlXmDNkvhGgfcYCdK+LpwMr5loyOpHg4e+e6TkJKzmoorKt9ML+Kqq+SmsmThyabaMkGqa6VzOL1jh/0lSfK1qB4g1xewLNRfcRslIl65xmu/0/649o4DFbjhZ/TUo4aiXh77+qL4sGG71+06jR8/wlQSwMEFAAAAAgA+LwzXSAbhuqyAAAALgEAAAsAAABfcmVscy8ucmVsc43Puw6CMBQG4J2naM4uBQdjDIXFmLAafICmPZRGeklbL7y9HRzEODie23fyN93TzOSOIWpnGdRlBQStcFJbxeAynDZ7IDFxK/nsLDJYMELXFs0ZZ57yTZy0jyQjNjKYUvIHSqOY0PBYOo82T0YXDE+5DIp6Lq5cId1W1Y6GTwPagpAVS3rJIPSyBjIsHv/h3ThqgUcnbgZt+vHlayPLPChMDB4uSCrf7TKzQHNKuorZvgBQSwMEFAAAAAgA+LwzXd5vwPaNAAAArwAAABEAAAB3b3JkL2RvY3VtZW50LnhtbEWNQQ7CIBBF956CzN5OdWFMU+jOE+gBELBtUmYIg9beXlwYVz8vP3mvH95xUa+QZWbScGhaUIEc+5lGDbfrZX8GJcWStwtT0LAFgcHs+rXz7J4xUFHVQNKtGqZSUocobgrRSsMpUP0enKMtFfOIK2efMrsgUgNxwWPbnjDamcBU5Z399t2Epscf4j9lPlBLAQIUAxQAAAAIAPi8M13XeYTq8QAAALgBAAATAAAAAAAAAAAAAACAAQAAAABbQ29udGVudF9UeXBlc10ueG1sUEsBAhQDFAAAAAgA+LwzXSAbhuqyAAAALgEAAAsAAAAAAAAAAAAAAIABIgEAAF9yZWxzLy5yZWxzUEsBAhQDFAAAAAgA+LwzXd5vwPaNAAAArwAAABEAAAAAAAAAAAAAAIAB/QEAAHdvcmQvZG9jdW1lbnQueG1sUEsFBgAAAAADAAMAuQAAALkCAAAAAA==',
+  xlsx: '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',
+  pptx: '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',
+}
+function readBlankTemplate(ext: 'docx' | 'xlsx' | 'pptx'): Buffer | null {
+  const b64 = BLANK_TEMPLATES[ext]
+  if (!b64) return null
+  try {
+    return Buffer.from(b64, 'base64')
+  } catch {
+    return null
+  }
+}
+
 export function registerHomeHandlers(): void {
   registerHandle('home:get-app-version', () => '1.0.0')
 
@@ -192,6 +216,15 @@ export function registerHomeHandlers(): void {
   registerHandle('home:new-doc', () => {
     const id = `doc-${Date.now()}`
     const path = join(FILES_DIR, `${id}.docx`)
+    /* Drop a known-good minimal docx on disk so docs:open-path can parse
+     * it on the first IPC round-trip. Without this write the docs app's
+     * catch path would still recover via newFile(), but the recents row
+     * would point at a path the user never saved to — the path the
+     * renderer actually wrote back to would be a different timestamp. */
+    try {
+      const tpl = readBlankTemplate('docx')
+      if (tpl) writeFileSync(path, tpl)
+    } catch { /* read-only storage: keep the recents entry anyway */ }
     DOCS_RECENT.set(path, { id, path, name: `${id}.docx`, openedAt: Date.now(), modified: false })
     saveRecentDocs([...DOCS_RECENT.values()])
     return { id, path }
@@ -200,6 +233,14 @@ export function registerHomeHandlers(): void {
   registerHandle('home:new-sheet', () => {
     const id = `sheet-${Date.now()}`
     const path = join(FILES_DIR, `${id}.xlsx`)
+    /* Pre-write a known-good minimal xlsx so workbook:open-path's xlsx
+     * sidecar parses it on the first try. The sheets app has no
+     * NotFoundError fallback (the open failure surfaces as a status-bar
+     * error), so the file has to be real from the start. */
+    try {
+      const tpl = readBlankTemplate('xlsx')
+      if (tpl) writeFileSync(path, tpl)
+    } catch { /* read-only storage: keep the recents entry anyway */ }
     DOCS_RECENT.set(path, { id, path, name: `${id}.xlsx`, openedAt: Date.now(), modified: false })
     saveRecentDocs([...DOCS_RECENT.values()])
     return { id, path }
@@ -208,6 +249,12 @@ export function registerHomeHandlers(): void {
   registerHandle('home:new-slide', () => {
     const id = `slide-${Date.now()}`
     const path = join(FILES_DIR, `${id}.pptx`)
+    /* Pre-write a known-good minimal pptx so the slides renderer boots
+     * onto a real empty deck (consistent with new-pdf / new-html). */
+    try {
+      const tpl = readBlankTemplate('pptx')
+      if (tpl) writeFileSync(path, tpl)
+    } catch { /* read-only storage: keep the recents entry anyway */ }
     DOCS_RECENT.set(path, { id, path, name: `${id}.pptx`, openedAt: Date.now(), modified: false })
     saveRecentDocs([...DOCS_RECENT.values()])
     return { id, path }
@@ -216,9 +263,11 @@ export function registerHomeHandlers(): void {
   registerHandle('home:new-markdown', () => {
     const id = `md-${Date.now()}`
     const path = join(DATA_DIR, `${id}.md`)
-    // Pre-seed recents so the home page lists the empty new tab even
-    // before the renderer writes the first byte. `missing` flag flips
-    // off the moment web:save-file lands bytes at this path.
+    // Markdown is plain text, so an actual empty file on disk is safe to
+    // open (parseDocText returns an empty envelope). Without this write,
+    // the markdown app boots, calls markdown:read-file, hits a 404, and
+    // shows "文件打开失败" — the user has to re-pick the file from recents.
+    try { writeFileSync(path, '', 'utf-8') } catch { /* read-only storage: keep the recents entry anyway */ }
     DOCS_RECENT.set(path, { id, path, name: `${id}.md`, openedAt: Date.now(), modified: false })
     saveRecentDocs([...DOCS_RECENT.values()])
     return { id, path }
