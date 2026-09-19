@@ -4,7 +4,7 @@
  */
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import { FILES_DIR, registerHandle } from '../common/index'
+import { FILES_DIR, isManagedPath, PATH_OUTSIDE_STORAGE, registerHandle } from '../common/index'
 
 const IMAGE_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }
 
@@ -12,6 +12,7 @@ export function registerSlidesFileHandlers(): void {
   registerHandle('slides:files-add', async (_event: unknown, args: unknown) => {
     const paths = Array.isArray(args) ? args.filter((p): p is string => typeof p === 'string') : []
     return paths.map((path) => {
+      if (!isManagedPath(path)) return { path, ok: false, error: PATH_OUTSIDE_STORAGE }
       if (!existsSync(path)) return { path, ok: false, error: 'file not found' }
       const stat = statSync(path)
       return { path, ok: stat.isFile(), name: basename(path), sizeBytes: stat.size }
@@ -25,7 +26,7 @@ export function registerSlidesFileHandlers(): void {
   }))
 
   registerHandle('slides:files-read-image', async (_event: unknown, path: unknown) => {
-    if (typeof path === 'string' && existsSync(path)) {
+    if (typeof path === 'string' && isManagedPath(path) && existsSync(path)) {
       const ext = extname(path).slice(1).toLowerCase()
       if (!IMAGE_MIME[ext]) return { ok: false, error: 'not an image' }
       const bytes = readFileSync(path)
@@ -36,7 +37,9 @@ export function registerSlidesFileHandlers(): void {
   })
 
   registerHandle('slides:files-read', async (_event: unknown, path: unknown, offset: unknown, maxChars: unknown) => {
-    if (typeof path !== 'string' || !existsSync(path)) return { ok: false, error: 'file not found' }
+    if (typeof path !== 'string' || !isManagedPath(path))
+      return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    if (!existsSync(path)) return { ok: false, error: 'file not found' }
     const ext = extname(path).slice(1).toLowerCase()
     if (IMAGE_MIME[ext]) return { ok: false, error: 'image has no text' }
     const text = readFileSync(path, 'utf8')

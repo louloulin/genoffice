@@ -16,6 +16,8 @@
 import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { DATA_DIR } from './state'
+import { InvalidArgumentError } from '../ai/errors'
 
 function resolveMetaDir(): string {
   // ESM path: this remains valid after esbuild bundles the server and points
@@ -87,4 +89,45 @@ export function isWithin(root: string, target: string): boolean {
     relativePath === '' ||
     (!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
   )
+}
+
+/**
+ * True when `target` is a path this server is allowed to read, write, delete or
+ * rename on a renderer's behalf: inside persistent storage (`DATA_DIR`, which
+ * contains `FILES_DIR` where uploads and save-as targets land) or inside the
+ * disposable upload area (`WEB_TEMP_ROOT`).
+ *
+ * In the web build there is no Electron path-grant map, so this predicate is
+ * the only thing between a renderer — or anyone who can reach the IPC endpoint;
+ * the default HOST binds every interface — and the rest of the filesystem.
+ */
+export function isManagedPath(target: string): boolean {
+  return [DATA_DIR, WEB_TEMP_ROOT].some((root) => isWithin(root, target))
+}
+
+/**
+ * The one rejection message for a path outside managed storage. Exported so
+ * element-wise channels can report the same refusal as the ones that throw
+ * InvalidArgumentError, and so tests can assert on a single string rather than
+ * on each channel's phrasing.
+ */
+export const PATH_OUTSIDE_STORAGE = 'path is outside the web storage area'
+
+/**
+ * Validate a renderer-supplied file path for a channel that touches the disk.
+ *
+ * Every such channel should start with this call and pass the result (not the
+ * raw argument) to `fs`: it rejects non-strings, which also stops the
+ * `fs.existsSync(undefined)` deprecation warning that a missing argument used
+ * to trigger, and it rejects any path outside managed storage.
+ *
+ * @throws InvalidArgumentError — a bad path is a client error (400), not a
+ *   server fault, so a caller probing for `/etc/passwd` learns nothing more
+ *   than that the path was refused.
+ */
+export function requireManagedPath(channel: string, value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || !isManagedPath(value)) {
+    throw new InvalidArgumentError(channel, PATH_OUTSIDE_STORAGE)
+  }
+  return value
 }

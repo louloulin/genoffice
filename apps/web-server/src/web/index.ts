@@ -12,6 +12,7 @@ import {
   FILES_DIR,
   loadProjects,
   registerHandle,
+  requireManagedPath,
   saveProjects,
   saveRecentDocs,
   WEB_TEMP_ROOT,
@@ -38,12 +39,13 @@ export function registerWebHandlers(): void {
   })
 
   registerHandle('web:read-file-bytes', async (_event: unknown, path: unknown) => {
-    if (!existsSync(path as string)) {
-      throw new NotFoundError('web:read-file-bytes', `File not found: ${String(path)}`)
+    const filePath = requireManagedPath('web:read-file-bytes', path)
+    if (!existsSync(filePath)) {
+      throw new NotFoundError('web:read-file-bytes', `File not found: ${filePath}`)
     }
-    const bytes = readFileSync(path as string)
+    const bytes = readFileSync(filePath)
     return {
-      name: basename(path as string),
+      name: basename(filePath),
       bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     }
   })

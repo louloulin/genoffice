@@ -11,7 +11,13 @@
  */
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
-import { DATA_DIR, registerHandle } from '../common/index'
+import {
+  DATA_DIR,
+  isManagedPath,
+  PATH_OUTSIDE_STORAGE,
+  registerHandle,
+  requireManagedPath,
+} from '../common/index'
 import { NotFoundError } from '../ai/errors'
 
 const HTML_DOC_DIR = join(DATA_DIR, 'html')
@@ -79,6 +85,9 @@ function statAttachment(
   | { ok: false; error: string } {
   const name = basename(filePath)
   const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  // Refuse before stat-ing: existence and size of an arbitrary host file are
+  // themselves a disclosure, and this is the one place attachments are vetted.
+  if (!isManagedPath(filePath)) return { ok: false, error: `${name}: ${PATH_OUTSIDE_STORAGE}` }
   if (!ATTACHMENT_EXTS.has(ext)) return { ok: false, error: `${name}: unsupported extension` }
   try {
     const s = statSync(filePath)
@@ -104,14 +113,18 @@ export function registerHtmlHandlers(): void {
   registerHandle('html:consume-pending', () => null)
 
   registerHandle('html:read-file', async (_event: unknown, filePath: unknown) => {
-    if (typeof filePath !== 'string' || !existsSync(filePath)) {
-      throw new NotFoundError('html:read-file', `File not found: ${String(filePath)}`)
+    const path = requireManagedPath('html:read-file', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('html:read-file', `File not found: ${path}`)
     }
-    return readFileSync(filePath, 'utf8')
+    return readFileSync(path, 'utf8')
   })
 
   registerHandle('html:save-file', async (_event: unknown, path: unknown, content: unknown) => {
-    if (typeof path !== 'string' || !path) return { ok: false, error: 'invalid path' }
+    // A write is destructive, so an unmanaged target is refused outright.
+    if (typeof path !== 'string' || !path || !isManagedPath(path)) {
+      return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    }
     try {
       writeFileSync(path, typeof content === 'string' ? content : '', 'utf8')
       return { ok: true, path }
@@ -279,8 +292,9 @@ export function registerHtmlHandlers(): void {
   registerHandle(
     'html:files-read',
     (_event: unknown, filePath: unknown, offset: unknown, maxChars: unknown) => {
-      if (typeof filePath !== 'string' || !existsSync(filePath))
-        return { ok: false, error: 'file not found' }
+      if (typeof filePath !== 'string' || !isManagedPath(filePath))
+        return { ok: false, error: PATH_OUTSIDE_STORAGE }
+      if (!existsSync(filePath)) return { ok: false, error: 'file not found' }
       const ext = extname(filePath).slice(1).toLowerCase()
       if (ATTACHMENT_IMAGE_EXTS.has(ext)) return { ok: false, error: 'image has no text' }
       let text: string
@@ -304,8 +318,9 @@ export function registerHtmlHandlers(): void {
     },
   )
   registerHandle('html:files-read-image', (_event: unknown, filePath: unknown) => {
-    if (typeof filePath !== 'string' || !existsSync(filePath))
-      return { ok: false, error: 'file not found' }
+    if (typeof filePath !== 'string' || !isManagedPath(filePath))
+      return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    if (!existsSync(filePath)) return { ok: false, error: 'file not found' }
     const ext = extname(filePath).slice(1).toLowerCase()
     const mime = ATTACHMENT_IMAGE_MIME[ext]
     if (!mime) return { ok: false, error: 'not an image' }
@@ -350,9 +365,9 @@ export function registerHtmlHandlers(): void {
 function resolveHtmlSaveTarget(path: unknown, suggested: unknown): string | null {
   if (typeof path === 'string' && path && path.endsWith('.html')) {
     const safe = basename(path)
-    if (path === join(HTML_DOC_DIR, safe)) return path
-    if (path.endsWith(safe)) {
-      // trust any same-name write into the managed dir
+    // `path.endsWith(safe)` on its own accepted `/etc/passwd.html`, so the
+    // containment check is what makes the comment below true.
+    if (isManagedPath(path) && (path === join(HTML_DOC_DIR, safe) || path.endsWith(safe))) {
       return path
     }
   }

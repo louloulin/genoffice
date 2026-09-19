@@ -3,7 +3,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
-import { DATA_DIR, registerHandle } from '../common/index'
+import { DATA_DIR, isManagedPath, registerHandle, requireManagedPath } from '../common/index'
 import { NotFoundError } from '../ai/errors'
 
 const MARKDOWN_ASSET_DIR = join(DATA_DIR, 'markdown-assets')
@@ -48,10 +48,11 @@ export function registerMarkdownHandlers(): void {
   })
 
   registerHandle('markdown:read-file', async (_event: unknown, filePath: unknown) => {
-    if (typeof filePath !== 'string' || !existsSync(filePath)) {
-      throw new NotFoundError('markdown:read-file', `File not found: ${String(filePath)}`)
+    const path = requireManagedPath('markdown:read-file', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('markdown:read-file', `File not found: ${path}`)
     }
-    return readFileSync(filePath, 'utf8')
+    return readFileSync(path, 'utf8')
   })
 
   // markdown:save mirrors the desktop `markdown-main` save channel so the
@@ -100,7 +101,9 @@ export function registerMarkdownHandlers(): void {
   registerHandle('markdown:close-save-result', () => ({ ok: true }))
 
   registerHandle('md-asset', async (_event: unknown, path?: unknown, type?: unknown) => {
-    if (type === 'read' && typeof path === 'string' && existsSync(path)) {
+    // `md-asset` is a generic reader, so it needs the same containment as
+    // every other path-taking channel.
+    if (type === 'read' && typeof path === 'string' && isManagedPath(path) && existsSync(path)) {
       return { content: readFileSync(path, 'utf-8') }
     }
     return null

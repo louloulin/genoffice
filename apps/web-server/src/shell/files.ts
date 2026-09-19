@@ -4,7 +4,16 @@
  */
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, extname } from 'node:path'
-import { FILES_INDEX, FILES_DIR, MIME_TYPES, loadProjects, registerHandle, saveProjects } from '../common/index'
+import {
+  FILES_INDEX,
+  FILES_DIR,
+  isManagedPath,
+  MIME_TYPES,
+  loadProjects,
+  PATH_OUTSIDE_STORAGE,
+  registerHandle,
+  saveProjects,
+} from '../common/index'
 import type { FileInfo } from '../common/index'
 
 export function registerFilesHandlers(): void {
@@ -15,10 +24,15 @@ export function registerFilesHandlers(): void {
   }))
 
   registerHandle('files:add', async (_event: unknown, paths: unknown) => {
-    const filePaths = (paths as string[]) || []
+    const filePaths = Array.isArray(paths)
+      ? paths.filter((path): path is string => typeof path === 'string')
+      : []
     const results: FileInfo[] = []
     for (const originalPath of filePaths) {
-      if (existsSync(originalPath)) {
+      // Only files inside managed storage are imported: this channel reads the
+      // source and copies it into FILES_DIR, so an unguarded path would pull
+      // any readable file on the machine into the browser-visible store.
+      if (isManagedPath(originalPath) && existsSync(originalPath)) {
         const stats = statSync(originalPath)
         const fileId = `${Date.now()}-${basename(originalPath)}`
         const destPath = FILES_DIR + '/' + fileId
@@ -40,12 +54,13 @@ export function registerFilesHandlers(): void {
   })
 
   registerHandle('files:read-image', async (_event: unknown, path: unknown) => {
-    if (existsSync(path as string)) {
-      const bytes = readFileSync(path as string)
+    if (typeof path !== 'string' || !isManagedPath(path)) return null
+    if (existsSync(path)) {
+      const bytes = readFileSync(path)
       return {
         base64: bytes.toString('base64'),
-        mimeType: MIME_TYPES[extname(path as string)] || 'image/png',
-        name: basename(path as string),
+        mimeType: MIME_TYPES[extname(path)] || 'image/png',
+        name: basename(path),
       }
     }
     return null
@@ -107,7 +122,7 @@ export function registerFilesHandlers(): void {
       }
     }
 
-    if (path && existsSync(path)) {
+    if (path && isManagedPath(path) && existsSync(path)) {
       const bytes = readFileSync(path)
       return {
         id: `file-${Date.now()}`,
@@ -154,9 +169,14 @@ export function registerFilesHandlers(): void {
       return { ok: true, deleted: id }
     }
 
-    if (path && existsSync(path)) {
-      unlinkSync(path)
-      return { ok: true, deleted: path }
+    if (path) {
+      // A delete is destructive, so an unmanaged path is refused before the
+      // existence check — otherwise this channel unlinks any file on the host.
+      if (!isManagedPath(path)) return { ok: false, error: PATH_OUTSIDE_STORAGE }
+      if (existsSync(path)) {
+        unlinkSync(path)
+        return { ok: true, deleted: path }
+      }
     }
 
     return { ok: false, error: 'File not found' }
@@ -165,12 +185,11 @@ export function registerFilesHandlers(): void {
   registerHandle('preview:get', async (_event: unknown, args: unknown) => {
     const { filePath } = args as { filePath: string; width?: number; height?: number; format?: 'thumbnail' | 'full' }
 
-    if (!existsSync(filePath as string)) {
-      return null
-    }
+    if (typeof filePath !== 'string' || !isManagedPath(filePath)) return null
+    if (!existsSync(filePath)) return null
 
-    const ext = extname(filePath as string).toLowerCase()
-    const bytes = readFileSync(filePath as string)
+    const ext = extname(filePath).toLowerCase()
+    const bytes = readFileSync(filePath)
 
     if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].includes(ext)) {
       return {

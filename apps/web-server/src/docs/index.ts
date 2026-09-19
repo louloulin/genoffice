@@ -10,8 +10,7 @@ import { basename, dirname, extname, join } from 'node:path'
 import {
   DATA_DIR,
   FILES_DIR,
-  WEB_TEMP_ROOT,
-  isWithin,
+  isManagedPath,
   loadProjects,
   loadRecentDocs,
   registerHandle,
@@ -28,7 +27,7 @@ const closeState = {
 
 function isManagedDocPath(filePath: string): boolean {
   return (
-    /\.docx$/i.test(filePath) && [DATA_DIR, WEB_TEMP_ROOT].some((root) => isWithin(root, filePath))
+    /\.docx$/i.test(filePath) && isManagedPath(filePath)
   )
 }
 

@@ -54,7 +54,14 @@ function toRecentEntry(d: {
 }
 
 import { basename, dirname, extname, join } from 'node:path'
-import { DATA_DIR, DOCS_RECENT, DOCS_STARRED, registerHandle } from '../common/index'
+import {
+  DATA_DIR,
+  DOCS_RECENT,
+  DOCS_STARRED,
+  isManagedPath,
+  PATH_OUTSIDE_STORAGE,
+  registerHandle,
+} from '../common/index'
 
 export function registerHomeHandlers(): void {
   registerHandle('home:get-app-version', () => '1.0.0')
@@ -126,15 +133,31 @@ export function registerHomeHandlers(): void {
   })
 
   registerHandle('home:delete-files', async (_event: unknown, paths: unknown) => {
-    if (!Array.isArray(paths)) return { ok: false, deleted: 0 }
-    paths.forEach((p) => {
-      if (existsSync(p)) unlinkSync(p)
+    const values = Array.isArray(paths)
+      ? paths.filter((path): path is string => typeof path === 'string')
+      : []
+    const refused: string[] = []
+    let deleted = 0
+    values.forEach((path) => {
+      // Refuse anything outside managed storage before touching the disk; this
+      // loop used to unlink any path handed to it. Out-of-storage paths are
+      // reported back instead of being silently skipped.
+      if (!isManagedPath(path)) {
+        refused.push(path)
+        return
+      }
+      if (existsSync(path)) {
+        unlinkSync(path)
+        deleted += 1
+      }
     })
-    return { ok: true, deleted: paths.length }
+    // `deleted` is the count that actually happened, not the count requested.
+    return refused.length > 0 ? { ok: refused.length < values.length, deleted, refused } : { ok: true, deleted }
   })
 
   registerHandle('home:duplicate-file', async (_event: unknown, path: unknown) => {
-    if (typeof path !== 'string' || !existsSync(path)) return { ok: false, error: 'File not found' }
+    if (typeof path !== 'string' || !isManagedPath(path)) return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    if (!existsSync(path)) return { ok: false, error: 'File not found' }
     const dir = dirname(path)
     const ext = extname(path)
     const base = basename(path, ext)
@@ -144,11 +167,16 @@ export function registerHomeHandlers(): void {
   })
 
   registerHandle('home:rename-file', async (_event: unknown, path: unknown, newName: unknown) => {
-    if (typeof path !== 'string' || typeof newName !== 'string' || !existsSync(path)) {
-      return { ok: false, error: 'File not found' }
+    if (typeof path !== 'string' || !isManagedPath(path))
+      return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    if (typeof newName !== 'string' || newName.length === 0 || newName === '.' || newName === '..' || basename(newName) !== newName) {
+      // A bare file name only: a separator or `..` in `newName` would move the
+      // file out of its directory, and out of managed storage.
+      return { ok: false, error: 'invalid file name' }
     }
-    const dir = dirname(path)
-    const newPath = join(dir, newName)
+    if (!existsSync(path)) return { ok: false, error: 'File not found' }
+    const newPath = join(dirname(path), newName)
+    if (!isManagedPath(newPath)) return { ok: false, error: PATH_OUTSIDE_STORAGE }
     renameSync(path, newPath)
     return { ok: true, path: newPath }
   })
@@ -375,10 +403,12 @@ export function registerHomeHandlers(): void {
   registerHandle('home:open-github-repo', () => ({ ok: true }))
 
   registerHandle('home:stat-paths', (_event: unknown, paths: unknown) => {
+    // Probing an arbitrary path would disclose whether a host file exists and
+    // how big it is; an unmanaged path reports the same shape as a missing one.
     return (Array.isArray(paths) ? paths : []).map((p) => ({
       path: p,
-      exists: existsSync(p),
-      size: existsSync(p) ? statSync(p).size : 0,
+      exists: typeof p === 'string' && isManagedPath(p) && existsSync(p),
+      size: typeof p === 'string' && isManagedPath(p) && existsSync(p) ? statSync(p).size : 0,
     }))
   })
 

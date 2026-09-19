@@ -105,14 +105,32 @@ describe('IPC transport status mapping', () => {
   })
 
   it('reports a missing file as 404 so the UI can say "moved or deleted"', async () => {
+    // The moved-or-deleted case concerns a document the app itself owns, so the
+    // path is inside managed storage and reaches the existence check.
     const res = await fetch(`${base}/api/ipc/${encodeURIComponent('pdf:read-file')}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ args: ['/definitely/not/here.pdf'] }),
+      body: JSON.stringify({ args: [join(dataDir, 'files', 'gone.pdf')] }),
     })
     expect(res.status).toBe(404)
     const body = (await res.json()) as { error?: { code?: string } }
     expect(body.error?.code).toBe('NOT_FOUND')
+  })
+
+  it('answers an outside path with 400 instead of disclosing whether it exists', async () => {
+    // Containment is checked before existence: otherwise the 404-vs-400 reply
+    // for /etc/passwd vs /etc/definitely-not-here would reveal which host files
+    // exist. A path outside DATA_DIR is refused whatever it points at.
+    for (const probe of ['/definitely/not/here.pdf', '/etc/passwd']) {
+      const res = await fetch(`${base}/api/ipc/${encodeURIComponent('pdf:read-file')}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ args: [probe] }),
+      })
+      expect(`${probe}=${res.status}`).toBe(`${probe}=400`)
+      const body = (await res.json()) as { error?: { code?: string } }
+      expect(body.error?.code).toBe('INVALID_ARGUMENT')
+    }
   })
 
   it('keeps an unsupported channel at 501 with its structured code', async () => {

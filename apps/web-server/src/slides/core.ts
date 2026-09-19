@@ -5,7 +5,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import { FILES_DIR, loadRecentSlides, registerHandle, saveRecentSlides } from '../common/index'
+import { FILES_DIR, loadRecentSlides, registerHandle, requireManagedPath, saveRecentSlides } from '../common/index'
 import { openPptx } from '@genoffice/pptx-engine'
 import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
 import { parseTheme } from '@genoffice/pptx-engine'
@@ -13,7 +13,7 @@ import { displayMime } from '../../../slides/src/main/media-mime'
 import { neutralizeJpegOrientation } from '../../../slides/src/main/jpeg-orientation'
 import { tiffToPng } from '../../../slides/src/main/tiff-decode'
 import type { OpenedPptx, Slide } from '@genoffice/pptx-engine'
-import { NotFoundError } from '../ai/errors'
+import { CorruptError, NotFoundError } from '../ai/errors'
 
 /** Mirror of the desktop `deckDefaultFont` in apps/slides/src/main/slides-main.ts:
  *  pull the deck's minor (body) Latin font from theme1.xml so the ribbon font box
@@ -115,28 +115,43 @@ export function registerSlidesCoreHandlers(): void {
   })
 
   registerHandle('slides:open-path', async (_event: unknown, filePath: unknown) => {
-    if (!existsSync(filePath as string)) {
-      throw new NotFoundError('slides:open-path', `File not found: ${String(filePath)}`)
+    const path = requireManagedPath('slides:open-path', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('slides:open-path', `File not found: ${path}`)
     }
 
-    const bytes = readFileSync(filePath as string)
-    const name = basename(filePath as string)
+    const bytes = readFileSync(path)
+    const name = basename(path)
     const id = `slide-${Date.now()}`
-
-    const recent = loadRecentSlides()
-    recent.unshift({ id, path: filePath as string, name, openedAt: Date.now() })
-    saveRecentSlides(recent)
 
     // Match the desktop `slides:open-path` shape: parse the pptx via `@genoffice/pptx-engine`
     // and return the same `{path, slides, size, defaultFont}` the renderer expects. Without
     // this the web renderer keeps `slides` as `undefined` and the boot screen never goes
     // away. Uses the web-only helpers above so we avoid the harfbuzz wasm + electron
     // deps that the desktop `render-helpers.ts` transitively pulls in.
-    const opened = await openPptx(new Uint8Array(bytes))
+    // A file that is not a pptx is a client-side problem (422), not a server
+    // fault: the parse used to throw out of the handler as an unhandled 500.
+    let opened: Awaited<ReturnType<typeof openPptx>>
+    try {
+      opened = await openPptx(new Uint8Array(bytes))
+    } catch (err) {
+      throw new CorruptError(
+        'slides:open-path',
+        `Failed to parse deck: ${err instanceof Error ? err.message : String(err)}`,
+        err,
+      )
+    }
+    // Recorded only now that the deck actually parses: a corrupt file used to
+    // reach the recents list and then fail, so "recently opened" listed decks
+    // that never opened.
+    const recent = loadRecentSlides()
+    recent.unshift({ id, path, name, openedAt: Date.now() })
+    saveRecentSlides(recent)
+
     const slides = buildWebRenderSlides(opened, DEFAULT_FIT_WIDTH)
 
     return {
-      path: filePath,
+      path,
       slides,
       size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
       defaultFont: deckDefaultFont(opened),

@@ -4,7 +4,7 @@
  * will replace this with real S3/MinIO/OSS.
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { CLOUD_FILES, FILES_DIR, registerHandle } from '../common/index'
 
 export function registerCloudHandlers(): void {
@@ -16,7 +16,11 @@ export function registerCloudHandlers(): void {
       public?: boolean
     }
 
-    const id = `cloud-${Date.now()}-${name}`
+    // `name` is renderer-supplied and becomes the on-disk name, so it is
+    // reduced to a bare file name: `../../etc/pwn` used to climb out of
+    // FILES_DIR. The display name below keeps the caller's original value.
+    const storedName = basename(name).replace(/[^\w.\- ]+/g, '_') || 'file'
+    const id = `cloud-${Date.now()}-${storedName}`
     const url = `/cloud/files/${id}`
 
     const filePath = join(FILES_DIR, id)

@@ -5,9 +5,17 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import { FILES_DIR, loadRecentSheets, registerHandle, saveRecentSheets } from '../common/index'
+import {
+  FILES_DIR,
+  isManagedPath,
+  loadRecentSheets,
+  PATH_OUTSIDE_STORAGE,
+  registerHandle,
+  requireManagedPath,
+  saveRecentSheets,
+} from '../common/index'
 import { WebSheetsSidecar } from './sidecar'
-import { InvalidArgumentError, NotFoundError } from '../ai/errors'
+import { CorruptError, InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const sheetsSidecar = new WebSheetsSidecar()
 
@@ -32,17 +40,14 @@ export function registerSheetsHandlers(): void {
   registerHandle('sheets:has-queued-workbook', () => false)
 
   registerHandle('workbook:open-path', async (_event: unknown, filePath: unknown) => {
-    if (!existsSync(filePath as string)) {
-      throw new NotFoundError('workbook:open-path', `File not found: ${String(filePath)}`)
+    const path = requireManagedPath('workbook:open-path', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('workbook:open-path', `File not found: ${path}`)
     }
 
-    const bytes = readFileSync(filePath as string)
-    const name = basename(filePath as string)
+    const bytes = readFileSync(path)
+    const name = basename(path)
     const id = `sheet-${Date.now()}`
-
-    const recent = loadRecentSheets()
-    recent.unshift({ id, path: filePath as string, name, openedAt: Date.now() })
-    saveRecentSheets(recent)
 
     // The renderer expects a fully parsed WorkbookFile (workbookFileSchema in
     // apps/sheets/src/shared/desktop-api.ts). The Electron main process parses
@@ -50,22 +55,32 @@ export function registerSheetsHandlers(): void {
     // and merge its result with the local sha256/fileBytes/path metadata.
     let workbook: Record<string, unknown>
     try {
-      const result = (await sheetsSidecar.open(filePath as string)) as Record<string, unknown>
+      // `path` is the guarded value: passing the raw parameter here was a cast
+      // that skipped the check the line above exists to apply.
+      const result = (await sheetsSidecar.open(path)) as Record<string, unknown>
       workbook = { ...result }
     } catch (err) {
-      // keep the sidecar failure attached as `cause` so the spawn/parse error
-      // is not reduced to a stringified message in the server log
-      throw new Error(
+      // A file that is not a workbook is a client-side problem (422), not a
+      // server fault: this used to surface as an unhandled 500.
+      throw new CorruptError(
+        'workbook:open-path',
         `Failed to parse workbook: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
+        err,
       )
     }
+
+    // Recorded only now that the workbook actually parses: a corrupt file used
+    // to reach the recents list and then fail, so "recently opened" listed
+    // documents that never opened.
+    const recent = loadRecentSheets()
+    recent.unshift({ id, path, name, openedAt: Date.now() })
+    saveRecentSheets(recent)
 
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     return {
       ...workbook,
       id,
-      path: filePath,
+      path,
       name,
       sha256,
       fileBytes: bytes.byteLength,
@@ -115,11 +130,15 @@ export function registerSheetsHandlers(): void {
     gif: 'image/gif',
     webp: 'image/webp',
   }
+  // The element-wise channels below answer per item rather than throwing, so a
+  // path outside managed storage becomes that item's error instead of a 400 for
+  // the whole batch — the renderer already renders `{ ok: false, error }`.
   registerHandle('sheets:files-add', (_event: unknown, paths: unknown) => {
     const values = Array.isArray(paths)
       ? paths.filter((path): path is string => typeof path === 'string')
       : []
     return values.map((path) => {
+      if (!isManagedPath(path)) return { path, ok: false, error: PATH_OUTSIDE_STORAGE }
       if (!existsSync(path)) return { path, ok: false, error: 'file not found' }
       const info = statSync(path)
       return { path, ok: info.isFile(), name: basename(path), sizeBytes: info.size }
@@ -128,8 +147,9 @@ export function registerSheetsHandlers(): void {
   registerHandle(
     'sheets:files-read',
     (_event: unknown, path: unknown, offset: unknown, maxChars: unknown) => {
-      if (typeof path !== 'string' || !existsSync(path))
-        return { ok: false, error: 'file not found' }
+      if (typeof path !== 'string' || !isManagedPath(path))
+        return { ok: false, error: PATH_OUTSIDE_STORAGE }
+      if (!existsSync(path)) return { ok: false, error: 'file not found' }
       const ext = extname(path).slice(1).toLowerCase()
       if (imageMime[ext]) return { ok: false, error: 'image has no text' }
       const text = readFileSync(path, 'utf8')
@@ -148,7 +168,9 @@ export function registerSheetsHandlers(): void {
     },
   )
   registerHandle('sheets:files-read-image', (_event: unknown, path: unknown) => {
-    if (typeof path !== 'string' || !existsSync(path)) return { ok: false, error: 'file not found' }
+    if (typeof path !== 'string' || !isManagedPath(path))
+      return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    if (!existsSync(path)) return { ok: false, error: 'file not found' }
     const ext = extname(path).slice(1).toLowerCase()
     const mime = imageMime[ext]
     if (!mime) return { ok: false, error: 'not an image' }
@@ -180,7 +202,10 @@ export function registerSheetsHandlers(): void {
       throw new InvalidArgumentError('workbook:open-for-merge', 'merge sources must be 1-20 files')
     }
     return paths.map((path) => {
-      if (typeof path !== 'string' || !existsSync(path)) {
+      if (typeof path !== 'string' || !isManagedPath(path)) {
+        throw new InvalidArgumentError('workbook:open-for-merge', PATH_OUTSIDE_STORAGE)
+      }
+      if (!existsSync(path)) {
         // A caller-supplied path that does not exist is a 404, not a server
         // fault: the renderer shows "file moved or deleted" for this case.
         throw new NotFoundError(

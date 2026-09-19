@@ -53,8 +53,15 @@ export class NotFoundError extends Error {
 export class CorruptError extends Error {
   readonly code: 'CORRUPT'
   readonly channel: string
-  constructor(channel: string, reason: string) {
-    super(reason)
+  /**
+   * `cause` keeps the parser's own stack attached: without it the reason
+   * string is all a server log shows, and the throw site inside the parser
+   * is lost. The IPC envelope (apps/web-server/src/index.ts sendIpcError)
+   * only serializes message/code/channel/reason, so a `cause` here does not
+   * reach the client.
+   */
+  constructor(channel: string, reason: string, cause?: unknown) {
+    super(reason, cause === undefined ? undefined : { cause })
     this.name = 'CorruptError'
     this.code = 'CORRUPT'
     this.channel = channel

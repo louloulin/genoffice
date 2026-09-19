@@ -14,7 +14,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
-import { FILES_DIR, registerHandle } from '../common/index'
+import { FILES_DIR, isManagedPath, registerHandle, requireManagedPath } from '../common/index'
 import { NotFoundError } from '../ai/errors'
 
 interface AnyDocConfig {
@@ -39,14 +39,15 @@ export function registerAnydocHandlers(): void {
 
   registerHandle('anydoc:recognize', async (_event: unknown, args: unknown) => {
     const { filePath } = args as { filePath: string; options?: { ocr?: boolean; language?: string } }
-    if (!existsSync(filePath)) {
-      throw new NotFoundError('anydoc:recognize', `File not found: ${String(filePath)}`)
+    const path = requireManagedPath('anydoc:recognize', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('anydoc:recognize', `File not found: ${path}`)
     }
 
-    const ext = extname(filePath).toLowerCase()
-    const fileName = basename(filePath)
-    const parsed = await parseFileToText(filePath)
-    const stats = statSync(filePath)
+    const ext = extname(path).toLowerCase()
+    const fileName = basename(path)
+    const parsed = await parseFileToText(path)
+    const stats = statSync(path)
 
     // an image has no text layer; without an OCR engine the honest answer is
     // "recognised nothing", not fabricated transcript text
@@ -73,14 +74,17 @@ export function registerAnydocHandlers(): void {
 
   registerHandle('anydoc:convert', async (_event: unknown, args: unknown) => {
     const { filePath, targetFormat } = args as { filePath: string; targetFormat: string }
-    if (!existsSync(filePath)) {
-      throw new NotFoundError('anydoc:convert', `File not found: ${String(filePath)}`)
+    // The written path is already inside FILES_DIR; the source is the
+    // renderer-supplied one, so that is what needs containing.
+    const path = requireManagedPath('anydoc:convert', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('anydoc:convert', `File not found: ${path}`)
     }
 
-    const sourceFormat = extname(filePath).slice(1)
+    const sourceFormat = extname(path).slice(1)
     const outputPath = join(FILES_DIR, `${Date.now()}-converted.${targetFormat}`)
 
-    const bytes = readFileSync(filePath)
+    const bytes = readFileSync(path)
     writeFileSync(outputPath, bytes)
 
     return {
@@ -94,11 +98,10 @@ export function registerAnydocHandlers(): void {
   })
 
   registerHandle('anydoc:extract-text', async (_event: unknown, filePath: unknown) => {
-    if (!existsSync(filePath as string)) {
-      return null
-    }
+    if (typeof filePath !== 'string' || !isManagedPath(filePath)) return null
+    if (!existsSync(filePath)) return null
 
-    const ext = extname(filePath as string).toLowerCase()
+    const ext = extname(filePath).toLowerCase()
 
     if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'].includes(ext)) {
       return {
@@ -109,7 +112,7 @@ export function registerAnydocHandlers(): void {
       }
     }
 
-    const parsed = await parseFileToText(filePath as string)
+    const parsed = await parseFileToText(filePath)
     if (!parsed.ok) {
       return { text: '', format: 'error', error: parsed.error ?? 'parse failed' }
     }
@@ -122,9 +125,8 @@ export function registerAnydocHandlers(): void {
   })
 
   registerHandle('anydoc:extract-tables', async (_event: unknown, filePath: unknown) => {
-    if (!existsSync(filePath as string)) {
-      return null
-    }
+    if (typeof filePath !== 'string' || !isManagedPath(filePath)) return null
+    if (!existsSync(filePath)) return null
 
     return {
       tables: [],
@@ -134,9 +136,8 @@ export function registerAnydocHandlers(): void {
   })
 
   registerHandle('anydoc:extract-images', async (_event: unknown, filePath: unknown) => {
-    if (!existsSync(filePath as string)) {
-      return null
-    }
+    if (typeof filePath !== 'string' || !isManagedPath(filePath)) return null
+    if (!existsSync(filePath)) return null
 
     return {
       images: [],
@@ -147,13 +148,14 @@ export function registerAnydocHandlers(): void {
 
   registerHandle('anydoc:render-preview', async (_event: unknown, args: unknown) => {
     const { filePath, options } = args as { filePath: string; options?: { width?: number; height?: number } }
+    const path = requireManagedPath('anydoc:render-preview', filePath)
 
-    if (!existsSync(filePath)) {
-      throw new NotFoundError('anydoc:render-preview', `File not found: ${String(filePath)}`)
+    if (!existsSync(path)) {
+      throw new NotFoundError('anydoc:render-preview', `File not found: ${path}`)
     }
 
-    const bytes = readFileSync(filePath)
-    const ext = extname(filePath).toLowerCase()
+    const bytes = readFileSync(path)
+    const ext = extname(path).toLowerCase()
 
     let mimeType = 'application/octet-stream'
     if (ext === '.pdf') mimeType = 'application/pdf'

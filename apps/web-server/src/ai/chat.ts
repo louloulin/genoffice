@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { DATA_DIR, registerHandle } from '../common/index'
+import { DATA_DIR, isManagedPath, registerHandle } from '../common/index'
 import {
   AiCreditsError,
   AiTimeoutError,
@@ -184,6 +184,10 @@ function dictionaryBucket(...candidates: Array<string | undefined>): string {
  * used to cause.
  */
 function loadDictionary(path: string, bucket = ''): LoadedDictionary | null {
+  // `dictionaryPath` arrives either from settings or straight from a request
+  // body, so it must not become an arbitrary file read: an unmanaged path
+  // degrades to "no glossary" instead of parsing someone else's file.
+  if (!isManagedPath(path)) return null
   if (lastDictionary?.path === path && lastDictionary.bucket === bucket) return lastDictionary
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))

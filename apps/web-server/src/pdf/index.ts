@@ -3,20 +3,19 @@
  * main process (convert-office, password get/submit/cancel, save).
  */
 import { existsSync, readFileSync } from 'node:fs'
-import { DATA_DIR, WEB_TEMP_ROOT, isWithin, registerHandle } from '../common/index'
+import { isManagedPath, registerHandle, requireManagedPath } from '../common/index'
 import { NotFoundError } from '../ai/errors'
 import { savePdfToPath } from '../../../pdf/src/main/save-pdf'
 import type { SavePdfRequest, SavePdfResult } from '../../../pdf/src/shared/ipc'
 
 /**
- * A PDF the web server is willing to read or rewrite: inside DATA_DIR (which
- * already contains FILES_DIR, where uploads and save-as targets land) or the
- * temp root the web bridges hand out. Same containment shape as docs'
- * isManagedDocPath — the web build has no Electron path-grant map, so this is
- * the only thing standing between a renderer and an arbitrary file rewrite.
+ * A PDF the web server is willing to read or rewrite: a PDF inside managed
+ * storage. Same containment shape as docs' isManagedDocPath — the web build has
+ * no Electron path-grant map, so this is the only thing standing between a
+ * renderer and an arbitrary file rewrite.
  */
 function isManagedPdfPath(filePath: string): boolean {
-  return /[.]pdf$/i.test(filePath) && [DATA_DIR, WEB_TEMP_ROOT].some((root) => isWithin(root, filePath))
+  return /[.]pdf$/i.test(filePath) && isManagedPath(filePath)
 }
 
 export function registerPdfHandlers(): void {
@@ -26,20 +25,22 @@ export function registerPdfHandlers(): void {
   registerHandle('pdf:dirty-changed', () => ({ ok: true }))
 
   registerHandle('pdf:read-file', async (_event: unknown, filePath: unknown) => {
-    if (typeof filePath !== 'string' || !existsSync(filePath)) {
-      throw new NotFoundError('pdf:read-file', `File not found: ${String(filePath)}`)
+    const path = requireManagedPath('pdf:read-file', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('pdf:read-file', `File not found: ${path}`)
     }
-    const bytes = readFileSync(filePath)
+    const bytes = readFileSync(path)
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
   })
 
   registerHandle('pdf:open-path', async (_event: unknown, filePath: unknown) => {
-    if (!existsSync(filePath as string)) {
-      throw new NotFoundError('pdf:open-path', `File not found: ${String(filePath)}`)
+    const path = requireManagedPath('pdf:open-path', filePath)
+    if (!existsSync(path)) {
+      throw new NotFoundError('pdf:open-path', `File not found: ${path}`)
     }
-    const bytes = readFileSync(filePath as string)
+    const bytes = readFileSync(path)
     return {
-      path: filePath,
+      path,
       bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     }
   })
