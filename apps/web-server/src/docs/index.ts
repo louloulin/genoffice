@@ -162,6 +162,26 @@ export function registerDocsHandlers(): void {
       return { needsPassword: true, path, name }
     }
 
+    // Cheap zip-magic check before handing bytes to JSZip: an empty file or a
+    // non-zip payload (e.g. an HTML error page leaked into the temp dir, a
+    // truncated upload, or a mislabeled .docx that is actually plain text)
+    // would otherwise surface as JSZip's cryptic "Can't find end of central
+    // directory : is this a zip file ?" deep inside parseDocx. Fail here with
+    // the file name so the renderer's existing openFailed toast has something
+    // actionable to show.
+    if (
+      original.length < 4 ||
+      original[0] !== 0x50 ||
+      original[1] !== 0x4b ||
+      original[2] !== 0x03 ||
+      original[3] !== 0x04
+    ) {
+      throw new InvalidArgumentError(
+        'docs:open-path',
+        `File is not a valid .docx (zip) archive: ${name}`,
+      )
+    }
+
     const hash = createHash('sha256').update(original).digest('hex')
     const id = `doc-${Date.now()}`
     const recent = loadRecentDocs()
