@@ -631,8 +631,17 @@ const server = createServer(async (request, response) => {
     : url.pathname.replace(/^\/+/, '') || 'index.html'
   const relativePath = rawRelative.replace(/^[/\\]+/, '') || 'index.html'
   let filePath = resolveRendererFile(appName, relativePath)
+  // A computed-but-missing path means "not found": clear it so `filePath` stays
+  // a truthful found/missing signal for every fallback below. Assigning the
+  // docs candidate unconditionally used to leave `filePath` truthy even when
+  // that candidate did not exist, which skipped both the route-prefix retry and
+  // the cross-app asset search further down. The visible effect: `/?app=pdf`
+  // served the pdf HTML and then 404'd its own bundle, because a relative
+  // `./assets/*` drops the query string, so the asset request is inferred as
+  // `shell` and the miss never reached the search that would have found it.
+  if (filePath && !existsSync(filePath)) filePath = null
 
-  if (!filePath || !existsSync(filePath)) {
+  if (!filePath) {
     const docsCandidate = resolveRendererFile('docs', relativePath)
     if (docsCandidate && existsSync(docsCandidate)) filePath = docsCandidate
   }
