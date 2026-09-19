@@ -74,4 +74,4 @@ export type {
 } from './state'
 
 export { MIME_TYPES } from './mime'
-export { ROOT, PORT, HOST, APPS, STATIC_ROOT, WEB_TEMP_ROOT } from './paths'
+export { ROOT, PORT, HOST, APPS, STATIC_ROOT, WEB_TEMP_ROOT, isWithin } from './paths'

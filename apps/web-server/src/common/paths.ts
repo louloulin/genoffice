@@ -15,14 +15,17 @@
  */
 import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 function resolveMetaDir(): string {
   // ESM path: this remains valid after esbuild bundles the server and points
   // at the directory containing the generated bundle.
   try {
     return fileURLToPath(new URL('.', import.meta.url))
-  } catch {}
+  } catch {
+    /* CJS / packaged runtime: import.meta.url is empty or not a file URL, so
+       fall through to the execPath and argv[1] strategies below. */
+  }
   // CJS path: argv[1] in a packaged binary is the snapshot virtual path
   // (e.g. /snapshot/dist/index.js), not a real file. execPath IS the
   // real on-disk path of the running binary, so prefer it.
@@ -68,3 +71,20 @@ export const APPS = ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html', 'she
 export { ROOT, STATIC_ROOT }
 
 export const WEB_TEMP_ROOT = resolve(process.env.TMPDIR || '/tmp', 'genoffice-web-temp')
+
+/**
+ * True when `target` resolves to `root` itself or to a path strictly beneath
+ * it. Used to contain every file path a renderer hands the server: the web
+ * build has no Electron path-grant map, so channels that read or rewrite a
+ * file must prove the path is inside the managed storage area first.
+ *
+ * Compares path components after resolution, not raw string prefixes, so
+ * `/data/files-evil` is NOT inside `/data/files`.
+ */
+export function isWithin(root: string, target: string): boolean {
+  const relativePath = relative(resolve(root), resolve(target))
+  return (
+    relativePath === '' ||
+    (!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
+  )
+}

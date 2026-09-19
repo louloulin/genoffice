@@ -6,11 +6,12 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import {
   DATA_DIR,
   FILES_DIR,
   WEB_TEMP_ROOT,
+  isWithin,
   loadProjects,
   loadRecentDocs,
   registerHandle,
@@ -23,14 +24,6 @@ const MAX_PASTED_IMAGE_BYTES = 20 * 1024 * 1024
 const closeState = {
   check: null as { dirty: boolean; autoSave: boolean; filePath: string | null } | null,
   saveOk: null as boolean | null,
-}
-
-function isWithin(root: string, target: string): boolean {
-  const relativePath = relative(resolve(root), resolve(target))
-  return (
-    relativePath === '' ||
-    (!relativePath.startsWith(`..${sep}`) && relativePath !== '..' && !isAbsolute(relativePath))
-  )
 }
 
 function isManagedDocPath(filePath: string): boolean {
@@ -228,7 +221,7 @@ export function registerDocsHandlers(): void {
         return { ok: false, error: 'save data is empty or invalid' }
       }
       try {
-        mkdirSync(resolve(filePath, '..'), { recursive: true })
+        mkdirSync(dirname(filePath), { recursive: true })
         writeFileSync(filePath, bytes)
         const recent = loadRecentDocs().filter((doc) => doc.path !== filePath)
         recent.unshift({

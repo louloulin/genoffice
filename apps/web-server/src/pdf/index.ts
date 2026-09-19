@@ -1,10 +1,23 @@
 /**
  * PDF channels — open-path and the parity channels from the Electron
- * main process (convert-office, password get/submit/cancel).
+ * main process (convert-office, password get/submit/cancel, save).
  */
 import { existsSync, readFileSync } from 'node:fs'
-import { registerHandle } from '../common/index'
+import { DATA_DIR, WEB_TEMP_ROOT, isWithin, registerHandle } from '../common/index'
 import { NotFoundError } from '../ai/errors'
+import { savePdfToPath } from '../../../pdf/src/main/save-pdf'
+import type { SavePdfRequest, SavePdfResult } from '../../../pdf/src/shared/ipc'
+
+/**
+ * A PDF the web server is willing to read or rewrite: inside DATA_DIR (which
+ * already contains FILES_DIR, where uploads and save-as targets land) or the
+ * temp root the web bridges hand out. Same containment shape as docs'
+ * isManagedDocPath — the web build has no Electron path-grant map, so this is
+ * the only thing standing between a renderer and an arbitrary file rewrite.
+ */
+function isManagedPdfPath(filePath: string): boolean {
+  return /[.]pdf$/i.test(filePath) && [DATA_DIR, WEB_TEMP_ROOT].some((root) => isWithin(root, filePath))
+}
 
 export function registerPdfHandlers(): void {
   registerHandle('pdf:consume-pending', () => null)
@@ -39,11 +52,55 @@ export function registerPdfHandlers(): void {
   registerHandle('pdf-password:submit', (_event: unknown, _password: unknown) => ({ ok: true }))
   registerHandle('pdf-password:cancel', () => ({ ok: true }))
 
+  /* ── Save ─────────────────────────────────────────────────────────────────
+   * In the desktop build the main process grants a path to a view and then
+   * applies that view's edit list to the PDF on disk. Nothing in that pipeline
+   * touches Electron: savePdfToPath reads the source bytes, applies the text /
+   * ink / form / image edits with pdf-lib, verifies content edits and writes
+   * the target atomically. The request already carries both the source path and
+   * the edits, so the web server can run the very same code — the only thing it
+   * has to add is the containment check the desktop gets for free from its
+   * path-grant map. This previously replied a bare { ok: true, saved: true }
+   * without writing anything, so every annotation edit was silently discarded
+   * behind a success toast.
+   * ───────────────────────────────────────────────────────────────────────── */
+  registerHandle('pdf:save', async (_e: unknown, request: unknown): Promise<SavePdfResult> => {
+    const value = (request || {}) as { path?: unknown; targetPath?: unknown }
+    if (typeof value.path !== 'string' || value.path.length === 0) {
+      return { ok: false, error: 'pdf:save expects { path: string }' }
+    }
+    const source = value.path
+    const target =
+      typeof value.targetPath === 'string' && value.targetPath.length > 0
+        ? value.targetPath
+        : source
+    if (!isManagedPdfPath(source) || !isManagedPdfPath(target)) {
+      return { ok: false, error: 'pdf: path is outside the web storage area' }
+    }
+    if (!existsSync(source)) {
+      return { ok: false, error: `pdf: source not found: ${source}` }
+    }
+    try {
+      const { skippedTextEdits, skippedTextInserts, skippedImageEdits } = await savePdfToPath(
+        source,
+        target,
+        request as SavePdfRequest,
+      )
+      return {
+        ok: true,
+        ...(skippedTextEdits.length > 0 ? { skippedTextEdits } : {}),
+        ...(skippedTextInserts.length > 0 ? { skippedTextInserts } : {}),
+        ...(skippedImageEdits.length > 0 ? { skippedImageEdits } : {}),
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
   /* ── Web-only stubs for features the Electron main process handles but the
    * web-server has no equivalent backend for. Returning a sane default (rather
    * than 404) keeps the renderer console clean and lets the UI fall back to
    * "feature unavailable" gracefully. ─────────────────────────────────────── */
-  registerHandle('pdf:save', async (_e: unknown, _req: unknown) => ({ ok: true, saved: true }))
   registerHandle('pdf:auto-rename', (_e: unknown, _p: unknown, _b: unknown) => null)
   registerHandle('pdf:is-untitled', (_e: unknown, _p: unknown) => false)
   registerHandle('pdf:validate-text-edits', (_e: unknown, _req: unknown) => ({
