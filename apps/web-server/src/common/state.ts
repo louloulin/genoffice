@@ -111,7 +111,7 @@ export function loadRecentDocs(): DocInfo[] {
 }
 
 export function saveRecentDocs(docs: DocInfo[]): void {
-  writeFileSync(DOCS_RECENT_FILE, JSON.stringify(docs.slice(0, 10), null, 2))
+  writeFileSync(DOCS_RECENT_FILE, JSON.stringify(pickNewest(docs, 10), null, 2))
 }
 
 export const DOCS_RECENT: Map<string, DocInfo> = new Map()
@@ -204,6 +204,20 @@ export interface SheetInfo {
   openedAt: number
 }
 
+/**
+ * Keep the newest `n` entries by `openedAt`. Items without an `openedAt` (or
+ * with a non-numeric one) sort to the end. The three sibling `saveRecent*`
+ * functions used to call `.slice(0, n)` directly, which silently dropped the
+ * most recent uploads because Map insertion order has no relation to time —
+ * the file kept the oldest `n` entries ever inserted, so the user's recents
+ * list lost its newest uploads across a server restart.
+ */
+function pickNewest<T extends { openedAt?: number }>(items: T[], n: number): T[] {
+  return [...items]
+    .sort((a, b) => (b.openedAt ?? 0) - (a.openedAt ?? 0))
+    .slice(0, n)
+}
+
 export const SHEETS_RECENT_FILE = join(DATA_DIR, 'sheets-recent.json')
 
 export function loadRecentSheets(): SheetInfo[] {
@@ -216,7 +230,7 @@ export function loadRecentSheets(): SheetInfo[] {
 }
 
 export function saveRecentSheets(sheets: SheetInfo[]): void {
-  writeFileSync(SHEETS_RECENT_FILE, JSON.stringify(sheets.slice(0, 10), null, 2))
+  writeFileSync(SHEETS_RECENT_FILE, JSON.stringify(pickNewest(sheets, 10), null, 2))
 }
 
 export interface SlideInfo {
@@ -238,7 +252,7 @@ export function loadRecentSlides(): SlideInfo[] {
 }
 
 export function saveRecentSlides(slides: SlideInfo[]): void {
-  writeFileSync(SLIDES_RECENT_FILE, JSON.stringify(slides.slice(0, 10), null, 2))
+  writeFileSync(SLIDES_RECENT_FILE, JSON.stringify(pickNewest(slides, 10), null, 2))
 }
 
 // ----- Collab state ---------------------------------------------------------
