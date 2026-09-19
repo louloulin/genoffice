@@ -22,6 +22,7 @@ export {
   IconRedo,
   IconCopy,
   IconSearch,
+  IconPaperclip,
 } from '../../../../docs/src/renderer/components/icons'
 
 interface IconProps {

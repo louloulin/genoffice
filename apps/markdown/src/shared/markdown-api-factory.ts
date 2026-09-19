@@ -26,6 +26,13 @@ export interface MarkdownApiOverrides {
   consumePending?: () => Promise<string | null>
   /** Web-native image picker (browser file input + saveImage). */
   pickImage?: () => Promise<string | null>
+  /**
+   * Web-native file upload: pick a file via the browser and land it in
+   * FILES_DIR via `web:save-file`. Returns null when the user cancels.
+   * The factory default is null because the base transport has no DOM
+   * access for a file picker; the web-bridge.ts override wires it.
+   */
+  uploadFile?: () => Promise<{ id: string; path: string; name: string } | null>
   /** Web-native DOCX export (browser download of the serialized bytes). */
   exportDocx?: (request: { base64: string; suggestedName?: string; mode?: string }) => Promise<{
     ok: boolean
@@ -69,6 +76,7 @@ export function createMarkdownApi(
     onFileRenamed: (handler) =>
       t.on(MARKDOWN_CHANNELS.fileRenamed, (newPath) => handler(newPath as string)),
     pickImage: overrides.pickImage ?? (() => t.invoke(MARKDOWN_CHANNELS.pickImage)),
+    uploadFile: overrides.uploadFile ?? (() => Promise.resolve(null)),
     saveImage: (data) => t.invoke(MARKDOWN_CHANNELS.saveImage, data),
     readImage: (src) => t.invoke(MARKDOWN_CHANNELS.readImage, src),
     onExportRequest: (handler) =>

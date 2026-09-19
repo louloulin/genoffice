@@ -20,6 +20,7 @@ import {
   IconLink,
   IconNumbered,
   IconOutlineView,
+  IconPaperclip,
   IconPicture,
   IconProperties,
   IconRedo,
@@ -40,6 +41,7 @@ interface Props {
   onToggleAutoSave: (on: boolean) => void
   imageEnabled: boolean
   onInsertImage: () => void
+  onUploadFile: () => void
   frontmatterOpen: boolean
   onToggleFrontmatter: () => void
   outlineOpen: boolean
@@ -161,6 +163,7 @@ export function Ribbon({
   onToggleAutoSave,
   imageEnabled,
   onInsertImage,
+  onUploadFile,
   frontmatterOpen,
   onToggleFrontmatter,
   outlineOpen,
@@ -295,6 +298,17 @@ export function Ribbon({
           onClick={onFind}
         >
           <IconSearch size={16} />
+        </button>
+        <button
+          type="button"
+          className="qa-btn"
+          data-tip={t('uploadTip')}
+          aria-label={t('uploadTip')}
+          disabled={off || !window.markdownApi?.uploadFile}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onUploadFile}
+        >
+          <IconPaperclip size={16} />
         </button>
         <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
           <span className="autosave-knob" />

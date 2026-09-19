@@ -168,6 +168,12 @@ export interface MarkdownApi {
    * inside the document's directory are allowed; anything else returns null.
    */
   readImage(src: string): Promise<ImageData | null>
+  /**
+   * Web-native file upload: pick one file and land it in FILES_DIR via
+   * `web:save-file`. Returns null when the user cancels or when the
+   * runtime does not support a browser file picker (desktop Electron).
+   */
+  uploadFile(): Promise<{ id: string; path: string; name: string } | null>
   /** Shell menu export → renderer serializes and calls exportDocx/exportPdf */
   onExportRequest(handler: (format: ExportFormat) => void): () => void
   /** Shell menu Print → renderer builds the print HTML and opens the system print dialog */

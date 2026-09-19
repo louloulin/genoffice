@@ -179,6 +179,14 @@ export default function App() {
     })()
   }, [])
 
+  const uploadFile = useCallback(() => {
+    // Web-native upload: pick a file in the browser and land it in FILES_DIR
+    // via `web:save-file`. The result is intentionally not inserted as text:
+    // markdown has no native file-attachment concept, and recents already
+    // surfaces the new file for the user to find from the shell home page.
+    void window.markdownApi.uploadFile?.()
+  }, [])
+
   const extensions = useMemo(() => {
     const controller: SlashController = {
       onOpen: setSlashState,
@@ -678,6 +686,7 @@ export default function App() {
         onToggleAutoSave={setAutoSave}
         imageEnabled={Boolean(filePath)}
         onInsertImage={insertImage}
+        onUploadFile={uploadFile}
         frontmatterOpen={fmOpen}
         onToggleFrontmatter={() => setFmOpen((v) => !v)}
         outlineOpen={outlineOpen}

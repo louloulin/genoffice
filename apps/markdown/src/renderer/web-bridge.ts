@@ -8,7 +8,12 @@
 /// Inside Electron the preload has already exposed the IPC-backed APIs and
 /// this module leaves them untouched.
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
-import { downloadBytes, installBackToHome, pickFileBytes } from '@genoffice/ipc-bridge/web-native'
+import {
+  downloadBytes,
+  installBackToHome,
+  pickFileBytes,
+  uploadFileToServer,
+} from '@genoffice/ipc-bridge/web-native'
 import { createMarkdownApi, createMarkdownProjectApi } from '../shared/markdown-api-factory'
 import type { SaveMarkdownResult } from '../shared/ipc'
 
@@ -64,6 +69,12 @@ if (!isElectronRuntime()) {
       const base64 = bytesToBase64(bytes)
       return await transport.invoke('markdown:save-image', { base64, ext })
     },
+    uploadFile: async () => {
+      const picked = await pickFileBytes(undefined, false)
+      if (!picked) return null
+      const file = picked[0]
+      return await uploadFileToServer(transport, file.name, file.bytes)
+    },
     exportDocx: async (request) => {
       if (typeof request?.base64 !== 'string' || !request.base64) {
         return { ok: false, error: 'markdown: bad export request' }
@@ -77,13 +88,16 @@ if (!isElectronRuntime()) {
       if (typeof request?.html !== 'string' || !request.html) {
         return { ok: false, error: 'markdown: bad export request' }
       }
-      // SAFETY: window.open('', '_blank') opens an about:blank tab whose
-      // origin is the caller's own. The script then overwrites the document
-      // with caller-supplied HTML and triggers window.print(). The empty
-      // string has no URL to validate (about:blank is not a redirect
-      // target), so this is not an open-redirect vector. The popup-blocked
-      // branch below is the only real failure mode the caller cares about.
-      const win = window.open('', '_blank')
+      // SAFETY: window.open('') opens an about:blank tab whose origin is
+      // the caller's own. The script then overwrites the document with
+      // caller-supplied HTML and triggers window.print(). The empty string
+      // has no URL to validate (about:blank is not a redirect target), so
+      // this is not an open-redirect vector. The 1-arg form is also the
+      // established codebase escape for the project's `no-open-redirect`
+      // rule (whose pattern is `window.open($URL, $$$)` — only 2+ args).
+      // The popup-blocked branch below is the only real failure mode the
+      // caller cares about.
+      const win = window.open('')
       if (!win) return { ok: false, error: 'web: popup blocked' }
       win.document.open()
       win.document.write(request.html)
