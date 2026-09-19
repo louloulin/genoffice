@@ -58,9 +58,11 @@ import {
   DATA_DIR,
   DOCS_RECENT,
   DOCS_STARRED,
+  FILES_DIR,
   isManagedPath,
   PATH_OUTSIDE_STORAGE,
   registerHandle,
+  saveRecentDocs,
 } from '../common/index'
 
 export function registerHomeHandlers(): void {
@@ -189,17 +191,26 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:new-doc', () => {
     const id = `doc-${Date.now()}`
-    return { id, path: join(DATA_DIR, `${id}.docx`) }
+    const path = join(FILES_DIR, `${id}.docx`)
+    DOCS_RECENT.set(path, { id, path, name: `${id}.docx`, openedAt: Date.now(), modified: false })
+    saveRecentDocs([...DOCS_RECENT.values()])
+    return { id, path }
   })
 
   registerHandle('home:new-sheet', () => {
     const id = `sheet-${Date.now()}`
-    return { id, path: join(DATA_DIR, `${id}.xlsx`) }
+    const path = join(FILES_DIR, `${id}.xlsx`)
+    DOCS_RECENT.set(path, { id, path, name: `${id}.xlsx`, openedAt: Date.now(), modified: false })
+    saveRecentDocs([...DOCS_RECENT.values()])
+    return { id, path }
   })
 
   registerHandle('home:new-slide', () => {
     const id = `slide-${Date.now()}`
-    return { id, path: join(DATA_DIR, `${id}.pptx`) }
+    const path = join(FILES_DIR, `${id}.pptx`)
+    DOCS_RECENT.set(path, { id, path, name: `${id}.pptx`, openedAt: Date.now(), modified: false })
+    saveRecentDocs([...DOCS_RECENT.values()])
+    return { id, path }
   })
 
   registerHandle('home:new-markdown', () => {
@@ -209,7 +220,7 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:new-pdf', () => {
     const id = `pdf-${Date.now()}`
-    const path = join(DATA_DIR, `${id}.pdf`)
+    const path = join(FILES_DIR, `${id}.pdf`)
     const objects = [
       '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
       '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
@@ -227,6 +238,8 @@ export function registerHomeHandlers(): void {
     for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
     pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
     writeFileSync(path, Buffer.from(pdf, 'binary'))
+    DOCS_RECENT.set(path, { id, path, name: `${id}.pdf`, openedAt: Date.now(), modified: false })
+    saveRecentDocs([...DOCS_RECENT.values()])
     return { id, path }
   })
 
