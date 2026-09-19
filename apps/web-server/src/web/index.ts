@@ -5,13 +5,15 @@
  * project.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
+  DOCS_RECENT,
   FILES_DIR,
   loadProjects,
   registerHandle,
   saveProjects,
+  saveRecentDocs,
   WEB_TEMP_ROOT,
 } from '../common/index'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
@@ -63,6 +65,20 @@ export function registerWebHandlers(): void {
     const fileId = `${Date.now()}-${name}`
     const filePath = join(FILES_DIR, fileId)
     writeFileSync(filePath, Buffer.from(bytes))
+
+    // Mirror the save into the home page recents list so the upload shows
+    // up immediately on the shell home tab. We unconditionally overwrite the
+    // map entry by path (keys are paths in DOCS_RECENT) and persist with
+    // saveRecentDocs. The recents list is deduped by path on read so a
+    // re-upload of the same logical file collapses to one row.
+    DOCS_RECENT.set(filePath, {
+      id: basename(fileId, extname(fileId)),
+      path: filePath,
+      name,
+      openedAt: Date.now(),
+      modified: false,
+    })
+    saveRecentDocs([...DOCS_RECENT.values()])
 
     if (projectId) {
       const projects = loadProjects()
