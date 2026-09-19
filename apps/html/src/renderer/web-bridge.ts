@@ -12,6 +12,7 @@ import {
   downloadBytes,
   installBackToHome,
   pickFileBytes,
+  uploadFileToServer,
   webFullscreen,
 } from '@genoffice/ipc-bridge/web-native'
 import { createHtmlApi, createHtmlProjectApi } from '../shared/html-api-factory'
@@ -94,6 +95,12 @@ if (!isElectronRuntime()) {
       const tab = openSameOriginTab(previewUrlBase)
       if (tab && title) tab.document.title = title
       return Boolean(tab)
+    },
+    uploadFile: async () => {
+      const picked = await pickFileBytes(undefined, false)
+      if (!picked) return null
+      const file = picked[0]
+      return await uploadFileToServer(transport, file.name, file.bytes)
     },
     pickImage: async () => {
       const picked = await pickFileBytes('image/png,image/jpeg,image/gif')

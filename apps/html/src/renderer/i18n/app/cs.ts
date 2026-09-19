@@ -140,4 +140,5 @@ export const cs = {
   replace: 'Nahradit',
   replaceAll: 'Nahradit vše',
   findTip: 'Najít a nahradit (⌘F)',
+  uploadTip: 'Nahrát soubor na webový server',
 } satisfies Record<keyof typeof zh, string>

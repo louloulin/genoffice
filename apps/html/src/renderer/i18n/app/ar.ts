@@ -25,6 +25,7 @@ export const ar = {
   replace: 'استبدال',
   replaceAll: 'استبدال الكل',
   findTip: 'بحث واستبدال (⌘F)',
+  uploadTip: 'تحميل ملف إلى خادم الويب',
   autoSaveTip: 'يحفظ كل 30 ثانية وعند فقدان النافذة للتركيز',
   zoom: 'تكبير',
   zoomIn: 'تكبير',

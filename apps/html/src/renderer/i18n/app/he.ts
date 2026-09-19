@@ -25,6 +25,7 @@ export const he = {
   replace: 'החלפה',
   replaceAll: 'החלפת הכול',
   findTip: 'חיפוש והחלפה (⌘F)',
+  uploadTip: 'העלה קובץ לשרת האינטרנט',
   autoSaveTip: 'שומר כל 30 שניות וכאשר החלון מאבד פוקוס',
   zoom: 'זום',
   zoomIn: 'הגדל',

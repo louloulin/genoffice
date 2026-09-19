@@ -20,6 +20,7 @@ import {
   IconHeading,
   IconPlay,
   IconPalette,
+  IconPaperclip,
   IconPicture,
   IconPilcrow,
   IconPlus,
@@ -64,6 +65,7 @@ interface Props {
   dirty: boolean
   onSave: () => void
   onFind: () => void
+  onUploadFile: () => void
   canUndo: boolean
   canRedo: boolean
   onUndo: () => void
@@ -241,6 +243,17 @@ export function Ribbon(p: Props) {
           onClick={p.onFind}
         >
           <IconSearch size={16} />
+        </button>
+        <button
+          type="button"
+          className="qa-btn"
+          data-tip={t('uploadTip')}
+          aria-label={t('uploadTip')}
+          disabled={off || !window.htmlApi?.uploadFile}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={p.onUploadFile}
+        >
+          <IconPaperclip size={16} />
         </button>
         <label className={`autosave-toggle${p.autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
           <span className="autosave-knob" />

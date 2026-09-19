@@ -40,6 +40,13 @@ export interface HtmlApiOverrides {
   consumePending?: () => Promise<string | null>
   /** Web-native image picker (browser file input + saveImage). */
   pickImage?: () => Promise<string | null>
+  /**
+   * Web-native file upload: pick a file via the browser and land it in
+   * FILES_DIR via `web:save-file`. The factory default returns null
+   * because the base transport has no DOM access for a file picker;
+   * the web-bridge.ts override wires it.
+   */
+  uploadFile?: () => Promise<{ id: string; path: string; name: string } | null>
   /** Web-native export (browser download/print). */
   exportDocx?: (request: ExportDocxRequest) => Promise<ExportResult>
   exportPdf?: (request: ExportPdfRequest) => Promise<ExportResult>
@@ -84,6 +91,7 @@ export function createHtmlApi(t: IpcTransport, overrides: HtmlApiOverrides = {})
       t.on(HTML_CHANNELS.fileRenamed, (newPath) => handler(newPath as string)),
     setProvisionalTitle: (title) => t.send(HTML_CHANNELS.provisionalTitle, title),
     pickImage: overrides.pickImage ?? (() => t.invoke(HTML_CHANNELS.pickImage) as Promise<string | null>),
+    uploadFile: overrides.uploadFile ?? (() => Promise.resolve(null)),
     saveImage: (data) => t.invoke(HTML_CHANNELS.saveImage, data) as Promise<string | null>,
     readImage: (src) => t.invoke(HTML_CHANNELS.readImage, src) as Promise<ImageData | null>,
     pickAttachments:

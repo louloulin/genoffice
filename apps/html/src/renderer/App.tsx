@@ -1391,6 +1391,14 @@ export default function App() {
         dirty={dirty}
         onSave={() => void doSave('save')}
         onFind={() => openFind(false)}
+        onUploadFile={() => {
+          // Web-native upload: pick a file in the browser and land it in
+          // FILES_DIR via `web:save-file`. The result is intentionally not
+          // inserted as html markup: html has its own attachment system
+          // (`html:files-add`) and the user finds the new file in recents
+          // from the shell home page.
+          void window.htmlApi.uploadFile?.()
+        }}
         canUndo={historyState.undo}
         canRedo={historyState.redo}
         onUndo={() => {

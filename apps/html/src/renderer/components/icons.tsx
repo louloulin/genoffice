@@ -18,6 +18,7 @@ export {
   IconLink,
   IconLock,
   IconPalette,
+  IconPaperclip,
   IconPicture,
   IconPilcrow,
   IconRedo,

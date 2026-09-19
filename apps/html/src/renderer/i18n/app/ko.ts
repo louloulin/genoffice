@@ -25,6 +25,7 @@ export const ko = {
   replace: '바꾸기',
   replaceAll: '모두 바꾸기',
   findTip: '찾기 및 바꾸기 (⌘F)',
+  uploadTip: '파일을 웹 서버에 업로드',
   autoSaveTip: '30초마다 및 창이 포커스를 잃을 때 자동 저장',
   zoom: '확대·축소',
   zoomIn: '확대',

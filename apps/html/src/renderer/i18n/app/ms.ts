@@ -25,6 +25,7 @@ export const ms = {
   replace: 'Ganti',
   replaceAll: 'Ganti Semua',
   findTip: 'Cari dan Ganti (⌘F)',
+  uploadTip: 'Muat naik fail ke pelayan web',
   autoSaveTip: 'Menyimpan setiap 30 saat dan apabila tetingkap hilang fokus',
   zoom: 'Zum',
   zoomIn: 'Besarkan',

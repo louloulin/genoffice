@@ -25,6 +25,7 @@ export const zhTW = {
   replace: '取代',
   replaceAll: '全部取代',
   findTip: '尋找與取代 (⌘F)',
+  uploadTip: '將檔案上傳到 Web 伺服器',
   autoSaveTip: '每 30 秒及視窗失焦時自動儲存',
   zoom: '縮放',
   zoomIn: '放大',

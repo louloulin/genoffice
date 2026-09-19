@@ -25,6 +25,7 @@ export const hi = {
   replace: 'बदलें',
   replaceAll: 'सभी बदलें',
   findTip: 'ढूँढें और बदलें (⌘F)',
+  uploadTip: 'अपलोड फ़ाइल वेब सर्वर पर',
   autoSaveTip: 'हर 30 सेकंड और विंडो का फ़ोकस हटने पर सहेजता है',
   zoom: 'ज़ूम',
   zoomIn: 'बड़ा करें',

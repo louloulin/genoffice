@@ -25,6 +25,7 @@ export const nl = {
   replace: 'Vervangen',
   replaceAll: 'Alles vervangen',
   findTip: 'Zoeken en vervangen (⌘F)',
+  uploadTip: 'Upload een bestand naar de webserver',
   autoSaveTip: 'Slaat elke 30 seconden op en wanneer het venster de focus verliest',
   zoom: 'Zoom',
   zoomIn: 'Inzoomen',

@@ -25,6 +25,7 @@ export const es = {
   replace: 'Reemplazar',
   replaceAll: 'Reemplazar todo',
   findTip: 'Buscar y reemplazar (⌘F)',
+  uploadTip: 'Subir un archivo al servidor web',
   autoSaveTip: 'Guarda cada 30 segundos y al perder el foco la ventana',
   zoom: 'Zoom',
   zoomIn: 'Acercar',

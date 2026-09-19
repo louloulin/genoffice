@@ -25,6 +25,7 @@ export const pl = {
   replace: 'Zamień',
   replaceAll: 'Zamień wszystko',
   findTip: 'Znajdź i zamień (⌘F)',
+  uploadTip: 'Prześlij plik na serwer WWW',
   autoSaveTip: 'Zapisuje co 30 sekund i gdy okno traci fokus',
   zoom: 'Powiększenie',
   zoomIn: 'Powiększ',

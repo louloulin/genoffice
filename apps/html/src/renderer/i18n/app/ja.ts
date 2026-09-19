@@ -25,6 +25,7 @@ export const ja = {
   replace: '置換',
   replaceAll: 'すべて置換',
   findTip: '検索と置換 (⌘F)',
+  uploadTip: 'ファイルを Web サーバーにアップロード',
   autoSaveTip: '30 秒ごととウィンドウのフォーカスが外れたときに自動保存',
   zoom: 'ズーム',
   zoomIn: '拡大',

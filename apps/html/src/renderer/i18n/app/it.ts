@@ -25,6 +25,7 @@ export const it = {
   replace: 'Sostituisci',
   replaceAll: 'Sostituisci tutto',
   findTip: 'Trova e sostituisci (⌘F)',
+  uploadTip: 'Carica un file sul server web',
   autoSaveTip: 'Salva ogni 30 secondi e quando la finestra perde il focus',
   zoom: 'Zoom',
   zoomIn: 'Ingrandisci',

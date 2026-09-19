@@ -25,6 +25,7 @@ export const id = {
   replace: 'Ganti',
   replaceAll: 'Ganti Semua',
   findTip: 'Temukan dan Ganti (⌘F)',
+  uploadTip: 'Unggah file ke server web',
   autoSaveTip: 'Menyimpan setiap 30 detik dan saat jendela kehilangan fokus',
   zoom: 'Zoom',
   zoomIn: 'Perbesar',

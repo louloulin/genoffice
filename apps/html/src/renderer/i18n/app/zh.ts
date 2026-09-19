@@ -24,6 +24,7 @@ export const zh = {
   replace: '替换',
   replaceAll: '全部替换',
   findTip: '查找和替换 (⌘F)',
+  uploadTip: '将文件上传到 Web 服务器',
   autoSaveTip: '每 30 秒及窗口失焦时自动保存',
   zoom: '缩放',
   zoomIn: '放大',

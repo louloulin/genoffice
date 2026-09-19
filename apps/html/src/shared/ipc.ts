@@ -238,6 +238,12 @@ export interface HtmlApi {
   readImage(src: string): Promise<ImageData | null>
   /** file picker for chat attachments (multi-select) */
   pickAttachments(): Promise<AttachmentAddResult | null>
+  /**
+   * Web-native file upload: pick one file and land it in FILES_DIR via
+   * `web:save-file`. Returns null when the user cancels or when the
+   * runtime does not support a browser file picker (desktop Electron).
+   */
+  uploadFile(): Promise<{ id: string; path: string; name: string } | null>
   /** validate dropped paths and return attachment metadata */
   addAttachmentPaths(paths: string[]): Promise<AttachmentAddResult>
   /** persist a pasted clipboard image (no local path) to a temp file and add it as an attachment */
