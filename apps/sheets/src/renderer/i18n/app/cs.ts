@@ -1339,4 +1339,7 @@ export const cs = {
   appFindTitle: 'Najít a vybrat ⌘F',
   appReplace: 'Nahradit',
   appGoTo: 'Přejít na',
+  appGroupFile: 'File',
+  appUploadFile: 'Upload File',
+  appUploadFileDetail: 'Save to web server',
 } satisfies Record<keyof typeof zh, string>

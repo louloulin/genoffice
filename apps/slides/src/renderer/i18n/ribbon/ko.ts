@@ -752,4 +752,7 @@ export const ko = {
   ribbonEqStdDev: '표준 편차',
   ribbonEqFourier: '푸리에 변환',
   ribbonEqNormalDist: '정규 분포',
+  ribbonGroupFile: '파일',
+  ribbonUpload: '파일 업로드',
+  ribbonUploadTip: '파일을 웹 서버에 업로드',
 } satisfies Record<keyof typeof zh, string>

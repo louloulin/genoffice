@@ -3047,6 +3047,16 @@ export function App() {
         onInsertModel3d={() => void insertModel3dFile()}
         recording={recording}
         onToggleScreenRecord={() => void toggleScreenRecord()}
+        onUploadFile={async () => {
+          try {
+            const uploaded = await window.slidesApi?.uploadFile?.()
+            if (uploaded?.path) {
+              window.dispatchEvent(new Event('genoffice:recents-changed'))
+            }
+          } catch (err) {
+            console.error('slides upload failed', err)
+          }
+        }}
         contextElementType={contextElementType}
         contextElementId={selectedNode?.sourceId}
         contextSlideIndex={current}

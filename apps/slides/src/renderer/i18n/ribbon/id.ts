@@ -747,4 +747,7 @@ export const id = {
   ribbonEqStdDev: 'Simpangan Baku',
   ribbonEqFourier: 'Transformasi Fourier',
   ribbonEqNormalDist: 'Distribusi Normal',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Unggah File',
+  ribbonUploadTip: 'Unggah file ke server web',
 } satisfies Record<keyof typeof zh, string>

@@ -1249,4 +1249,7 @@ export const zhTW = {
   appFindTitle: '尋找與選取 ⌘F',
   appReplace: '取代',
   appGoTo: '到',
+  appGroupFile: '檔案',
+  appUploadFile: '上傳檔案',
+  appUploadFileDetail: '儲存到 Web 伺服器',
 } satisfies Record<keyof typeof zh, string>

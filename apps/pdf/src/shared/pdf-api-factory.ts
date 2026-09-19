@@ -14,11 +14,18 @@ import type { PdfApi, UiTheme } from './ipc'
 export interface PdfApiOverrides {
   /** Web-native open: grant a path to the bridge sender and return it as pending. */
   consumePending?: () => Promise<string | null>
+  /** Web-native file upload (browser file input → FILES_DIR via web:save-file). */
+  uploadFile?: (projectId?: string) => Promise<{ id: string; path: string; name: string } | null>
 }
 
 export function createPdfApi(t: IpcTransport, overrides: PdfApiOverrides = {}): PdfApi {
   return {
     consumePending: overrides.consumePending ?? (() => t.invoke(PDF_CHANNELS.consumePending)),
+    async uploadFile(projectId?: string) {
+      if (overrides.uploadFile) return await overrides.uploadFile(projectId)
+      // Electron: no native upload bridge exposed.
+      return null
+    },
     readFile: (path) => t.invoke(PDF_CHANNELS.readFile, path),
     save: (request) => t.invoke(PDF_CHANNELS.save, request),
     autoRename: (path, baseName) => t.invoke(PDF_CHANNELS.autoRename, path, baseName),

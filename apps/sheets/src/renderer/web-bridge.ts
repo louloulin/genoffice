@@ -13,6 +13,7 @@ import {
   createWebFileBridge,
   installBackToHome,
   pickFileBytes,
+  uploadFileToServer,
 } from '@genoffice/ipc-bridge/web-native'
 import { createSheetsApi, createSheetsProjectApi } from '../shared/sheets-api-factory'
 
@@ -58,6 +59,20 @@ if (!isElectronRuntime()) {
         paths.push(await files.writeTempFile(file.name, file.bytes))
       }
       return await transport.invoke('sheets:files-add', paths)
+    },
+    uploadFile: async (projectId?: string) => {
+      const picked = await pickFileBytes(undefined, false)
+      if (!picked) return null
+      const file = picked[0]
+      if (!file) return null
+      try {
+        const uploaded = await uploadFileToServer(transport, file.name, file.bytes, projectId)
+        window.dispatchEvent(new Event('genoffice:recents-changed'))
+        return uploaded
+      } catch (err) {
+        console.error('sheets uploadFile failed', err)
+        return null
+      }
     },
     captureScreenSources: async () => {
       return {

@@ -750,4 +750,7 @@ export const pl = {
   ribbonEqStdDev: 'Odchylenie standardowe',
   ribbonEqFourier: 'Transformata Fouriera',
   ribbonEqNormalDist: 'Rozkład normalny',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
 } satisfies Record<keyof typeof zh, string>

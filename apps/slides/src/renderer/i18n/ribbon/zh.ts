@@ -739,4 +739,7 @@ export const zh = {
   ribbonEqStdDev: '标准差',
   ribbonEqFourier: '傅里叶变换',
   ribbonEqNormalDist: '正态分布',
+  ribbonGroupFile: '文件',
+  ribbonUpload: '上传文件',
+  ribbonUploadTip: '将文件上传到 Web 服务器',
 }

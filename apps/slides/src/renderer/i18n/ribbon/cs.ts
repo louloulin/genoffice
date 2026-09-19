@@ -741,4 +741,7 @@ export const cs = {
   ribbonEqStdDev: 'Směrodatná odchylka',
   ribbonEqFourier: 'Fourierova transformace',
   ribbonEqNormalDist: 'Normální rozdělení',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
 } satisfies Record<keyof typeof zh, string>

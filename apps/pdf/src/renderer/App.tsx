@@ -5506,10 +5506,39 @@ export default function App() {
     return (
       <div className="app">
         <div className="pdf-placeholder">
-          {status === 'loading' ? t('loading') : status === 'error' ? t('loadError') : t('noFile')}
+          {status === 'loading' ? (
+            t('loading')
+          ) : status === 'error' ? (
+            t('loadError')
+          ) : (
+            <>
+              <p>{t('noFile')}</p>
+              <button
+                className="qa-btn"
+                data-tip={t('uploadTip')}
+                aria-label={t('uploadTip')}
+                onClick={() => void handleUploadFile()}
+              >
+                {t('uploadFile')}
+              </button>
+            </>
+          )}
         </div>
       </div>
     )
+  }
+
+  /** Web-only: pick a file via the browser and land it in FILES_DIR via
+   * `web:save-file`. */
+  async function handleUploadFile(): Promise<void> {
+    try {
+      const uploaded = await window.pdfApi?.uploadFile?.()
+      if (uploaded?.path) {
+        window.dispatchEvent(new Event('genoffice:recents-changed'))
+      }
+    } catch (err) {
+      console.error('pdf upload failed', err)
+    }
   }
 
   const menuOrig = thumbMenu?.origIdx ?? -1

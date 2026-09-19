@@ -1333,4 +1333,7 @@ export const hi = {
   appFindTitle: 'ढूँढें और चुनें ⌘F',
   appReplace: 'बदलें',
   appGoTo: 'इस पर जाएँ',
+  appGroupFile: 'File',
+  appUploadFile: 'Upload File',
+  appUploadFileDetail: 'Save to web server',
 } satisfies Record<keyof typeof zh, string>

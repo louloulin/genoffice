@@ -147,6 +147,9 @@ export interface DesktopFilesApi {
   readAttachmentImage(path: string): Promise<AttachmentImageResult>
   /** Absolute path of a File dropped on the window (Electron webUtils) */
   getPathForFile(file: File): string
+  /** Web-only: pick a file in the browser and land it in FILES_DIR via
+   * `web:save-file`. Returns null when the user cancels. */
+  uploadFile(projectId?: string): Promise<{ id: string; path: string; name: string } | null>
 }
 
 /** A raw op transaction from the AI batch surface (ops are validated by the registry; coordinates are document-space EMU). */

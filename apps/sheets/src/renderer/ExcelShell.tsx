@@ -267,6 +267,9 @@ interface ExcelShellProps {
   readonly onEditPivot: (config: OoXmlPivotConfig) => string | null
   readonly onRefreshPivot: () => string | null
   readonly onIsSelectionInPivot: () => boolean
+  /** Web-only: pick a file in the browser and land it in FILES_DIR via
+   * `web:save-file`. Falls back to no-op on Electron. */
+  readonly onUploadFile: () => Promise<void>
   readonly onGetActiveCell: () => string
   /// Value of the selection's top-left cell, read when Format Cells opens
   /// (number-format preview).
@@ -343,6 +346,7 @@ export function ExcelShell({
   onEditPivot,
   onRefreshPivot,
   onIsSelectionInPivot,
+  onUploadFile,
   onGetActiveCell,
   onGetAnchorValue,
   activeCellA1,
@@ -620,6 +624,7 @@ export function ExcelShell({
           calcManual={calcManual}
           onRefreshPivot={onRefreshPivot}
           onIsSelectionInPivot={onIsSelectionInPivot}
+          onUploadFile={onUploadFile}
           onCommand={(command) => {
             if (command === 'format-cells') setShowFormatCells(true)
             else if (command === 'row-height-open') setAxisSizeTarget('row')
@@ -1273,6 +1278,7 @@ function Ribbon({
   calcManual,
   onRefreshPivot,
   onIsSelectionInPivot,
+  onUploadFile,
 }: {
   readonly activeTab: RibbonTab
   readonly selectionFormat: SelectionFormat | null
@@ -1296,6 +1302,9 @@ function Ribbon({
   readonly onAiToggle: () => void
   readonly onRefreshPivot: () => string | null
   readonly onIsSelectionInPivot: () => boolean
+  /** Web-only: pick a file in the browser and land it in FILES_DIR via
+   * `web:save-file`. No-op on Electron (caller can noop the override). */
+  readonly onUploadFile: () => Promise<void>
 }): React.JSX.Element {
   const { t } = useI18n()
   const [fontColor, setFontColor] = useState('#C00000')
@@ -1547,6 +1556,15 @@ function Ribbon({
   if (activeTab === 'Insert') {
     return (
       <div className="ribbon" data-ribbon-body="">
+        <RibbonGroup label={t('appGroupFile')}>
+          <RibbonButton
+            large
+            label={t('appUploadFile')}
+            detail={t('appUploadFileDetail')}
+            symbol="📎"
+            onClick={() => void onUploadFile()}
+          />
+        </RibbonGroup>
         <RibbonGroup label={t('appGroupTables')}>
           <RibbonButton
             large

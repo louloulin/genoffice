@@ -1399,4 +1399,7 @@ export const fr = {
   appFindTitle: 'Rechercher et sélectionner ⌘F',
   appReplace: 'Remplacer',
   appGoTo: 'Atteindre',
+  appGroupFile: 'Fichier',
+  appUploadFile: 'Téléverser un fichier',
+  appUploadFileDetail: 'Enregistrer sur le serveur web',
 } satisfies Record<keyof typeof zh, string>

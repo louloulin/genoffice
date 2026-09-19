@@ -1358,4 +1358,7 @@ export const ko = {
   appFindTitle: '찾기 및 선택 ⌘F',
   appReplace: '바꾸기',
   appGoTo: '이동',
+  appGroupFile: '파일',
+  appUploadFile: '파일 업로드',
+  appUploadFileDetail: '웹 서버에 저장',
 } satisfies Record<keyof typeof zh, string>

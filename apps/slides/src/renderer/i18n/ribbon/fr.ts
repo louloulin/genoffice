@@ -763,4 +763,7 @@ export const fr = {
   ribbonEqStdDev: 'Écart type',
   ribbonEqFourier: 'Transformée de Fourier',
   ribbonEqNormalDist: 'Loi normale',
+  ribbonGroupFile: 'Fichier',
+  ribbonUpload: 'Téléverser un fichier',
+  ribbonUploadTip: 'Téléverser un fichier sur le serveur web',
 } satisfies Record<keyof typeof zh, string>

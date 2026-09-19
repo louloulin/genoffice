@@ -1364,4 +1364,7 @@ export const pl = {
   appFindTitle: 'Znajdź i zaznacz ⌘F',
   appReplace: 'Zamień',
   appGoTo: 'Przejdź do',
+  appGroupFile: 'File',
+  appUploadFile: 'Upload File',
+  appUploadFileDetail: 'Save to web server',
 } satisfies Record<keyof typeof zh, string>

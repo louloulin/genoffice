@@ -1386,4 +1386,7 @@ export const de = {
   appFindTitle: 'Suchen und Auswählen ⌘F',
   appReplace: 'Ersetzen',
   appGoTo: 'Gehe zu',
+  appGroupFile: 'Datei',
+  appUploadFile: 'Datei hochladen',
+  appUploadFileDetail: 'Auf dem Webserver speichern',
 } satisfies Record<keyof typeof zh, string>

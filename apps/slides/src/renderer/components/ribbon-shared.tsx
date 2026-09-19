@@ -539,6 +539,9 @@ export interface Props {
   /** Screen recording state (true = recording, button shows stop) */
   recording: boolean
   onToggleScreenRecord: () => void
+  /** Web-only: pick a file in the browser and land it in FILES_DIR via
+   * `web:save-file`. Falls back to no-op on Electron. */
+  onUploadFile: () => Promise<void>
   // ── Contextual tabs: table design / chart design / picture format ────────────────
   /** Current selection category used to expose and activate contextual tabs */
   contextElementType?: 'table' | 'chart' | 'picture' | 'shape' | 'textShape' | 'mixed' | null
@@ -675,6 +678,7 @@ export interface RibbonTabCtx extends Pick<
   | 'onToggleAi'
   | 'onToggleFormat'
   | 'onToggleScreenRecord'
+  | 'onUploadFile'
   | 'recording'
   | 'slideCount'
   | 'zoom'

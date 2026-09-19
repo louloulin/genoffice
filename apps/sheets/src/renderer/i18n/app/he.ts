@@ -1280,4 +1280,7 @@ export const he = {
   appFindTitle: 'חפש ובחר ⌘F',
   appReplace: 'החלף',
   appGoTo: 'עבור אל',
+  appGroupFile: 'File',
+  appUploadFile: 'Upload File',
+  appUploadFileDetail: 'Save to web server',
 } satisfies Record<keyof typeof zh, string>

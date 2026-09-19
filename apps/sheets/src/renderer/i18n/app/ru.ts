@@ -1354,4 +1354,7 @@ export const ru = {
   appFindTitle: 'Найти и выделить ⌘F',
   appReplace: 'Заменить',
   appGoTo: 'Перейти',
+  appGroupFile: 'Файл',
+  appUploadFile: 'Загрузить файл',
+  appUploadFileDetail: 'Сохранить на веб-сервер',
 } satisfies Record<keyof typeof zh, string>

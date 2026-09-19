@@ -24,6 +24,7 @@ import {
   IconLink,
   IconNewSlide,
   IconPageNumber,
+  IconPaperclip,
   IconPicture,
   IconScreenRec,
   IconShapes,
@@ -90,6 +91,19 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
   } = rb
   return (
     <>
+      <Group label={t('ribbonGroupFile')}>
+        <button
+          className="rb-big"
+          disabled={!hasDoc}
+          data-tip={t('ribbonUploadTip')}
+          onClick={() => void rb.onUploadFile?.()}
+        >
+          <span className="rb-big-icon">
+            <IconPaperclip size={BIG} />
+          </span>
+          <span>{t('ribbonUpload')}</span>
+        </button>
+      </Group>
       <Group label={t('ribbonGroupSlides')}>
         <div className="rb-drop-wrap">
           <button

@@ -725,4 +725,7 @@ export const he = {
   ribbonEqStdDev: 'סטיית תקן',
   ribbonEqFourier: 'התמרת פורייה',
   ribbonEqNormalDist: 'התפלגות נורמלית',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
 } satisfies Record<keyof typeof zh, string>

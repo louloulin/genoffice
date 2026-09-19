@@ -1376,4 +1376,7 @@ export const pt = {
   appFindTitle: 'Localizar e Selecionar ⌘F',
   appReplace: 'Substituir',
   appGoTo: 'Ir para',
+  appGroupFile: 'File',
+  appUploadFile: 'Upload File',
+  appUploadFileDetail: 'Save to web server',
 } satisfies Record<keyof typeof zh, string>

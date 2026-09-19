@@ -4277,6 +4277,16 @@ export function App(): React.JSX.Element {
         onEditPivot={(config) => handleEditPivotApplyImpl(pivotContext(), config)}
         onRefreshPivot={() => handleRefreshPivotImpl(pivotContext())}
         onIsSelectionInPivot={() => isSelectionInPivotImpl(pivotContext())}
+        onUploadFile={async () => {
+          try {
+            const uploaded = await window.desktopApi?.uploadFile?.()
+            if (uploaded?.path) {
+              window.dispatchEvent(new Event('genoffice:recents-changed'))
+            }
+          } catch (err) {
+            console.error('sheets upload failed', err)
+          }
+        }}
         onGetActiveCell={() => activeCellLabelImpl(dataToolsContext())}
         onGetAnchorValue={anchorCellValue}
         activeCellA1={activeCellA1}

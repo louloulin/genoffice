@@ -6,7 +6,11 @@
 /// Electron main process. Inside Electron the preload has already exposed the
 /// IPC-backed APIs and this module leaves them untouched.
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
-import { installBackToHome } from '@genoffice/ipc-bridge/web-native'
+import {
+  installBackToHome,
+  pickFileBytes,
+  uploadFileToServer,
+} from '@genoffice/ipc-bridge/web-native'
 import { createPdfApi, createPdfProjectApi } from '../shared/pdf-api-factory'
 
 if (!isElectronRuntime()) {
@@ -28,6 +32,20 @@ if (!isElectronRuntime()) {
         return granted ? hashOpen : null
       }
       return null
+    },
+    uploadFile: async (projectId?: string) => {
+      const picked = await pickFileBytes(undefined, false)
+      if (!picked) return null
+      const file = picked[0]
+      if (!file) return null
+      try {
+        const uploaded = await uploadFileToServer(transport, file.name, file.bytes, projectId)
+        window.dispatchEvent(new Event('genoffice:recents-changed'))
+        return uploaded
+      } catch (err) {
+        console.error('pdf uploadFile failed', err)
+        return null
+      }
     },
   })
   bridgedWindow.projectApi = createPdfProjectApi(transport)

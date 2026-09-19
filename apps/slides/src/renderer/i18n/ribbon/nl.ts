@@ -754,4 +754,7 @@ export const nl = {
   ribbonEqStdDev: 'Standaardafwijking',
   ribbonEqFourier: 'Fouriertransformatie',
   ribbonEqNormalDist: 'Normale verdeling',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
 } satisfies Record<keyof typeof zh, string>

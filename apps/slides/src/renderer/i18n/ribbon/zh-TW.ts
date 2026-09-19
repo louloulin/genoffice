@@ -717,4 +717,7 @@ export const zhTW = {
   ribbonEqStdDev: '標準差',
   ribbonEqFourier: '傅立葉轉換',
   ribbonEqNormalDist: '常態分佈',
+  ribbonGroupFile: '檔案',
+  ribbonUpload: '上傳檔案',
+  ribbonUploadTip: '將檔案上傳到 Web 伺服器',
 } satisfies Record<keyof typeof zh, string>

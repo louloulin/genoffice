@@ -68,6 +68,8 @@ export interface SheetsApiOverrides {
   confirmCsvSave?: () => Promise<'csv' | 'xlsx' | 'cancel'>
   /** Web-native attachment picker (browser file input → temp files → files-add). */
   pickAttachments?: () => Promise<AttachmentAddResult | null>
+  /** Web-native file upload (browser file input → FILES_DIR via web:save-file). */
+  uploadFile?: (projectId?: string) => Promise<{ id: string; path: string; name: string } | null>
   /** Web-native screen capture (getDisplayMedia). */
   captureScreenSources?: () => Promise<ScreenSourcesResult>
   captureScreenSource?: () => Promise<ScreenCaptureResult | null>
@@ -581,6 +583,12 @@ export function createSheetsApi(t: IpcTransport, overrides: SheetsApiOverrides =
       if (overrides.pickAttachments) return await overrides.pickAttachments()
       const result: unknown = await t.invoke(IPC_CHANNELS.filesPick)
       return result === null ? null : parseAttachmentAddResult(result)
+    },
+    async uploadFile(projectId?: string) {
+      if (overrides.uploadFile) return await overrides.uploadFile(projectId)
+      // Electron: no native upload bridge exposed; callers should fall back
+      // to the native file picker via selectWorkbook / pickAttachments etc.
+      return null
     },
     async addAttachmentPaths(paths) {
       if (

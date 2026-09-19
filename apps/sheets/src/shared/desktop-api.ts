@@ -2662,6 +2662,11 @@ export interface DesktopApi {
   onAiStream(handler: (chunk: AiStreamChunk) => void): () => void
   /// Chat attachments: multi-select file dialog (returns null on cancel)
   pickAttachments(): Promise<AttachmentAddResult | null>
+  /** web-native file upload: pick one file and land it in FILES_DIR via
+   * `web:save-file`. Returns null when the user cancels. Web-only — on
+   * Electron the answer is always null and callers should fall back to the
+   * native file picker. */
+  uploadFile(projectId?: string): Promise<{ id: string; path: string; name: string } | null>
   /// Validates dropped paths and returns attachment metadata
   addAttachmentPaths(paths: string[]): Promise<AttachmentAddResult>
   /// Persists a clipboard-pasted image (no local path) to a temp file and adds it

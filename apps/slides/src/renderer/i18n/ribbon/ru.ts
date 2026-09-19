@@ -747,4 +747,7 @@ export const ru = {
   ribbonEqStdDev: 'Стандартное отклонение',
   ribbonEqFourier: 'Преобразование Фурье',
   ribbonEqNormalDist: 'Нормальное распределение',
+  ribbonGroupFile: 'Файл',
+  ribbonUpload: 'Загрузить файл',
+  ribbonUploadTip: 'Загрузить файл на веб-сервер',
 } satisfies Record<keyof typeof zh, string>

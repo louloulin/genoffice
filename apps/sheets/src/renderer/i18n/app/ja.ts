@@ -1385,4 +1385,7 @@ export const ja = {
   appFindTitle: '検索と選択 ⌘F',
   appReplace: '置換',
   appGoTo: 'ジャンプ',
+  appGroupFile: 'ファイル',
+  appUploadFile: 'ファイルをアップロード',
+  appUploadFileDetail: 'Webサーバーに保存',
 } satisfies Record<keyof typeof zh, string>

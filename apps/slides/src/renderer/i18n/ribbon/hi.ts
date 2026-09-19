@@ -746,4 +746,7 @@ export const hi = {
   ribbonEqStdDev: 'मानक विचलन',
   ribbonEqFourier: 'फ़ूरियर रूपांतरण',
   ribbonEqNormalDist: 'सामान्य बंटन',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
 } satisfies Record<keyof typeof zh, string>

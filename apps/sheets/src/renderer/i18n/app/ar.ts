@@ -1301,4 +1301,7 @@ export const ar = {
   appFindTitle: 'بحث وتحديد ⌘F',
   appReplace: 'استبدال',
   appGoTo: 'الانتقال إلى',
+  appGroupFile: 'ملف',
+  appUploadFile: 'تحميل ملف',
+  appUploadFileDetail: 'حفظ على خادم الويب',
 } satisfies Record<keyof typeof zh, string>

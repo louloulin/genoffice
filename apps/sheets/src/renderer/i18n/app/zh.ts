@@ -1277,4 +1277,7 @@ export const zh = {
   appFindTitle: '查找和选择 ⌘F',
   appReplace: '替换',
   appGoTo: '定位',
+  appGroupFile: '文件',
+  appUploadFile: '上传文件',
+  appUploadFileDetail: '保存到Web 服务器',
 }

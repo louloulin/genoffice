@@ -1375,4 +1375,7 @@ export const it = {
   appFindTitle: 'Trova e seleziona ⌘F',
   appReplace: 'Sostituisci',
   appGoTo: 'Vai a',
+  appGroupFile: 'File',
+  appUploadFile: 'Upload File',
+  appUploadFileDetail: 'Save to web server',
 } satisfies Record<keyof typeof zh, string>

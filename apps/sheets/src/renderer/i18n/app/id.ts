@@ -1336,4 +1336,7 @@ export const id = {
   appFindTitle: 'Temukan & Pilih ⌘F',
   appReplace: 'Ganti',
   appGoTo: 'Buka',
+  appGroupFile: 'File',
+  appUploadFile: 'Unggah File',
+  appUploadFileDetail: 'Simpan ke server web',
 } satisfies Record<keyof typeof zh, string>

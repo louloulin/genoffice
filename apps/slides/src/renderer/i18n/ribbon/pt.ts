@@ -749,4 +749,7 @@ export const pt = {
   ribbonEqStdDev: 'Desvio Padrão',
   ribbonEqFourier: 'Transformada de Fourier',
   ribbonEqNormalDist: 'Distribuição Normal',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
 } satisfies Record<keyof typeof zh, string>

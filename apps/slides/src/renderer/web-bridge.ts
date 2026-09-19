@@ -14,6 +14,7 @@ import {
   downloadBytes,
   installBackToHome,
   pickFileBytes,
+  uploadFileToServer,
   webFullscreen,
   webPrint,
 } from '@genoffice/ipc-bridge/web-native'
@@ -177,7 +178,21 @@ if (!isElectronRuntime()) {
         downloadBytes(file.name, file.bytes)
       }
       return result
+    },    uploadFile: async (projectId?: string) => {
+      const picked = await pickFileBytes(undefined, false)
+      if (!picked) return null
+      const file = picked[0]
+      if (!file) return null
+      try {
+        const uploaded = await uploadFileToServer(transport, file.name, file.bytes, projectId)
+        window.dispatchEvent(new Event('genoffice:recents-changed'))
+        return uploaded
+      } catch (err) {
+        console.error('slides uploadFile failed', err)
+        return null
+      }
     },
+
   })
   bridgedWindow.desktop = createSlidesFilesApi(transport, {})
   bridgedWindow.projectApi = createSlidesProjectApi(transport)

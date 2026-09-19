@@ -281,6 +281,9 @@ export const strings = {
     loading: '正在打开…',
     loadError: '文件打开失败',
     noFile: '没有要打开的文件',
+    uploadFile: '上传文件',
+    uploadTip: '将文件上传到 Web 服务器',
+
     thumbs: '缩略图',
     zoomIn: '放大',
     zoomOut: '缩小',
@@ -622,6 +625,9 @@ export const strings = {
     loading: 'Opening…',
     loadError: 'Failed to open file',
     noFile: 'No file to open',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Thumbnails',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
@@ -969,6 +975,9 @@ export const strings = {
     loading: '開いています…',
     loadError: 'ファイルを開けませんでした',
     noFile: '開くファイルがありません',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'サムネイル',
     zoomIn: '拡大',
     zoomOut: '縮小',
@@ -1317,6 +1326,9 @@ export const strings = {
     loading: '여는 중…',
     loadError: '파일을 열지 못했습니다',
     noFile: '열 파일이 없습니다',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: '미리보기',
     zoomIn: '확대',
     zoomOut: '축소',
@@ -1667,6 +1679,9 @@ export const strings = {
     loading: 'Ouverture…',
     loadError: "Échec de l'ouverture du fichier",
     noFile: 'Aucun fichier à ouvrir',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Vignettes',
     zoomIn: 'Zoom avant',
     zoomOut: 'Zoom arrière',
@@ -2020,6 +2035,9 @@ export const strings = {
     loading: 'Wird geöffnet…',
     loadError: 'Datei konnte nicht geöffnet werden',
     noFile: 'Keine Datei zum Öffnen',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Miniaturen',
     zoomIn: 'Vergrößern',
     zoomOut: 'Verkleinern',
@@ -2371,6 +2389,9 @@ export const strings = {
     loading: 'Abriendo…',
     loadError: 'No se pudo abrir el archivo',
     noFile: 'No hay archivo para abrir',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Miniaturas',
     zoomIn: 'Acercar',
     zoomOut: 'Alejar',
@@ -2723,6 +2744,9 @@ export const strings = {
     loading: 'กำลังเปิด…',
     loadError: 'เปิดไฟล์ไม่สำเร็จ',
     noFile: 'ไม่มีไฟล์ที่จะเปิด',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'ภาพขนาดย่อ',
     zoomIn: 'ขยาย',
     zoomOut: 'ย่อ',
@@ -3071,6 +3095,9 @@ export const strings = {
     loading: 'Membuka…',
     loadError: 'Gagal membuka file',
     noFile: 'Tidak ada file untuk dibuka',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Gambar mini',
     zoomIn: 'Perbesar',
     zoomOut: 'Perkecil',
@@ -3421,6 +3448,9 @@ export const strings = {
     loading: 'Открытие…',
     loadError: 'Не удалось открыть файл',
     noFile: 'Нет файла для открытия',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Миниатюры',
     zoomIn: 'Увеличить',
     zoomOut: 'Уменьшить',
@@ -3770,6 +3800,9 @@ export const strings = {
     loading: 'جارٍ الفتح…',
     loadError: 'فشل فتح الملف',
     noFile: 'لا يوجد ملف للفتح',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'مصغرات',
     zoomIn: 'تكبير',
     zoomOut: 'تصغير',
@@ -4118,6 +4151,9 @@ export const strings = {
     loading: 'Abrindo…',
     loadError: 'Falha ao abrir o arquivo',
     noFile: 'Nenhum arquivo para abrir',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Miniaturas',
     zoomIn: 'Ampliar',
     zoomOut: 'Reduzir',
@@ -4470,6 +4506,9 @@ export const strings = {
     loading: 'Apertura…',
     loadError: 'Impossibile aprire il file',
     noFile: 'Nessun file da aprire',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Miniature',
     zoomIn: 'Ingrandisci',
     zoomOut: 'Riduci',
@@ -4823,6 +4862,9 @@ export const strings = {
     loading: 'Otwieranie…',
     loadError: 'Nie udało się otworzyć pliku',
     noFile: 'Brak pliku do otwarcia',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Miniatury',
     zoomIn: 'Powiększ',
     zoomOut: 'Pomniejsz',
@@ -5173,6 +5215,9 @@ export const strings = {
     loading: 'Otevírání…',
     loadError: 'Soubor se nepodařilo otevřít',
     noFile: 'Žádný soubor k otevření',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Miniatury',
     zoomIn: 'Přiblížit',
     zoomOut: 'Oddálit',
@@ -5524,6 +5569,9 @@ export const strings = {
     loading: 'Openen…',
     loadError: 'Kan bestand niet openen',
     noFile: 'Geen bestand om te openen',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Miniaturen',
     zoomIn: 'Inzoomen',
     zoomOut: 'Uitzoomen',
@@ -5874,6 +5922,9 @@ export const strings = {
     loading: 'Membuka…',
     loadError: 'Gagal membuka fail',
     noFile: 'Tiada fail untuk dibuka',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'Imej kecil',
     zoomIn: 'Zum masuk',
     zoomOut: 'Zum keluar',
@@ -6222,6 +6273,9 @@ export const strings = {
     loading: 'פותח…',
     loadError: 'פתיחת הקובץ נכשלה',
     noFile: 'אין קובץ לפתיחה',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'תמונות ממוזערות',
     zoomIn: 'הגדלה',
     zoomOut: 'הקטנה',
@@ -6565,6 +6619,9 @@ export const strings = {
     loading: 'खोला जा रहा है…',
     loadError: 'फ़ाइल खोलने में विफल',
     noFile: 'खोलने के लिए कोई फ़ाइल नहीं',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: 'थंबनेल',
     zoomIn: 'ज़ूम इन',
     zoomOut: 'ज़ूम आउट',
@@ -6912,6 +6969,9 @@ export const strings = {
     loading: '正在開啟…',
     loadError: '檔案開啟失敗',
     noFile: '沒有要開啟的檔案',
+    uploadFile: 'Upload File',
+    uploadTip: 'Upload a file to the web server',
+
     thumbs: '縮圖',
     zoomIn: '放大',
     zoomOut: '縮小',

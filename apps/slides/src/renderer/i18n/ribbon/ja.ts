@@ -761,4 +761,7 @@ export const ja = {
   ribbonEqStdDev: '標準偏差',
   ribbonEqFourier: 'フーリエ変換',
   ribbonEqNormalDist: '正規分布',
+  ribbonGroupFile: 'ファイル',
+  ribbonUpload: 'ファイルをアップロード',
+  ribbonUploadTip: 'Webサーバーにファイルをアップロード',
 } satisfies Record<keyof typeof zh, string>

@@ -760,4 +760,7 @@ export const es = {
   ribbonEqStdDev: 'Desviación estándar',
   ribbonEqFourier: 'Transformada de Fourier',
   ribbonEqNormalDist: 'Distribución normal',
+  ribbonGroupFile: 'Archivo',
+  ribbonUpload: 'Subir archivo',
+  ribbonUploadTip: 'Subir un archivo al servidor web',
 } satisfies Record<keyof typeof zh, string>

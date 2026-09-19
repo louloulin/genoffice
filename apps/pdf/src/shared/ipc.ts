@@ -748,7 +748,10 @@ export interface PdfApi {
   getUsername(): Promise<string>
   /** Mirror unsaved-changes state to the main process; drives the save prompt before closing a tab/window */
   setDirty(dirty: boolean): void
-  /** Main process picked "Save" in the close prompt → renderer saves and replies via sendCloseSaveResult */
+
+  /** Web-only: pick a file in the browser and land it in FILES_DIR via
+   * `web:save-file`. Returns null when the user cancels. */
+  uploadFile(projectId?: string): Promise<{ id: string; path: string; name: string } | null>  /** Main process picked "Save" in the close prompt → renderer saves and replies via sendCloseSaveResult */
   onCloseSaveRequest(handler: () => void): () => void
   sendCloseSaveResult(ok: boolean): void
   /** Shell menu Save As → renderer writes pending edits to targetPath only (original untouched) and replies via sendSaveAsResult */

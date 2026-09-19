@@ -731,4 +731,7 @@ export const th = {
   ribbonEqStdDev: 'ส่วนเบี่ยงเบนมาตรฐาน',
   ribbonEqFourier: 'การแปลงฟูรีเย',
   ribbonEqNormalDist: 'การแจกแจงปกติ',
+  ribbonGroupFile: 'ไฟล์',
+  ribbonUpload: 'อัปโหลดไฟล์',
+  ribbonUploadTip: 'อัปโหลดไฟล์ไปยังเว็บเซิร์ฟเวอร์',
 } satisfies Record<keyof typeof zh, string>

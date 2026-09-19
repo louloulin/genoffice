@@ -735,4 +735,7 @@ export const en = {
   ribbonEqStdDev: 'Standard Deviation',
   ribbonEqFourier: 'Fourier Transform',
   ribbonEqNormalDist: 'Normal Distribution',
+  ribbonGroupFile: 'File',
+  ribbonUpload: 'Upload File',
+  ribbonUploadTip: 'Upload a file to the web server',
 } satisfies Record<keyof typeof zh, string>

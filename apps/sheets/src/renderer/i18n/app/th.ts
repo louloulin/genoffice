@@ -1301,4 +1301,7 @@ export const th = {
   appFindTitle: 'ค้นหาและเลือก ⌘F',
   appReplace: 'แทนที่',
   appGoTo: 'ไปที่',
+  appGroupFile: 'ไฟล์',
+  appUploadFile: 'อัปโหลดไฟล์',
+  appUploadFileDetail: 'บันทึกไปยังเว็บเซิร์ฟเวอร์',
 } satisfies Record<keyof typeof zh, string>

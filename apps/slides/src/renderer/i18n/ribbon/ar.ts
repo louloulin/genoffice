@@ -733,4 +733,7 @@ export const ar = {
   ribbonEqStdDev: 'الانحراف المعياري',
   ribbonEqFourier: 'تحويل فورييه',
   ribbonEqNormalDist: 'التوزيع الطبيعي',
+  ribbonGroupFile: 'ملف',
+  ribbonUpload: 'تحميل ملف',
+  ribbonUploadTip: 'تحميل ملف إلى خادم الويب',
 } satisfies Record<keyof typeof zh, string>

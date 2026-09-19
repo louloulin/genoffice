@@ -126,6 +126,8 @@ export interface SlidesApiOverrides {
   pickAttachments?: () => Promise<unknown>
   /** Web-native dropped-file path resolution. */
   getPathForFile?: (file: File) => string
+  /** Web-native file upload (browser file input → FILES_DIR via web:save-file). */
+  uploadFile?: (projectId?: string) => Promise<{ id: string; path: string; name: string } | null>
 }
 
 export function createSlidesApi(t: IpcTransport, overrides: SlidesApiOverrides = {}): SlidesApi {
@@ -164,6 +166,12 @@ export function createSlidesApi(t: IpcTransport, overrides: SlidesApiOverrides =
       (() => {
         throw new Error('WEB_UNSUPPORTED: resolving dropped files needs the desktop file picker')
       })(),
+    uploadFile: async (projectId?: string) => {
+      if (overrides.uploadFile) return await overrides.uploadFile(projectId)
+      // Electron: no native upload bridge exposed; callers fall back
+      // to the native file picker via pickPictureFile / pickAttachments.
+      return null
+    },
     pickPictureFile: async () => {
       // No native picker in web build; UI offers a file-input fallback.
       throw new Error('pickPictureFile is not available in the web build')
@@ -461,6 +469,12 @@ export function createSlidesFilesApi(
       (() => {
         throw new Error('WEB_UNSUPPORTED: resolving dropped files needs the desktop file picker')
       })(),
+    uploadFile: async (projectId?: string) => {
+      if (overrides.uploadFile) return await overrides.uploadFile(projectId)
+      // Electron: no native upload bridge exposed; callers fall back to
+      // the native file picker via pickPictureFile / pickAttachments.
+      return null
+    },
   }
 }
 export function createSlidesProjectApi(t: IpcTransport): ProjectApi {
