@@ -38,6 +38,7 @@ const workspaceAlias = {
   // HTTP IPC bridge (web dual-protocol server)
   '@genoffice/ipc-bridge/client': resolve(here, '../../packages/ipc-bridge/src/client.ts'),
   '@genoffice/ipc-bridge/web-native': resolve(here, '../../packages/ipc-bridge/src/web-native.ts'),
+  '@genoffice/ipc-bridge/web-tabs': resolve(here, '../../packages/ipc-bridge/src/web-tabs.ts'),
   '@genoffice/ipc-bridge': resolve(here, '../../packages/ipc-bridge/src/index.ts'),
 }
 

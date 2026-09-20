@@ -19,6 +19,7 @@ import {
   webOpenTab,
   webPrint,
 } from '@genoffice/ipc-bridge/web-native'
+import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { createDesktopApi, createProjectApi } from '../shared/desktop-api-factory'
 import type { DesktopApi } from '../shared/ipc'
 import { parseDataflareTranslateResponse } from '../shared/dataflare-translate-response'
@@ -38,6 +39,12 @@ if (!isElectronRuntime()) {
   // IPC bridge. The helper is idempotent and reads no state, so it is safe
   // to call at the top of every web-only bridge.
   installBackToHome({ label: '返回主页' })
+  /* Editor tabs are opened by the shell with `window.open`, so the shell has
+   * no window handle to watch. This announces the tab (and keeps beating) over
+   * the shared tab protocol — without it the shell can only guess whether a
+   * row in its TabBar still has a window behind it, and a wrong guess is what
+   * made clicking a recent file do nothing (or open a duplicate). */
+  installTabGuest()
   const embeddedPathPrefix = window.location.pathname.startsWith('/office-engine/')
     ? '/office-engine'
     : ''

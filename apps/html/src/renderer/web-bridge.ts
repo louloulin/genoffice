@@ -15,6 +15,7 @@ import {
   uploadFileToServer,
   webFullscreen,
 } from '@genoffice/ipc-bridge/web-native'
+import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { createHtmlApi, createHtmlProjectApi } from '../shared/html-api-factory'
 import type { ExportDocxRequest, ExportPdfRequest, ExportHtmlRequest } from '../shared/ipc'
 
@@ -46,6 +47,12 @@ function openBlankTab(): Window | null {
 if (!isElectronRuntime()) {
   // Floating "返回主页" pill for the html renderer.
   installBackToHome({ label: '返回主页' })
+  /* Editor tabs are opened by the shell with `window.open`, so the shell has
+   * no window handle to watch. This announces the tab (and keeps beating) over
+   * the shared tab protocol — without it the shell can only guess whether a
+   * row in its TabBar still has a window behind it, and a wrong guess is what
+   * made clicking a recent file do nothing (or open a duplicate). */
+  installTabGuest()
   const transport = createHttpIpcTransport()
   // SAFETY: `window` has no `htmlApi` / `htmlFilesApi` / `htmlProjectApi`
   // in lib.dom. The bridge assigns those keys below and reads them back

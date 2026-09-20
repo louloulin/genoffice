@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
-    "./web-native": "./src/web-native.ts"
+    "./web-native": "./src/web-native.ts",
+    "./web-tabs": "./src/web-tabs.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -38,6 +38,11 @@ export const IPC_BRIDGE_UNREACHABLE = 'IPC_BRIDGE_UNREACHABLE'
 /** Web-file channels the bridge serves itself (no app registration needed). */
 export { WEB_FILE_CHANNELS } from './web-native'
 
+/* The browser tab protocol is *not* re-exported here. This entry point is the
+ * node-side bridge server (it imports node:http, node:fs, ...), so pulling the
+ * protocol through it would drag those into the shell's browser bundle and
+ * break the renderer build. Import it from '@genoffice/ipc-bridge/web-tabs'. */
+
 /** Longest allowed POST body — the largest real payloads are document saves. */
 const DEFAULT_BODY_LIMIT_BYTES = 256 * 1024 * 1024
 /** Push frames buffered for a session while its SSE stream is (re)connecting. */

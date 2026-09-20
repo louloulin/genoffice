@@ -1,6 +1,10 @@
 node_modules
 out/
 dist/
+# Local copies of a previous renderer build kept while chasing a fix. Several
+# MB each and reproducible with `npm run build:all`, so never committable.
+out.bak*/
+.upload-test/
 release/
 *.log
 .DS_Store

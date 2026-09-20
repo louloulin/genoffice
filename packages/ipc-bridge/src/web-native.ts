@@ -18,6 +18,11 @@
 
 import type { IpcTransport } from './client'
 
+/* The tab protocol lives in `./web-tabs` and is imported from there directly
+ * (`@genoffice/ipc-bridge/web-tabs`), not re-exported here: this module is
+ * pulled into every editor renderer, and routing through it would make the
+ * browser bundle depend on the protocol by accident. */
+
 /** Generic main-process web-file channels (registered by the bridge server). */
 export const WEB_FILE_CHANNELS = {
   writeTempFile: 'web:write-temp-file',

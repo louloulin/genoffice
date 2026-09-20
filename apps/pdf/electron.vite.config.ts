@@ -31,6 +31,7 @@ export default defineConfig({
         // subpath before the bare name: string aliases are prefix replacements
         '@genoffice/ipc-bridge/client': resolve(__dirname, '../../packages/ipc-bridge/src/client.ts'),
   '@genoffice/ipc-bridge/web-native': resolve(__dirname, '../../packages/ipc-bridge/src/web-native.ts'),
+  '@genoffice/ipc-bridge/web-tabs': resolve(__dirname, '../../packages/ipc-bridge/src/web-tabs.ts'),
         '@genoffice/ipc-bridge': resolve(__dirname, '../../packages/ipc-bridge/src/index.ts'),
       },
     },
