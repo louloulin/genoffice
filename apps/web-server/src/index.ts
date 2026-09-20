@@ -33,8 +33,10 @@ import {
   MIME_TYPES,
   PORT,
   STATIC_ROOT,
+  WEB_TEMP_ROOT,
   decodeTransportValue,
   initRecentState,
+  sweepWebTempRoot,
   encodeTransportValue,
   getHandler,
   handlerCount,
@@ -48,6 +50,7 @@ import {
   handleTranslateStreamCancelHttp,
 } from './ai/translate-http'
 import { handleLanguagesHttp } from './ai/languages-http'
+import { translationStateSummary } from './ai/chat'
 import type { AiSettings, AiStreamChunk } from '@genoffice/ai-provider'
 import { registerProjectHandlers } from './projects/index'
 import { registerDocsHandlers } from './docs/index'
@@ -61,6 +64,7 @@ import { registerCollabHandlers } from './collab/index'
 import { registerEnterpriseHandlers } from './enterprise/index'
 import { registerAnydocHandlers } from './anydoc/index'
 import { registerWebHandlers } from './web/index'
+import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 
 // ----- global error traps (must run before any handler so unexpected
 //       failures in the pi session bridge show a stack instead of dying silently)
@@ -72,6 +76,18 @@ process.on('unhandledRejection', (reason) => {
 })
 
 // ----- capability wiring ----------------------------------------------------
+// Sweep stale WEB_TEMP_ROOT uploads (older than 24 h) before any handler can
+// observe them. Safe to skip on failure — a misbehaving boot path should
+// not abort the whole server.
+try {
+  const gc = sweepWebTempRoot(WEB_TEMP_ROOT)
+  if (gc.removed > 0) {
+    console.log(`[genoffice] swept ${gc.removed} stale upload directory(ies) from ${WEB_TEMP_ROOT}`)
+  }
+} catch (error) {
+  console.warn('[genoffice] temp-root sweep failed:', error)
+}
+
 initRecentState()
 registerAiHandlers()
 registerProjectHandlers()
@@ -277,19 +293,47 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  // Phase 1 auth gate. Every `/api/*` request must carry a token when
+  // `WEB_TOKEN` is set; the small public allowlist (`/health`,
+  // `/api/channels`, `/api/html/preview/*`) stays open so health
+  // probes, channel discovery, and anonymous previews keep working.
+  // Without `WEB_TOKEN`, the gate is a no-op — dev / e2e / desktop
+  // preload builds all rely on that open posture.
+  if (
+    url.pathname.startsWith('/api/') &&
+    !isPublicApiPath(url.pathname) &&
+    !isAuthorised(request)
+  ) {
+    writeUnauthorized(response, `Missing or invalid token for ${url.pathname}`)
+    return
+  }
+
   if (url.pathname === '/health' && request.method === 'GET') {
+    const translation = translationStateSummary()
     sendJson(response, 200, {
       status: 'ok',
       version: '0.8.0',
       mode: 'web-server',
       implementedChannels: handlerCount(),
       features: ['ai', 'collab', 'files', 'projects'],
+      translation: {
+        kbLoaded: translation.kbLoaded,
+        kbTerms: translation.kbTerms,
+        tmLoaded: translation.tmLoaded,
+        tmPairs: translation.tmPairs,
+        defaultProvider: translation.defaultProvider,
+      },
+      auth: process.env.WEB_TOKEN ? 'required' : 'open',
     })
     return
   }
 
   if (url.pathname === '/api/channels' && request.method === 'GET') {
-    sendJson(response, 200, { channels: listChannels() })
+    sendJson(response, 200, {
+      protocolVersion: 1,
+      minClientVersion: 1,
+      channels: listChannels(),
+    })
     return
   }
 

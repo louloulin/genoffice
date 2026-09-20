@@ -5,14 +5,26 @@
  * project.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+
+/**
+ * Hard cap on a single `web:write-temp-file` upload. Sized for a
+ * realistic large PDF / DOCX with embedded media but small enough to
+ * keep a misbehaving renderer from filling the temp directory in a
+ * single request. The dedicated `files:add-pasted-image` channel has
+ * its own 20 MiB cap for inline images; this cap is for arbitrary
+ * uploaded documents.
+ */
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 import { basename, extname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   DOCS_RECENT,
   FILES_DIR,
   loadProjects,
+  randomFileId,
   registerHandle,
   requireManagedPath,
+  sanitizeFileName,
   saveProjects,
   saveRecentDocs,
   WEB_TEMP_ROOT,
@@ -28,7 +40,13 @@ export function registerWebHandlers(): void {
         'expects { name: string, bytes: ArrayBuffer }',
       )
     }
-    const safeName = (basename(record.name) || 'file').replace(/[^\w.\- ]+/g, '_') || 'file'
+    const safeName = sanitizeFileName(record.name, 'file')
+    if (record.bytes.byteLength > MAX_UPLOAD_BYTES) {
+      throw new InvalidArgumentError(
+        'web:write-temp-file',
+        `upload exceeds the ${MAX_UPLOAD_BYTES}-byte cap`,
+      )
+    }
     const dir = mkdirSync(
       join(WEB_TEMP_ROOT, `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
       { recursive: true },
@@ -63,8 +81,15 @@ export function registerWebHandlers(): void {
     if (!name || !bytes) {
       throw new InvalidArgumentError('web:save-file', 'expects { name, bytes, projectId? }')
     }
+    if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+      throw new InvalidArgumentError(
+        'web:save-file',
+        `upload exceeds the ${MAX_UPLOAD_BYTES}-byte cap`,
+      )
+    }
 
-    const fileId = `${Date.now()}-${name}`
+    const safeName = sanitizeFileName(name, 'file')
+    const fileId = randomFileId(safeName)
     const filePath = join(FILES_DIR, fileId)
     writeFileSync(filePath, Buffer.from(bytes))
 

@@ -13,7 +13,11 @@
  */
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import { parseFileToText } from '@genoffice/file-parse'
+import {
+  extractDocxImages,
+  extractDocxTables,
+  parseFileToText,
+} from '@genoffice/file-parse'
 import { FILES_DIR, isManagedPath, registerHandle, requireManagedPath } from '../common/index'
 import { NotFoundError } from '../ai/errors'
 
@@ -74,26 +78,36 @@ export function registerAnydocHandlers(): void {
 
   registerHandle('anydoc:convert', async (_event: unknown, args: unknown) => {
     const { filePath, targetFormat } = args as { filePath: string; targetFormat: string }
-    // The written path is already inside FILES_DIR; the source is the
-    // renderer-supplied one, so that is what needs containing.
     const path = requireManagedPath('anydoc:convert', filePath)
     if (!existsSync(path)) {
       throw new NotFoundError('anydoc:convert', `File not found: ${path}`)
     }
 
-    const sourceFormat = extname(path).slice(1)
-    const outputPath = join(FILES_DIR, `${Date.now()}-converted.${targetFormat}`)
-
-    const bytes = readFileSync(path)
-    writeFileSync(outputPath, bytes)
-
+    // Honest gate. The standalone web build has no LibreOffice / docx2pdf
+    // pipeline; the previous code wrote the source bytes to a path with the
+    // new extension and returned `success: true`, which silently produced a
+    // broken file the renderer would later try to open. Surface
+    // WEB_UNSUPPORTED instead so the renderer's existing fallback UI takes
+    // over.
+    const sourceExt = extname(path).slice(1).toLowerCase()
+    const target = targetFormat.toLowerCase().replace(/^\./, '')
+    const supported =
+      (sourceExt === 'docx' && target === 'pdf') || (sourceExt === 'pdf' && target === 'docx')
+    if (!supported) {
+      return {
+        success: false,
+        sourceFormat: sourceExt,
+        targetFormat: target,
+        error: `WEB_UNSUPPORTED: anydoc:convert only supports docx<->pdf in this build (got '${sourceExt}' -> '${target}')`,
+      }
+    }
+    // TODO(phase-3): wire packages/pdf2docx (pdf->docx) and packages/docx-engine's
+    // PDF export (docx->pdf). Until then, refuse rather than fabricate.
     return {
-      id: `convert-${Date.now()}`,
-      sourceFormat,
-      targetFormat,
-      outputPath,
-      success: true,
-      message: `文档已从 ${sourceFormat} 转换为 ${targetFormat}`,
+      success: false,
+      sourceFormat: sourceExt,
+      targetFormat: target,
+      error: `WEB_UNSUPPORTED: ${sourceExt} -> ${target} conversion needs the pdf2docx / docx2pdf pipeline (not wired in web build)`,
     }
   })
 
@@ -128,10 +142,33 @@ export function registerAnydocHandlers(): void {
     if (typeof filePath !== 'string' || !isManagedPath(filePath)) return null
     if (!existsSync(filePath)) return null
 
-    return {
-      tables: [],
-      unsupported: true,
-      error: 'Structure-aware table extraction needs the pdf2docx IR pipeline; not wired in this build.',
+    // Only DOCX has a real implementation in this build — pdf2docx's IR
+    // pipeline for PDF tables is not wired (see `analysis-and-roadmap.md`
+    // phase 3). xlsx/pptx tables are surfaces the desktop build serves
+    // through dedicated editor channels, not through anydoc.
+    const ext = extname(filePath).toLowerCase()
+    if (ext !== '.docx') {
+      return {
+        tables: [],
+        unsupported: true,
+        error: `Table extraction for '${ext || 'unknown'}' is not wired in this build (only .docx is supported)`,
+      }
+    }
+
+    try {
+      const bytes = readFileSync(filePath)
+      const tables = await extractDocxTables(new Uint8Array(bytes))
+      return { tables, unsupported: false }
+    } catch (error) {
+      // CFB (OLE2) encrypted docx, OpenDocument masquerading as docx,
+      // truncated uploads, and the rest of the parser's failure modes
+      // land here. Surface a structured error instead of a 500 so the
+      // renderer can fall back to its own preview.
+      return {
+        tables: [],
+        unsupported: false,
+        error: error instanceof Error ? error.message : 'table extraction failed',
+      }
     }
   })
 
@@ -139,10 +176,27 @@ export function registerAnydocHandlers(): void {
     if (typeof filePath !== 'string' || !isManagedPath(filePath)) return null
     if (!existsSync(filePath)) return null
 
-    return {
-      images: [],
-      unsupported: true,
-      error: 'Embedded-image extraction is not wired in this build.',
+    // Same honesty as extract-tables: only docx has a real
+    // implementation; pptx embedded pictures need a dedicated pipeline.
+    const ext = extname(filePath).toLowerCase()
+    if (ext !== '.docx') {
+      return {
+        images: [],
+        unsupported: true,
+        error: `Image extraction for '${ext || 'unknown'}' is not wired in this build (only .docx is supported)`,
+      }
+    }
+
+    try {
+      const bytes = readFileSync(filePath)
+      const images = await extractDocxImages(new Uint8Array(bytes))
+      return { images, unsupported: false }
+    } catch (error) {
+      return {
+        images: [],
+        unsupported: false,
+        error: error instanceof Error ? error.message : 'image extraction failed',
+      }
     }
   })
 
@@ -161,7 +215,21 @@ export function registerAnydocHandlers(): void {
     if (ext === '.pdf') mimeType = 'application/pdf'
     else if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)) mimeType = `image/${ext.slice(1)}`
 
+    // Hard cap on base64 payload size. A 50 MiB PDF would serialise to a
+    // ~67 MiB base64 string, easily OOMing the renderer when the IPC
+    // bridge JSON-decodes the response. Refuse and let the renderer fall
+    // back to a streaming URL.
+    const MAX_RENDER_BYTES = 25 * 1024 * 1024
+    if (bytes.byteLength > MAX_RENDER_BYTES) {
+      return {
+        success: false,
+        mimeType,
+        error: `preview payload exceeds the ${MAX_RENDER_BYTES}-byte cap (got ${bytes.byteLength})`,
+      }
+    }
+
     return {
+      success: true,
       base64: bytes.toString('base64'),
       mimeType,
       width: options?.width || 800,

@@ -7,6 +7,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { atomicWriteJson } from './atomic'
 import { join } from 'node:path'
 
 function resolveDataDir(): string {
@@ -68,13 +69,13 @@ export function loadProjects(): Project[] {
     },
   ]
   try {
-    writeFileSync(PROJECTS_FILE, JSON.stringify(seed, null, 2))
+    atomicWriteJson(PROJECTS_FILE, seed)
   } catch {}
   return seed
 }
 
 export function saveProjects(projects: Project[]): void {
-  writeFileSync(PROJECTS_FILE, JSON.stringify(projects, null, 2))
+  atomicWriteJson(PROJECTS_FILE, projects)
 }
 
 // ----- File index -----------------------------------------------------------
@@ -100,6 +101,7 @@ export interface DocInfo {
 }
 
 export const DOCS_RECENT_FILE = join(DATA_DIR, 'docs-recent.json')
+export const DOCS_STARRED_FILE = join(DATA_DIR, 'docs-starred.json')
 
 export function loadRecentDocs(): DocInfo[] {
   try {
@@ -111,16 +113,63 @@ export function loadRecentDocs(): DocInfo[] {
 }
 
 export function saveRecentDocs(docs: DocInfo[]): void {
-  writeFileSync(DOCS_RECENT_FILE, JSON.stringify(pickNewest(docs, 10), null, 2))
+  atomicWriteJson(DOCS_RECENT_FILE, pickNewest(docs, 10))
+}
+
+/**
+ * Persisted shape of the starred-docs map. The disk format is just the
+ * path -> timestamp map; the home pane reads it through `home:starred`
+ * which joins against `DOCS_RECENT` for the user-visible fields.
+ */
+export function loadStarredDocs(): Array<{ path: string; starredAt: number }> {
+  try {
+    if (existsSync(DOCS_STARRED_FILE)) {
+      const raw = JSON.parse(readFileSync(DOCS_STARRED_FILE, 'utf-8'))
+      if (Array.isArray(raw)) {
+        return raw.filter(
+          (entry): entry is { path: string; starredAt: number } =>
+            typeof entry?.path === 'string' &&
+            typeof entry?.starredAt === 'number',
+        )
+      }
+    }
+  } catch {}
+  return []
+}
+
+export function saveStarredDocs(
+  entries: Array<{ path: string; starredAt: number }> | Map<string, number>,
+): void {
+  const normalised: Array<{ path: string; starredAt: number }> = entries instanceof Map
+    ? Array.from(entries, ([path, starredAt]) => ({ path, starredAt }))
+    : entries
+  atomicWriteJson(DOCS_STARRED_FILE, normalised)
 }
 
 export const DOCS_RECENT: Map<string, DocInfo> = new Map()
-export const DOCS_STARRED: Set<string> = new Set()
+/**
+ * Starred docs — path -> starredAt timestamp. The previous Set<string>
+ * dropped on every restart because nothing persisted it; the home pane
+ * then silently un-starred everything. The Map shape keeps the membership
+ * test cheap and gives us a stable order (most-recent first) for the
+ * `home:starred` IPC.
+ */
+export const DOCS_STARRED: Map<string, number> = new Map()
 
 /** Populate the in-memory recent/starred caches from the on-disk JSON so
  * the home page reflects what was recorded by previous sessions. Idempotent —
  * safe to call from the boot path. */
 export function initRecentState(): void {
+  try {
+    // Starred set first so the disk-sweep below knows which entries to
+    // mark as starred when it creates fresh DOCS_RECENT rows.
+    for (const entry of loadStarredDocs()) {
+      DOCS_STARRED.set(entry.path, entry.starredAt)
+    }
+  } catch {
+    /* A corrupt docs-starred.json is recoverable on the next
+     * home:toggle-star; do not let it block boot. */
+  }
   try {
     for (const d of loadRecentDocs()) {
       DOCS_RECENT.set(d.path, d)
@@ -230,7 +279,7 @@ export function loadRecentSheets(): SheetInfo[] {
 }
 
 export function saveRecentSheets(sheets: SheetInfo[]): void {
-  writeFileSync(SHEETS_RECENT_FILE, JSON.stringify(pickNewest(sheets, 10), null, 2))
+  atomicWriteJson(SHEETS_RECENT_FILE, pickNewest(sheets, 10))
 }
 
 export interface SlideInfo {
@@ -252,7 +301,7 @@ export function loadRecentSlides(): SlideInfo[] {
 }
 
 export function saveRecentSlides(slides: SlideInfo[]): void {
-  writeFileSync(SLIDES_RECENT_FILE, JSON.stringify(pickNewest(slides, 10), null, 2))
+  atomicWriteJson(SLIDES_RECENT_FILE, pickNewest(slides, 10))
 }
 
 // ----- Collab state ---------------------------------------------------------

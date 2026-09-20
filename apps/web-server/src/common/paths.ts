@@ -66,7 +66,16 @@ if (envStatic && envStatic.length > 0) {
 }
 
 export const PORT = Number(process.env.PORT) || 18081
-export const HOST = process.env.HOST || '0.0.0.0'
+/**
+ * Bind address for the HTTP listener. The web build is a developer
+ * tool that ships an IPC bridge to a remote-controlled renderer
+ * (`web:save-file`, `docs:open-path`, `web:read-file-bytes`); the
+ * previous default of `0.0.0.0` exposed every channel to anyone
+ * reachable on the LAN. Operators that need an external bind must
+ * opt in explicitly with `HOST=0.0.0.0` (and should pair it with
+ * `WEB_TOKEN` for the auth gate in `apps/web-server/src/auth/`).
+ */
+export const HOST = process.env.HOST || '127.0.0.1'
 
 export const APPS = ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html', 'shell']
 
@@ -130,4 +139,71 @@ export function requireManagedPath(channel: string, value: unknown): string {
     throw new InvalidArgumentError(channel, PATH_OUTSIDE_STORAGE)
   }
   return value
+}
+/**
+ * Reserved device names on Windows: a file literally named `CON`,
+ * `PRN`, `AUX`, `NUL`, or `COM1`-`COM9` / `LPT1`-`LPT9` cannot be
+ * opened on the OS even when only the basename is used. We refuse
+ * them so a renderer-supplied name can never silently alias a host
+ * device.
+ */
+export const WINDOWS_RESERVED = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+])
+
+/**
+ * Sanitize a renderer-supplied filename before it touches the disk.
+ *
+ * Goal: produce a single basename that is safe to use as a leaf name
+ * (no path separators, no NUL, no platform-forbidden characters,
+ * no control codes, no `..` siblings, no trailing dots/spaces, no
+ * Windows-reserved device names) and produce an extension that maps
+ * to a known MIME type so the saved file can be served back through
+ * the static renderer.
+ *
+ * `name` is attacker-controlled. Without this, a renderer could
+ * ship `..\u005C..\u005Cetc\u005Cpasswd` or `CON.docx` and the
+ * previous code happily wrote it as a `web:save-file` artefact —
+ * see `tests/managed-path-guard.test.ts` for the attack matrix and
+ * `tests/paths-sanitize.test.ts` for the unit matrix.
+ */
+export function sanitizeFileName(name: unknown, fallback = 'file'): string {
+  if (typeof name !== 'string' || name.length === 0) return fallback
+  // Strip any directory components in one pass. `basename` does this
+  // for both POSIX and Windows separators; we re-implement it here to
+  // also strip NUL bytes and the rare look-alike Unicode separators
+  // (\u2215 division slash, \uFF0F fullwidth solidus, \uFF3C fullwidth
+  // reverse solidus) so the leaf cannot escape its parent directory.
+  const stripped = name
+    .replace(/[\u0000]/g, '')
+    .split(/[\\\/∕／＼]/)
+    .pop() ?? ''
+  if (!stripped || stripped === '.' || stripped === '..') return fallback
+  // Reserved chars: ASCII control codes, the C1 control block (0x7f),
+  // and the platform-specific set (\ : * ? " < > |). Replace with `_`
+  // rather than dropping so the user can see something happened.
+  const cleaned = stripped.replace(/[\u0000-\u001f\u007f\\:*?"<>|]+/g, '_')
+  // Windows drops trailing dots and trailing spaces on disk, which
+  // would silently change the file name under the operator's feet.
+  // Strip them BEFORE extracting the extension so 'foo.docx   ' becomes
+  // 'foo.docx' (not 'fo.docx   ' with a corrupted stem).
+  const trimmed = cleaned.replace(/[. ]+$/g, '') || cleaned
+  const ext = extensionOf(trimmed).toLowerCase()
+  const stemRaw = ext ? trimmed.slice(0, trimmed.length - ext.length) : trimmed
+  const stem = stemRaw.replace(/[. ]+$/g, '')
+  if (!stem) return fallback
+  if (WINDOWS_RESERVED.has(stem.toUpperCase())) return fallback
+  return ext ? `${stem}${ext}` : stem
+}
+
+function extensionOf(value: string): string {
+  const dot = value.lastIndexOf('.')
+  if (dot <= 0) return ''
+  // Hidden file with no extension (e.g. `.bashrc`) should keep the
+  // leading dot — only treat `.` as the extension separator when it
+  // is followed by at least one non-dot character.
+  if (dot === value.length - 1) return ''
+  return value.slice(dot)
 }

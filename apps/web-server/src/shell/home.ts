@@ -63,6 +63,7 @@ import {
   PATH_OUTSIDE_STORAGE,
   registerHandle,
   saveRecentDocs,
+  saveStarredDocs,
 } from '../common/index'
 
 /* ── Blank file templates ────────────────────────────────────────────
@@ -149,7 +150,9 @@ export function registerHomeHandlers(): void {
       limit = 50,
       ext,
     } = (args || {}) as { offset?: number; limit?: number; ext?: string }
-    const all = [...DOCS_STARRED]
+    // DOCS_STARRED is now a Map<path, starredAt>; spread the keys, then
+    // resolve against DOCS_RECENT to attach the user-visible fields.
+    const all = Array.from(DOCS_STARRED.keys())
       .map((p) => DOCS_RECENT.get(p))
       .filter((d): d is NonNullable<typeof d> => Boolean(d))
     const filtered = ext ? all.filter((d) => d.path.toLowerCase().endsWith('.' + ext)) : all
@@ -164,12 +167,23 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:toggle-star', (_event: unknown, path: unknown) => {
     if (typeof path !== 'string' || !path) return { starred: false }
+    let starred: boolean
     if (DOCS_STARRED.has(path)) {
       DOCS_STARRED.delete(path)
-      return { starred: false }
+      starred = false
+    } else {
+      DOCS_STARRED.set(path, Date.now())
+      starred = true
     }
-    DOCS_STARRED.add(path)
-    return { starred: true }
+    // Persist immediately so a restart does not silently un-star. The Map
+    // may have been re-seeded by `initRecentState()` from a previous session;
+    // saving the full snapshot keeps the home pane consistent across reboots.
+    try {
+      saveStarredDocs(DOCS_STARRED)
+    } catch (error) {
+      console.warn('[home] failed to save starred docs:', error)
+    }
+    return { starred }
   })
 
   registerHandle('home:open-path', async (_event: unknown, path: unknown) => {
@@ -413,7 +427,7 @@ export function registerHomeHandlers(): void {
   registerHandle('home:github-stars', async () => {
     if (cachedGithubStars !== null) return cachedGithubStars
     try {
-      const response = await fetch('https://api.github.com/repos/genspark-ai/genoffice', {
+      const response = await fetch('https://api.github.com/repos/louloulin/genoffice', {
         headers: { Accept: 'application/vnd.github+json' },
         signal: AbortSignal.timeout(5000),
       })

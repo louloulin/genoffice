@@ -448,6 +448,14 @@ export async function handleTranslateStreamHttp(
       },
       { provider, config, ...storage },
       {
+        // Cancellation already short-circuits the SSE socket via the
+        // `AbortController` registered in TRANSLATE_STREAM_SESSIONS, but the
+        // core layer still schedules new units until the worker loop notices
+        // the abort. Forwarding the signal here lets the core mark every
+        // not-yet-started unit as `failed` / `errorMessage: 'aborted'`
+        // instead of continuing to spend provider credits on a stream the
+        // user has already closed.
+        signal: abort.signal,
         concurrency: 25,
         onUnit: ({ total, result }) => {
           if (abort.signal.aborted) return

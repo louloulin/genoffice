@@ -351,6 +351,52 @@ function saveSettings(settings: AiSettings): void {
 
 export let aiSettings: AiSettings = loadSettings()
 
+/**
+ * Lightweight summary of translation knowledge base + memory + provider
+ * state for the `/health` endpoint. Every field is best-effort: a
+ * KB that has never been loaded (no requests have hit `ai:translate*`
+ * yet) reports `loaded: false`, never throws. The numbers are
+ * read against the in-memory map; they reflect what the next
+ * translate call would use, not what is on disk after a crash.
+ */
+export function translationStateSummary(): {
+  kbLoaded: boolean
+  kbTerms: number
+  tmLoaded: boolean
+  tmPairs: number
+  defaultProvider: string | null
+} {
+  const defaultProvider = aiSettings.provider ?? null
+  let kbTerms = 0
+  try {
+    // KnowledgeBase exposes the resolved schema via its public API.
+    // `entries` is the Map<SchemaId, KBEntry[]> we already populate on
+    // every load / upsert; counting it is O(1) over the schema map and
+    // O(n) over terms.
+    kbTerms = (sharedKnowledgeBase as unknown as { entries?: Map<string, unknown[]> }).entries
+      ? Array.from(
+          (sharedKnowledgeBase as unknown as { entries: Map<string, unknown[]> }).entries.values(),
+        ).reduce((sum, list) => sum + list.length, 0)
+      : 0
+  } catch {
+    kbTerms = 0
+  }
+  let tmPairs = 0
+  try {
+    const buckets = (translationMemory as unknown as { buckets?: Map<string, unknown> }).buckets
+    tmPairs = buckets ? buckets.size : 0
+  } catch {
+    tmPairs = 0
+  }
+  return {
+    kbLoaded: kbLoadPromise !== null,
+    kbTerms,
+    tmLoaded: tmLoadPromise !== null,
+    tmPairs,
+    defaultProvider,
+  }
+}
+
 // ----- shared streaming core -------------------------------------------------
 
 export interface StreamSession {

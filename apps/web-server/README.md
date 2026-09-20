@@ -1,145 +1,137 @@
-# GenOffice Web Server
+# @genoffice/web-server
 
-> Standalone Web Server for GenOffice - no Electron required
+Standalone HTTP server for GenOffice. No Electron required — runs the same
+apps/docs / apps/sheets / apps/slides / apps/pdf / apps/markdown / apps/html
+renderers the desktop build ships, but over an `http://` IPC transport
+instead of Electron's preload bridge.
 
-## 特性
-
-- **338+ IPC 通道** - 与 Electron 版本完全兼容
-- **MiniMax AI 集成** - 开箱即用的 AI 能力
-- **SSE 流式响应** - 实时 AI 对话
-- **跨平台** - Linux / macOS / Windows
-- **容器化部署** - Docker 支持
-
-## 快速开始
-
-### 方式一: 直接运行
+## Quick start
 
 ```bash
-# 安装依赖
-npm install
+# 1. Build the renderer bundles (apps/docs, etc.) — required because
+#    the server serves them straight off disk.
+pnpm --filter @genoffice/docs build
+pnpm --filter @genoffice/sheets build
+pnpm --filter @genoffice/slides build
+pnpm --filter @genoffice/pdf build
+pnpm --filter @genoffice/markdown build
+pnpm --filter @genoffice/html build
 
-# 构建
-npm run build
-
-# 运行
-npm start
-# 或指定端口
-PORT=3000 npm start
+# 2. Bundle and start the server.
+pnpm --filter @genoffice/web-server bundle
+pnpm --filter @genoffice/web-server start
+# → http://127.0.0.1:18081
 ```
 
-### 方式二: Docker
+## Configuration
+
+All knobs are environment variables. Defaults are tuned for a developer
+running on the same machine as the renderer (no auth, loopback-only).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HOST` | `127.0.0.1` | Bind address. Set to `0.0.0.0` to expose on the LAN — **always pair with `WEB_TOKEN`** in that case. |
+| `PORT` | `18081` | HTTP port. |
+| `WEB_TOKEN` | (unset) | When set, every `/api/*` request must carry `Authorization: Bearer <token>` (or `X-GenOffice-Token: <token>`). Health, channel discovery, and HTML preview stay open. |
+| `DATA_DIR` | `/tmp/genoffice-data` | Persistent state: `projects.json`, `docs-recent.json`, `docs-starred.json`, `ai-settings.json`, `translation-kb.json`, KB/TM, upload `files/`. |
+| `WEB_TEMP_ROOT` | `$TMPDIR/genoffice-web-temp` | Disposable per-upload directories; swept every boot, age > 24 h. |
+| `WEB_STATIC_ROOT` | `<repo>/apps` | Override where the server looks for the renderer `out/` directories. |
+| `WEB_PATH_PREFIX` | (empty) | Strip a URL prefix from incoming requests before routing. Useful for reverse proxies. |
+| `WEB_CORS_ORIGIN` | (echo request Origin) | Set to a single origin to lock CORS to that value. |
+| `WEB_CORS_ORIGINS` | (unset) | Comma-separated allowlist for CORS. |
+
+## Storage layout
+
+```
+DATA_DIR/
+├── projects.json           # Project list
+├── docs-recent.json        # Recent docs (capped at 10)
+├── docs-starred.json       # Starred docs (persisted)
+├── sheets-recent.json
+├── slides-recent.json
+├── ai-settings.json        # Provider keys, default model
+├── translation-kb.json     # GenOffice translation knowledge base
+├── translation-memory/     # Persistent TM shards
+└── files/                  # All uploads, save-as targets, recents rows
+
+WEB_TEMP_ROOT/
+└── upload-<ts>-<rand>/     # Per-upload sandbox; swept at boot
+    └── <sanitized-name>
+```
+
+## Channel inventory
+
+Every renderer request hits one of the channels registered by
+`register*Handlers()` in `src/<capability>/index.ts`. The boot banner
+reports `handlers.size`; `/api/channels` returns the full sorted list.
+
+See `docs/channels.md` for the per-channel reference (request shape,
+response shape, error codes). Highlights:
+
+- `web:save-file`, `web:write-temp-file`, `web:read-file-bytes` — file
+  upload helpers. Bytes capped at 100 MiB; names sanitised; uploads
+  isolated to managed storage.
+- `docs:open-path`, `docs:save`, `docs:save-new`,
+  `docs:create-document`, `files:add-pasted-image` — document
+  persistence. Atomic writes; magic-byte gate; daily paste quota
+  (default 100 MiB / day).
+- `home:recents`, `home:starred`, `home:toggle-star` — home pane
+  state.
+- `anydoc:recognize`, `anydoc:convert`, `anydoc:extract-text`,
+  `anydoc:extract-tables`, `anydoc:extract-images`,
+  `anydoc:render-preview` — format recognition and extraction. See
+  the channel doc for honest gaps.
+
+## Security posture
+
+The web-server has no OS-level sandbox. Three things keep it honest:
+
+1. **Loopback bind** — the default `HOST=127.0.0.1` means anything that
+   is not on the same machine cannot reach `/api/*`.
+2. **Path containment** — every channel that touches the disk starts
+   with `requireManagedPath(channel, path)`. The managed area is
+   `DATA_DIR` plus `WEB_TEMP_ROOT`.
+3. **Token gate** — setting `WEB_TOKEN` activates a Bearer-token
+   middleware on every `/api/*` request. `/health`, `/api/channels`,
+   and `/api/html/preview/*` stay open so health probes and the
+   iframe preview keep working.
+
+Together with `sanitizeFileName` (path-traversal-proof basenames),
+`assertMagicMatchesExtension` (refuse bytes that don't match the
+extension), `atomicWriteJson` (crash-safe JSON persistence), and the
+WEB_TEMP_ROOT 24 h GC, the surface area is enough for a single-host
+deployment and clearly insufficient for an untrusted multi-tenant one.
+
+## Testing
 
 ```bash
-# 构建镜像
-docker build -t genoffice-web -f Dockerfile ..
-
-# 运行容器
-docker run -p 8080:8080 genoffice-web
-
-# 或使用 docker-compose
-docker-compose up -d
+pnpm --filter @genoffice/web-server typecheck
+pnpm --filter @genoffice/web-server test
 ```
 
-### 方式三: 使用 MiniMax AI
+The `tests/` directory holds unit suites (`paths-sanitize`, `magic`,
+`auth`, `atomic`, `static-spa-routes`, `ipc-error-status`,
+`ai-provider-config`) and e2e suites (`*-e2e.test.ts`) that boot a
+real HTTP server. The e2e suites share `tests/global-setup.ts`, which
+re-runs the esbuild bundle when `src/` is newer than `dist/bundle`.
 
-```bash
-# 设置 API Key
-MINIMAX_API_KEY=your-api-key npm start
+## Repository layout
+
 ```
-
-## API 端点
-
-### 健康检查
-
-```bash
-curl http://localhost:8080/health
+src/
+├── ai/            AI settings, KB/TM, chat/stream, HTTP translate
+├── anydoc/        Format recognition, conversion, extraction, preview
+├── auth/          Static-token auth gate (optional, WEB_TOKEN)
+├── collab/        Collaboration sessions
+├── common/        Shared utilities (paths, registry, state, magic, atomic)
+├── docs/          Docs IPC (open/save/recents)
+├── enterprise/    Mail / calendar / workflow / audit
+├── html/          HTML app entry + preview
+├── markdown/      Markdown app entry
+├── pdf/           PDF app entry
+├── projects/      Project management IPC
+├── sheets/        Sheets IPC
+├── slides/        Slides IPC
+├── shell/         Home, modules, prefs, skills, pi session
+└── web/           Web platform helpers (temp file, save-file)
 ```
-
-### IPC 通道调用
-
-```bash
-# 调用 AI 对话
-curl -X POST http://localhost:8080/api/ipc/ai:chat \
-  -H "Content-Type: application/json" \
-  -d '{"args":[{"message":"Hello"}]}'
-
-# 打开文档
-curl -X POST http://localhost:8080/api/ipc/docs:open \
-  -H "Content-Type: application/json" \
-  -d '{"args":[]}'
-
-# 获取主题设置
-curl -X POST http://localhost:8080/api/ipc/home:get-theme \
-  -H "Content-Type: application/json" \
-  -d '{"args":[]}'
-```
-
-### 通道列表
-
-```bash
-curl http://localhost:8080/api/channels
-```
-
-### AI 流式响应 (SSE)
-
-```bash
-curl -X POST http://localhost:8080/api/ai/stream \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Hello"}]}'
-```
-
-## 环境变量
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `HOST` | `0.0.0.0` | 绑定地址 |
-| `PORT` | `8080` | 端口 |
-| `MINIMAX_API_KEY` | - | MiniMax API Key |
-| `DATA_DIR` | `/tmp/genoffice-data` | 数据存储目录 |
-
-## 通道统计
-
-| 类别 | 数量 |
-|------|------|
-| AI | 41 |
-| Slides | 126 |
-| Docs | 15 |
-| Home | 32 |
-| Tabs | 8 |
-| Update | 5 |
-| PDF | 4 |
-| Files | 7 |
-| 其他 | 100+ |
-| **总计** | **338** |
-
-## 开发
-
-```bash
-# 开发模式 (热重载)
-npm run dev
-
-# 构建
-npm run build
-
-# 类型检查
-npm run typecheck
-```
-
-## 打包发布
-
-```bash
-# 安装 pkg
-npm install -g pkg
-
-# 打包所有平台
-npm run pkg:all
-
-# 单独打包
-npm run pkg:linux
-npm run pkg:win
-npm run pkg:mac
-```
-
-## 许可
-
-Apache-2.0

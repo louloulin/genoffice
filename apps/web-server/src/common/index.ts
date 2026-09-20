@@ -5,6 +5,7 @@
  * split stays a pure refactor (no behaviour change, no handler lost).
  */
 export { BYTES_TAG, encodeTransportValue, decodeTransportValue } from './codec'
+export { randomFileId, atomicWriteJson, reserveDailyPasteQuota, DAILY_PASTE_LIMIT_BYTES, sweepWebTempRoot } from './atomic'
 export type { TypedArrayTag } from './codec'
 
 export { registerHandle, getHandler, listChannels, handlerCount } from './registry'
@@ -22,6 +23,9 @@ export {
   saveRecentDocs,
   DOCS_RECENT,
   DOCS_STARRED,
+  DOCS_STARRED_FILE,
+  loadStarredDocs,
+  saveStarredDocs,
   initRecentState,
   SHEETS_RECENT_FILE,
   loadRecentSheets,
@@ -83,4 +87,6 @@ export {
   isManagedPath,
   requireManagedPath,
   PATH_OUTSIDE_STORAGE,
+  sanitizeFileName,
+  WINDOWS_RESERVED,
 } from './paths'

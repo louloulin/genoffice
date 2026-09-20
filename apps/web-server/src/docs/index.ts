@@ -5,18 +5,25 @@
  * declared in `common/state.ts`.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import {
+  atomicWriteJson,
   DATA_DIR,
   FILES_DIR,
   isManagedPath,
   loadProjects,
   loadRecentDocs,
+  randomFileId,
   registerHandle,
+  reserveDailyPasteQuota,
+  sanitizeFileName,
   saveProjects,
   saveRecentDocs,
 } from '../common/index'
+
+const PASTE_QUOTA_FILE = join(DATA_DIR, '.quotas', 'paste.json')
+import { assertMagicMatchesExtension, MagicMismatchError } from '../common/magic'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const MAX_PASTED_IMAGE_BYTES = 20 * 1024 * 1024
@@ -119,9 +126,11 @@ export function registerDocsHandlers(): void {
     const id = `doc-${Date.now()}`
 
     if (opts?.docx) {
+      const bytes = Buffer.from(opts.docx)
+      assertMagicMatchesExtension('docs:open', '.docx', bytes)
       const name = `文档-${new Date().toLocaleDateString()}.docx`
       const path = join(FILES_DIR, `${id}.docx`)
-      writeFileSync(path, Buffer.from(opts.docx))
+      writeFileSync(path, bytes)
 
       const recent = loadRecentDocs()
       recent.unshift({ id, path, name, openedAt: Date.now(), modified: false })
@@ -154,25 +163,16 @@ export function registerDocsHandlers(): void {
       return { needsPassword: true, path, name }
     }
 
-    // Cheap zip-magic check before handing bytes to JSZip: an empty file or a
-    // non-zip payload (e.g. an HTML error page leaked into the temp dir, a
-    // truncated upload, or a mislabeled .docx that is actually plain text)
-    // would otherwise surface as JSZip's cryptic "Can't find end of central
-    // directory : is this a zip file ?" deep inside parseDocx. Fail here with
-    // the file name so the renderer's existing openFailed toast has something
-    // actionable to show.
-    if (
-      original.length < 4 ||
-      original[0] !== 0x50 ||
-      original[1] !== 0x4b ||
-      original[2] !== 0x03 ||
-      original[3] !== 0x04
-    ) {
-      throw new InvalidArgumentError(
-        'docs:open-path',
-        `File is not a valid .docx (zip) archive: ${name}`,
-      )
-    }
+    // Magic-mismatch gate before handing bytes to the real parser. The web
+    // build has no Electron path-grant map, so the only signal that the
+    // file extension is honest is the file's own magic bytes. Failing
+    // here surfaces a structured `MagicMismatchError` to the renderer
+    // instead of a cryptic "Can't find end of central directory" stack
+    // trace from JSZip. The .docx case is the one the desktop build has
+    // always cared about; the other extensions (`assertMagicMatchesExtension`
+    // looks at `.docx`, `.xlsx`, `.pptx`, `.pdf`, images, plain text) get
+    // the same treatment for free.
+    assertMagicMatchesExtension('docs:open-path', path, original)
 
     const hash = createHash('sha256').update(original).digest('hex')
     const id = `doc-${Date.now()}`
@@ -221,7 +221,13 @@ export function registerDocsHandlers(): void {
       }
       try {
         mkdirSync(dirname(filePath), { recursive: true })
-        writeFileSync(filePath, bytes)
+        // Atomic temp+rename: a crash mid-write cannot leave the file half-
+        // written on disk. The desktop build uses fs.promises.writeFile
+        // with O_CREAT|O_EXCL on a temp path; the web build mirrors that
+        // shape with sync APIs (every channel here is sync anyway).
+        const tmpPath = `${filePath}.${randomFileId('tmp').split('-')[0]}.tmp`
+        writeFileSync(tmpPath, bytes)
+        renameSync(tmpPath, filePath)
         const recent = loadRecentDocs().filter((doc) => doc.path !== filePath)
         recent.unshift({
           id: basename(filePath, extname(filePath)),
@@ -241,14 +247,7 @@ export function registerDocsHandlers(): void {
   registerHandle('docs:create-document', async (_event: unknown, request: unknown) => {
     const value = request as { type?: unknown; title?: unknown; content?: unknown } | null
     const type = value?.type
-    const title =
-      String(value?.title ?? 'Untitled')
-        // Matching the C0 control-character range is the point here: the title
-        // becomes a file name, so control characters must be stripped.
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
-        .trim()
-        .slice(0, 80) || 'Untitled'
+    const title = sanitizeFileName(value?.title ?? 'Untitled', 'Untitled').slice(0, 80) || 'Untitled'
     const content = typeof value?.content === 'string' ? value.content : ''
     if (!content.trim()) return { ok: false, error: 'content must not be empty' }
     if (type !== 'md' && type !== 'html') {
@@ -259,7 +258,11 @@ export function registerDocsHandlers(): void {
     }
     const filePath = join(DATA_DIR, `${title}.${type}`)
     try {
-      writeFileSync(filePath, content, 'utf8')
+      // Atomic temp+rename so a crash cannot leave a partial document on
+      // disk. Mirrors docs:save and web:save-file.
+      const tmpPath = `${filePath}.${randomFileId('tmp').split('-')[0]}.tmp`
+      writeFileSync(tmpPath, content, 'utf8')
+      renameSync(tmpPath, filePath)
       return { ok: true, path: filePath }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -292,12 +295,30 @@ export function registerDocsHandlers(): void {
     if (bytes.byteLength > MAX_PASTED_IMAGE_BYTES) {
       return { accepted: [], rejected: ['image is too large'] }
     }
-    const name = `pasted-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${cleanExt}`
+    // Magic-byte gate: a renderer that names a JPEG with a .png extension
+    // used to slip through (or vice versa). Reject before reserving quota
+    // so a misbehaving tab can't burn the day's allowance on rejected
+    // bytes.
+    assertMagicMatchesExtension('files:add-pasted-image', `.${cleanExt}`, bytes)
+    try {
+      reserveDailyPasteQuota(PASTE_QUOTA_FILE, bytes.byteLength)
+    } catch (error) {
+      return {
+        accepted: [],
+        rejected: [error instanceof Error ? error.message : 'quota exceeded'],
+      }
+    }
+    const safeExt = sanitizeFileName(cleanExt, 'png')
+    const name = `pasted-${randomFileId('paste').split('-')[0]}.${safeExt}`
     const path = join(FILES_DIR, name)
-    writeFileSync(path, bytes)
+    // Atomic temp+rename: a crash mid-write cannot leave a half-image on
+    // disk AND keep the day's quota counter incremented.
+    const tmpPath = `${path}.tmp`
+    writeFileSync(tmpPath, bytes)
+    renameSync(tmpPath, path)
     const stat = statSync(path)
     return {
-      accepted: [{ path, name, ext: cleanExt, sizeBytes: stat.size }],
+      accepted: [{ path, name, ext: safeExt, sizeBytes: stat.size }],
       rejected: [],
     }
   })
@@ -308,7 +329,7 @@ export function registerDocsHandlers(): void {
       const name =
         (typeof defaultName === 'string' && defaultName) ||
         `文档-${new Date().toLocaleDateString()}.docx`
-      const id = `doc-${Date.now()}`
+      const id = `doc-${randomFileId(name).split('-')[0]}`
       const path = join(FILES_DIR, `${id}.docx`)
 
       if (data) {
