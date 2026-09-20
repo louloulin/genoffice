@@ -78,6 +78,13 @@ if (!isElectronRuntime()) {
   const liveness = createTabLiveness(TAB_STALE_MS)
   const markTabLive = (id: string, at?: number): void => liveness.markLive(id, at)
 
+  /* Which tab the shell believes is currently in front. The web build runs
+   * editors in separate browser tabs (one per `window.open`), so there is no
+   * "focused WebContentsView" event to subscribe to — but the shell *does*
+   * know what the user clicked on last, and that is enough for the TabBar to
+   * light up the right row. */
+  let activeTabId: string = 'home'
+
   /* Live `Window` handles keyed by tab id. The shell opens every editor with
    * `window.open(url, windowName(id))`, so a click on a TabBar row can focus
    * the child window directly — Chrome honors `handle.focus()` for a window
@@ -170,6 +177,16 @@ if (!isElectronRuntime()) {
     window.dispatchEvent(new CustomEvent('genoffice:web-tabs-changed', { detail: tabsCache }))
   }
 
+  /** Set the active tab id and broadcast a refresh. The TabBar reads
+   *  `active` from `tabsList`, so any state change that should repaint the
+   *  strip — opening a new editor, focusing a row, closing the active one —
+   *  funnels through here. */
+  const setActiveTab = (id: string): void => {
+    if (activeTabId === id) return
+    activeTabId = id
+    window.dispatchEvent(new CustomEvent('genoffice:web-tabs-changed', { detail: tabsCache }))
+  }
+
   /** Replace the cache and tell everyone. `retire` also closes their windows. */
   const setTabs = (next: WebTab[], retire: readonly WebTab[] = []): void => {
     tabsCache = next
@@ -224,6 +241,11 @@ if (!isElectronRuntime()) {
     if (!changed) return false
     liveness.pruneLive(tabs.map((t) => t.id))
     setTabs(tabs)
+    /* If the row that was active just died, fall back to home so the TabBar
+     * keeps showing a sensible selection. */
+    if (activeTabId !== 'home' && !tabs.some((t) => t.id === activeTabId)) {
+      setActiveTab('home')
+    }
     return true
   }
 
@@ -325,6 +347,7 @@ if (!isElectronRuntime()) {
         }
         registerTab(module, path, win, id)
         win.location.href = moduleUrl(module, path, id)
+        setActiveTab(id)
       },
       cancel: () => {
         try {
@@ -350,6 +373,7 @@ if (!isElectronRuntime()) {
     const tab = window.open(url, windowName(id))
     if (!tab) return null
     registerTab(module, path, tab, id)
+    setActiveTab(id)
     return tab
   }
 
@@ -569,6 +593,7 @@ if (!isElectronRuntime()) {
     const tab = window.open(url, windowName(tabId))
     if (!tab) return
     registerTab(kind, path, tab, tabId)
+    setActiveTab(tabId)
     /* Fire-and-forget: the server handler materialises the file and
      * appends it to DOCS_RECENT. If the renderer predicted the wrong
      * FILES_DIR (because home:get-data-paths hadn't returned), the server
@@ -672,12 +697,13 @@ if (!isElectronRuntime()) {
   bridgedWindow.aiOfficeTabs = createShellTabsApi(transport, {
     tabsList: async () => {
       // always include the home tab at index 0
+      const homeActive = activeTabId === 'home'
       const home = {
         id: 'home',
         kind: 'home' as const,
         title: '首页',
         closable: false,
-        active: true,
+        active: homeActive,
       }
       sweepStaleTabs()
       return [
@@ -687,12 +713,13 @@ if (!isElectronRuntime()) {
           kind: t.kind,
           title: t.title,
           closable: true,
-          active: false,
+          active: t.id === activeTabId,
         })),
       ]
     },
     tabsActivate: async (id: string) => {
       if (id === 'home') {
+        setActiveTab('home')
         window.focus()
         return
       }
@@ -710,6 +737,7 @@ if (!isElectronRuntime()) {
       const url = meta.path
         ? moduleUrl(meta.kind, meta.path, id)
         : `/${meta.kind}/?mode=tab&tab=${id}`
+      setActiveTab(id)
       focusNamedTab(id, url)
       markTabLive(id)
     },
@@ -719,6 +747,7 @@ if (!isElectronRuntime()) {
        * fallback covers windows opened by another shell instance. */
       closeNamedTab(id)
       unregisterTabById(id)
+      if (activeTabId === id) setActiveTab('home')
     },
     tabsShowMenu: async () => {},
     tabsShowNewMenu: async () => {
