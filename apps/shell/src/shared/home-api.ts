@@ -88,8 +88,11 @@ export interface HomeApi {
   statPaths(paths: string[]): Promise<RecentEntry[]>
   /** star / unstar a file */
   toggleStar(path: string): Promise<void>
-  /** open an existing file, routing to the right module by extension */
-  openPath(path: string): Promise<void>
+  /** open an existing file, routing to the right module by extension.
+   * The optional `title` is the recents row's human-friendly name; the
+   * web build uses it to label the TabBar row, the desktop build
+   * ignores it (the file web map owns the basename). */
+  openPath(path: string, title?: string): Promise<void>
   /** file picker accepting every supported extension, then routes */
   browse(): Promise<void>
   /** open a docs window at its start screen */

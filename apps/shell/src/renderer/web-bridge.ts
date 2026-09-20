@@ -203,8 +203,14 @@ if (!isElectronRuntime()) {
     path: string | undefined,
     win: Window | null,
     id: string = newTabId(),
+    /* Optional display title. Recents rows carry the human-friendly
+     * name (e.g. 'upload-me.docx') which is what the user expects the
+     * TabBar to show; the on-disk basename includes the upload id
+     * prefix (e.g. '7-1789927383352-15m3na-upload-me.docx') and is
+     * only useful as a fallback when no recents row is in scope. */
+    displayTitle?: string,
   ): WebTab => {
-    const title = path ? moduleFileName(path) : MODULE_LABEL[kind]
+    const title = displayTitle || (path ? moduleFileName(path) : MODULE_LABEL[kind])
     const tab: WebTab = { id, kind, title, windowId: id }
     markTabLive(id)
     tabMeta.set(id, { kind, ...(path !== undefined && { path }) })
@@ -338,14 +344,14 @@ if (!isElectronRuntime()) {
     rememberHandle(id, win)
     return {
       win,
-      open: (path: string) => {
+      open: (path: string, displayTitle?: string) => {
         const module = moduleForPath(path)
         if (!module) {
           win.close()
           tabHandles.delete(id)
           return
         }
-        registerTab(module, path, win, id)
+        registerTab(module, path, win, id, displayTitle)
         win.location.href = moduleUrl(module, path, id)
         setActiveTab(id)
       },
@@ -362,7 +368,7 @@ if (!isElectronRuntime()) {
   }
 
   /** Open `module` (optionally on `path`) without consulting the cache. */
-  const openFreshTab = (module: OpenableModule, path?: string): Window | null => {
+  const openFreshTab = (module: OpenableModule, path?: string, displayTitle?: string): Window | null => {
     /* The id is minted before the URL is built and travels *inside* it, so
      * the guest announces exactly the row the host just created. The window
      * is opened with the same id as its `name`, so a second click on the
@@ -372,12 +378,12 @@ if (!isElectronRuntime()) {
     const url = path ? moduleUrl(module, path, id) : `/${module}/?mode=tab&tab=${id}`
     const tab = window.open(url, windowName(id))
     if (!tab) return null
-    registerTab(module, path, tab, id)
+    registerTab(module, path, tab, id, displayTitle)
     setActiveTab(id)
     return tab
   }
 
-  const openModule = (module: OpenableModule, path?: string): Window | null => {
+  const openModule = (module: OpenableModule, path?: string, displayTitle?: string): Window | null => {
     /* Dedupe: a tab already open for this exact path should be focused, not
      * duplicated. Recents clicks fire often and a new window.open per click
      * would leave the user with N tabs of the same file. The decision itself
@@ -396,7 +402,7 @@ if (!isElectronRuntime()) {
         for (const id of deadIds) liveness.forget(id)
         setTabs(tabsCache.filter((t) => !deadIds.has(t.id)))
       }
-      return openFreshTab(module, path)
+      return openFreshTab(module, path, displayTitle)
     }
 
     /* An authoritative tab exists. Named-window focus replaces the old
@@ -416,13 +422,24 @@ if (!isElectronRuntime()) {
     }
     /* moduleUrl requires a path; recents-click callers always pass one. */
     if (path) focusNamedTab(target, moduleUrl(module, path, target))
+    /* A focused tab may already carry a basename-style title; if the caller
+     * now hands us the recents row's display name, refresh the title so the
+     * TabBar updates from '13-1789927471769-...docx' to 'upload-me.docx'. */
+    if (displayTitle) {
+      const idx = tabsCache.findIndex((t) => t.id === target)
+      if (idx >= 0 && tabsCache[idx].title !== displayTitle) {
+        const next = tabsCache.slice()
+        next[idx] = { ...next[idx], title: displayTitle }
+        setTabs(next)
+      }
+    }
     markTabLive(target)
     return null
   }
 
-  const openPathInModule = (path: string): void => {
+  const openPathInModule = (path: string, displayTitle?: string): void => {
     const module = moduleForPath(path)
-    if (module) openModule(module, path)
+    if (module) openModule(module, path, displayTitle)
   }
 
   /* ── Web-native upload ─────────────────────────────────────────────────
@@ -434,13 +451,23 @@ if (!isElectronRuntime()) {
    * path (and it mirrors the entry into the recents map server-side), so
    * both entry points funnel through it and fall back to temp only if
    * storage itself rejects the write. */
-  const uploadPicked = async (name: string, bytes: ArrayBuffer): Promise<string> => {
+  const uploadPicked = async (
+    name: string,
+    bytes: ArrayBuffer,
+  ): Promise<{ path: string; displayName: string }> => {
     try {
       const uploaded = await uploadFileToServer(transport, name, bytes)
       window.dispatchEvent(new Event('genoffice:recents-changed'))
-      return uploaded.path
+      /* The recents row's display name (file.name with the id prefix
+       * stripped) is what the TabBar should show. uploaded.name comes from
+       * web:save-file's sanitized filename, which preserves the user's
+       * basename when it is safe. The fallback path branch returns the
+       * raw name because the temp file sits outside FILES_DIR and has no
+       * recents row of its own. */
+      return { path: uploaded.path, displayName: uploaded.name }
     } catch {
-      return await files.writeTempFile(name, bytes)
+      const path = await files.writeTempFile(name, bytes)
+      return { path, displayName: name }
     }
   }
   // The Electron build gets this from installDropOpenBridge in the preload;
@@ -458,13 +485,17 @@ if (!isElectronRuntime()) {
     const reserved = reserveTab()
     void (async () => {
       let first: string | null = null
+      let firstDisplay: string | undefined
       for (const file of dropped) {
         try {
           /* `first ??= await upload()` would short-circuit: once `first` is
            * set, the right-hand side never runs and the remaining files are
            * silently dropped. Always await the upload, then assign. */
-          const path = await uploadPicked(file.name, await file.arrayBuffer())
-          first ??= path
+          const uploaded = await uploadPicked(file.name, await file.arrayBuffer())
+          if (first === null) {
+            first = uploaded.path
+            firstDisplay = uploaded.displayName
+          }
         } catch {
           /* one unreadable file must not abort the rest of the drop */
         }
@@ -473,8 +504,8 @@ if (!isElectronRuntime()) {
         reserved?.cancel()
         return
       }
-      if (reserved) reserved.open(first)
-      else openPathInModule(first)
+      if (reserved) reserved.open(first, firstDisplay)
+      else openPathInModule(first, firstDisplay)
     })()
   })
 
@@ -637,12 +668,16 @@ if (!isElectronRuntime()) {
         return
       }
       let first: string | null = null
+      let firstDisplay: string | undefined
       for (const file of filesPicked) {
         try {
           /* Always await: `first ??= await …` would short-circuit after the
            * first success and upload none of the remaining files. */
-          const path = await uploadPicked(file.name, file.bytes)
-          first ??= path
+          const uploaded = await uploadPicked(file.name, file.bytes)
+          if (first === null) {
+            first = uploaded.path
+            firstDisplay = uploaded.displayName
+          }
         } catch (cause) {
           /* One rejected file must not discard the rest of the selection. */
           console.warn('[web-bridge] upload failed:', cause)
@@ -655,11 +690,15 @@ if (!isElectronRuntime()) {
       }
       /* The reserved tab opens the first file, and the rest land in recents so
        * the user can reach them from the home grid. */
-      if (reserved) reserved.open(first)
-      else openPathInModule(first)
+      if (reserved) reserved.open(first, firstDisplay)
+      else openPathInModule(first, firstDisplay)
     },
-    openPath: async (path) => {
-      openPathInModule(path)
+    openPath: async (path, title) => {
+      /* The TabBar shows the recents row's display name (e.g.
+       * 'upload-me.docx') rather than the on-disk basename that
+       * includes the upload-id prefix; passing it through here keeps
+       * the row label consistent with what the user clicked. */
+      openPathInModule(path, title)
     },
     /* Sync single-shot creator. Pre-builds the path the editor URL needs,
      * calls window.open inside the click handler (the only place the user

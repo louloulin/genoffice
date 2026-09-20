@@ -106,7 +106,7 @@ export interface ShellApiOverrides {
   /** Web-native trash (no-op in the browser). */
   openTrash?: () => Promise<void>
   /** Web-native open/new module actions (browser tabs). */
-  openPath?: (path: string) => Promise<void>
+  openPath?: (path: string, title?: string) => Promise<void>
   newDoc?: (opts?: { projectId?: string }) => Promise<void>
   newSheet?: (opts?: { projectId?: string }) => Promise<void>
   newSlide?: (opts?: { projectId?: string }) => Promise<void>
@@ -138,10 +138,15 @@ export function createShellHomeApi(t: IpcTransport, overrides: ShellApiOverrides
       if (typeof path !== 'string' || !path) throw new Error('Invalid path.')
       await t.invoke(HOME_CHANNELS.toggleStar, path)
     },
-    async openPath(path) {
+    async openPath(path, title) {
       if (typeof path !== 'string' || !path) throw new Error('Invalid path.')
-      if (overrides.openPath) return await overrides.openPath(path)
-      await t.invoke(HOME_CHANNELS.openPath, path)
+      if (overrides.openPath) return await overrides.openPath(path, title)
+      /* The desktop transport does not encode the title separately; pass
+       * it via a project-shape wrapper so the web override can pick it up
+       * without a schema change. The desktop handler ignores the title
+       * arg (its file web map owns the basename), so this is safe in the
+       * Electron build too. */
+      await t.invoke(HOME_CHANNELS.openPath, path, title)
     },
     async browse() {
       if (overrides.browse) return await overrides.browse()

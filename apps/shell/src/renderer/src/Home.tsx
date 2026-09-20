@@ -1769,12 +1769,12 @@ export function Home() {
           onClick={() => {
             if (isRenaming) return
             if (entry.missing) setConfirmMissing(entry)
-            else void window.aiOffice.openPath(entry.path)
+            else void window.aiOffice.openPath(entry.path, entry.name)
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && event.target === event.currentTarget) {
               if (entry.missing) setConfirmMissing(entry)
-              else void window.aiOffice.openPath(entry.path)
+              else void window.aiOffice.openPath(entry.path, entry.name)
             }
           }}
         >
@@ -1855,7 +1855,7 @@ export function Home() {
                   role="menuitem"
                   onClick={() => {
                     setRowMenu(null)
-                    void window.aiOffice.openPath(entry.path)
+                    void window.aiOffice.openPath(entry.path, entry.name)
                   }}
                 >
                   {t('open')}
