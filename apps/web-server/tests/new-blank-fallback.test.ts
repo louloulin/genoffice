@@ -14,7 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { encodeTransportValue } from '../src/common/codec'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { stopServer } from './helpers/server-process'
@@ -52,6 +52,24 @@ async function invoke(
   })
   const text = await response.text()
   return { status: response.status, body: text ? JSON.parse(text) : null }
+}
+
+
+function validateZipCentralDirectory(path: string): boolean {
+  /* Node ships no public API for "is this a valid zip?", but we can rely
+   * on the fact that every JSZip/ZipFile consumer blows up on
+   * "Can't find end of central directory" when the trailer is missing.
+   * Reading the last 64 KiB and looking for the EOCD signature (PK\x05\x06)
+   * is enough to catch the truncation class of bugs the template fix
+   * protects against. */
+  const fd = readFileSync(path)
+  const tail = fd.subarray(Math.max(0, fd.byteLength - 65536))
+  for (let i = 0; i < tail.byteLength - 3; i++) {
+    if (tail[i] === 0x50 && tail[i + 1] === 0x4b && tail[i + 2] === 0x05 && tail[i + 3] === 0x06) {
+      return true
+    }
+  }
+  return false
 }
 
 describe.skipIf(!haveBundle)('new-blank fallback to embedded template', () => {
@@ -100,6 +118,11 @@ describe.skipIf(!haveBundle)('new-blank fallback to embedded template', () => {
     /* A pptx is a zip; the template is several KB. Anything below ~512
      * bytes means the fallback did not run. */
     expect(statSync(row.path).size).toBeGreaterThan(512)
+    /* The pptx must also be a structurally valid zip — the editor refuses
+     * to open anything else. The previous template shipped with a
+     * corrupt central directory and the editor then surfaced a parse
+     * error banner rather than a blank deck. */
+    expect(validateZipCentralDirectory(row.path), 'embedded pptx must be a valid zip').toBe(true)
   })
 
   it('sheets:new-blank writes a real xlsx when called without bytes', async () => {
@@ -111,6 +134,10 @@ describe.skipIf(!haveBundle)('new-blank fallback to embedded template', () => {
     expect(path).toMatch(/\.xlsx$/)
     expect(existsSync(path)).toBe(true)
     expect(statSync(path).size).toBeGreaterThan(512)
+    /* xlsx must also be a structurally valid zip; the embedded xlsx
+     * template shipped with no central directory, which made
+     * workbook:open-path fail with "Failed to parse workbook". */
+    expect(validateZipCentralDirectory(path), 'embedded xlsx must be a valid zip').toBe(true)
   })
 
   it('home:recents surfaces the freshly-created slides deck as not missing', async () => {
