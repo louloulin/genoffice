@@ -24,6 +24,21 @@ import type {
   TranslateResponse,
 } from './types'
 import { callLlm } from './llm-client' // W9: seam between translation-core and the underlying LLM SDK
+
+/**
+ * Normalize a customer-name filter before it reaches KB resolution.
+ *
+ * The KB `customerPreference` schema keys preferences on a non-empty string,
+ * so an empty / whitespace-only value would match the "no customer" bucket
+ * and bleed between tenants. Trim and collapse undefined.
+ */
+export function normalizeCustomerName(raw: string | undefined): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+
 import {
   applyTerminology,
   matchTermsInSource,
@@ -209,7 +224,7 @@ export async function translateOne(
     targetLang,
     preserveFormat,
     glossaryCategory: request.glossaryCategory,
-    ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+    ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
     ...(opts.knowledgeBase ? { knowledgeBase: opts.knowledgeBase } : {}),
     ...(dictionaryTerms.length > 0 ? { dictionaryTerms } : {}),
   })
@@ -301,7 +316,7 @@ function resolveTerminology(input: {
           sourceLang,
           targetLang,
           ...(request.glossaryCategory !== undefined ? { category: request.glossaryCategory } : {}),
-          ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+          ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
         }),
       )
     : []
@@ -390,7 +405,7 @@ function terminologyForBatch(
       ...(request.glossaryCategory !== undefined
         ? { glossaryCategory: request.glossaryCategory }
         : {}),
-      ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+      ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
     },
     opts,
     sourceText: '',
@@ -429,6 +444,26 @@ function malformedUnitResult(index: number, raw: unknown): TranslateBatchUnitRes
     warnings: ['malformed-unit'],
     errorMessage: reason,
     range,
+  }
+}
+
+/**
+ * Shape of a unit that never ran because the batch was aborted.
+ *
+ * The SSE handler relies on positional `units[]` to reconcile counts with
+ * per-unit events, so the slot cannot stay empty. Marking it `failed` keeps
+ * the existing status enum stable; the `errorMessage` lets the UI distinguish
+ * "provider refused" from "user clicked cancel".
+ */
+function abortedUnitResult(index: number, raw: unknown): TranslateBatchUnitResult {
+  const u = raw as { unitId?: unknown; sourceText?: unknown } | undefined
+  const unitId = typeof u?.unitId === 'string' ? u.unitId : `unit-${index}`
+  const sourceText = typeof u?.sourceText === 'string' ? u.sourceText : ''
+  return {
+    unitId,
+    sourceText,
+    status: 'failed',
+    errorMessage: 'aborted',
   }
 }
 
@@ -485,7 +520,7 @@ export async function translateBatch(
           memoryEnabled: request.memoryEnabled,
           qualityCheck: request.qualityCheck,
           glossaryCategory: request.glossaryCategory,
-          ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+          ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
         },
         opts,
       )
@@ -546,6 +581,15 @@ export interface TranslateBatchStreamOptions {
     total: number
     result: TranslateBatchUnitResult
   }) => void | Promise<void>
+  /**
+   * Abort signal checked between unit settlements. When the signal aborts the
+   * core layer stops scheduling new units, marks any remaining units as
+   * `status: 'failed'` with `errorMessage: 'aborted'`, and returns. Already
+   * in-flight provider calls still complete (no mid-flight cancel through the
+   * LLM client yet); the SSE handler is expected to close its socket from its
+   * own `AbortController` once the abort fires.
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -619,7 +663,7 @@ export async function translateBatchStream(
           memoryEnabled: request.memoryEnabled,
           qualityCheck: request.qualityCheck,
           glossaryCategory: request.glossaryCategory,
-          ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+          ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
         },
         opts,
       )
@@ -651,8 +695,19 @@ export async function translateBatchStream(
 
   // Bounded-concurrency driver: pull the next pending index when a slot frees up.
   let nextIndex = 0
+  const signal = streamOpts.signal
   const workers = Array.from({ length: concurrency }, async (): Promise<void> => {
     for (let i = nextIndex++; i < total; i = nextIndex++) {
+      if (signal?.aborted) {
+        // Fill the remaining slots with an aborted-shape failure so the
+        // caller's positional `units[]` stays well-formed. Without this the
+        // downstream SSE handler would emit `complete` with a `totalUnits`
+        // count that does not match the wire events.
+        const aborted = abortedUnitResult(i, request.units[i])
+        settled[i] = aborted
+        if (streamOpts.onUnit) await streamOpts.onUnit({ index: i, total, result: aborted })
+        continue
+      }
       await settleOne(i)
     }
     // explicit return for array-callback-return; the for-loop exit path

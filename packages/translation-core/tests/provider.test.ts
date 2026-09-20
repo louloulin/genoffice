@@ -16,7 +16,7 @@ import { callLlm } from '../src/llm-client'
 
 import { KnowledgeBase } from '../src/knowledge-base'
 import { TranslationMemory } from '../src/memory'
-import { sharedMemory, translateBatch, translateBatchStream, translateOne } from '../src/provider'
+import { normalizeCustomerName, sharedMemory, translateBatch, translateBatchStream, translateOne } from '../src/provider'
 
 const mockedCall = vi.mocked(callLlm)
 
@@ -627,6 +627,142 @@ describe('translateBatchStream', () => {
     expect(stream.units?.map((u) => u.unitId)).toEqual(batch.units?.map((u) => u.unitId))
     expect(stream.units?.map((u) => u.translatedText)).toEqual(batch.units?.map((u) => u.translatedText))
     expect(stream.quality?.overallScore).toBe(batch.quality?.overallScore)
+  })
+
+  it('marks every unit as aborted when the signal is already aborted on entry', async () => {
+    // SSE handler cancels the stream by calling abortController.abort(); the
+    // core layer must short-circuit immediately so the SSE socket can close
+    // without burning more provider credits.
+    mockedCall.mockResolvedValue({ ok: true, content: '<source_text>hi</source_text>译' })
+    const ac = new AbortController()
+    ac.abort()
+    const events: Array<{ index: number; status?: string; errorMessage?: string }> = []
+    const r = await translateBatchStream(
+      {
+        units: [
+          { unitId: 'u1', kind: 'paragraph' as const, sourceText: 'hello', order: 0 },
+          { unitId: 'u2', kind: 'paragraph' as const, sourceText: 'world', order: 1 },
+        ],
+        targetLang: 'zh-CN',
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+      {
+        signal: ac.signal,
+        onUnit: (e) => {
+          events.push({ index: e.index, status: e.result.status, errorMessage: e.result.errorMessage })
+        },
+      },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.units).toHaveLength(2)
+    expect(r.units?.[0]?.status).toBe('failed')
+    expect(r.units?.[0]?.errorMessage).toBe('aborted')
+    expect(r.units?.[1]?.status).toBe('failed')
+    expect(r.units?.[1]?.errorMessage).toBe('aborted')
+    expect(events).toHaveLength(2)
+    expect(events.map((e) => e.errorMessage)).toEqual(['aborted', 'aborted'])
+    expect(mockedCall).not.toHaveBeenCalled()
+  })
+
+  it('aborts mid-batch via signal: remaining units get errorMessage=aborted, in-flight calls still settle', async () => {
+    // Two units, concurrency=1 so they run sequentially. Abort fires after
+    // the first unit's onUnit, while the worker pulls the second index.
+    mockedCall.mockResolvedValueOnce({ ok: true, content: '<source_text>hi</source_text>译' })
+    const ac = new AbortController()
+    const units = [
+      { unitId: 'u1', kind: 'paragraph' as const, sourceText: 'a', order: 0 },
+      { unitId: 'u2', kind: 'paragraph' as const, sourceText: 'b', order: 1 },
+    ]
+    const events: Array<{ unitId: string; status?: string; errorMessage?: string }> = []
+    const r = await translateBatchStream(
+      { units, targetLang: 'zh-CN', qualityCheck: false },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+      {
+        concurrency: 1,
+        signal: ac.signal,
+        onUnit: (e) => {
+          events.push({ unitId: e.result.unitId, status: e.result.status, errorMessage: e.result.errorMessage })
+          if (e.result.unitId === 'u1') ac.abort()
+        },
+      },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.units).toHaveLength(2)
+    // u1 was already settled (provider already returned); u2 was never run.
+    expect(events.map((e) => e.unitId)).toEqual(['u1', 'u2'])
+    expect(events.find((e) => e.unitId === 'u1')?.status).toBe('translated')
+    expect(events.find((e) => e.unitId === 'u2')?.errorMessage).toBe('aborted')
+    expect(events.find((e) => e.unitId === 'u2')?.status).toBe('failed')
+    // Only one provider call happened (the cancelled unit did not spend credits).
+    expect(mockedCall).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// customerName normalisation
+//
+// The KB `customerPreference` schema keys preferences on a non-empty string,
+// so an empty / whitespace-only value would match the "no customer" bucket
+// and bleed between tenants. `normalizeCustomerName` collapses those to
+// undefined before they reach the resolver.
+// ---------------------------------------------------------------------------
+describe('normalizeCustomerName', () => {
+  it('returns undefined for an empty string', async () => {
+    mockedCall.mockReset()
+    mockedCall.mockResolvedValue({ ok: true, content: '<source_text>hi</source_text>译' })
+    const kb = new KnowledgeBase({ seed: {} })
+    const resolveSpy = vi.spyOn(kb, 'resolve')
+    await translateOne(
+      { instruction: 'hi', targetLang: 'zh-CN', customerName: '' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' }, knowledgeBase: kb },
+    )
+    const passedOpts = resolveSpy.mock.calls[0]?.[0] as { customerName?: string } | undefined
+    expect(passedOpts?.customerName).toBeUndefined()
+  })
+
+  it('returns undefined for a whitespace-only string', async () => {
+    mockedCall.mockReset()
+    mockedCall.mockResolvedValue({ ok: true, content: '<source_text>hi</source_text>译' })
+    const kb = new KnowledgeBase({ seed: {} })
+    const resolveSpy = vi.spyOn(kb, 'resolve')
+    await translateOne(
+      { instruction: 'hi', targetLang: 'zh-CN', customerName: '   ' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' }, knowledgeBase: kb },
+    )
+    const passedOpts = resolveSpy.mock.calls[0]?.[0] as { customerName?: string } | undefined
+    expect(passedOpts?.customerName).toBeUndefined()
+  })
+
+  it('passes a non-empty trimmed value through to the KB resolver', async () => {
+    mockedCall.mockReset()
+    mockedCall.mockResolvedValue({ ok: true, content: '<source_text>hi</source_text>译' })
+    const kb = new KnowledgeBase({ seed: {} })
+    const resolveSpy = vi.spyOn(kb, 'resolve')
+    await translateOne(
+      { instruction: 'hi', targetLang: 'zh-CN', customerName: '  Acme  ' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' }, knowledgeBase: kb },
+    )
+    const passedOpts = resolveSpy.mock.calls[0]?.[0] as { customerName?: string } | undefined
+    expect(passedOpts?.customerName).toBe('Acme')
+  })
+
+  it('preserves translateBatchStream parity: empty customerName is dropped before onUnit fires', async () => {
+    mockedCall.mockResolvedValueOnce({ ok: true, content: '<source_text>hi</source_text>译' })
+    const kb = new KnowledgeBase({ seed: {} })
+    const resolveSpy = vi.spyOn(kb, 'resolve')
+    const r = await translateBatchStream(
+      {
+        units: [{ unitId: 'u1', kind: 'paragraph' as const, sourceText: 'hi', order: 0 }],
+        targetLang: 'zh-CN',
+        customerName: '',
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' }, knowledgeBase: kb },
+    )
+    expect(r.ok).toBe(true)
+    const passedOpts = resolveSpy.mock.calls[0]?.[0] as { customerName?: string } | undefined
+    expect(passedOpts?.customerName).toBeUndefined()
   })
 })
 
