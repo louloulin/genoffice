@@ -5,7 +5,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import { FILES_DIR, loadRecentSlides, registerHandle, requireManagedPath, saveRecentSlides } from '../common/index'
+import { FILES_DIR, loadRecentSlides, registerHandle, requireManagedPath, saveRecentSlides, writeBlankOfficeFile } from '../common/index'
+import { recordRecentDoc } from '../common/document-stores'
 import { openPptx } from '@genoffice/pptx-engine'
 import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
 import { parseTheme } from '@genoffice/pptx-engine'
@@ -82,11 +83,27 @@ export function registerSlidesCoreHandlers(): void {
 
     if (opts?.pptx) {
       writeFileSync(path, Buffer.from(opts.pptx))
+    } else if (opts?.path) {
+      /* Caller supplied a path but no bytes (e.g. caller already wrote the
+       * file via a different channel). Trust the path; do not overwrite. */
+    } else {
+      /* No bytes, no path: the renderer fired the channel from its boot
+       * "give me a blank deck" path. Materialise a real, openable file
+       * from the embedded template so the recents row we are about to
+       * append actually points at a file on disk. Without this fallback
+       * every cold-start click left a "missing" tile in the home grid. */
+      writeBlankOfficeFile('pptx', path)
     }
 
     const recent = loadRecentSlides()
     recent.unshift({ id, path, name, openedAt: Date.now() })
     saveRecentSlides(recent)
+    /* Mirror into the unified store so home:recents (the home grid uses
+     * unifiedRecents) surfaces this row. Without the mirror every
+     * cold-start click is invisible to the home tile, even though the
+     * file actually exists at `path`. recordRecentDoc is fire-and-forget
+     * safe: failures are absorbed by the debounced writer. */
+    void recordRecentDoc(path, { id, name, modified: false })
 
     return {
       path: '',

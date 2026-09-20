@@ -6,6 +6,7 @@
  */
 export { BYTES_TAG, encodeTransportValue, decodeTransportValue } from './codec'
 export { randomFileId, atomicWriteJson, reserveDailyPasteQuota, DAILY_PASTE_LIMIT_BYTES, sweepWebTempRoot } from './atomic'
+export { readBlankTemplate, writeBlankOfficeFile } from './blank-templates'
 export type { TypedArrayTag } from './codec'
 
 export { registerHandle, getHandler, listChannels, handlerCount } from './registry'

@@ -13,7 +13,9 @@ import {
   registerHandle,
   requireManagedPath,
   saveRecentSheets,
+  writeBlankOfficeFile,
 } from '../common/index'
+import { recordRecentDoc } from '../common/document-stores'
 import { WebSheetsSidecar } from './sidecar'
 import { CorruptError, InvalidArgumentError, NotFoundError } from '../ai/errors'
 
@@ -28,11 +30,23 @@ export function registerSheetsHandlers(): void {
 
     if (opts?.xlsx) {
       writeFileSync(path, Buffer.from(opts.xlsx))
+    } else if (opts?.path) {
+      /* Caller supplied a path but no bytes; trust it. */
+    } else {
+      /* No bytes, no path: cold-start "give me a blank workbook" path.
+       * Materialise a real openable xlsx so the recents row we are about
+       * to append actually points at a file on disk. Without this fallback
+       * every cold-start click left a "missing" tile in the home grid. */
+      writeBlankOfficeFile('xlsx', path)
     }
 
     const recent = loadRecentSheets()
     recent.unshift({ id, path, name, openedAt: Date.now() })
     saveRecentSheets(recent)
+    /* Mirror into unifiedRecents so home:recents (the home grid) surfaces
+     * this row. Without it cold-start clicks are invisible to the home tile
+     * even though the file actually exists at `path`. */
+    void recordRecentDoc(path, { id, name, modified: false })
 
     return { id, path, name }
   })
