@@ -649,9 +649,36 @@ if (!isElectronRuntime()) {
     projectId?: string,
   ): void => {
     const spec = NEW_MODULE_SPECS[kind]
-    /* Suffix the id with a short random tag so two clicks fired in the same
-     * millisecond don't collide on the same FILES_DIR path. The prefix +
-     * suffix together stay inside the safe regex the server validates. */
+    /* Dedupe: if the user re-clicks "AI Docs" while a still-empty editor
+     * for the same module is alive, focus it instead of minting a second
+     * window. The previous logic minted a fresh id and a fresh path every
+     * time, so each click produced a new row — that was the "AI Docs
+     * duplicates" half of the user's bug. Cold (unresponsive) tabs are
+     * swept first so the user doesn't get a stuck ghost row they cannot
+     * reach again. */
+    const survivor = tabsCache.find((t) => t.kind === kind && liveness.isLive(t.id))
+    if (survivor) {
+      /* Resolve the path the same way `tabsActivate` does: WebTab carries
+       * only (id, kind, title, windowId); the on-disk path lives in the
+       * tabMeta side-channel. Reconstructing the URL from `survivor.path`
+       * (which is undefined) used to land us on `…/docs/?mode=tab&tab=…`
+       * without the `&open=` query — that mismatch forced
+       * `focusNamedTab` to rewrite `cached.location.href`, which made the
+       * editor reload, dispose its tab-guest, and broadcast `unregister`,
+       * deleting the very row we meant to keep alive. */
+      const meta = tabMeta.get(survivor.id)
+      const url = meta?.path
+        ? moduleUrl(survivor.kind, meta.path, survivor.id)
+        : `/${kind}/?mode=tab&tab=${survivor.id}`
+      setActiveTab(survivor.id)
+      focusNamedTab(survivor.id, url)
+      markTabLive(survivor.id)
+      return
+    }
+    /* No live empty tab to reuse. Suffix the new file id with a short
+     * random tag so two clicks fired in the same millisecond don't collide
+     * on the same FILES_DIR path. The prefix + suffix together stay inside
+     * the safe regex the server validates. */
     const fileId = `${spec.prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const path = `${effectiveDir(spec.serverDir)}/${fileId}.${spec.ext}`
     /* Built via moduleUrl so the tab id travels in the URL exactly as it does
