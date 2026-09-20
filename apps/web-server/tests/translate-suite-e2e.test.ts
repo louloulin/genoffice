@@ -15,9 +15,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -85,13 +86,8 @@ describe('translate suite E2E', () => {
     await waitForHealth(base)
   }, 60_000)
 
-  afterAll(() => {
-    server?.kill('SIGTERM')
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+  afterAll(async () => {
+    await stopServer(server, dataDir)
   })
 
   it('exposes the six translate-* marketplace entries', async () => {

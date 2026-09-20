@@ -25,9 +25,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 import JSZip from 'jszip'
 
 interface IpcResult<T = unknown> {
@@ -246,14 +247,9 @@ wb.save(${JSON.stringify(join(dataDir, 'verify-supplier.xlsx'))})
     ])
   }, 90_000)
 
-  afterAll(() => {
-    server?.kill('SIGTERM')
+  afterAll(async () => {
     fake?.server.close()
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+    await stopServer(server, dataDir)
   })
 
   it('reports coverage, including the segments a KB term only partly covers', async () => {

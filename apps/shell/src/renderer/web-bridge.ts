@@ -360,10 +360,13 @@ if (!isElectronRuntime()) {
       let first: string | null = null
       for (const file of dropped) {
         try {
-          // one unreadable file must not abort the rest of the drop
-          first ??= await uploadPicked(file.name, await file.arrayBuffer())
+          /* `first ??= await upload()` would short-circuit: once `first` is
+           * set, the right-hand side never runs and the remaining files are
+           * silently dropped. Always await the upload, then assign. */
+          const path = await uploadPicked(file.name, await file.arrayBuffer())
+          first ??= path
         } catch {
-          /* unreadable or rejected file: skip it and keep uploading the rest */
+          /* one unreadable file must not abort the rest of the drop */
         }
       }
       if (!first) {
@@ -516,22 +519,41 @@ if (!isElectronRuntime()) {
        * reserve the editor tab) need. `window.open()` consumes it, so the
        * picker must go first — otherwise the browser refuses to show the
        * file chooser with "File chooser dialog can only be shown with a user
-       * activation". Both calls are synchronous, so they share the tick. */
-      const picked = pickFileBytes(undefined, false)
+       * activation". Both calls are synchronous, so they share the tick.
+       *
+       * `multiple: true` matches the drop handler below and the server, which
+       * already accepts a burst of uploads and gives each one its own id. With
+       * a single-file picker the only way to add a folder of documents was one
+       * card click per file — and the second click reused the first tab, so it
+       * looked like the picker did nothing at all. */
+      const picked = pickFileBytes(undefined, true)
       const reserved = reserveTab()
-      const file = (await picked)?.[0]
-      if (!file) {
+      const filesPicked = await picked
+      if (!filesPicked || filesPicked.length === 0) {
         reserved?.cancel()
         return
       }
-      try {
-        const path = await uploadPicked(file.name, file.bytes)
-        if (reserved) reserved.open(path)
-        else openPathInModule(path)
-      } catch (cause) {
-        reserved?.cancel()
-        window.alert(`无法打开该文件：${cause instanceof Error ? cause.message : String(cause)}`)
+      let first: string | null = null
+      for (const file of filesPicked) {
+        try {
+          /* Always await: `first ??= await …` would short-circuit after the
+           * first success and upload none of the remaining files. */
+          const path = await uploadPicked(file.name, file.bytes)
+          first ??= path
+        } catch (cause) {
+          /* One rejected file must not discard the rest of the selection. */
+          console.warn('[web-bridge] upload failed:', cause)
+        }
       }
+      if (!first) {
+        reserved?.cancel()
+        window.alert('无法打开所选文件：上传失败')
+        return
+      }
+      /* The reserved tab opens the first file, and the rest land in recents so
+       * the user can reach them from the home grid. */
+      if (reserved) reserved.open(first)
+      else openPathInModule(first)
     },
     openPath: async (path) => {
       openPathInModule(path)

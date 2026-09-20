@@ -14,9 +14,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -74,15 +75,8 @@ describe('marketplace E2E flow', () => {
     await waitForHealth(base)
   }, 60_000)
 
-  afterAll(() => {
-    if (server) {
-      server.kill('SIGKILL')
-    }
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+  afterAll(async () => {
+    await stopServer(server, dataDir)
   })
 
   it('runs the full upload → install → pi-loader → uninstall flow', async () => {

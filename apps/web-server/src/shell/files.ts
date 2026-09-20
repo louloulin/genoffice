@@ -112,6 +112,8 @@ export function registerFilesHandlers(): void {
   registerHandle('files:read', (_event: unknown, args: unknown) => {
     const { id, path } = (args || {}) as { id?: string; path?: string }
 
+    /* Ids come from `fileIndexStore`, which is rehydrated from disk at boot,
+     * so an id issued before a restart still resolves here. */
     if (id && FILES_INDEX.has(id)) {
       const fileInfo = FILES_INDEX.get(id)!
       if (existsSync(fileInfo.path)) {

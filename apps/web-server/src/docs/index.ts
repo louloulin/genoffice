@@ -6,9 +6,8 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, extname, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import {
-  atomicWriteJson,
   DATA_DIR,
   FILES_DIR,
   isManagedPath,
@@ -23,7 +22,9 @@ import {
 } from '../common/index'
 
 const PASTE_QUOTA_FILE = join(DATA_DIR, '.quotas', 'paste.json')
-import { assertMagicMatchesExtension, MagicMismatchError } from '../common/magic'
+import { assertMagicMatchesExtension } from '../common/magic'
+import { atomicWriteFile } from '../common/atomic'
+import { recordRecentDoc } from '../common/document-stores'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const MAX_PASTED_IMAGE_BYTES = 20 * 1024 * 1024
@@ -220,23 +221,19 @@ export function registerDocsHandlers(): void {
         return { ok: false, error: 'save data is empty or invalid' }
       }
       try {
-        mkdirSync(dirname(filePath), { recursive: true })
-        // Atomic temp+rename: a crash mid-write cannot leave the file half-
-        // written on disk. The desktop build uses fs.promises.writeFile
-        // with O_CREAT|O_EXCL on a temp path; the web build mirrors that
-        // shape with sync APIs (every channel here is sync anyway).
-        const tmpPath = `${filePath}.${randomFileId('tmp').split('-')[0]}.tmp`
-        writeFileSync(tmpPath, bytes)
-        renameSync(tmpPath, filePath)
-        const recent = loadRecentDocs().filter((doc) => doc.path !== filePath)
-        recent.unshift({
+        // Atomic: a crash mid-write cannot leave the document half-written on
+        // disk. Uses the shared kernel implementation so the Windows
+        // EPERM-retry behaviour matches the desktop build exactly.
+        atomicWriteFile(filePath, bytes)
+        /* Dual write. The legacy mirror feeds the in-session home grid, and
+         * `unifiedRecents` is what makes the entry survive a restart — without
+         * it a saved document vanished from recents the next time the server
+         * booted, which reads to the user as "my save was lost". */
+        await recordRecentDoc(filePath, {
           id: basename(filePath, extname(filePath)),
-          path: filePath,
           name: basename(filePath),
-          openedAt: Date.now(),
-          modified: false,
+          modified: true,
         })
-        saveRecentDocs(recent)
         return { ok: true }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }

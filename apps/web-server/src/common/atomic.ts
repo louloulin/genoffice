@@ -14,10 +14,17 @@
  * persistence channel in `common/state.ts` routes through it.
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 
 import { sanitizeFileName } from './paths'
+import { atomicWriteJson } from '@genoffice/file-management'
+
+/* `atomicWriteFile` is the shared kernel's implementation, not a second copy:
+ * the temp+rename dance (including the Windows EPERM retry and the zero-byte
+ * guard) is subtle enough that two implementations would drift, and the web
+ * build and the desktop build must agree on what a save guarantees.
+ * `atomicWriteJson` is re-exported from the same place for the same reason. */
+export { atomicWriteFile, atomicWriteJson } from '@genoffice/file-management'
 
 /**
  * Build a stable, filesystem-safe identifier for a renderer-supplied
@@ -29,30 +36,6 @@ export function randomFileId(name: unknown): string {
   return `${randomUUID()}-${safeName}`
 }
 
-/**
- * Serialise `value` to JSON and write it atomically. The temp file
- * lives in the same directory as the target so `rename` is always a
- * single-filesystem move; the parent directory is created if missing.
- */
-export function atomicWriteJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true })
-  const tmp = `${path}.${randomUUID()}.tmp`
-  try {
-    writeFileSync(tmp, JSON.stringify(value, null, 2))
-    renameSync(tmp, path)
-  } catch (error) {
-    // Don't leave a half-written temp file around on failure; the next
-    // call will overwrite it with a fresh UUID.
-    if (existsSync(tmp)) {
-      try {
-        renameSync(tmp, `${tmp}.failed.${randomUUID()}`)
-      } catch {
-        /* swallow — the original error is what the caller wants to see */
-      }
-    }
-    throw error
-  }
-}
 /**
  * Per-day byte counter for renderer-driven bulk actions (paste images,
  * etc.). The renderer can request `files:add-pasted-image` with a

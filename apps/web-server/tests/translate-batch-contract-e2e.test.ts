@@ -21,9 +21,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -135,14 +136,9 @@ describe('ai:translate-batch unit contract', () => {
     ])
   }, 90_000)
 
-  afterAll(() => {
-    server?.kill('SIGTERM')
+  afterAll(async () => {
     fake?.server.close()
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+    await stopServer(server, dataDir)
   })
 
   it('returns the status / sourceText / range / quality the renderer filters on', async () => {

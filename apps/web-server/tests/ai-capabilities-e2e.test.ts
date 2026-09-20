@@ -9,9 +9,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -100,15 +101,8 @@ describe('home:ai-capabilities E2E', () => {
     await waitForHealth(base)
   }, 30_000)
 
-  afterAll(() => {
-    if (server && !server.killed) {
-      server.kill('SIGTERM')
-    }
-    if (dataDir) {
-      try {
-        rmSync(dataDir, { recursive: true, force: true })
-      } catch { /* ignore */ }
-    }
+  afterAll(async () => {
+    await stopServer(server, dataDir)
   })
 
   it('reports Serper as configured with DDG fallback for web + image search', async () => {

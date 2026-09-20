@@ -42,6 +42,8 @@ import {
   handlerCount,
   listChannels,
 } from './common/index'
+import { fileIndexStore } from './common/file-index-store'
+import { flushFileManagementState } from './common/document-stores'
 import { registerAiHandlers, AI_STREAM_SESSIONS, runProviderStream } from './ai/index'
 import { classifyWebError, ipcErrorStatus, InvalidArgumentError } from './ai/errors'
 import {
@@ -89,6 +91,10 @@ try {
 }
 
 initRecentState()
+/* Rehydrate the persisted upload index BEFORE any handler can serve a
+ * `files:read({id})`: an id issued in a previous session must resolve from the
+ * first request after a restart, not only after the next upload. */
+fileIndexStore.fromDiskSync()
 registerAiHandlers()
 registerProjectHandlers()
 registerDocsHandlers()
@@ -842,7 +848,19 @@ function flushTranslationMemory(): Promise<void> {
 }
 
 function shutdown(code = 0): void {
-  void flushTranslationMemory().finally(() => {
+  /* Both writers are debounced, so a signal in the last few hundred
+   * milliseconds would otherwise discard the recents entries and file ids the
+   * user just created. Flush them before the server stops accepting
+   * connections, and only then close. */
+  const flushState = async (): Promise<void> => {
+    try {
+      await fileIndexStore.flushNow()
+    } catch {
+      /* a failed flush during shutdown must not block the exit path */
+    }
+    flushFileManagementState()
+  }
+  void Promise.allSettled([flushTranslationMemory(), flushState()]).finally(() => {
     server.close(() => process.exit(code))
   })
 }

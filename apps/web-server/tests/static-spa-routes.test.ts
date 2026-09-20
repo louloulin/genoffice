@@ -21,9 +21,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 const bundle = join(__dirname, '..', 'dist', 'bundle', 'index.js')
 const haveBundle = existsSync(bundle)
@@ -65,13 +66,8 @@ describe.skipIf(!haveBundle)('static SPA route fallback', () => {
     await waitForHealth(base)
   }, 60_000)
 
-  afterAll(() => {
-    if (server) server.kill('SIGKILL')
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+  afterAll(async () => {
+    await stopServer(server, dataDir)
   })
 
   // The shell renderer on disk — the module hash changes whenever the shell is
@@ -129,11 +125,24 @@ describe.skipIf(!haveBundle)('static SPA route fallback', () => {
     for (const asset of [
       '/definitely-missing/assets/index-00000000.js',
       '/definitely-missing/assets/index-00000000.css',
-      '/favicon.ico',
+      '/definitely-missing/assets/vendor-00000000.woff2',
     ]) {
       const res = await fetch(`${base}${asset}`)
       expect(res.status, asset).toBe(404)
       expect(res.headers.get('content-type'), asset).not.toContain('text/html')
+    }
+  })
+
+  it('serves /favicon.ico as an image (never as the SPA index.html)', async () => {
+    // `/favicon.ico` is deliberately served — the browser requests it on every
+    // page load and the console used to fill with 404s. The contract is "an
+    // image or an explicit empty response", never HTML: answering with
+    // index.html would make the browser try to decode markup as an icon.
+    const res = await fetch(`${base}/favicon.ico`)
+    expect([200, 204]).toContain(res.status)
+    expect(res.headers.get('content-type') ?? '').not.toContain('text/html')
+    if (res.status === 200) {
+      expect(res.headers.get('content-type')).toContain('image/')
     }
   })
 

@@ -27,6 +27,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 const SRC_DIR = join(__dirname, '..', 'src')
 const bundle = join(__dirname, '..', 'dist', 'bundle', 'index.js')
@@ -241,10 +242,9 @@ describe.skipIf(!haveBundle)('the running server refuses outside paths', () => {
     throw new Error('web-server did not become healthy')
   })
 
-  afterAll(() => {
-    server?.kill()
+  afterAll(async () => {
     rmSync(canary, { force: true })
-    rmSync(dataDir, { recursive: true, force: true })
+    await stopServer(server, dataDir)
   })
 
   it.each(READ_PROBES)('%s does not disclose an outside file', async (channel, args) => {

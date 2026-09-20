@@ -29,6 +29,7 @@
     "@genoffice/agent-skills": "*",
     "@genoffice/ai-provider": "*",
     "@genoffice/ai-search": "*",
+    "@genoffice/file-management": "*",
     "@genoffice/file-parse": "*",
     "@genoffice/ipc-bridge": "*",
     "@genoffice/translation-core": "*"

@@ -6,15 +6,13 @@
  * Maps, so behaviour matches the legacy single-file implementation exactly.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { atomicWriteJson } from './atomic'
 import { join } from 'node:path'
 
 function resolveDataDir(): string {
   const fromEnv =
-    process.env.DATA_DIR ||
-    process.env.GENOFFICE_DATA_DIR ||
-    process.env.GENOFFICE_WEB_DATA_DIR
+    process.env.DATA_DIR || process.env.GENOFFICE_DATA_DIR || process.env.GENOFFICE_WEB_DATA_DIR
   if (fromEnv && fromEnv.length > 0) return fromEnv
   return '/tmp/genoffice-data'
 }
@@ -112,8 +110,13 @@ export function loadRecentDocs(): DocInfo[] {
   return []
 }
 
+/** Row cap for the legacy mirror file. It matches `UnifiedRecents`' own cap:
+ *  a smaller number silently truncated the persisted list, so a restart showed
+ *  fewer documents than the session that wrote them. */
+const LEGACY_RECENTS_ROWS = 200
+
 export function saveRecentDocs(docs: DocInfo[]): void {
-  atomicWriteJson(DOCS_RECENT_FILE, pickNewest(docs, 10))
+  atomicWriteJson(DOCS_RECENT_FILE, pickNewest(docs, LEGACY_RECENTS_ROWS))
 }
 
 /**
@@ -128,8 +131,7 @@ export function loadStarredDocs(): Array<{ path: string; starredAt: number }> {
       if (Array.isArray(raw)) {
         return raw.filter(
           (entry): entry is { path: string; starredAt: number } =>
-            typeof entry?.path === 'string' &&
-            typeof entry?.starredAt === 'number',
+            typeof entry?.path === 'string' && typeof entry?.starredAt === 'number',
         )
       }
     }
@@ -140,9 +142,10 @@ export function loadStarredDocs(): Array<{ path: string; starredAt: number }> {
 export function saveStarredDocs(
   entries: Array<{ path: string; starredAt: number }> | Map<string, number>,
 ): void {
-  const normalised: Array<{ path: string; starredAt: number }> = entries instanceof Map
-    ? Array.from(entries, ([path, starredAt]) => ({ path, starredAt }))
-    : entries
+  const normalised: Array<{ path: string; starredAt: number }> =
+    entries instanceof Map
+      ? Array.from(entries, ([path, starredAt]) => ({ path, starredAt }))
+      : entries
   atomicWriteJson(DOCS_STARRED_FILE, normalised)
 }
 
@@ -208,13 +211,15 @@ export function initRecentState(): void {
     /* Same fail-open for slides-recent.json; the disk sweep below is
      * independent of all three JSON caches. */
   }
-  /* ── Sweep disk for pdf/md/html artifacts ─────────────────────────────
-   * The other modules persist their own recents JSON; html/pdf/md currently
-   * don't, so a fresh boot would leave the home page's PDF/Markdown/HTML
-   * filters empty. We walk BOTH FILES_DIR (where save-as targets land) and
-   * DATA_DIR itself (where home:new-pdf and home:new-html write their
-   * auto-named files). Each match seeds an entry with an mtime-derived
-   * openedAt so it sorts naturally alongside docs/sheets/slides. */
+  /* ── Sweep disk for document artifacts ───────────────────────────────
+   * The per-format modules each persist their own recents JSON, and docx has
+   * none at all, so a fresh boot left the home grid missing every format that
+   * had not happened to be written into one of those files. We walk BOTH
+   * FILES_DIR (where uploads and save-as targets land) and DATA_DIR itself
+   * (where home:new-* writes its auto-named files). Each match seeds an entry
+   * with an mtime-derived openedAt so it sorts naturally, and an entry that is
+   * already known keeps its recorded name — the basename on disk is a
+   * generated id, not what the user should see in the list. */
   const sweepDirs = [FILES_DIR, DATA_DIR]
   const seen = new Set<string>()
   const now = Date.now()
@@ -223,28 +228,44 @@ export function initRecentState(): void {
       if (!existsSync(dir)) continue
       for (const entry of readdirSync(dir)) {
         const lower = entry.toLowerCase()
-        if (
-          lower.endsWith('.pdf') ||
-          lower.endsWith('.md') ||
-          lower.endsWith('.html') ||
-          lower.endsWith('.htm')
-        ) {
-          const full = join(dir, entry)
-          if (seen.has(full) || DOCS_RECENT.has(full)) continue
-          seen.add(full)
-          const st = statSync(full)
-          DOCS_RECENT.set(full, {
-            id: entry.replace(/\.[^.]+$/, ''),
-            path: full,
-            name: entry,
-            openedAt: st.mtimeMs || now,
-            modified: false,
-          })
+        if (!SWEEP_EXTENSIONS.some((ext) => lower.endsWith(ext))) continue
+        const full = join(dir, entry)
+        if (seen.has(full) || DOCS_RECENT.has(full)) continue
+        seen.add(full)
+        let st
+        try {
+          st = statSync(full)
+        } catch {
+          continue /* removed between readdir and stat */
         }
+        if (!st.isFile()) continue
+        DOCS_RECENT.set(full, {
+          id: entry.replace(/\.[^.]+$/, ''),
+          path: full,
+          name: entry,
+          openedAt: st.mtimeMs || now,
+          modified: false,
+        })
       }
     } catch {}
   }
 }
+
+/** Extensions the boot sweep adopts from disk. Every format the home grid can
+ *  render is listed; a file whose format has no entry here is only reachable
+ *  through the channel that created it. */
+const SWEEP_EXTENSIONS = [
+  '.docx',
+  '.xlsx',
+  '.pptx',
+  '.pdf',
+  '.md',
+  '.markdown',
+  '.html',
+  '.htm',
+  '.txt',
+  '.csv',
+]
 
 export interface SheetInfo {
   id: string
@@ -262,9 +283,7 @@ export interface SheetInfo {
  * list lost its newest uploads across a server restart.
  */
 function pickNewest<T extends { openedAt?: number }>(items: T[], n: number): T[] {
-  return [...items]
-    .sort((a, b) => (b.openedAt ?? 0) - (a.openedAt ?? 0))
-    .slice(0, n)
+  return [...items].sort((a, b) => (b.openedAt ?? 0) - (a.openedAt ?? 0)).slice(0, n)
 }
 
 export const SHEETS_RECENT_FILE = join(DATA_DIR, 'sheets-recent.json')

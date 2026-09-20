@@ -16,8 +16,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 import { join } from 'node:path'
 import { request } from 'node:http'
 
@@ -86,12 +87,9 @@ beforeAll(async () => {
   })
 }, 60_000)
 
-afterAll(() => {
-  if (server) {
-    server.kill('SIGTERM')
-    server = null
-  }
-  rmSync(TMP_DATA, { recursive: true, force: true })
+afterAll(async () => {
+  await stopServer(server, TMP_DATA)
+  server = null
 })
 
 describe('POST /api/ai/stream — malformed body', () => {

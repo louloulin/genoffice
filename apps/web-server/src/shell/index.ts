@@ -10,6 +10,7 @@ import { registerPiSessionHandlers } from './pi-session'
 import { registerClipboardHandlers } from './clipboard'
 import { registerCloudHandlers } from './cloud'
 import { registerMobileHandlers, registerMultimodalHandlers } from './devices'
+import { registerFileManagementHandlers } from './file-management'
 import { registerFilesHandlers } from './files'
 import { registerHomeHandlers } from './home'
 import { registerModuleHandlers } from './modules'
@@ -40,6 +41,7 @@ export function registerShellHandlers(): void {
   registerWindowHandlers()
   registerClipboardHandlers()
   registerFilesHandlers()
+  registerFileManagementHandlers()
   registerNotificationHandlers()
   registerCloudHandlers()
   registerOfflineHandlers()

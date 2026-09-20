@@ -12,9 +12,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 let server: ChildProcess | undefined
 let base: string
@@ -54,9 +55,8 @@ beforeAll(async () => {
   await waitForHealth()
 }, 60_000)
 
-afterAll(() => {
-  server?.kill('SIGTERM')
-  if (dataDir) rmSync(dataDir, { recursive: true, force: true })
+afterAll(async () => {
+  await stopServer(server, dataDir)
 })
 
 describe('IPC transport status mapping', () => {

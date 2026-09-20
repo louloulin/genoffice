@@ -21,10 +21,10 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -184,14 +184,9 @@ describe('KERRITS Chinese garment spec — full translation pipeline', () => {
     ])
   }, 90_000)
 
-  afterAll(() => {
-    server?.kill('SIGTERM')
+  afterAll(async () => {
     fake?.server.close()
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+    await stopServer(server, dataDir)
   })
 
   it('mines real KERRITS Chinese text into line-oriented segments', async () => {

@@ -16,9 +16,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResponse<T = unknown> {
   ok?: boolean
@@ -105,10 +106,9 @@ beforeAll(async () => {
   await waitForHealth()
 }, 60_000)
 
-afterAll(() => {
-  server?.kill('SIGTERM')
+afterAll(async () => {
   stub?.close()
-  if (dataDir) rmSync(dataDir, { recursive: true, force: true })
+  await stopServer(server, dataDir)
 })
 
 describe('malformed translation payloads', () => {

@@ -16,9 +16,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -139,13 +140,8 @@ describe('PDF translation E2E', () => {
     await waitForHealth(base)
   }, 90_000)
 
-  afterAll(() => {
-    server?.kill('SIGTERM')
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+  afterAll(async () => {
+    await stopServer(server, dataDir)
   })
 
   it('mines PDF text the same way it mines DOCX paragraphs', async () => {

@@ -23,9 +23,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -148,14 +149,9 @@ describe('cross-customer bucket isolation', () => {
     await ipc(base, 'ai:translation-kb-upsert', [term('iso-acme', '克重(A)', 'ACME')])
   }, 90_000)
 
-  afterAll(() => {
-    server?.kill('SIGTERM')
+  afterAll(async () => {
     fake?.server.close()
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+    await stopServer(server, dataDir)
   })
 
   async function batch(bucket: Record<string, string>, unitId: string): Promise<string | undefined> {

@@ -5,7 +5,7 @@
  * open-trash, cloud-projects. The recents and starred sets share the maps
  * declared in `common/state.ts` (`DOCS_RECENT`, `DOCS_STARRED`).
  */
-import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 /** Map a DocInfo record to the RecentEntry shape the home renderer expects,
  *  stat-ing the file for size/mtime. Files that fail to stat are flagged
  *  `missing` instead of being dropped (mirrors the desktop behaviour). */
@@ -62,9 +62,29 @@ import {
   isManagedPath,
   PATH_OUTSIDE_STORAGE,
   registerHandle,
-  saveRecentDocs,
   saveStarredDocs,
 } from '../common/index'
+import { atomicWriteFile } from '../common/atomic'
+import {
+  forgetRecentDoc,
+  mirrorRecentDoc,
+  recordRecentDoc,
+  trash,
+  unifiedRecents,
+} from '../common/document-stores'
+import { setupRecentsFileWatcher } from './recents-watcher'
+
+/**
+ * Mirror a recents change into the legacy in-session `DOCS_RECENT` map.
+ *
+ * Thin wrapper over the shared helpers in `common/document-stores` so the
+ * legacy mirror can never drift from `unifiedRecents`, which is what makes
+ * the list survive a restart.
+ */
+function mirrorRecent(path: string, action: 'add' | 'remove'): void {
+  if (action === 'add') mirrorRecentDoc(path, { name: basename(path) })
+  else forgetRecentDoc(path)
+}
 
 /* ── Blank file templates ────────────────────────────────────────────
  * A new docx/xlsx/pptx must round-trip through the matching renderer before
@@ -108,6 +128,17 @@ function pickRendererId(args: unknown, prefix: string): string {
 }
 
 export function registerHomeHandlers(): void {
+  /* A file dropped into FILES_DIR by anything other than our own save
+   * channels (drag-and-drop, `mv`, a sync client) must still reach the home
+   * grid, so the directory is watched and every addition mirrored into both
+   * recents stores. */
+  setupRecentsFileWatcher({
+    filesDir: FILES_DIR,
+    recents: unifiedRecents,
+    onAdded: (path) => mirrorRecent(path, 'add'),
+    onRemoved: (path) => mirrorRecent(path, 'remove'),
+  })
+
   registerHandle('home:get-app-version', () => '1.0.0')
 
   /* Expose the resolved data / file roots so the web renderer can predict
@@ -133,8 +164,38 @@ export function registerHomeHandlers(): void {
       limit = 50,
       ext,
     } = (args || {}) as { offset?: number; limit?: number; ext?: string }
-    const all = [...DOCS_RECENT.values()]
-    const filtered = ext ? all.filter((d) => d.path.toLowerCase().endsWith('.' + ext)) : all
+    /* `unifiedRecents` is the restart-safe list; `DOCS_RECENT` is the legacy
+     * in-session mirror. Reading only the mirror meant a restart silently
+     * truncated the grid to whatever the mirror's on-disk file happened to
+     * hold (it is capped at ten rows), so documents the user had uploaded
+     * disappeared on the next boot. The mirror is still merged in so an entry
+     * written before this change stays visible, but the union is keyed by
+     * path so a row present in both is not shown twice. */
+    const merged = new Map<
+      string,
+      { id: string; path: string; name: string; openedAt?: number; modified?: boolean }
+    >()
+    for (const entry of unifiedRecents.list()) {
+      merged.set(entry.path, {
+        id: entry.id,
+        path: entry.path,
+        name: entry.name,
+        openedAt: entry.openedAt,
+        modified: entry.modified,
+      })
+    }
+    for (const doc of DOCS_RECENT.values()) {
+      /* The mirror never wins a name: it is populated from the generated
+       * on-disk basename in some paths, while the store keeps the name the
+       * save channel recorded. */
+      if (!merged.has(doc.path)) merged.set(doc.path, doc)
+    }
+    const all = [...merged.values()]
+    const filtered = ext
+      ? all.filter((d) => d.path.toLowerCase().endsWith('.' + ext.toLowerCase()))
+      : all
+    /* Newest first, so the union order does not depend on Map insertion. */
+    filtered.sort((a, b) => (b.openedAt ?? 0) - (a.openedAt ?? 0))
     const sliced = filtered.slice(offset, offset + limit)
     const entries = sliced.map((d) => toRecentEntry(d))
     return {
@@ -203,46 +264,80 @@ export function registerHomeHandlers(): void {
       : []
     const refused: string[] = []
     let deleted = 0
-    values.forEach((path) => {
+    for (const path of values) {
       // Refuse anything outside managed storage before touching the disk; this
       // loop used to unlink any path handed to it. Out-of-storage paths are
       // reported back instead of being silently skipped.
       if (!isManagedPath(path)) {
         refused.push(path)
-        return
+        continue
       }
-      if (existsSync(path)) {
-        unlinkSync(path)
+      // Soft delete: the file moves into `.trash/` with an index entry, so a
+      // mis-click is recoverable through home:restore-from-trash. The previous
+      // `unlinkSync` destroyed the document outright.
+      if (trash.delete(path)) {
         deleted += 1
+        /* Drop the path from both the in-session mirror and the restart-safe
+         * store, or the home grid keeps offering a row for a file the user
+         * just deleted. Awaited so the caller cannot observe it as still
+         * present. */
+        forgetRecentDoc(path)
+        await unifiedRecents.remove(path)
       }
-    })
+    }
     // `deleted` is the count that actually happened, not the count requested.
-    return refused.length > 0 ? { ok: refused.length < values.length, deleted, refused } : { ok: true, deleted }
+    return refused.length > 0
+      ? { ok: refused.length < values.length, deleted, refused }
+      : { ok: true, deleted }
   })
 
   registerHandle('home:duplicate-file', async (_event: unknown, path: unknown) => {
-    if (typeof path !== 'string' || !isManagedPath(path)) return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    if (typeof path !== 'string' || !isManagedPath(path))
+      return { ok: false, error: PATH_OUTSIDE_STORAGE }
     if (!existsSync(path)) return { ok: false, error: 'File not found' }
     const dir = dirname(path)
     const ext = extname(path)
     const base = basename(path, ext)
-    const newPath = join(dir, `${base}-copy${ext}`)
-    writeFileSync(newPath, readFileSync(path))
+    /* `name-copy.docx`, then `name-copy (2).docx`, `(3)` … The first duplicate
+     * used to be a fixed `-copy` name, so duplicating twice silently
+     * overwrote the first copy — destroying the file the user had just made. */
+    let newPath = join(dir, `${base}-copy${ext}`)
+    for (let n = 2; existsSync(newPath); n += 1) {
+      newPath = join(dir, `${base}-copy (${n})${ext}`)
+    }
+    atomicWriteFile(newPath, readFileSync(path))
+    void unifiedRecents.add(newPath, { name: basename(newPath), modified: true })
     return { ok: true, path: newPath }
   })
 
   registerHandle('home:rename-file', async (_event: unknown, path: unknown, newName: unknown) => {
     if (typeof path !== 'string' || !isManagedPath(path))
       return { ok: false, error: PATH_OUTSIDE_STORAGE }
-    if (typeof newName !== 'string' || newName.length === 0 || newName === '.' || newName === '..' || basename(newName) !== newName) {
-      // A bare file name only: a separator or `..` in `newName` would move the
-      // file out of its directory, and out of managed storage.
+    if (typeof newName !== 'string') return { ok: false, error: 'invalid file name' }
+    /* A bare file name only: a separator or `..` in `newName` would move the
+     * file out of its directory, and out of managed storage. Every check below
+     * runs before any filesystem call, and the source is never touched on a
+     * rejection — the caller reports `ok: false` and the file stays put. */
+    if (newName.length === 0 || newName.length > 255 || newName === '.' || newName === '..') {
       return { ok: false, error: 'invalid file name' }
     }
+    if (basename(newName) !== newName) return { ok: false, error: 'invalid file name' }
+    /* A NUL or short control char in a name truncates the path at the syscall
+     * boundary or corrupts the dirent, so it is rejected before any fs call. */
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(newName)) return { ok: false, error: 'invalid file name' }
     if (!existsSync(path)) return { ok: false, error: 'File not found' }
     const newPath = join(dirname(path), newName)
     if (!isManagedPath(newPath)) return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    if (newPath !== path && existsSync(newPath)) {
+      /* Refusing beats clobbering: the destination holds a different document
+       * that the user did not ask to lose. */
+      return { ok: false, error: 'a file with that name already exists' }
+    }
     renameSync(path, newPath)
+    /* The recents row has to follow the file, or the home grid keeps pointing
+     * at a path that no longer exists. */
+    void unifiedRecents.rename(path, newPath)
     return { ok: true, path: newPath }
   })
 
@@ -252,7 +347,7 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:open-trash', () => ({ ok: true }))
 
-  registerHandle('home:new-doc', (_event: unknown, args: unknown) => {
+  registerHandle('home:new-doc', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'doc')
     const path = join(FILES_DIR, `${id}.docx`)
     /* Drop a known-good minimal docx on disk so docs:open-path can parse
@@ -263,13 +358,14 @@ export function registerHomeHandlers(): void {
     try {
       const tpl = readBlankTemplate('docx')
       if (tpl) writeFileSync(path, tpl)
-    } catch { /* read-only storage: keep the recents entry anyway */ }
-    DOCS_RECENT.set(path, { id, path, name: `${id}.docx`, openedAt: Date.now(), modified: false })
-    saveRecentDocs([...DOCS_RECENT.values()])
+    } catch {
+      /* read-only storage: keep the recents entry anyway */
+    }
+    await recordRecentDoc(path, { id, name: `${id}.docx`, modified: false })
     return { id, path }
   })
 
-  registerHandle('home:new-sheet', (_event: unknown, args: unknown) => {
+  registerHandle('home:new-sheet', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'sheet')
     const path = join(FILES_DIR, `${id}.xlsx`)
     /* Pre-write a known-good minimal xlsx so workbook:open-path's xlsx
@@ -279,13 +375,14 @@ export function registerHomeHandlers(): void {
     try {
       const tpl = readBlankTemplate('xlsx')
       if (tpl) writeFileSync(path, tpl)
-    } catch { /* read-only storage: keep the recents entry anyway */ }
-    DOCS_RECENT.set(path, { id, path, name: `${id}.xlsx`, openedAt: Date.now(), modified: false })
-    saveRecentDocs([...DOCS_RECENT.values()])
+    } catch {
+      /* read-only storage: keep the recents entry anyway */
+    }
+    await recordRecentDoc(path, { id, name: `${id}.xlsx`, modified: false })
     return { id, path }
   })
 
-  registerHandle('home:new-slide', (_event: unknown, args: unknown) => {
+  registerHandle('home:new-slide', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'slide')
     const path = join(FILES_DIR, `${id}.pptx`)
     /* Pre-write a known-good minimal pptx so the slides renderer boots
@@ -293,26 +390,30 @@ export function registerHomeHandlers(): void {
     try {
       const tpl = readBlankTemplate('pptx')
       if (tpl) writeFileSync(path, tpl)
-    } catch { /* read-only storage: keep the recents entry anyway */ }
-    DOCS_RECENT.set(path, { id, path, name: `${id}.pptx`, openedAt: Date.now(), modified: false })
-    saveRecentDocs([...DOCS_RECENT.values()])
+    } catch {
+      /* read-only storage: keep the recents entry anyway */
+    }
+    await recordRecentDoc(path, { id, name: `${id}.pptx`, modified: false })
     return { id, path }
   })
 
-  registerHandle('home:new-markdown', (_event: unknown, args: unknown) => {
+  registerHandle('home:new-markdown', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'md')
     const path = join(DATA_DIR, `${id}.md`)
     // Markdown is plain text, so an actual empty file on disk is safe to
     // open (parseDocText returns an empty envelope). Without this write,
     // the markdown app boots, calls markdown:read-file, hits a 404, and
     // shows "文件打开失败" — the user has to re-pick the file from recents.
-    try { writeFileSync(path, '', 'utf-8') } catch { /* read-only storage: keep the recents entry anyway */ }
-    DOCS_RECENT.set(path, { id, path, name: `${id}.md`, openedAt: Date.now(), modified: false })
-    saveRecentDocs([...DOCS_RECENT.values()])
+    try {
+      writeFileSync(path, '', 'utf-8')
+    } catch {
+      /* read-only storage: keep the recents entry anyway */
+    }
+    await recordRecentDoc(path, { id, name: `${id}.md`, modified: false })
     return { id, path }
   })
 
-  registerHandle('home:new-pdf', (_event: unknown, args: unknown) => {
+  registerHandle('home:new-pdf', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'pdf')
     const path = join(FILES_DIR, `${id}.pdf`)
     const objects = [
@@ -332,12 +433,11 @@ export function registerHomeHandlers(): void {
     for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
     pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
     writeFileSync(path, Buffer.from(pdf, 'binary'))
-    DOCS_RECENT.set(path, { id, path, name: `${id}.pdf`, openedAt: Date.now(), modified: false })
-    saveRecentDocs([...DOCS_RECENT.values()])
+    await recordRecentDoc(path, { id, name: `${id}.pdf`, modified: false })
     return { id, path }
   })
 
-  registerHandle('home:new-html', (_event: unknown, args: unknown) => {
+  registerHandle('home:new-html', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'html')
     const path = join(DATA_DIR, `${id}.html`)
     const html = `<!doctype html>
@@ -359,8 +459,7 @@ export function registerHomeHandlers(): void {
 </html>
 `
     writeFileSync(path, html, 'utf-8')
-    DOCS_RECENT.set(path, { id, path, name: `${id}.html`, openedAt: Date.now(), modified: false })
-    saveRecentDocs([...DOCS_RECENT.values()])
+    await recordRecentDoc(path, { id, name: `${id}.html`, modified: false })
     return { id, path }
   })
 

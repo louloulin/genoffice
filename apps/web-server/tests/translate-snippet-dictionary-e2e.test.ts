@@ -14,9 +14,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { stopServer } from './helpers/server-process'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -145,14 +146,9 @@ describe('snippet translation + dictionary reuse E2E', () => {
     writeFileSync(dictionaryPath, JSON.stringify({ 'Oxford cloth': '牛津布' }, null, 2), 'utf8')
   }, 90_000)
 
-  afterAll(() => {
-    server?.kill('SIGTERM')
+  afterAll(async () => {
     fake?.server.close()
-    try {
-      rmSync(dataDir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
+    await stopServer(server, dataDir)
   })
 
   it('translates a snippet and reports the KB terms that applied', async () => {
