@@ -328,18 +328,48 @@ if (!isElectronRuntime()) {
    * the real editor URL once the bytes are on disk. The placeholder is the
    * empty string the browser already put in the window — we never navigate
    * to a same-origin URL before we know it, so nothing is fetched twice. */
-  const reserveTab = (): {
+  /* Choose an editor URL to open as the popup placeholder. Browsers
+   * have a "popup intent" heuristic that tears down an about:blank
+   * window if it sits un-navigated after the gesture expires, so the
+   * placeholder must be a same-origin page the editor can boot into. */
+  const guessKindFromContext = (): OpenableModule => {
+    /* The 'last opened' heuristic: the user usually opens the same kind
+     * they opened most recently. Read the current tab list — if any of
+     * them is a real editor (not home), reuse its kind. Falls back to
+     * docs, which is the most common pick. */
+    for (let i = tabsCache.length - 1; i >= 0; i--) {
+      const t = tabsCache[i]
+      if (t.id !== 'home' && (t.kind === 'docs' || t.kind === 'sheets' || t.kind === 'slides' ||
+          t.kind === 'pdf' || t.kind === 'markdown' || t.kind === 'html')) {
+        return t.kind
+      }
+    }
+    return 'docs'
+  }
+
+    const reserveTab = (): {
     win: Window
     open: (path: string) => void
     cancel: () => void
   } | null => {
-    /* The id is minted synchronously so the blank window opens *named*. The
-     * eventual `win.location.href = moduleUrl(...)` lands back on the same
-     * window because the URL carries the matching `name`, instead of
-     * spawning a second popup (which is exactly how "打开本地文件" used to
-     * look like nothing happened). */
+    /* Chrome tears down an about:blank popup if it sits un-navigated for
+     * longer than the user-gesture stack that opened it (the "popup
+     * intent" heuristic). A multi-megabyte upload can easily take longer
+     * than that — the subsequent `win.location.href = ...` write lands on
+     * a window Chrome has already discarded, and the user sees "I clicked
+     * upload and nothing happened". We avoid this by navigating the
+     * popup to a real same-origin shell URL synchronously, so by the time
+     * the gesture stack unwinds the popup is a fully-formed document
+     * and Chrome has no reason to kill it. The actual editor URL lands
+     * once the upload completes. */
     const id = newTabId()
-    const win = window.open('about:blank', windowName(id))
+    /* Open the editor's own index at `?mode=tab&tab=<id>` (no path). The
+     * docs / sheets / slides / pdf / markdown / html apps all read
+     * `tab=` and treat "no pending open" as the boot-blank path, so the
+     * popup becomes a working editor shell immediately. When the upload
+     * finishes, `open()` below redirects it to the real file. */
+    const placeholder = `/${guessKindFromContext()}?mode=tab&tab=${encodeURIComponent(id)}`
+    const win = window.open(placeholder, windowName(id))
     if (!win) return null
     rememberHandle(id, win)
     return {
@@ -347,12 +377,36 @@ if (!isElectronRuntime()) {
       open: (path: string, displayTitle?: string) => {
         const module = moduleForPath(path)
         if (!module) {
+          /* Closing the popup silently was the exact "I clicked upload and
+           * nothing happened" symptom for .txt and other formats the editor
+           * set does not own. Surface the failure instead so the user knows
+           * the upload landed but the format is not openable. */
+          const ext = path.split(/[\\/.]/).pop()?.toLowerCase() ?? ''
+          try {
+            window.alert(
+              `暂不支持打开 .${ext || '未知'} 文件。请上传 docx / xlsx / pptx / pdf / md / html 格式。`,
+            )
+          } catch {}
           win.close()
           tabHandles.delete(id)
           return
         }
+        /* The placeholder is already a same-origin editor. Navigate to
+         * the real editor URL with the file path. */
         registerTab(module, path, win, id, displayTitle)
-        win.location.href = moduleUrl(module, path, id)
+        const target = moduleUrl(module, path, id)
+        try {
+          win.location.href = target
+        } catch {
+          /* Window torn down — reopen under the same name. */
+          const fresh = window.open(target, windowName(id))
+          if (fresh) {
+            tabHandles.set(id, fresh)
+            try {
+              ;(fresh as unknown as { __genofficeTabId?: string }).__genofficeTabId = id
+            } catch {}
+          }
+        }
         setActiveTab(id)
       },
       cancel: () => {

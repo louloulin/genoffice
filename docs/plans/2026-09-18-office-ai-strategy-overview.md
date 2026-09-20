@@ -94,17 +94,18 @@ i18n:               19 语言
 
 ## 5. 文件索引
 
-| 文件                               | 主题                                      | 优先级 |
-| ---------------------------------- | ----------------------------------------- | ------ |
-| `plan-00-overview.md`              | 本文档：战略 + 目标 + 现状                | —      |
-| `plan-01-issues.md`                | 问题清单（事实驱动，21 项）               | —      |
-| `plan-02-architecture-refactor.md` | 架构重构（双轨 → 单轨 IPC）               | P0     |
-| `plan-03-top-tier-office-ai.md`    | AI 顶级化（agentic / 多模态 / RAG）       | P0     |
-| `plan-04-saas-and-desktop.md`      | SaaS + 桌面一体化（多租户 / 计费 / 团队） | P0     |
-| `plan-05-collab.md`                | 实时协作（Yjs CRDT / Presence / WS）      | P1     |
-| `plan-06-quality.md`               | 工程化（DX / CI / 测试 / 监控）           | P1     |
-| `plan-07-roadmap.md`               | 12 周路线图 + KPI + 责任分配              | P0     |
-| `plan-08-quick-wins.md`            | 立即可做的 12 项 quick wins               | P0     |
+| 文件                               | 主题                                                                  | 优先级 |
+| ---------------------------------- | --------------------------------------------------------------------- | ------ |
+| `plan-00-overview.md`              | 本文档：战略 + 目标 + 现状                                            | —      |
+| `plan-01-issues.md`                | 问题清单（事实驱动，21 项）                                           | —      |
+| `plan-02-architecture-refactor.md` | 架构重构（双轨 → 单轨 IPC）                                           | P0     |
+| `plan-03-top-tier-office-ai.md`    | AI 顶级化（agentic / 多模态 / RAG）                                   | P0     |
+| `plan-04-saas-and-desktop.md`      | SaaS + 桌面一体化（多租户 / 计费 / 团队）                             | P0     |
+| `plan-05-collab.md`                | 实时协作（Yjs CRDT / Presence / WS）                                  | P1     |
+| `plan-06-quality.md`               | 工程化（DX / CI / 测试 / 监控）                                       | P1     |
+| `plan-07-roadmap.md`               | 12 周路线图 + KPI + 责任分配                                          | P0     |
+| `plan-08-quick-wins.md`            | 立即可做的 12 项 quick wins                                           | P0     |
+| `../../saas1.md`                   | SaaS 化专项改造计划（12 维差距 + 四档权益 + 12 周 Sprint + 风险预算） | P0     |
 
 ---
 
