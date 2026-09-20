@@ -300,6 +300,18 @@ export const TAB_STORAGE_KEY = 'genoffice:web-tabs'
 export const TAB_ID_KEY = 'genoffice:tab-id'
 export const SHELL_ID_KEY = 'genoffice:shell-id'
 
+/** Stable browser window name per tab id. `window.open(url, name)` reuses
+ *  an existing browsing context with the same name and focuses it; that is
+ *  what makes "click a tab in the TabBar" actually switch to the editor —
+ *  the previous design relied on the child window calling `window.focus()`
+ *  on itself, which browsers silently ignore for tabs that are not the
+ *  currently-active one. Prefix keeps these names from colliding with the
+ *  built-in targets (`_blank`, `_self`, `_top`, frame names, etc.). */
+export const TAB_WINDOW_NAME_PREFIX = 'genoffice-tab:'
+export function windowName(id: string): string {
+  return TAB_WINDOW_NAME_PREFIX + id
+}
+
 /** Child windows get their id stamped on the handle by the host; a reload
  *  restores it from sessionStorage instead. Not part of lib.dom. */
 export interface TabIdHost {

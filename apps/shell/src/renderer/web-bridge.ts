@@ -33,6 +33,7 @@ import {
   saveTabs,
   sweepTabs,
   TAB_CHANNEL_NAME,
+  windowName,
   type OpenableModule,
   type TabChannelMessage,
   type WebTab,
@@ -65,9 +66,10 @@ if (!isElectronRuntime()) {
    *  alive as soon as the user switches away. This only tidies the TabBar —
    *  a click is settled by the focus handshake, never by this guess. */
   const TAB_STALE_MS = 150_000
-  /** How long a focus handshake waits for the target window to answer before
-   *  concluding it is gone and opening the file ourselves. */
-  const FOCUS_ACK_TIMEOUT_MS = 400
+  /* (removed) The old focus handshake + 400 ms timeout was the source of
+   * the "重复" symptom: a slow-to-answer guest (or one whose tab was still
+   * loading a 2.6 MB bundle) was declared phantom and a second window was
+   * opened for the same file. Named-window focus replaces it. */
   /** Grace given to restored rows on boot, long enough for the beat each live
    *  tab fires on load — far shorter than TAB_STALE_MS, so phantom rows from a
    *  previous session disappear seconds after a reload instead of lingering. */
@@ -76,8 +78,84 @@ if (!isElectronRuntime()) {
   const liveness = createTabLiveness(TAB_STALE_MS)
   const markTabLive = (id: string, at?: number): void => liveness.markLive(id, at)
 
-  /** Pending focus handshakes, keyed by the tab we asked to come forward. */
-  const pendingFocusAcks = new Map<string, () => void>()
+  /* Live `Window` handles keyed by tab id. The shell opens every editor with
+   * `window.open(url, windowName(id))`, so a click on a TabBar row can focus
+   * the child window directly — Chrome honors `handle.focus()` for a window
+   * the calling page opened, which is what makes "click the tab and enter
+   * the document" actually work in the web build. The previous design let
+   * the child call `win.focus()` on itself in a BroadcastChannel handler;
+   * Chrome ignores that for backgrounded tabs, which is the root cause of
+   * the user's "点击没法进入" symptom.
+   *
+   * The named-window reuse is also what prevents duplicates: a second click
+   * on the same row asks Chrome to focus the existing named window — no
+   * second window is created. */
+  const tabHandles = new Map<string, Window>()
+  /** Path/kind per tab id, so `tabsActivate(id)` can rebuild the editor URL
+   *  even after a shell reload (when the handle cache is cold). */
+  const tabMeta = new Map<string, { kind: OpenableModule; path?: string }>()
+
+  const rememberHandle = (id: string, win: Window | null): Window | null => {
+    if (!win) return null
+    if (win.closed) {
+      tabHandles.delete(id)
+      return null
+    }
+    tabHandles.set(id, win)
+    return win
+  }
+  const forgetHandle = (id: string): void => {
+    const handle = tabHandles.get(id)
+    tabHandles.delete(id)
+    if (handle && !handle.closed) {
+      try {
+        handle.close()
+      } catch {
+        /* cross-origin or already-gone: the row's gone too, nothing to do */
+      }
+    }
+  }
+  /** Focus (and re-navigate when the URL drifted) the named window for `id`.
+   *  Called from click handlers, so the user-activation token is live and
+   *  `window.open(url, name)` is free to either focus the existing window
+   *  or open a new one. */
+  const focusNamedTab = (id: string, url: string): Window | null => {
+    const cached = tabHandles.get(id)
+    /* Compare against the absolute URL — `cached.location.href` is always
+     * absolute, but `moduleUrl` returns a relative path. Without this
+     * normalisation, a re-click on the same recents row looked "different"
+     * and triggered an unnecessary `location.href = …` write, which
+     * navigated the editor and fired `pagehide` → `unregister`, the chain
+     * that closed the window on a re-click. */
+    const absUrl = url ? new URL(url, window.location.href).href : ''
+    if (cached && !cached.closed) {
+      try {
+        cached.focus()
+        if (absUrl && cached.location.href !== absUrl) cached.location.href = absUrl
+        return cached
+      } catch {
+        tabHandles.delete(id)
+        /* fall through to a fresh open */
+      }
+    }
+    return rememberHandle(id, window.open(url, windowName(id)))
+  }
+  /** Close the editor window for `id`. Cache is preferred (instant); falls
+   *  back to a BroadcastChannel close-request when the handle is lost. */
+  const closeNamedTab = (id: string): void => {
+    const cached = tabHandles.get(id)
+    if (cached && !cached.closed) {
+      try {
+        cached.close()
+      } catch {
+        /* ignore */
+      }
+      tabHandles.delete(id)
+      return
+    }
+    const row = tabsCache.find((t) => t.id === id)
+    if (row) requestTabClose(tabChannel, [row])
+  }
 
   const tabChannel = new BroadcastChannel(TAB_CHANNEL_NAME)
   let tabsCache = loadTabs(localStorage)
@@ -95,7 +173,10 @@ if (!isElectronRuntime()) {
   /** Replace the cache and tell everyone. `retire` also closes their windows. */
   const setTabs = (next: WebTab[], retire: readonly WebTab[] = []): void => {
     tabsCache = next
-    for (const gone of retire) liveness.forget(gone.id)
+    for (const gone of retire) {
+      liveness.forget(gone.id)
+      forgetHandle(gone.id)
+    }
     broadcast()
     if (retire.length > 0) requestTabClose(tabChannel, retire)
   }
@@ -109,7 +190,9 @@ if (!isElectronRuntime()) {
     const title = path ? moduleFileName(path) : MODULE_LABEL[kind]
     const tab: WebTab = { id, kind, title, windowId: id }
     markTabLive(id)
+    tabMeta.set(id, { kind, ...(path !== undefined && { path }) })
     if (win) {
+      rememberHandle(id, win)
       /* Stamp the handle too, so the guest can recognise itself even if it
        * loaded before the URL carried the id (older cached bundle). */
       try {
@@ -129,6 +212,8 @@ if (!isElectronRuntime()) {
 
   const unregisterTabById = (id: string): void => {
     liveness.forget(id)
+    forgetHandle(id)
+    tabMeta.delete(id)
     setTabs(tabsCache.filter((t) => t.id !== id))
   }
 
@@ -180,7 +265,10 @@ if (!isElectronRuntime()) {
         }
         return
       case 'focus-ack':
-        pendingFocusAcks.get(data.id)?.()
+        /* legacy: a guest that loaded an older bundle may still answer our
+         * (no-longer-sent) focus-request. The ack is now just a heartbeat —
+         * mark the tab live so the row survives the periodic sweep. */
+        markTabLive(data.id)
         return
       default:
         return
@@ -200,13 +288,6 @@ if (!isElectronRuntime()) {
     sweepStaleTabs()
   }, BOOT_GRACE_MS + 500)
 
-  /* Every URL this module opens is a same-origin path it builds itself
-   * (`/${module}/...`), never anything a caller supplies. The two async callers
-   * (newPdf, newHtml) must still create the window inside the click handler and
-   * navigate it only after their IPC round-trip resolves, so they open it blank
-   * first; window.open's single-argument form already defaults to a new tab. */
-  const openBlankTab = (): Window | null => window.open('')
-
   /* Reserve a tab for an upload *inside the caller's click handler*.
    *
    * The file picker is modal: by the time the user has chosen a file and we
@@ -224,15 +305,22 @@ if (!isElectronRuntime()) {
     open: (path: string) => void
     cancel: () => void
   } | null => {
-    const win = openBlankTab()
-    if (!win) return null
+    /* The id is minted synchronously so the blank window opens *named*. The
+     * eventual `win.location.href = moduleUrl(...)` lands back on the same
+     * window because the URL carries the matching `name`, instead of
+     * spawning a second popup (which is exactly how "打开本地文件" used to
+     * look like nothing happened). */
     const id = newTabId()
+    const win = window.open('about:blank', windowName(id))
+    if (!win) return null
+    rememberHandle(id, win)
     return {
       win,
       open: (path: string) => {
         const module = moduleForPath(path)
         if (!module) {
           win.close()
+          tabHandles.delete(id)
           return
         }
         registerTab(module, path, win, id)
@@ -245,20 +333,23 @@ if (!isElectronRuntime()) {
           /* the browser may refuse to close a tab it thinks the script did
            * not open; the blank tab is harmless if so */
         }
+        tabHandles.delete(id)
       },
     }
   }
 
   /** Open `module` (optionally on `path`) without consulting the cache. */
   const openFreshTab = (module: OpenableModule, path?: string): Window | null => {
-    /* The id is minted before the URL is built and travels *inside* it, so the
-     * guest announces exactly the row the host just created. A blank tab gets
-     * no id: the guest will mint its own and announce it. */
+    /* The id is minted before the URL is built and travels *inside* it, so
+     * the guest announces exactly the row the host just created. The window
+     * is opened with the same id as its `name`, so a second click on the
+     * same row focuses this tab instead of creating a sibling window — that
+     * is the fix for the user's "重复" symptom. */
     const id = newTabId()
-    const tab = openBlankTab()
+    const url = path ? moduleUrl(module, path, id) : `/${module}/?mode=tab&tab=${id}`
+    const tab = window.open(url, windowName(id))
     if (!tab) return null
     registerTab(module, path, tab, id)
-    tab.location.href = path ? moduleUrl(module, path, id) : `/${module}/?mode=tab&tab=${id}`
     return tab
   }
 
@@ -284,17 +375,14 @@ if (!isElectronRuntime()) {
       return openFreshTab(module, path)
     }
 
-    /* An authoritative tab exists, so this is a handshake, not an assumption:
-     * the target answers `focus-ack` and we stop. No answer within
-     * FOCUS_ACK_TIMEOUT_MS means the entry outlived its window, and we open
-     * the file ourselves. The window.open below happens inside that timeout,
-     * which still counts as the current task for popup purposes (and this
-     * whole path only runs for a click the browser already authorised). */
+    /* An authoritative tab exists. Named-window focus replaces the old
+     * 400 ms focus handshake: a click on the recents row hands the URL
+     * back to `window.open` with the same `name` as the existing window,
+     * which Chrome focuses (and returns the handle back to us, repopulating
+     * the cache). No timeout, no chance of opening a duplicate when the
+     * target is slow to answer — that race was the source of the user's
+     * "重复" complaint. */
     const target = decision.tab.id
-    /* Other rows claiming this path are duplicates of the tab we are about to
-     * focus. They are live windows, so they are told to close — leaving them
-     * open would give two windows the same file, and whichever the user edits
-     * second wins. */
     if (decision.duplicates.length > 0) {
       const dupIds = new Set(decision.duplicates.map((t) => t.id))
       setTabs(
@@ -302,21 +390,9 @@ if (!isElectronRuntime()) {
         decision.duplicates,
       )
     }
-    let settled = false
-    const openBecauseSilent = (): void => {
-      if (settled) return
-      settled = true
-      pendingFocusAcks.delete(target)
-      unregisterTabById(target)
-      openFreshTab(module, path)
-    }
-    pendingFocusAcks.set(target, () => {
-      settled = true
-      pendingFocusAcks.delete(target)
-      markTabLive(target)
-    })
-    tabChannel.postMessage({ type: 'focus-request', id: target })
-    setTimeout(openBecauseSilent, FOCUS_ACK_TIMEOUT_MS)
+    /* moduleUrl requires a path; recents-click callers always pass one. */
+    if (path) focusNamedTab(target, moduleUrl(module, path, target))
+    markTabLive(target)
     return null
   }
 
@@ -488,7 +564,9 @@ if (!isElectronRuntime()) {
      * from the shared rule. */
     const tabId = newTabId()
     const url = `${moduleUrl(kind, path, tabId)}`
-    const tab = window.open(url, '_blank')
+    /* Named-window reuse: a second "AI Docs" click focuses the existing
+     * empty doc instead of opening a third one. */
+    const tab = window.open(url, windowName(tabId))
     if (!tab) return
     registerTab(kind, path, tab, tabId)
     /* Fire-and-forget: the server handler materialises the file and
@@ -618,34 +696,28 @@ if (!isElectronRuntime()) {
         window.focus()
         return
       }
-      /* The shell never holds the child Window handle, so clicking a tab used
-       * to just focus the shell itself — the click looked like a no-op. The
-       * tab protocol solves it the same way a recents click does: ask the tab
-       * to come forward and let it focus itself. A tab that does not answer is
-       * a phantom, and its row is dropped so the TabBar stops offering it. */
-      const tab = tabsCache.find((t) => t.id === id)
-      if (!tab) return
-      let settled = false
-      pendingFocusAcks.set(id, () => {
-        settled = true
-        pendingFocusAcks.delete(id)
-        markTabLive(id)
-      })
-      tabChannel.postMessage({ type: 'focus-request', id } satisfies TabChannelMessage)
-      setTimeout(() => {
-        if (settled) return
-        pendingFocusAcks.delete(id)
-        /* Nobody answered: the row outlived its window. */
-        unregisterTabById(id)
-      }, FOCUS_ACK_TIMEOUT_MS)
+      /* Click → focus the editor window. With the handle cache, a live tab
+       * is just `handle.focus()`; with a cold cache, `window.open(url,
+       * windowName(id))` either focuses the existing named window or opens
+       * a new one (and we cache its handle for next time). The user-gesture
+       * token is live on the click that fires this call. */
+      const meta = tabMeta.get(id)
+      if (!meta) return
+      /* `meta.path` is undefined for tabs that loaded before their file was
+       * created (e.g. an AI Docs tab mid-creation). Fall back to the same
+       * "no file yet" URL `openFreshTab` uses so the focus call always has
+       * a valid URL to pass to `window.open`. */
+      const url = meta.path
+        ? moduleUrl(meta.kind, meta.path, id)
+        : `/${meta.kind}/?mode=tab&tab=${id}`
+      focusNamedTab(id, url)
+      markTabLive(id)
     },
     tabsClose: async (id: string) => {
-      /* The shell has no handle on the child window, so it asks the tab to
-       * close itself; the row is dropped either way. */
-      requestTabClose(
-        tabChannel,
-        tabsCache.filter((t) => t.id === id),
-      )
+      /* Close the editor window for this tab. The handle cache makes this
+       * instant for windows the shell is still tracking; the broadcast
+       * fallback covers windows opened by another shell instance. */
+      closeNamedTab(id)
       unregisterTabById(id)
     },
     tabsShowMenu: async () => {},
