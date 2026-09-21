@@ -10,6 +10,8 @@ import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
 import { atomicWriteFile } from '../common/atomic'
 import { notifyFileSaved } from '../common/webhooks-store'
+import { sendIpcEvent } from '../common/event-broadcast'
+import { captureBeforeSave } from '../common/version-history'
 import { savePdfToPath } from '../../../pdf/src/main/save-pdf'
 import type { SavePdfRequest, SavePdfResult } from '../../../pdf/src/shared/ipc'
 
@@ -27,7 +29,10 @@ export function registerPdfHandlers(): void {
   registerHandle('pdf:consume-pending', () => null)
   registerHandle('pdf:get-username', () => 'Web User')
   registerHandle('pdf:list-edit-fonts', () => ['Arial', 'Calibri', 'Times New Roman', 'Helvetica'])
-  registerHandle('pdf:dirty-changed', () => ({ ok: true }))
+  registerHandle('pdf:dirty-changed', (event: unknown, dirty: unknown) => {
+    sendIpcEvent(event, 'dirtyChanged', { dirty: Boolean(dirty) })
+    return { ok: true }
+  })
 
   /* Read PDF bytes from either a managed-path FILES_DIR entry (legacy
    * desktop callers) or a `storage://<backend>/<key>` URI (the path the
@@ -158,7 +163,7 @@ export function registerPdfHandlers(): void {
     return targetStaged
   }
 
-  registerHandle('pdf:save', async (_e: unknown, request: unknown): Promise<SavePdfResult> => {
+  registerHandle('pdf:save', async (event: unknown, request: unknown): Promise<SavePdfResult> => {
     const value = (request || {}) as { path?: unknown; targetPath?: unknown }
     if (typeof value.path !== 'string' || value.path.length === 0) {
       return { ok: false, error: 'pdf:save expects { path: string }' }
@@ -199,6 +204,12 @@ export function registerPdfHandlers(): void {
         textInserts: (request as SavePdfRequest).textInserts ?? [],
         imageEdits: (request as SavePdfRequest).imageEdits ?? [],
       }
+      // Snapshot prior bytes BEFORE savePdfToPath overwrites them so the
+      // renderer can roll back via files:restore-version.
+      try {
+        const prev = readFileSync(target)
+        captureBeforeSave(basename(target), prev)
+      } catch { /* new file, nothing to snapshot */ }
       const { skippedTextEdits, skippedTextInserts, skippedImageEdits } = await savePdfToPath(
         source,
         target,
@@ -216,6 +227,13 @@ export function registerPdfHandlers(): void {
         target,
       )
       notifyFileSaved(finalPath, { format: 'pdf' })
+      // Push `saved` to embed SSE listeners; Date.now() is a cheap
+      // monotonic counter the SDK uses as a conflict-detection watermark.
+      sendIpcEvent(event, 'saved', {
+        path: finalPath,
+        version: Date.now(),
+        format: 'pdf',
+      })
       return {
         ok: true,
         ...(skippedTextEdits.length > 0 ? { skippedTextEdits } : {}),

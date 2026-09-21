@@ -5,6 +5,7 @@
  * stays a thin shell over the same LLM / image / translate pipeline that
  * the in-renderer transport already uses. Adding a new LLM feature in IPC
  * automatically surfaces it in REST without duplication.
+ * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
@@ -19,6 +20,7 @@ import { requireScopeFromHeaders } from './auth'
  * **Required scope**: `ai:read`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleAiCapabilities(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:read')
@@ -39,6 +41,7 @@ export async function handleAiCapabilities(ctx: { request: IncomingMessage; resp
  * **Required scope**: `ai:chat`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleAiChat(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:chat')
@@ -68,6 +71,7 @@ export async function handleAiChat(ctx: { request: IncomingMessage; response: Se
  * **Required scope**: `ai:translate`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleAiTranslate(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:translate')
@@ -97,6 +101,7 @@ export async function handleAiTranslate(ctx: { request: IncomingMessage; respons
  * **Required scope**: `ai:image`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleAiImage(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:image')
@@ -126,6 +131,7 @@ export async function handleAiImage(ctx: { request: IncomingMessage; response: S
  * **Required scope**: `ai:skill`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 NOT_FOUND (unknown skill)`
+ * @public
  */
 export async function handleAiSkill(ctx: { request: IncomingMessage; response: ServerResponse }, skillName: string): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:skill')

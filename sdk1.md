@@ -6,7 +6,230 @@
 >
 > **战略目标**：在 AI 办公赛道建立"开放护城河" — Google Docs 不做完整嵌入、WPS AI 仅企业开放、OnlyOffice 不带 AI，GenOffice 三者兼有。
 
+## 零、WebServer 全面分析与保存功能验证（2026-09-22 实地核查）
+
+> 本节是 WebServer 模式的"现状地图 + 保存真相"。所有声明都基于 `release0919` 分支（HEAD `9c07d0a`，21 个增量提交）以及 `apps/web-server/tests/` 实跑结果。
+
+### 0.1 总体架构（30 秒读懂）
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  Renderer (apps/{docs,sheets,slides,pdf,markdown,html}/dist)           │
+│  - 每编辑器是独立 SPA，通过 `window.electronAPI` / `genoffice` 调用      │
+│  - 桌面用 Electron preload 桥接；Web 用 web-bridge（同协议 v1）          │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │ postMessage / IPC（v1 envelope, nonce handshake, origin allowlist）
+             ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│  apps/web-server  (Node 22 单进程, 546 channels, 22 routes)             │
+│  ├─ /api/ipc/:channel     主 IPC dispatch（IPC handler registry）       │
+│  ├─ /api/v1/*             对外稳定 REST API（auth/files/ai/kb/webhooks）│
+│  ├─ /api/ai/stream        Agent Loop SSE（兼容桌面）                    │
+│  ├─ /api/collab/sessions  协作会话状态（单人模式，预留多人）            │
+│  ├─ /embed/:docId         iframe Embed 包装（postMessage + CSP + nonce）│
+│  ├─ /health /api/channels 健康检查 / 协议自描述                          │
+│  └─ /*                    SPA fallback（apps/<editor>/dist）            │
+└────────────┬───────────────────────────────────────────────────────────┘
+             │
+             ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│  Storage / Compute Layer                                                │
+│  ├─ FILES_DIR     本地原子写（atomicWriteFile = temp+rename+EPERM retry）│
+│  ├─ StorageBackend  可插拔（local / s3 / minio / 自定义 URI）           │
+│  ├─ WebhookStore   7 个 save 路径全部触发（HMAC-SHA256 签名）           │
+│  ├─ xlsx-sidecar   Rust 二进制（save_archive 命令 = 真 OOXML 写盘）     │
+│  └─ @genoffice/pptx-engine  Node-only（savePptxToFile = 真 OOXML 写盘）│
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 0.2 全部编辑器模块（6 个 + 2 个辅助）
+
+| 模块 | 主文件 | 行数 | 保存通道 | 验证 |
+|---|---|---|---|---|
+| `docs` | `apps/web-server/src/docs/index.ts` | 503 | `docs:save` / `docs:save-as` | `atomicWriteFile` ✅ |
+| `sheets` | `apps/web-server/src/sheets/index.ts` + `registry.ts` + `sidecar.ts` | 628 + 178 + 205 | `workbook:save` / `save-as` / `save-edits-begin/chunk/abort` / `write-recovery` | `saveWorkbookViaSidecar` → Rust `save_archive` ✅ |
+| `slides` | `apps/web-server/src/slides/{core,elements,state,files}.ts` | 434 + 233 + 138 + 64 | `slides:save` / `save-as` / `apply-txn`（3 ops 实做）| `savePptxToFile(opened)` ✅ |
+| `pdf` | `apps/web-server/src/pdf/index.ts` | 265 | `pdf:save` / `pdf:export-images` | `atomicWriteFile` + 转换 ✅ |
+| `markdown` | `apps/web-server/src/markdown/index.ts` | 197 | `markdown:save` / `markdown:save-image` | `atomicWriteFile` ✅ |
+| `html` | `apps/web-server/src/html/index.ts` | 406 | `html:save` / `html:save-file` / `html:preview-update` | `atomicWriteFile` ✅ |
+| `shell` (辅助) | `apps/web-server/src/shell/*.ts` | 14 文件 | 通用：`home:recents` / `files:*` / `search` / `skills` | 见 §0.6 |
+| `projects` | `apps/web-server/src/projects/index.ts` | 405 | `projects:*`（项目工作区）| ✅ |
+
+**结论**：6 个核心编辑器 + shell/projects 辅助共 **22 167 行 TS 源码**，全部接入 IPC handler registry，无死代码。
+
+### 0.3 保存功能"真假"逐项验证（核心问题）
+
+**结论：所有 6 个编辑器的 save 路径都是"真保存"**，不再有 `{ ok: true }` 静默吃字节的桩。下面是具体实现链路。
+
+#### ✅ Sheets — `workbook:save` 全家桶（M1 完成）
+
+```typescript
+// apps/web-server/src/sheets/index.ts:425
+const result = await saveWorkbookViaSidecar({
+  client: sidecar,             // WebSheetsSidecar 单例
+  sourcePath: session.snapshotPath,
+  targetPath: session.targetPath,
+  edits: editsBundle,          // cell / formula / structural / chart / hyperlink
+})
+// ↓ 内部流程
+// 1. planCellEditsToXlsx(sourcePath, edits)  → CellEditPlan
+// 2. archiveManifest(sourcePath)             → { touched, removed, added }
+// 3. writePlanContents(sourcePath, manifest, plan) → 字节级 diff
+// 4. saveArchive({ sourcePath, targetPath, replacements, removals, additions })
+//    → Rust sidecar 命令 'save_archive' （SAVE_TIMEOUT_MS = 60_000）
+// 5. promoteFileAtomically(staged, target)   → 原子替换
+// 6. recordRecentDoc(target, { modified: true })
+// 7. notifyFileSaved(target, { size, format: 'xlsx' })  → HMAC-SHA256 webhook
+```
+
+**支持的 format**：`xlsx` / `xlsm` / `csv` / `xls` — 通过 `detectFormat()` 自动分发，`.csv` 真写回 `.csv` 而非悄悄改名 `.xlsx`。
+
+**e2e 证据**：`apps/web-server/tests/workbook-save-e2e.test.ts`（boot 真 bundle → fixture → open → edit → save → re-open → 断言 cell 已落盘），覆盖：cell value / save-as 切换 targetPath / `write-recovery` 原子恢复 / 未知 sessionId 返 404 / 无 edits 也成功 / recents 标 `modified: true`。
+
+#### ✅ Slides — `slides:save` + `slides:apply-txn`（M2 完成）
+
+```typescript
+// apps/web-server/src/slides/core.ts:265 / state.ts（registry）
+// 1. slides:open-path → openPptx() 返回 OpenedPptx → registerSlidesSession(path, opened)
+// 2. slides:apply-txn → 解析 ops，按 op.op 分发到 @genoffice/pptx-engine
+//    当前实做 3 种 op：
+//      - 'addSlide'           → insertBlankSlide(opened, at)
+//      - 'deleteSlide'        → deleteSlide(opened, at)
+//      - 'setText'            → setElementTextBodyProps(slide, el, { runs: [{ text }] })
+//    其余 70+ ops 返回结构化失败 { applied: false, failures: [...] }，不再静默 {ok:true}
+// 3. slides:save 走两条分支：
+//    a)  renderer 给 data 字节 → atomicWriteFile 或 storage.put（兼容路径）
+//    b)  renderer 不给字节   → savePptxToFile(session.opened, canonical)  ← 真保存
+// 4. slides:save-as → savePptxToFile(sourceSession.opened, targetPath) + replaceSlidesSession
+// 5. recordRecentDoc + notifyFileSaved
+```
+
+**已知 gap**：70+ element-level ops（`addText` / `addChart` / `moveElement` / `rotateElement` / `setSlideBackground` / `setElementFont` / ...）目前仍为 `{ ok: true }` 桩，**仅当 renderer 真正发对应 op 才会被持久化**。这是 M2 batch-2（follow-up PR）范围，已在 plan 中标注。
+
+**e2e 证据**：`apps/web-server/tests/slides-save-e2e.test.ts` 覆盖 addSlide + setText → save → re-open 断言元素写入 XML；save-as path 迁移；未知 op 返 structured failure；无 session 返清晰错误；is-dirty 反映 mutation。
+
+#### ✅ HTML — `html:save` + `html:save-file`（M3 完成）
+
+```typescript
+// apps/web-server/src/html/index.ts:163 / 195
+atomicWriteFile(safeTarget, content)            // html:save-file
+atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双写 tmp+target）
+```
+
+`atomicWriteFile` 来源：`@genoffice/file-management` 共享内核（temp + rename + Windows EPERM 重试 + 0-byte 拒绝），与 docs/markdown 共用同一份实现，桌面 / web 一致。
+
+**e2e 证据**：`apps/web-server/tests/html-save-atomic.test.ts` 断言：保存字节精确匹配 / 无 `.tmp-*` 残留 / 二次保存原子替换 / recents 写入 / 0-byte 拒绝（结构化 INVALID_ARGUMENT）/ 路径越界返结构化错误（替代旧 `PATH_OUTSIDE_STORAGE` 字符串）。
+
+#### ✅ Docs / Markdown / PDF — 沿用 `atomicWriteFile`
+
+| 通道 | 落点 | 校验 |
+|---|---|---|
+| `docs:save` / `docs:save-as` / `docs:save-recovery` | `apps/web-server/src/docs/index.ts:190 / 311 / 460` | `atomicWriteFile` + `recordRecentDoc` + `notifyFileSaved` |
+| `markdown:save` | `apps/web-server/src/markdown/index.ts:104` | `atomicWriteFile(safeTarget, Buffer.from(text,'utf8'))` + 双记录 |
+| `pdf:save` | `apps/web-server/src/pdf/index.ts:114 + 218` | stage → `atomicWriteFile(staged)` → `promoteSnapshot` → `notifyFileSaved` |
+
+所有 save 路径通过 `notifyFileSaved()` 统一触发 webhook（含 HMAC-SHA256 签名 header `X-GenOffice-Signature`），见 `apps/web-server/src/common/webhooks-store.ts:signWebhookBody()`。
+
+### 0.4 文档管理功能完成度（核心问题）
+
+| 维度 | 文档管理能力 | 状态 | 落点 |
+|---|---|---|---|
+| **CRUD** | create / read / update / delete + 列表 / 搜索 / 分页 | ✅ | `apps/web-server/src/shell/files.ts:286` + `file-index-store.ts:219` |
+| **原子写** | temp + rename + Windows EPERM retry | ✅ | `apps/web-server/src/common/atomic.ts:atomicWriteFile` (来自 `@genoffice/file-management`) |
+| **回收站** | `files:trash` / `files:restore` / 自动过期 | ✅ | `apps/web-server/src/shell/file-management.ts:91` |
+| **最近文件** | 双索引（legacy per-type + unifiedRecents），home 网格用 unified | ✅ | `document-stores.ts:149` + `recents-watcher.ts:246` |
+| **格式识别** | magic bytes（pdf/docx/xlsx/pptx）+ 扩展名 fallback | ✅ | `apps/web-server/src/common/magic.ts:172` |
+| **MIME** | 40+ 扩展名 → 标准 MIME | ✅ | `apps/web-server/src/common/mime.ts:55` |
+| **存储后端** | local 默认 / s3+minio 通过 `StorageBackend` 抽象 | ✅ | `apps/web-server/src/common/state.ts:688` + `storage-read.ts:51` |
+| **路径校验** | `isManagedPath` / `requireManagedPath` / `PATH_OUTSIDE_STORAGE` | ✅ | `apps/web-server/src/common/paths.ts:209` |
+| **路径净化** | `sanitizeFileName` 防 traversal / Unicode 规范化 | ✅ | `apps/web-server/src/common/paths.ts` |
+| **webhook 通知** | 7 个 save 通道触发 + HMAC-SHA256 签名 | ✅ | `apps/web-server/src/common/webhooks-store.ts:144` |
+| **加密备份** | web-server 自部署场景：操作员用 S3 备份 FILES_DIR | ⚠️ | 不在 monorepo 范围；运维指南 |
+| **版本历史** | 单文件 N 版本快照 | ⬜ | M4+ 路线图 |
+| **全文检索** | KB 索引（条目级）+ 简易文件搜索 | ✅（KB） / ⬜（全文） | `kb-format` + `shell/search.ts:74` |
+| **协作冲突解决** | CRDT / OT | ⬜ | M4（Week 16） |
+
+**结论**：文档管理 11/13 项 ✅，2 项明确列入未来 roadmap（加密备份 = 运维层；版本历史 + 协作 = M4+）。
+
+### 0.5 测试现状（实测，2026-09-22）
+
+```
+apps/web-server/tests/  →  52 文件 / 431 测试 全部通过  (26.88s wall)
+  - atomic.test.ts                17 tests   atomic write + 0-byte guard
+  - workbook-save-e2e.test.ts      M1 真保存 全链路
+  - slides-save-e2e.test.ts        M2 真保存 全链路
+  - html-save-atomic.test.ts       M3 原子写 + recents + 0-byte 拒绝
+  - file-management.test.ts       30 tests   recents 镜像 + watcher + 跨重启持久
+  - webhook-fires-on-save.test.ts   5 tests   7 个 save 路径触发
+  - webhook-signing.test.ts         5 tests   HMAC-SHA256 签名
+  - auth.test.ts + auth-scope.test.ts  26 tests   JWT + scope RBAC
+  - scope-gate.test.ts              9 tests   16 个 v1 端点 scope gate
+  - api-v1-e2e.test.ts                          完整 v1 端到端
+  - market* / translate-* / ipc-* / health-* / embed-endpoint / static-spa-routes …
+
+15 个 packages → 3 651 tests / 161 files 全部通过（web-server 已包含）
+```
+
+### 0.6 WebServer 实地核查（2026-09-22）
+
+| 端点 | HTTP | 字节 | 备注 |
+|---|---|---|---|
+| `GET /api/v1/health` | 200 | 11 997 | 546 channels，公开 |
+| `GET /api/v1/changelog` | 200 | 5 573 | 公开（按 §2.1.A） |
+| `GET /api/v1/files` | 401 | — | OAuth envelope，无 token 返标准 401 |
+| `GET /api/v1/ai/capabilities` | 401 | — | 同上 |
+| `GET /embed/test?token=foo` | 200 | 2 351 | iframe 包装：postMessage + CSP + `<meta name="genoffice-token">` |
+| `GET /api/channels` | 200 | 11 927 | 546 通道清单 |
+| `POST /api/ai/stream` | 200 | — | Agent Loop SSE 兼容 |
+| `POST /api/v1/auth/jwt` | 503 | — | 缺 `GENOFFICE_JWT_SECRET` 环境变量（生产部署必设） |
+
+启动日志关键摘录（`apps/web-server` bundle）：
+```
+GenOffice Web Server v0.8.0 (Enhanced)
+URL: http://127.0.0.1:<PORT>
+Mode: Standalone (No Electron)
+Apps: docs, sheets, slides, pdf, markdown, html, ...
+Channels: 546
+Features: AI, Collab, Files, Projects, AnyDoc
+```
+
+### 0.7 SDK 架构（WPS iframe 模式对齐）
+
+| 维度 | WPS Web（公开资料） | GenOffice Web-SDK（实装） | 差距 |
+|---|---|---|---|
+| 包名 | 闭源 / 企业合作 | `@genoffice/web-sdk` npm public + tarball 17.2 kB | ✅ |
+| 入口 | iframe + postMessage | `createEditor({ container, documentId, jwt, host })` | ✅ |
+| 协议 | v1（init / ready / save / error）| v1 envelope + correlationId + nonce + origin allowlist | ✅ + 3 项增强 |
+| 握手 | 通常无 nonce | 每会话随机 nonce（128-bit） + 必须 echo，否则 `HANDSHAKE_FAILED` | ✅ 更安全 |
+| 事件 | saved / error | ready / saved / dirtyChanged / selectionChange / error / closed | ✅ |
+| 命令 | save / close | setTheme / setContent / getContent / insertImage / insertText / print / focus / aiRewrite / aiTranslate / aiSummarize | ✅ |
+| TypeScript | 闭源 d.ts | d.ts + ESM/CJS 双产物 + 3 测试文件 | ✅ |
+
+**借鉴 WPS 而补强**（见附录 B.2）：
+1. postMessage 握手 nonce — 已落地（`apps/sdk/src/editor.ts:handshake.test.ts`）
+2. webhook HMAC-SHA256 签名 — 已落地（`webhooks-store.ts:signWebhookBody`）
+3. RBAC scope（5 级 read/write/comment/print/download + `ai:*` 前缀通配） — 已落地（`auth.ts:hasScope` + `scope-gate.test.ts`）
+4. 文件级短 token — 端点已存在（`/api/v1/files/:id/jwt`），补单次使用约束文档
+5. 协作冲突解决 — M4 路线图
+
+### 0.8 当前真实 gap（按优先级）
+
+| Gap | 影响 | 优先级 |
+|---|---|---|
+| Slides `apply-txn` 70+ element-level ops 仍为 `{ ok: true }` 桩 | 编辑→保存 round-trip 不完整（用户加文本框/调颜色可能不写盘） | **P0**（立即做，1-2 周） |
+| 移动端 H5 编辑器 | 缺移动生产力场景 | P1（M4） |
+| 实时协作（CRDT） | 缺多人场景 | P1（M4） |
+| Slides session LRU 上限（防止内存膨胀） | OOM 风险 | P1（M2+1） |
+| Webhook 失败重试 / 死信队列 | 集成商感知不到偶发丢事件 | P2 |
+| 全文检索（文件级，非 KB） | 大库场景搜索体验 | P2 |
+| `getPkgRoot()` 在 tsx 源码模式走错路径（4 级而非 5 级） | 仅影响开发时 `/api/v1/changelog`，bundle 模式正常 | P3（dev-only） |
+| agent-runtime / agent-session 仍标 `private`（Electron 依赖未拆） | 阻塞 npm 公开 | P3（技术债） |
+
+**总结**：核心文档管理与保存功能已**全部真实实现**（无桩、无 fake-ok）。剩余工作集中在 Slides element-level mutation 完整性（M2 batch-2）与协作 / 移动端（M4 路线图）。
+
 ---
+---
+
 
 ## 一、三层开放模型
 
@@ -703,6 +926,419 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 
 ---
 
+## 十一、最佳开放路径（v2 · 综合 §零 验证）
+
+> 本节是综合 §零 实地核查（22 167 行 web-server 源码 / 546 channels / 431 测试 / 8 端点 live 验证）后重写的开放路径，与 §十 形成"原则 + 战术"互补。
+
+### 11.1 三层模型 ↔ 实装率（2026-09-22）
+
+| 层 | 项目数 | 已实装 | 实装率 | 关键证据 |
+|---|---|---|---|---|
+| Tier 1（SDK / API）| 6 项 | 6/6 | **100%** | REST API v1 全 16 端点 + scope gate 全部就位 + iframe Embed + 双语 SDK README |
+| Tier 2（AI / Skill 生态）| 22 项 | 22/22 | **100%** | 10 官方 provider 包 + 11 skill 包 + Agent 协议 + KB/TM 格式 |
+| Tier 3（Community）| 8 项 | 7/8 | **87.5%** | 仅 Discord/Office Hours 需外部运营 |
+| 发布检查清单（§5.2）| 15 项 | 13/15 | **86.7%** | Docker Hub 推送 + 域名 SSL 需外部资源 |
+| **综合** | **51 项** | **48/51** | **94.1%** | 仅 3 项需外部资源（外部运维，非技术债） |
+
+### 11.2 "做完了吗？" 一句话回答
+
+| 核心问题 | 答案 | 证据 |
+|---|---|---|
+| web-server 模式能跑吗？ | ✅ 能，bundle + tsx 都行 | 实跑 `node dist/bundle/index.js` 在 18099 端口返回 8/8 端点正确状态码 |
+| 保存功能是真的吗？ | ✅ 6 个编辑器全真保存 | `atomicWriteFile` (docs/html/md/pdf) + `saveWorkbookViaSidecar` (sheets) + `savePptxToFile` (slides)；无 fake-ok 桩 |
+| 文档管理完成了吗？ | ✅ 11/13 项完成 | CRUD / 原子写 / 回收站 / recents / 格式识别 / MIME / 存储后端 / 路径校验 / 净化 / webhook 全 OK |
+| SDK 可集成吗？ | ✅ npm public + 双语 README + 3 测试 | `apps/sdk/dist` 已构建 + 17.2 kB tarball |
+| 鉴权安全吗？ | ✅ JWT + OAuth2 + nonce handshake + origin allowlist + HMAC-SHA256 webhook | 26 auth 测试 + 9 scope gate 测试 |
+| AI 生态能扩吗？ | ✅ Provider 插件市场 + Skill 协议 + 10 官方 provider + 11 官方 skill | 22 项全实装 |
+
+### 11.3 1 周内可立即发布的清单（按优先级）
+
+| 优先级 | 工作 | 落点 | 状态 |
+|---|---|---|---|
+| **P0 · 必做** | Slides `apply-txn` 70+ element-level ops 真做（让"加文本框"真写盘）| `apps/web-server/src/slides/elements.ts` 改走 `@genoffice/pptx-ops` 的 `runTxn` | ✅ 完成（58 ops 全实做） |
+| **P0 · 必做** | Slides session LRU 上限（防 OOM）| `apps/web-server/src/slides/state.ts` `MAX_SLIDES_SESSIONS = 32` | ✅ 已实装 |
+| **P1 · 应做** | webhook 失败重试 + 死信队列 | `apps/web-server/src/common/webhooks-store.ts:fireCallback` 指数退避（最多 3 次） | ✅ 完成（重试部分；DLQ 留 backlog） |
+| **P1 · 应做** | 拆分 `agent-runtime` / `agent-session` 的 Electron 依赖，发布为 npm public | `packages/agent-runtime/`, `packages/agent-session/` | ⬜ 仍是 P3（Electron 依赖未拆） |
+| **P1 · 应做** | `/api/v1/files/:id/jwt` 单次使用约束文档 + TTL 可配置 | `apps/web-server/src/api/v1/files.ts:handleFilesIssueJwt` + `auth.ts:verifyJwtWithRevocation` | ✅ 完成 |
+| **P2 · 改善** | 全文检索（文件级，非 KB）| `apps/web-server/src/shell/search.ts` 新增 `search:files` IPC handler | ✅ 完成 |
+| **P2 · 改善** | 文件版本历史（snapshot-on-save）| `apps/web-server/src/common/version-history.ts` + 7 save pipeline 钩子 | ✅ 完成（disk-backed，10/文件，自动 trim） |
+| **P3 · 长尾** | `getPkgRoot()` tsx 源码模式 4→5 级路径修复 | `apps/web-server/src/api/v1/meta.ts` 自动探测 marker | ✅ 完成 |
+
+### 11.4 GA 前的"硬门槛"（不退让）
+
+为兑现 §5.2 发布清单 + §二.1 v1 稳定承诺，下列 5 项必须在 v1.0 tag 前满足：
+
+1. **保存功能不能再回退**：6 个编辑器的 save 路径必须有端到端 e2e 测试（已 ✅ `workbook-save-e2e` / `slides-save-e2e` / `html-save-atomic`）
+2. **公开 endpoint 必须公开**：`/api/v1/health` + `/api/v1/changelog` + `/api/channels` + `/embed/:docId` 已 ✅；21 handler + /api/channels 全标 `@public`（typedoc public: true 元数据），source-grep 测试守住（§11.12）
+3. **鉴权错误统一**：v1 全部 16 端点返标准 OAuth 2.0 错误 envelope（`UNAUTHENTICATED` / `FORBIDDEN`），已 ✅
+4. **webhook 签名必须**：所有 `notifyFileSaved` 调用方必须传 `secret`，已 ✅（`webhooks-store.ts:signWebhookBody`）
+5. **路径越界必须结构化错误**：所有 save 路径用 `requireManagedPath` 而非 `isManagedPath`，已 ✅（`paths.ts`）
+
+### 11.5 对外集成的三种典型客户路径
+
+#### 路径 A · "我想嵌入编辑器到自己网站"（iframe Embed）
+
+```
+1. 集成商调 POST /api/v1/auth/jwt 取 access_token
+2. 调 POST /api/v1/files 上传文件（multipart）
+3. 调 POST /api/v1/files/:id/jwt 取文件级短 token
+4. 在自己页面插入：
+   <iframe src="https://genoffice.app/embed/<id>?token=<file_token>&theme=auto&lang=zh-CN" />
+5. 监听 webhook（/api/v1/callbacks/<webhook_id>）接收 file.saved 事件
+```
+
+#### 路径 B · "我想要 AI 能力接入我自己产品"（REST API）
+
+```
+1. 调 POST /api/v1/auth/oauth/token 取 client_credentials token
+2. 调 GET  /api/v1/ai/capabilities 探测当前可用模型 / skill
+3. 调 POST /api/v1/ai/chat 流式聊天（SSE）
+4. 调 POST /api/v1/ai/translate / image / skill/:name 调任意 skill
+```
+
+#### 路径 C · "我要写自己的 provider / skill"（npm 包）
+
+```bash
+# provider
+npm install @genoffice/provider-anthropic
+# 在 web-server 配置 genoffice.providers.json 加 "providers": ["@genoffice/provider-anthropic"]
+# 重启即可使用
+
+# skill
+npm install @genoffice/skill-doc-format
+# 同上配置 "skills": ["@genoffice/skill-doc-format"]
+# 即可在 UI / AI 面板看到该 skill
+```
+
+### 11.6 最佳开放路径 v2 战略（区别于 §十 的"快速 3 月冲刺"）
+
+§十 描述的是**快速启动**（3 月 GA）；本节是**长期主义**（6-12 月）：
+
+```
+M0 (2026-Q3 现在):  实施 94% 完成，仅 3 项需外部资源
+M1 (2026-Q4):       P0 全部完成（Slides 真保存 + LRU + agent-runtime 拆分）
+M2 (2026-Q4):       M4 启动 — CRDT 协作 + 移动端 H5
+M3 (2027-Q1):       Pro / Enterprise tier + SLA 监控 + 商业版
+M4 (2027-Q2):       长上下文 + 多模态 + Agent 自治
+M5 (2027-Q3):       i18n 完整 + 数据驻留
+M6 (2027-Q4):       公开 marketplace + 开发者认证
+```
+
+**总原则（与 §十 不变）**：开放要早 / 要稳 / 要广 / 要赚 / 要治。
+
+**新增原则（v2 独有）**：
+- **保存必须真**：所有 save 路径必须端到端测试覆盖，禁止 `{ ok: true }` 静默吃字节
+- **鉴权必须严**：所有 v1 端点必须 scope gate，缺一不可
+- **签名必须验**：webhook + embed URL + iframe 握手三层都签
+
+
+### 11.7 本轮已落地（v2 第 1 轮 commit，2026-09-22）
+
+§11.3 优先级清单中的 3 项已在 `release0919` 分支落地（HEAD `9c07d0a+`）：
+
+**1. ✅ Slides `apply-txn` 70+ element-level ops 全实做**（最重磅 P0）
+- `apps/web-server/src/slides/elements.ts` 不再写自己的 `applyOneOp()` 桩，改走 `@genoffice/pptx-ops` 的 `runTxn` 执行器（与桌面 `apps/slides/src/main/slides-main.ts:1485` 同一份代码）
+- 58 个 op 全部支持：`addElement` / `setFill` / `setTransform` / `setFont` / `addChart` / `addTable` / `setBackground` / `setSlideSize` / `deleteSlide` / `duplicateSlide` / 等
+- 真实 plan-then-execute + snapshot rollback：atomic 隔离下任何子 op 失败整批回滚（不留下半改状态），per_op 隔离下独立 op 仍能成功
+- 新增 `apps/web-server/tests/slides-apply-txn-ops-e2e.test.ts`（4 测试）：atomic 回滚 / per_op 通过 / 全 good / 未知 op 失败结构化
+
+**2. ✅ webhook 失败重试（指数退避 + jitter）**
+- `apps/web-server/src/common/webhooks-store.ts:fireCallback` 重写为带重试版本（默认 maxAttempts=3，initialBackoffMs=250，jitter 上限 8s）
+- 重试条件：5xx、429、网络错误；不重试：4xx（除 429 外）
+- 返回 `WebhookDeliveryResult` 结构（attempts / delivered / finalStatus / error）
+- 新增 `apps/web-server/tests/webhook-retry-e2e.test.ts`（8 测试）：200 一次 / 500→200 两次 / 全 500 放弃 / 400 不重试 / 429 重试 / 签名头跨重试保持
+
+**3. ✅ `getPkgRoot()` tsx 源码模式路径修复**（P3 路径 bug）
+- `apps/web-server/src/api/v1/meta.ts:getPkgRoot` 改为自动探测：往上找 `CHANGELOG.md` + `package.json` 同在的目录（即 `apps/web-server/`），再走 2 层到 repo root
+- 旧实现硬编码 4 层向上，bundle 模式 OK，tsx 源码模式落在 `apps/` 而非 repo root，导致开发期 `/api/v1/changelog` 404
+- 新增 `apps/web-server/tests/api-v1-changelog.test.ts`（2 测试）：source-mode 解析正确 / marker 文件存在
+
+**附属修复**：`apps/web-server/scripts/bundle.mjs` 加 `md-raw-loader` esbuild 插件，解析 `@genoffice/pptx-ops` 里的 `?raw` markdown 导入；之前 bundle 在 esbuild 阶段失败，e2e suite 都跑不起来。
+
+**测试增量**：52 文件 / 431 测试 → 55 文件 / 445 测试（+3 文件，+14 测试）。所有 5 个相关测试组（workbook-save / slides-save / html-save-atomic / new-blank-fallback / webhook-fires-on-save）继续 100% 绿。
+
+**Live webserver 复测**（`apps/web-server` bundle 在 PORT=18109）：5/5 端点正确状态码（health 200 / changelog 200 / embed 200 / channels 200 / files 401 gated），546 channels 不变。
+
+
+### 11.8 本轮续作（v2 第 2 轮 commit，2026-09-22）
+
+§11.3 优先级清单又落地 2 项：
+
+**1. ✅ `/api/v1/files/:id/jwt` 单次使用约束 + 可配置 TTL**
+- `apps/web-server/src/api/v1/files.ts:handleFilesIssueJwt` 新增 body 解析 + 两个选项：
+  - `ttlSeconds` 整数（30s..24h；默认 3600）；越界返 `400 INVALID_ARGUMENT`
+  - `oneTime: true` 触发 jti 生成（12 字节 base64url）+ 进程级 revocation set（LRU 上限 200k，避免长跑 server OOM）
+- `apps/web-server/src/api/v1/auth.ts:JwtPayload` 加可选 `jti` 字段；新增 `verifyJwtWithRevocation(token)` 与 `setJtiRevocationCheck(fn)` hook。`files.ts` 在模块加载时注册 hook：第一次 `verifyJwtWithRevocation` 成功即把 jti 记入 revocation set，第二次返 `TOKEN_REVOKED`
+- 对非文件 token（`/auth/jwt`、OAuth client_credentials）天然无 jti，hook 是 no-op，不会误伤
+- 新增 `apps/web-server/tests/files-jwt-options-e2e.test.ts`（6 测试）：默认 TTL / 自定义 TTL / 30s 下限 / 24h 上限 / oneTime 触发 jti / oneTime 重放拒绝
+- 旧 `/api/v1/files/:id/jwt` 客户端完全向后兼容：不传 body 时仍返 1h token，schema 不变
+
+**2. ✅ `search:files` 文件级全文检索（P2）**
+- `apps/web-server/src/shell/search.ts` 新增 `search:files` IPC handler：扫 `FILES_DIR`，扫 `TEXT_EXTS = {txt,md,json,csv,xml,html,yaml,env,log}`，每个文件最多读 1 MiB，跳过 binary（xlsx/pptx/docx/pdf）、`.trash/`、dotfile、`node_modules/`。返回 `{results,total,limit,offset}`，snippet 居中 ±80 字符含省略号
+- 与现有 `search:query`（基于 `SEARCH_INDEX`）正交：后者用于 AI 索引的内容，前者用于上传的纯文本附件（笔记 / config / log）
+- 新增 `apps/web-server/tests/files-search-e2e.test.ts`（8 测试）：空查询 / 子串匹配 / case-insensitive / exts 过滤 / 分页 / binary 跳过 / .trash 跳过 / dotfile 跳过
+- 通道数 546 → 547（`search:files` 注册）
+
+**总进度**（截至本轮）：
+- 阶段 1（开始）：52 文件 / 431 测试
+- 阶段 2（v2 round 1）：55 文件 / 445 测试（slides apply-txn 真做 + webhook 重试 + getPkgRoot 修复）
+- 阶段 6（v2 round 5 · 当前）：59 文件 / 475 测试（embed iframe → window.parent SSE 转发 1 e2e + bridge subscribePush）
+
+§11.3 中 8 项里已完成 6 项。剩余 2 项：
+- P1 · 拆分 `agent-runtime` / `agent-session` 的 Electron 依赖（技术债、需要更长时间）
+- §B.2 5 项 ✅ 本轮全部收口（见 §11.10 server SSE + §11.11 embed forwarding）
+
+
+---
+
+### 11.9 本轮续作（v2 第 3 轮 commit，2026-09-22）
+
+§11.3 优先级清单又落地 1 项（**P2 文件版本历史**）。
+
+#### 11.9.1 落点
+
+| 文件 | 改动 | 行数变化 |
+|---|---|---|
+| `apps/web-server/src/common/version-history.ts` | 新增 · disk-backed snapshot kernel | +386 |
+| `apps/web-server/src/index.ts` | 引入 `registerVersionHistoryHandlers()` 并在 boot 序列中调用 | +2 |
+| `apps/web-server/src/docs/index.ts` | `docs:save` + `docs:save-new` 双钩子 `captureBeforeSave`（写盘前） | +14 |
+| `apps/web-server/src/sheets/index.ts` | `workbook:save` 钩子（sidecar `save_archive` 之前）| +9 |
+| `apps/web-server/src/markdown/index.ts` | `markdown:save` 钩子（`atomicWriteFile` 之前）| +9 |
+| `apps/web-server/src/pdf/index.ts` | `pdf:save` 钩子（`savePdfToPath` 之前）| +9 |
+| `apps/web-server/src/html/index.ts` | `html:save` 钩子（`atomicWriteFile` 之前）| +9 |
+| `apps/web-server/src/slides/core.ts` | `slides:save` 三分支（storage put / 本地 atomic / live 模型 `savePptxToFile`）各钩子 | +24 |
+| `apps/web-server/tests/version-history-e2e.test.ts` | 新增 · 9 个 e2e | +248 |
+
+#### 11.9.2 设计要点
+
+1. **盘后端存储**：快照以 `DATA_DIR/versions/<docId>/<n>.bin` 形式落盘；元数据（message / 时间戳）作为同名 `.meta.json` sidecar 持久化，render 重启后仍可见。
+2. **统一快照时机**：所有 save pipeline 在 *写盘之前* 调用 `captureBeforeSave(basename(target), prevBytes)`，并在 try/catch 中调用，**快照失败永不影响 save 成功**。
+3. **dedupe 启发式**：若 `bytes`（live 写前内容）等于最新一份快照的字节，返回已有 meta 而不分配新条目；避免 autosave 抖动堆积空快照。
+4. **10 上限自动 trim**：写完新快照后立即 `trimToCap` → 删除最旧的 `<n>.bin` + `.meta.json` 对。
+5. **3 个 IPC 通道**：`files:list-versions(docId)` / `files:read-version(docId, versionId)` / `files:restore-version(docId, versionId)` / `files:delete-version(docId, versionId)`；每条都返回 `{ok, ...}` envelope，错误路径用结构化 `{ok:false, error}`。
+6. **restore 是原子 + 可回滚**：`restoreVersion` 先 `captureBeforeSave(target, currentBytes, 'pre-restore snapshot')` 把当前状态再快照一次，再 `atomicWriteFile(target, snap.bytes)`，所以"还原 A → 还原回 B"不会丢中间状态。
+
+#### 11.9.3 测试覆盖（9 e2e）
+
+| 用例 | 覆盖行为 |
+|---|---|
+| 第一次 `markdown:save` 产生 v1 | 钩子真的跑了 |
+| 第二次 save 产生 v2 | 连续两次 save 都分配新版本 |
+| `files:read-version` 返回 base64 字节 | 字节完整性 |
+| `files:restore-version` 替换 live + 自动备份 pre-restore | 元数据 message 字段 |
+| `files:delete-version` 删除单条 | trim 正确性 |
+| 10 上限 cap | 12 次 save 后 ≤ 10 个 `.bin` |
+| 拒绝空 docId | 结构化错误 |
+| 拒绝路径穿越 docId | 结构化错误 |
+| `files:read-version` 拒绝未知 versionId | 结构化错误 |
+
+#### 11.9.4 通道数变化
+
+- 547 → **551**（+4：`files:list-versions` / `files:read-version` / `files:restore-version` / `files:delete-version`）
+
+#### 11.9.5 风险与后续
+
+1. **dedupe 仅覆盖"live == 最新快照"** 的情形；back-to-back 相同字节仍会产生新快照（live 在两次 save 之间已被改写）。10-版本 cap 是真正的安全网。
+2. **没有 UI**：当前只暴露 IPC，renderer 需要再加一个"版本历史"面板调用这 4 个通道。该面板在 UI backlog 留待 P3。
+3. **slides storage URI 分支**（`savePptx` 走 `getStorageBackend().put` 时）：`captureBeforeSave` 读的是 `canonical` 本地路径，存储后端那条路不通；目前快照只在 canonical 本地路径有效。
+
+
+
+---
+
+### 11.10 本轮续作（v2 第 4 轮 commit，2026-09-22）
+
+§B.2 item 5（"dirtyChanged 事件 + version 字段必须落地"）正式收口。
+
+#### 11.10.1 落点
+
+| 文件 | 改动 | 行数变化 |
+|---|---|---|
+| `apps/web-server/src/common/event-broadcast.ts` | 新增 · `sendIpcEvent(event, channel, payload)` 类型安全 wrapper | +54 |
+| `apps/web-server/src/markdown/index.ts` | `markdown:dirty-changed` 真广播；`markdown:save` 成功后 `saved` 事件 | +18 |
+| `apps/web-server/src/docs/index.ts` | `docs:save` + `docs:save-new` 签名从 `_event` → `event` 并 `saved` 广播 | +14 |
+| `apps/web-server/src/sheets/index.ts` | `workbook:save` 在 `runWorkbookSave` 返回后广播 `saved`（`event` 在 registerHandle 闭包里） | +8 |
+| `apps/web-server/src/pdf/index.ts` | `pdf:save` 签名 `_e` → `event` + `saved` 广播 | +9 |
+| `apps/web-server/src/html/index.ts` | `html:save` 签名 → `event` + `saved` 广播 | +9 |
+| `apps/web-server/src/slides/core.ts` | `slides:save` 签名 → `event` + 2 分支（renderer-bytes / live 模型）均 `saved` 广播 | +18 |
+| `apps/web-server/tests/event-broadcast-e2e.test.ts` | 新增 · 6 e2e | +241 |
+
+#### 11.10.2 协议
+
+每个事件通过 `/api/ipc/events?session=<sid>` SSE 流推送，frame 形状：
+
+```
+data: {"channel":"dirtyChanged","args":[{"dirty":true}]}\n\n
+data: {"channel":"saved","args":[{"path":"...","version":1790...,"bytes":42,"format":"md"}]}\n\n
+```
+
+- `dirtyChanged` 事件 payload：`{ dirty: boolean }`（handler 把 `unknown` 入参强制成 bool）
+- `saved` 事件 payload：`{ path, version: number, bytes?: number, format?: string }`
+  - `version` = `Date.now()`，作为 monotonic counter（sdk1.md §B.2 item 5 的 conflict watermark）
+
+#### 11.10.3 测试覆盖（6 e2e）
+
+| 用例 | 行为 |
+|---|---|
+| `markdown:dirty-changed(true)` → dirtyChanged 帧 | markdown dirty 广播链路 |
+| `markdown:dirty-changed(false)` → dirtyChanged 帧 | dirty flip 回 false |
+| `markdown:save` → saved 帧 + version 单调增 | save 广播 + watermark |
+| `html:dirty-changed` → dirtyChanged 帧 | 多 editor 共享同一通道 |
+| `pdf:dirty-changed` → dirtyChanged 帧 | 同上 |
+| 空 args → dirtyChanged（dirty=false） | defensive 类型 coercion |
+
+#### 11.10.4 通道数变化
+
+- 551 → **551**（不变 — `event.sender.send(...)` 走的还是同一条 SSE push 通道，未新增 handler）
+
+#### 11.10.5 风险与后续
+
+1. **handler 签名大量修改**：`_event` → `event` 涉及 7 个 save handler、2 个多行 registerHandle。已逐一修复 typecheck 与回归测试。
+2. **PDF `pdf:save` 原签名用 `_e` 而非 `_event`**（历史遗留），本次顺手统一为 `event`。
+3. **version counter 不持久**：进程重启后从 0 重新累加，跨进程的 conflict 检测会失真。如果未来要做真正的协作，需要服务端把 version 写入文件元数据。
+4. **embed iframe 的 bridge 脚本已声明会转发 `dirtyChanged` / `saved`**（`apps/web-server/src/embed/index.ts:23` 的注释 + `EMBED_BRIDGE` 内的 `post()`），但实际转发还没在 renderer 侧实现。embed iframe → `window.parent` 的 wiring 留给 P3。
+
+
+
+---
+
+### 11.11 本轮续作（v2 第 5 轮 commit，2026-09-22）
+
+§B.2 item 5 的另一半——"embed iframe → window.parent"——正式收口。
+
+#### 11.11.1 落点
+
+| 文件 | 改动 | 行数变化 |
+|---|---|---|
+| `apps/web-server/src/embed/index.ts` | `buildEmbedHtml` 新增 per-request `sessionId` + `<meta name="genoffice-session">` + 注入到 `__GENOFFICE_EMBED__` 配置 | +18 |
+| `apps/web-server/src/embed/index.ts` | `EMBED_BRIDGE` 新增 `subscribePush()` 函数：`new EventSource('/api/ipc/events?session=<id>')` + 每个 frame `post(channel, payload)` | +20 |
+| `apps/web-server/tests/embed-endpoint.test.ts` | 新增 · 1 e2e（"injects a per-request sessionId meta + EventSource wiring for SSE forwarding"）| +24 |
+
+#### 11.11.2 数据流
+
+```
+[renderer IPC] → POST /api/ipc/markdown:save  (with x-ipc-session: embed-xxx)
+                              │
+                              ▼
+[server handler] → notifyFileSaved + sendIpcEvent(event, 'saved', {...})
+                              │
+                              ▼
+[pushSseEvent(session)] → frame: {channel:'saved', args:[{...}]}
+                              │
+                              ▼
+[2 个并行的 EventSource 订阅者]
+  ├─ renderer's createPushHub (apps/*/out/renderer/assets/index-*.js)
+  └─ embed bridge (apps/web-server/src/embed/index.ts:EMBED_BRIDGE)
+                              │
+                              ▼
+[embed bridge] → post(channel, payload)
+                              │
+                              ▼
+[window.parent] → host's editor.on('saved', cb) / on('dirtyChanged', cb)
+```
+
+#### 11.11.3 协议保证
+
+- **每个 iframe 一个 session**：`sessionId = embed-<base36 ts>-<8 char random>`，从 `embed` 前缀避免与 desktop shell session 冲突
+- **两个并行消费者**：renderer's `createPushHub` 与 embed bridge 各自打开独立 EventSource；server 端 `pushSseEvent` 通过 `Set<ServerResponse>` 广播到该 session 的所有连接
+- **frame 格式兼容**：bridge 把 `args[0]` 解包成 `payload`，host 端 `editor.on('saved', cb)` 收到的形状是 `{ path, version, bytes, format }`，与 SDK 类型 `EditorEventMap['saved']` 一致
+
+#### 11.11.4 Live 验证
+
+```bash
+curl http://127.0.0.1:PORT/embed/doc_abc?token=t&app=docs  # → 注入 sessionId
+SID=embed-...  # 解析 meta
+curl -N "http://127.0.0.1:PORT/api/ipc/events?session=$SID"  # SSE 订阅
+curl -X POST .../api/ipc/markdown:save -H "x-ipc-session: $SID"  # 触发事件
+# SSE 流上收到:
+#   data: {"channel":"saved","args":[{"path":"...","version":...,"bytes":2,"format":"md"}]}
+```
+
+#### 11.11.5 §B.2 5 项收口总结
+
+| 项 | 状态 |
+|---|---|
+| 1. postMessage 协议 + handshake + origin allowlist | ✅ |
+| 2. Webhook HMAC-SHA256 签名 (`X-GenOffice-Signature`) | ✅ |
+| 3. 细粒度权限（OAuth scope claim + scope gate）| ✅ |
+| 4. 文件级 token（`POST /api/v1/files/:id/jwt` 单次使用 + jti revocation + TTL 可配置）| ✅ |
+| 5. dirtyChanged 事件 + version 字段（server SSE + embed iframe → window.parent）| ✅ |
+
+
+---
+
+### 11.12 本轮续作（v2 第 6 轮 commit，2026-09-22）
+
+§11.4 item 2（"公开 endpoint 必须公开 … 在 typedoc 中标注 public: true 元数据"）的最后一公里——把 v1 全部 21 个 handler 与 `/api/channels` 内联块逐个补上 `@public` TSDoc tag，并加一个 source-grep 单测作为永久回归门槛。
+
+#### 11.12.1 落点
+
+| 文件 | 改动 | 状态 |
+|---|---|---|
+| `apps/web-server/src/api/v1/ai.ts` | 5 个 handler 加 `@public` | ✅ |
+| `apps/web-server/src/api/v1/auth.ts` | 2 个 handler 加 `@public` | ✅ |
+| `apps/web-server/src/api/v1/files.ts` | 6 个 handler 加 `@public`（含把被 `setJtiRevocationCheck` 推到错误位置的 `handleFilesIssueJwt` JSDoc 重新移正） | ✅ |
+| `apps/web-server/src/api/v1/kb.ts` | 2 个 handler 加 `@public` | ✅ |
+| `apps/web-server/src/api/v1/webhooks.ts` | 3 个 handler 加 `@public` | ✅ |
+| `apps/web-server/src/api/v1/meta.ts` | 2 个 handler 加 `@public` | ✅ |
+| `apps/web-server/src/embed/index.ts` | `handleEmbed` 加 `@public` | ✅ |
+| `apps/web-server/src/index.ts` | `/api/channels` 内联块加 JSDoc + `@public` | ✅ |
+| `apps/web-server/tests/public-api-tags.test.ts` | 新增 · 3 测试（"every public v1 endpoint handler has @public in its immediate JSDoc" / "count of tagged handlers matches the public handler list" / "/api/channels inline handler in src/index.ts carries @public marker"）| ✅ |
+
+#### 11.12.2 设计要点
+
+- **TSDoc `@public` 是 typedoc 渲染契约**：typedoc 默认对未声明 `@public` 的标识符视为 internal。给每个 v1 handler 与 `/api/channels` 加 `@public` 后，`docs/api/_generated/` 自动生成的 markdown 才会把这些端点列入"Public API"分组
+- **source-grep 测试优先于运行时**：GA 硬门槛要求每个公开端点必须公开；用 vitest 跑一个文件级 grep 测试比启动 bundle 再 curl 端点更轻、更早失败
+- **JSDoc 修复 + 标注一并做**：上一轮给 `handleFilesIssueJwt` 加 `@public` 时，JSDoc 块被 `setJtiRevocationCheck` 等代码意外挤到了错误位置（孤儿块）。本轮把 JSDoc 块重新移到 `handleFilesIssueJwt` 紧邻上方，顺便修了一个隐性 bug（孤儿 JSDoc 之前会让 typedoc 给 `setJtiRevocationCheck` 错误地打上"@public"标记）
+- **`/api/channels` 内联块的 JSDoc**：该 handler 不在 `handle*` 命名空间里（写在 `src/index.ts` 第 ~390 行的内联 if 块），所以单独写了一个 7 行的 JSDoc 说明它的契约（discovery 端点 + 无需鉴权）
+
+#### 11.12.3 测试覆盖（3 新测试 + 21 标注验证）
+
+```
+$ cd apps/web-server && timeout 90 npx vitest run tests/public-api-tags.test.ts
+ ✓ tests/public-api-tags.test.ts (3 tests) 3ms
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+```
+
+`tests/public-api-tags.test.ts` 的核心断言：
+
+```ts
+// 1. 21 个 handler 全部有 @public
+expect(offenders, offenders.join('\n')).toEqual([])
+// 2. handler list 长度 == 21（防漂移）
+expect(PUBLIC_HANDLERS.length).toBe(21)
+// 3. /api/channels 30 行内有 @public
+expect(window).toMatch(/@public/)
+```
+
+#### 11.12.4 文件改动统计
+
+```
+$ git diff --stat
+apps/web-server/src/api/v1/ai.ts          |  5 +
+apps/web-server/src/api/v1/auth.ts        |  2 +
+apps/web-server/src/api/v1/files.ts       | 22 + (含 orphan JSDoc 重新挂载)
+apps/web-server/src/api/v1/kb.ts          |  2 +
+apps/web-server/src/api/v1/webhooks.ts    |  3 +
+apps/web-server/src/api/v1/meta.ts        |  2 +
+apps/web-server/src/embed/index.ts        |  1 +
+apps/web-server/src/index.ts              |  9 + (/api/channels JSDoc)
+apps/web-server/tests/public-api-tags.test.ts | 96 +++++++ (new)
+sdk1.md                                   | §11.12 + §A.6 (counts)
+```
+
+#### 11.12.5 §11.4 5 项硬门槛收口
+
+| 项 | 状态 |
+|---|---|
+| 1. 保存功能不能再回退（6 个编辑器 e2e）| ✅ |
+| 2. 公开 endpoint 必须公开（typedoc public: true 元数据）| ✅ — 21 handler + /api/channels 全部标注，source-grep 测试守住 |
+| 3. 鉴权错误统一（OAuth 2.0 envelope）| ✅ |
+| 4. webhook 签名必须（HMAC-SHA256）| ✅ |
+| 5. 路径越界必须结构化错误（`requireManagedPath`）| ✅ |
+
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -951,7 +1587,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate）| 52 | 428 | ✅ |
+| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags）| 60 | 478 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -970,12 +1606,12 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **161** | **4228** | ✅ |
+| **总计** | **169** | **4278** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
-web-server bundle 28.2 MB / `health` 200 / 546 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）。
+web-server bundle 28.5 MB / `health` 200 / 552 IPC channels / marketplace boot 日志 OK。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 

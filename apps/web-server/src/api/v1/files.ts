@@ -6,6 +6,7 @@
  * means the REST API and the in-renderer transport share the same storage
  * backend, recents bookkeeping, and quota enforcement — a file uploaded
  * via REST shows up in `home:recents` immediately, and vice versa.
+ * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
@@ -14,7 +15,7 @@ import { FILES_DIR } from '../../common/index'
 import { existsSync, statSync, unlinkSync, writeFileSync, readdirSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { verifyJwt, signJwt, requireScopeFromHeaders, type JwtPayload } from './auth'
+import { verifyJwt, signJwt, requireScopeFromHeaders, type JwtPayload, setJtiRevocationCheck } from './auth'
 
 function getJwtFromAuth(headers: IncomingMessage['headers']): { sub: string; doc?: string; perm?: string[]; scope?: string[] } | null {
   const auth = headers.authorization
@@ -54,6 +55,7 @@ function requireFilesScope(
  * **Required scope**: `files:read`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleFilesList(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const caller = getJwtFromAuth(ctx.request.headers)
@@ -94,6 +96,7 @@ export async function handleFilesList(ctx: { request: IncomingMessage; response:
  * **Required scope**: `files:write`
  *
  * **Errors**: `400 INVALID_ARGUMENT`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleFilesCreate(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const caller = getJwtFromAuth(ctx.request.headers)
@@ -165,6 +168,7 @@ export async function handleFilesCreate(ctx: { request: IncomingMessage; respons
  * **Required scope**: `files:read`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 NOT_FOUND`
+ * @public
  */
 export async function handleFilesGet(ctx: { request: IncomingMessage; response: ServerResponse }, id: string): Promise<boolean> {
   const caller = getJwtFromAuth(ctx.request.headers)
@@ -203,6 +207,7 @@ export async function handleFilesGet(ctx: { request: IncomingMessage; response: 
  * **Required scope**: `files:delete`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 NOT_FOUND`
+ * @public
  */
 export async function handleFilesDelete(ctx: { request: IncomingMessage; response: ServerResponse }, id: string): Promise<boolean> {
   const caller = getJwtFromAuth(ctx.request.headers)
@@ -233,15 +238,85 @@ export async function handleFilesDelete(ctx: { request: IncomingMessage; respons
   return true
 }
 
+
+const FILE_JWT_TTL_MIN_SEC = 30
+const FILE_JWT_TTL_MAX_SEC = 86_400 // 24h
+const FILE_JWT_DEFAULT_TTL_SEC = 3600
+
+/**
+ * Single-use revocation set: tokens whose `jti` already authenticated are
+ * added here so the second use returns TOKEN_REVOKED. Bounded to the
+ * last `MAX_REVOCATIONS` entries (LRU eviction by insertion order) so
+ * the set cannot grow without bound across a long-running server. The
+ * bound is conservative — a 24h-token has 86 400 s; we keep at most
+ * 2× that many entries so any one-time token's revocation outlives its
+ * own TTL.
+ */
+const MAX_REVOCATIONS = 200_000
+const revokedJtis = new Set<string>()
+const revocationOrder: string[] = []
+
+function revokeJti(jti: string): void {
+  if (revokedJtis.has(jti)) return
+  revokedJtis.add(jti)
+  revocationOrder.push(jti)
+  while (revocationOrder.length > MAX_REVOCATIONS) {
+    const oldest = revocationOrder.shift()
+    if (oldest) revokedJtis.delete(oldest)
+  }
+}
+
+export function isJtiRevoked(jti: string): boolean {
+  return revokedJtis.has(jti)
+}
+
+/**
+ * Test-only reset hook; keeps e2e suites isolated.
+ */
+export function _resetFileJwtState(): void {
+  revokedJtis.clear()
+  revocationOrder.length = 0
+}
+
+/**
+ * Install the single-use revocation hook into `verifyJwtWithRevocation`.
+ * Called once at module-load time so every embed / file JWT verification
+ * flows through the revocation list. The hook also records the jti on
+ * first verify — so callers do not need a separate "consume" step; the
+ * act of successful verification IS the consumption.
+ *
+ * For non-file tokens (global /auth/jwt, OAuth client_credentials), no
+ * `jti` is minted so the check is a no-op.
+ */
+setJtiRevocationCheck((jti) => {
+  if (revokedJtis.has(jti)) return true
+  revokeJti(jti)
+  return false
+})
+
 /**
  * `POST /api/v1/files/:id/jwt`
  *
- * Mint a short-lived, file-scoped JWT (1 hour TTL) bound to a single document id. The token can be passed to the embed URL.
+ * Mint a short-lived, file-scoped JWT bound to a single document id. The
+ * token can be passed to the embed URL (`?token=...`). Honours two
+ * client-controlled options to align with WPS-style file tokens:
+ *
+ *   - **TTL**: `ttlSeconds` in the request body caps the token's lifetime.
+ *     Defaults to 1 hour. Range: 30 s … 24 h. Integrators that need a
+ *     short-lived refresh token for SPA bootstrap should pass ~300 s.
+ *   - **Single use**: when `oneTime: true`, the token carries a unique
+ *     `jti` and is recorded in a process-local revocation set. The first
+ *     successful verification consumes the entry; subsequent calls (even
+ *     from the same client) answer 401 TOKEN_REVOKED. Use this for
+ *     one-shot embedding where the iframe URL may be cached anywhere.
  *
  * **Required scope**: `files:read`
  *
- * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`, `404 NOT_FOUND`
+ * **Errors**: `400 INVALID_ARGUMENT`, `401 UNAUTHENTICATED`,
+ *             `403 FORBIDDEN`, `404 NOT_FOUND`
+ * @public
  */
+
 export async function handleFilesIssueJwt(ctx: { request: IncomingMessage; response: ServerResponse }, id: string): Promise<boolean> {
   const caller = getJwtFromAuth(ctx.request.headers)
   if (!caller) {
@@ -258,21 +333,82 @@ export async function handleFilesIssueJwt(ctx: { request: IncomingMessage; respo
     sendError(ctx.response, 404, `file not found: ${id}`, 'NOT_FOUND', 'files:jwt')
     return true
   }
-  // Short-lived file-scoped token: `doc` claim binds the token to this file
-  // so a leaked iframe URL cannot be reused against a different file.
+  // Parse the optional request body (POST without body is fine). Accept
+  // either JSON or x-www-form-urlencoded so legacy form-style callers
+  // keep working.
+  const body = await readBody(ctx.request)
+  const params = parseBody(body)
+  const ttlRaw = params.ttlSeconds
+  let ttlSec = FILE_JWT_DEFAULT_TTL_SEC
+  if (ttlRaw !== undefined) {
+    const n = Number(ttlRaw)
+    if (!Number.isFinite(n) || !Number.isInteger(n)) {
+      sendError(ctx.response, 400, 'ttlSeconds must be an integer', 'INVALID_ARGUMENT', 'files:jwt')
+      return true
+    }
+    if (n < FILE_JWT_TTL_MIN_SEC || n > FILE_JWT_TTL_MAX_SEC) {
+      sendError(
+        ctx.response,
+        400,
+        `ttlSeconds out of range (${FILE_JWT_TTL_MIN_SEC}..${FILE_JWT_TTL_MAX_SEC})`,
+        'INVALID_ARGUMENT',
+        'files:jwt',
+      )
+      return true
+    }
+    ttlSec = n
+  }
+  const oneTime = params.oneTime === 'true' || params.oneTime === '1'
   const now = Math.floor(Date.now() / 1000)
-  const exp = now + 3600
+  const exp = now + ttlSec
+  const jti = oneTime ? randomBytes(12).toString('base64url') : undefined
   const token = signJwt({
     sub: caller.sub,
     doc: id,
     ...(caller.perm ? { perm: caller.perm } : {}),
+    ...(jti ? { jti } : {}),
     iat: now,
     exp,
     iss: 'genoffice',
     aud: 'genoffice-web',
   })
-  sendJson(ctx.response, 200, { token, exp })
+  sendJson(ctx.response, 200, {
+    token,
+    exp,
+    ttlSeconds: ttlSec,
+    oneTime,
+    ...(jti ? { jti } : {}),
+  })
   return true
+}
+
+function parseBody(raw: string | null): Record<string, string> {
+  if (!raw) return {}
+  const trimmed = raw.trim()
+  if (!trimmed) return {}
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>
+      const out: Record<string, string> = {}
+      for (const [k, v] of Object.entries(obj)) {
+        if (v == null) continue
+        out[k] = typeof v === 'string' ? v : String(v)
+      }
+      return out
+    } catch {
+      return {}
+    }
+  }
+  // x-www-form-urlencoded fallback.
+  const out: Record<string, string> = {}
+  for (const pair of trimmed.split('&')) {
+    const eq = pair.indexOf('=')
+    if (eq < 0) continue
+    const k = decodeURIComponent(pair.slice(0, eq).replace(/\+/g, ' '))
+    const v = decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, ' '))
+    out[k] = v
+  }
+  return out
 }
 
 /**
@@ -283,6 +419,7 @@ export async function handleFilesIssueJwt(ctx: { request: IncomingMessage; respo
  * **Required scope**: `files:write`
  *
  * **Errors**: `400 INVALID_ARGUMENT`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleFilesCallback(ctx: { request: IncomingMessage; response: ServerResponse }, id: string): Promise<boolean> {
   const caller = getJwtFromAuth(ctx.request.headers)

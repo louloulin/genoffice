@@ -3,11 +3,13 @@
  * save, save-as, export-pdf, consume-pending-open, font-download/install,
  * insert-model3d. Persistence uses `slides-recent.json`.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { DOCS_RECENT, FILES_DIR, loadRecentSlides, registerHandle, requireManagedPath, saveRecentSlides, writeBlankOfficeFile, isManagedPath } from '../common/index'
 import { recordRecentDoc } from '../common/document-stores'
 import { notifyFileSaved } from '../common/webhooks-store'
+import { sendIpcEvent } from '../common/event-broadcast'
+import { captureBeforeSave } from '../common/version-history'
 import { openPptx, savePptxToFile } from '@genoffice/pptx-engine'
 import {
   registerSlidesSession,
@@ -263,7 +265,7 @@ export function registerSlidesCoreHandlers(): void {
 
   registerHandle(
     'slides:save',
-    async (_event: unknown, _id?: unknown, path?: unknown, data?: unknown) => {
+    async (event: unknown, _id?: unknown, path?: unknown, data?: unknown) => {
       if (typeof path !== 'string' || !path) {
         return { ok: false, canceled: true, error: 'slides:save expects { path: string }' }
       }
@@ -294,14 +296,34 @@ export function registerSlidesCoreHandlers(): void {
             return { ok: false, error: 'save data is empty or invalid' }
           }
           if (key) {
+            // Snapshot prior bytes BEFORE the storage put so the renderer can
+            // roll back via files:restore-version. Storage URIs are not
+            // restorable directly (we never read the key back through the
+            // kernel) so capture is a no-op for that branch.
+            try {
+              const prev = readFileSync(canonical)
+              captureBeforeSave(basename(canonical), prev)
+            } catch { /* new file or storage-backed, nothing to snapshot */ }
             await getStorageBackend().put(key, new Uint8Array(bytes), {
               contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
             })
           } else {
+            // Snapshot prior bytes BEFORE the atomic write so the renderer can
+            // roll back via files:restore-version.
+            try {
+              const prev = readFileSync(canonical)
+              captureBeforeSave(basename(canonical), prev)
+            } catch { /* new file, nothing to snapshot */ }
             mkdirSync(dirname(canonical), { recursive: true })
             atomicWriteFile(canonical, bytes)
           }
           notifyFileSaved(canonical, { size: bytes.byteLength, format: 'pptx' })
+          sendIpcEvent(event, 'saved', {
+            path: canonical,
+            version: Date.now(),
+            bytes: bytes.byteLength,
+            format: 'pptx',
+          })
           return { ok: true, path: canonical }
         }
 
@@ -317,9 +339,27 @@ export function registerSlidesCoreHandlers(): void {
           }
         }
         mkdirSync(dirname(canonical), { recursive: true })
+        // Snapshot the existing deck bytes so the renderer can roll back
+        // via files:restore-version. Read before savePptxToFile overwrites.
+        try {
+          const prev = readFileSync(canonical)
+          captureBeforeSave(basename(canonical), prev)
+        } catch { /* new file, nothing to snapshot */ }
         await savePptxToFile(session.opened, canonical)
         // Clear the dirty flag: the on-disk bytes now match the model.
         setSlidesDirty(canonical, false)
+        // Surface the save through SSE so embed consumers can update
+        // their `dirty` UI state. Bytes comes from statSync because the
+        // live model path doesn't keep a handle on the buffer.
+        try {
+          const st = statSync(canonical)
+          sendIpcEvent(event, 'saved', {
+            path: canonical,
+            version: Date.now(),
+            bytes: st.size,
+            format: 'pptx',
+          })
+        } catch { /* missing file is unexpected here, swallow */ }
         return { ok: true, path: canonical }
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) }

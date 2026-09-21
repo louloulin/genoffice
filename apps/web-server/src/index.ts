@@ -70,6 +70,7 @@ import { registerCollabHandlers } from './collab/index'
 import { registerEnterpriseHandlers } from './enterprise/index'
 import { registerAnydocHandlers } from './anydoc/index'
 import { registerWebHandlers } from './web/index'
+import { registerVersionHistoryHandlers } from './common/version-history'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 import { handleApiV1 } from './api/v1/index'
 import { handleEmbed } from './embed/index'
@@ -152,6 +153,7 @@ registerCollabHandlers()
 registerEnterpriseHandlers()
 registerAnydocHandlers()
 registerWebHandlers()
+registerVersionHistoryHandlers()
 
 // ----- HTTP helpers --------------------------------------------------------
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
@@ -386,6 +388,15 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  /**
+   * `GET /api/channels`
+   *
+   * Discovery endpoint — returns the list of IPC channels the server
+   * currently registers (`{ protocolVersion, minClientVersion, channels }`).
+   * Renderers call this on boot to negotiate protocol version and pick the
+   * right transport. Public and unauthenticated; no JWT or scope required.
+   * @public
+   */
   if (url.pathname === '/api/channels' && request.method === 'GET') {
     sendJson(response, 200, {
       protocolVersion: 1,

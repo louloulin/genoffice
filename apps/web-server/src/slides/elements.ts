@@ -2,24 +2,24 @@
  * Slides element-manipulation channels — add/edit/delete/transform/copy/paste
  * of slides, elements, charts, tables, text, ink, media, etc.
  *
- * Most handlers remain `{ ok: true }` placeholders because the full desktop
- * transaction executor lives in `apps/slides/src/main/slides-main.ts:1485`
- * and depends on Electron session state. The web build keeps a minimal
- * subset that mutates the in-memory `OpenedPptx` registry, just enough for
- * `slides:save` to serialise a meaningful deck. Unknown ops in
- * `slides:apply-txn` answer a structured failure rather than the previous
- * silently-accepted `{ ok: true }`, so a missing handler never no-ops a
- * renderer-side edit.
+ * The web build reuses `@genoffice/pptx-ops`'s `runTxn` executor — the same
+ * validated, journaled transaction engine the desktop main process drives
+ * from `apps/slides/src/main/slides-main.ts:1485`. Every renderer-emitted op
+ * (58 total: addElement / setFill / setTransform / setFont / addChart / etc.)
+ * lands mutations on the live `OpenedPptx` so `slides:save` serialises a real
+ * deck. Unknown ops still answer a structured `{ applied: false, failures }`
+ * so a missing handler never silently no-ops a renderer-side edit.
+ *
+ * Channel-level handlers (the 70+ `slides:add-text` / `slides:edit-fill` /
+ * `slides:set-advance-times` ones below) remain `{ ok: true }` for ops the
+ * renderer routes through `slides:apply-txn`. The desktop equivalent accepts
+ * the same ops; the renderer code path is unchanged.
  */
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
 import { getSlidesSession, setSlidesDirty } from './state'
-import {
-  insertBlankSlide,
-  deleteSlide,
-  setElementTextBodyProps,
-  type OpenedPptx,
-} from '@genoffice/pptx-engine'
+import type { OpenedPptx } from '@genoffice/pptx-engine'
+import { runTxn, type Op } from '@genoffice/pptx-ops'
 
 export function registerSlidesElementHandlers(): void {
   // ----- slide-level mutations ---------------------------------------------
@@ -31,7 +31,6 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:paste-slide', () => ({ ok: true }))
   registerHandle('slides:repaste-slide', () => ({ ok: true }))
   registerHandle('slides:move-slide', () => ({ ok: true }))
-
 
   // ----- element add / edit / delete ---------------------------------------
   registerHandle('slides:add-chart', () => ({ ok: true, chartId: `chart-${Date.now()}` }))
@@ -71,17 +70,20 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:apply-edit-script', () => ({ ok: true }))
   registerHandle('slides:apply-header-footer', () => ({ ok: true }))
   registerHandle('slides:apply-theme', () => ({ ok: true }))
+
   // ----- per-element transactions -----------------------------------------
-  // The minimal but real transaction dispatcher. The desktop equivalent
-  // (apps/slides/src/main/slides-main.ts:1485) runs every op through
-  // `runTxn`, which knows ~50 op shapes; the web build wires only the
-  // high-frequency ops the renderer uses today. Unknown ops return
-  // `{ applied: false, failures: [...] }` so a missing handler never
-  // silently no-ops a renderer-side edit.
+  // The full transaction executor from `@genoffice/pptx-ops` (`runTxn`) —
+  // the same one the desktop main process drives from
+  // `apps/slides/src/main/slides-main.ts:1485`. 58 op shapes are now
+  // supported (addElement / setFill / setTransform / setFont / addChart /
+  // addTable / setBackground / ...). Failures still surface as
+  // `{ applied: false, failures: [...] }`; success returns the live
+  // slide summary so it can refresh the renderer's slide panel.
   registerHandle('slides:apply-txn', async (_event: unknown, request: unknown) => {
     const req = (request || {}) as {
       path?: string
-      ops?: Array<Record<string, unknown>>
+      ops?: unknown[]
+      isolation?: 'atomic' | 'per_op'
     }
     const rawPath = typeof req.path === 'string' ? req.path : null
     if (!rawPath) {
@@ -90,11 +92,11 @@ export function registerSlidesElementHandlers(): void {
         failures: [{ index: 0, error: 'slides:apply-txn requires { path }' }],
       }
     }
-    // Resolve storage://<backend>/<key> to the FILES_DIR canonical path
-    // so the registry lookup matches what slides:open-path used to
-    // register the session. Without this, a renderer that opens an
-    // upload (storage URI) and then sends apply-txn ops gets a
-    // "no live model" failure even though the open succeeded.
+    // Resolve storage://<backend>/<key> to the FILES_DIR canonical path so
+    // the registry lookup matches what slides:open-path used to register
+    // the session. Without this, a renderer that opens an upload (storage
+    // URI) and then sends apply-txn ops gets a "no live model" failure
+    // even though the open succeeded.
     const key = storageKeyFromPath(rawPath)
     const path = key ? join(FILES_DIR, key) : rawPath
     const session = getSlidesSession(path)
@@ -102,10 +104,7 @@ export function registerSlidesElementHandlers(): void {
       return {
         applied: false,
         failures: [
-          {
-            index: 0,
-            error: 'no live model for this path — call slides:open-path first',
-          },
+          { index: 0, error: 'no live model for this path — call slides:open-path first' },
         ],
       }
     }
@@ -113,78 +112,51 @@ export function registerSlidesElementHandlers(): void {
     if (ops.length === 0) {
       return { applied: true, ops: [], slides: slideSummary(session.opened) }
     }
-    const failures: Array<{ index: number; error: string }> = []
-    let anyApplied = false
-    for (let i = 0; i < ops.length; i++) {
-      const op = ops[i]
-      try {
-        if (applyOneOp(session.opened, op)) {
-          anyApplied = true
-        } else {
-          failures.push({
-            index: i,
-            error: `unsupported op '${String(op.op ?? '?')}' on web`,
-          })
-        }
-      } catch (error) {
-        failures.push({
-          index: i,
-          error: error instanceof Error ? error.message : String(error),
-        })
+    if (ops.length > 50) {
+      return {
+        applied: false,
+        failures: [
+          { index: 0, error: 'ops must be a non-empty array (at most 50 per transaction).' },
+        ],
       }
     }
-    if (anyApplied) setSlidesDirty(path, true)
+    const isolation = req.isolation === 'per_op' ? 'per_op' : 'atomic'
+    // runTxn performs plan-then-execute with snapshot rollback. Atomic
+    // isolation (default) restores the deck on any failure so the model
+    // never carries a half-applied batch; per_op lets independent ops
+    // succeed even when a sibling fails. The executor validates first
+    // (dry-run) and only mutates on success — that's how the desktop
+    // main process drives the same 58-op surface from
+    // apps/slides/src/main/slides-main.ts:1485 without trusting renderer
+    // input.
+    const typedOps = ops as Op[]
+    const plan = runTxn(session.opened, { ops: typedOps, isolation, dryRun: true })
+    const invalid = plan.failures?.length ?? 0
+    if (isolation === 'atomic' ? invalid > 0 : invalid >= ops.length) {
+      return {
+        applied: false,
+        failures: (plan.failures ?? []).map((f) => ({ index: f.index, error: f.error })),
+      }
+    }
+    const r = runTxn(session.opened, { ops: typedOps, isolation })
+    const failures = (r.failures ?? []).map((f) => ({ index: f.index, error: f.error }))
+    if (!r.applied) {
+      return { applied: false, failures }
+    }
+    if ((r.records ?? []).length > 0) setSlidesDirty(path, true)
     return {
-      applied: failures.length === 0,
+      applied: true,
       ...(failures.length > 0 ? { failures } : {}),
       slides: slideSummary(session.opened),
     }
+  })
 
-  /** Real op dispatch: returns true if the op mutated the model. The desktop
-   *  executor handles ~50 op shapes; this is the high-frequency subset
-   *  needed for a render → save round-trip to land bytes on disk. */
-  function applyOneOp(opened: OpenedPptx, op: Record<string, unknown>): boolean {
-    const kind = String(op.op ?? '')
-    switch (kind) {
-      case 'addSlide': {
-        const at = typeof op.at === 'number' ? op.at : opened.deck.slides.length
-        insertBlankSlide(opened, at)
-        return true
-      }
-      case 'deleteSlide': {
-        const at = typeof op.at === 'number' ? op.at : 0
-        return deleteSlide(opened, at)
-      }
-      case 'setText': {
-        // The renderer's apply-txn ops carry the slide *index* in
-        //  (a numeric position that drifts after delete/
-        // duplicate ops). The pptx-engine setElementTextBodyProps takes
-        // a slide reference + element id, so resolve index → Slide here
-        // and trust the renderer to send a fresh op set after a
-        // structural op. The text patch uses the minimal shape the
-        // engine recognises for a single-run replacement.
-        const target = op.target as { slide?: number; el?: string } | undefined
-        const text = typeof op.text === 'string' ? op.text : ''
-        if (!target || typeof target.slide !== 'number' || !target.el) return false
-        const slide = opened.deck.slides[target.slide]
-        if (!slide) return false
-        setElementTextBodyProps(slide, target.el, { runs: [{ text }] } as never)
-        return true
-      }
-      default:
-        return false
-    }
-  }
-
-  function slideSummary(
-    opened: OpenedPptx,
-  ): Array<{ id: string; index: number }> {
+  function slideSummary(opened: OpenedPptx): Array<{ id: string; index: number }> {
     return opened.deck.slides.map((s, idx) => ({
       id: (s as { id?: string }).id ?? `slide-${idx}`,
       index: idx,
     }))
   }
-  })
 
   // ----- element set / link / transition -----------------------------------
   registerHandle('slides:set-advance-times', () => ({ ok: true }))

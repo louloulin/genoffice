@@ -16,6 +16,7 @@
  *
  * Both paths share the same secret (`GENOFFICE_JWT_SECRET`) by default;
  * flipping `GENOFFICE_JWT_ALG=RS256` enables asymmetric signing.
+ * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createHmac, createSign, createVerify, timingSafeEqual } from 'node:crypto'
@@ -39,6 +40,11 @@ export interface JwtPayload {
    *  See sdk1.md Appendix B.2 #3. */
   scope?: string[]
   perm?: string[]
+  /** Optional unique token id (RFC 7519 §4.1.7). Used to support
+   *  single-use file JWTs — the embed endpoint records the jti in a
+   *  process-local revocation set on first use so subsequent requests
+   *  with the same token answer 401 TOKEN_REVOKED. */
+  jti?: string
   iat: number
   exp: number
   iss: string
@@ -114,6 +120,38 @@ export function verifyJwt(token: string): JwtPayload | null {
   }
 }
 
+/**
+ * Optional revocation-list hook used by `verifyJwt`. Defaults to a
+ * no-op so existing callers keep working. The file JWT endpoint
+ * installs a revocation check that records each `jti` on first verify
+ * and rejects second uses; other token kinds (the global `/auth/jwt`
+ * issuance, OAuth client_credentials) opt out by leaving the default.
+ */
+export type JtiRevocationCheck = (jti: string) => boolean
+
+let jtiRevocationHook: JtiRevocationCheck = () => false
+
+export function setJtiRevocationCheck(fn: JtiRevocationCheck): void {
+  jtiRevocationHook = fn
+}
+
+export function isJtiRevoked(jti: string): boolean {
+  return jtiRevocationHook(jti)
+}
+
+/**
+ * Verify a JWT with the revocation check layered on top of `verifyJwt`.
+ * Returns the decoded payload, or null on revocation / signature /
+ * expiry failures. Use this entrypoint from any handler that consumes
+ * a token which may carry a `jti` (embed iframe, file-scoped tokens).
+ */
+export function verifyJwtWithRevocation(token: string): JwtPayload | null {
+  const payload = verifyJwt(token)
+  if (!payload) return null
+  if (payload.jti && jtiRevocationHook(payload.jti)) return null
+  return payload
+}
+
 
 
 
@@ -183,6 +221,7 @@ export function hasScope(payload: JwtPayload | null | undefined, scope: string):
  * @summary (see above)
  * @scope ai:* / files:* / kb:* / webhooks:* / admin
  * @errors INVALID_ARGUMENT / UNAUTHORIZED / INTERNAL
+ * @public
  */
 export async function handleAuthJwt(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const { request, response } = ctx
@@ -232,6 +271,7 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
  * @summary (see above)
  * @scope —
  * @errors INVALID_ARGUMENT / UNAUTHORIZED
+ * @public
  */
 export async function handleOAuthToken(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const { request, response } = ctx

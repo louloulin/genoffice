@@ -149,7 +149,7 @@ describe.skipIf(skip)('slides:apply-txn + slides:save (M2 real save)', () => {
     const apply = await invoke(base, 'slides:apply-txn', [
       {
         path: targetPptx,
-        ops: [{ op: 'addSlide', at: 0 }],
+        ops: [{ op: 'addBlankSlide', target: { slide: 0 } }],
       },
     ])
     expect(apply.status).toBe(200)
@@ -174,7 +174,7 @@ describe.skipIf(skip)('slides:apply-txn + slides:save (M2 real save)', () => {
     const r = await invoke(base, 'slides:apply-txn', [
       {
         path: targetPptx,
-        ops: [{ op: 'addSlide' }, { op: 'hypothetical-not-implemented-op' }],
+        ops: [{ op: 'addBlankSlide', target: { slide: 0 } }, { op: 'hypothetical-not-implemented-op' }],
       },
     ])
     expect(r.status).toBe(200)
@@ -187,7 +187,7 @@ describe.skipIf(skip)('slides:apply-txn + slides:save (M2 real save)', () => {
   })
 
   it('slides:apply-txn with no path returns a clear failure', async () => {
-    const r = await invoke(base, 'slides:apply-txn', [{ ops: [{ op: 'addSlide' }] }])
+    const r = await invoke(base, 'slides:apply-txn', [{ ops: [{ op: 'addBlankSlide', target: { slide: 0 } }] }])
     expect(r.status).toBe(200)
     const result = unwrap<{ applied?: boolean; failures?: Array<{ error: string }> }>(r.body)
     expect(result?.applied).toBe(false)
@@ -212,7 +212,7 @@ describe.skipIf(skip)('slides:apply-txn + slides:save (M2 real save)', () => {
     const r0 = await invoke(base, 'slides:is-dirty', [targetPptx])
     expect((unwrap<{ }>(r0.body))).toBe(false)
     await invoke(base, 'slides:apply-txn', [
-      { path: targetPptx, ops: [{ op: 'addSlide' }] },
+      { path: targetPptx, ops: [{ op: 'addBlankSlide', target: { slide: 0 } }] },
     ])
     const r1 = await invoke(base, 'slides:is-dirty', [targetPptx])
     expect(unwrap<boolean>(r1.body)).toBe(true)

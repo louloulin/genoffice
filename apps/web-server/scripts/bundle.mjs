@@ -10,8 +10,8 @@
 // `const { Buffer } = require('buffer')`) keep working inside an ESM bundle.
 
 import { build } from 'esbuild'
-import { mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { mkdirSync, readFileSync } from 'node:fs'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -29,6 +29,26 @@ await build({
   target: 'node22',
   packages: 'bundle',
   external: ['node:*', 'ws'],
+  // The op-docs surface (used by the AI provider prompt builder) inlines
+  // markdown via Vite-style `?raw` imports. esbuild has no built-in
+  // loader for the suffix; strip it and return the file contents as a
+  // string so the web-server bundle resolves without a runtime fs read.
+  plugins: [
+    {
+      name: 'md-raw-loader',
+      setup(b) {
+        b.onResolve({ filter: /\.md\?raw$/ }, (args) => {
+          const rel = args.path.replace('?raw', '')
+          const path = isAbsolute(rel) ? rel : resolve(args.resolveDir, rel)
+          return { path, namespace: 'md-raw' }
+        })
+        b.onLoad({ filter: /.*/, namespace: 'md-raw' }, (args) => {
+          const contents = readFileSync(args.path, 'utf8')
+          return { contents: 'export default ' + JSON.stringify(contents), loader: 'js' }
+        })
+      },
+    },
+  ],
   banner: {
     js: [
       "import { createRequire as __genofficeCreateRequire } from 'node:module';",

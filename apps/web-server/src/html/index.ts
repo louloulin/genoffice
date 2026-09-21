@@ -22,6 +22,8 @@ import {
 import { atomicWriteFile } from '../common/atomic'
 import { recordRecentDoc } from '../common/document-stores'
 import { notifyFileSaved } from '../common/webhooks-store'
+import { sendIpcEvent } from '../common/event-broadcast'
+import { captureBeforeSave } from '../common/version-history'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const HTML_DOC_DIR = join(DATA_DIR, 'html')
@@ -174,7 +176,7 @@ export function registerHtmlHandlers(): void {
   // web-bridge layer). When path is supplied and lies within the managed
   // area we overwrite atomically; otherwise allocate a new file under
   // HTML_DOC_DIR.
-  registerHandle('html:save', async (_event: unknown, request: unknown) => {
+  registerHandle('html:save', async (event: unknown, request: unknown) => {
     const value = request as {
       text?: unknown
       mode?: unknown
@@ -192,9 +194,21 @@ export function registerHtmlHandlers(): void {
       // left the temp on disk after a crash. `atomicWriteFile` rejects
       // empty payloads, which is the right behaviour: a renderer that
       // emits an empty `text` field has lost its document model.
+      // Snapshot prior bytes BEFORE the atomic write so the renderer can
+      // roll back via files:restore-version. Swallowed on first save.
+      try {
+        const prev = readFileSync(target)
+        captureBeforeSave(basename(target), prev)
+      } catch { /* new file, nothing to snapshot */ }
       atomicWriteFile(target, value.text)
       await recordRecentDoc(target, { modified: true })
       notifyFileSaved(target, { size: Buffer.byteLength(value.text, 'utf8'), format: 'html' })
+      sendIpcEvent(event, 'saved', {
+        path: target,
+        version: Date.now(),
+        bytes: Buffer.byteLength(value.text, 'utf8'),
+        format: 'html',
+      })
       return { ok: true, path: target }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
@@ -207,7 +221,10 @@ export function registerHtmlHandlers(): void {
   registerHandle('html:headless-export-done', () => ({ ok: true }))
 
   // send-only channels that have no work in the web build
-  registerHandle('html:dirty-changed', () => ({ ok: true }))
+  registerHandle('html:dirty-changed', (event: unknown, dirty: unknown) => {
+    sendIpcEvent(event, 'dirtyChanged', { dirty: Boolean(dirty) })
+    return { ok: true }
+  })
   registerHandle('html:provisional-title', () => ({ ok: true }))
   registerHandle('html:close-save-result', () => ({ ok: true }))
   registerHandle('html:save-request-ack', () => ({ ok: true }))

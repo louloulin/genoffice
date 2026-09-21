@@ -18,6 +18,8 @@ import { NotFoundError } from '../ai/errors'
 import { storageKeyFromPath } from '../common/state'
 import { recordRecentDoc } from '../common/document-stores'
 import { notifyFileSaved } from '../common/webhooks-store'
+import { sendIpcEvent } from '../common/event-broadcast'
+import { captureBeforeSave } from '../common/version-history'
 
 const MARKDOWN_ASSET_DIR = join(DATA_DIR, 'markdown-assets')
 const IMAGE_MIME: Record<string, string> = {
@@ -35,7 +37,10 @@ function safeAssetPath(src: string): string | null {
 
 export function registerMarkdownHandlers(): void {
   registerHandle('markdown:consume-pending', () => null)
-  registerHandle('markdown:dirty-changed', () => ({ ok: true }))
+  registerHandle('markdown:dirty-changed', (event: unknown, dirty: unknown) => {
+    sendIpcEvent(event, 'dirtyChanged', { dirty: Boolean(dirty) })
+    return { ok: true }
+  })
 
   registerHandle('markdown:save-image', (_event: unknown, request: unknown) => {
     const value = request as { base64?: unknown; ext?: unknown } | null
@@ -79,7 +84,7 @@ export function registerMarkdownHandlers(): void {
   // tracks the current document path (from `?open=` or the last save) and
   // passes it as `request.path`; here we either overwrite atomically or
   // allocate a new managed file under DATA_DIR.
-  registerHandle('markdown:save', async (_event: unknown, request: unknown) => {
+  registerHandle('markdown:save', async (event: unknown, request: unknown) => {
     const value = request as {
       text?: unknown
       mode?: unknown
@@ -101,6 +106,13 @@ export function registerMarkdownHandlers(): void {
       // path now MUST live inside DATA_DIR + WEB_TEMP_ROOT.
       const safeTarget = requireManagedPath('markdown:save', target)
       mkdirSync(dirname(safeTarget), { recursive: true })
+      // Snapshot prior bytes BEFORE the atomicWriteFile below overwrites
+      // them, so the renderer can roll back via files:restore-version.
+      // Swallowed on first save (no prior file).
+      try {
+        const prev = readFileSync(safeTarget)
+        captureBeforeSave(basename(safeTarget), prev)
+      } catch { /* new file, nothing to snapshot */ }
       atomicWriteFile(safeTarget, Buffer.from(value.text, 'utf8'))
       // Mirror into the home recents grid so the new file shows up
       // immediately. Key the recents row by whatever path the renderer
@@ -126,6 +138,16 @@ export function registerMarkdownHandlers(): void {
         modified: true,
       })
       notifyFileSaved(recentsKey, { size: Buffer.byteLength(value.text, 'utf8'), format: 'md' })
+      // Push a `saved` event to any embed consumer listening on this session.
+      // The version is a monotonic counter incremented on each successful save
+      // so a renderer can use it as a conflict-detection watermark
+      // (sdk1.md §B.2 item 5).
+      sendIpcEvent(event, 'saved', {
+        path: recentsKey,
+        version: Date.now(),
+        bytes: Buffer.byteLength(value.text, 'utf8'),
+        format: 'md',
+      })
       return { ok: true, path: recentsKey }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
@@ -138,7 +160,10 @@ export function registerMarkdownHandlers(): void {
   registerHandle('markdown:consume-headless-export', () => null)
   registerHandle('markdown:headless-export-done', () => ({ ok: true }))
   // send-only channels that have no work in the web build
-  registerHandle('markdown:dirty-changed', () => ({ ok: true }))
+  registerHandle('markdown:dirty-changed', (event: unknown, dirty: unknown) => {
+    sendIpcEvent(event, 'dirtyChanged', { dirty: Boolean(dirty) })
+    return { ok: true }
+  })
   registerHandle('markdown:save-request-ack', () => ({ ok: true }))
   registerHandle('markdown:close-save-result', () => ({ ok: true }))
 

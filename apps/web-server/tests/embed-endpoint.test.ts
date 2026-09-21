@@ -98,6 +98,30 @@ describe('handleEmbed', () => {
     expect(body).toContain('&quot;')
   })
 
+
+
+  it('injects a per-request sessionId meta + EventSource wiring for SSE forwarding', async () => {
+    const handleEmbed = await loadHandler()
+    const resp = fakeResponse()
+    handleEmbed(
+      {} as Incoming,
+      resp.res,
+      new URL('http://x/embed/doc_abc?token=jwt-xyz&app=docs'),
+    )
+    if (resp.status() !== 200) return // docs not built — skip
+    const body = resp.chunks.join('')
+    // Per-request sessionId for SSE push forwarding.
+    expect(body).toMatch(/<meta name="genoffice-session" content="embed-[a-z0-9-]+">/)
+    // The bridge script must open an EventSource to the same SSE channel
+    // the editor's own push-hub uses, so server-side saved/dirtyChanged
+    // events flow through to window.parent.
+    expect(body).toContain('new EventSource(\'/api/ipc/events?session=\' + encodeURIComponent(cfg.sessionId))')
+    // The bridge must forward each SSE frame to window.parent via the
+    // existing post(name, payload) helper so the host sees one envelope
+    // per frame, same shape as ready/error/etc.
+    expect(body).toMatch(/es\.onmessage = function \(ev\) \{[\s\S]*post\(frame\.channel, p\)/)
+  })
+
   // The "503 when no app is built" path is covered by the docs-not-built
   // smoke check (the resolveAppIndex candidate walk returns null when no
   // out/ directory exists). Mocking node:fs requires resetModules + doMock

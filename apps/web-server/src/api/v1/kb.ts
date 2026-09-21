@@ -5,6 +5,7 @@
  * knowledge base (the same backing store that powers `ai:translation-kb-*`
  * IPC channels). When the dedicated KB / RAG store lands (see roadmap M2),
  * this module will switch its IPC targets without changing the v1 contract.
+ * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError } from './http-utils'
@@ -19,6 +20,7 @@ import { requireScopeFromHeaders } from './auth'
  * **Required scope**: `kb:read`
  *
  * **Errors**: `400 INVALID_ARGUMENT`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleKbSearch(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'kb:read')
@@ -45,6 +47,7 @@ export async function handleKbSearch(ctx: { request: IncomingMessage; response: 
  * **Required scope**: `kb:read`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleKbEntries(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'kb:read')

@@ -27,6 +27,7 @@
  *   - The page returns a small `text/html` doc so embed consumers can
  *     see the editor loading state immediately; we deliberately do NOT
  *     `cache-control: public` so a token rotation propagates.
+ * @public
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -92,6 +93,13 @@ function resolveAppIndex(app: string): string | null {
  * embed page renders instantly even on slow connections; the heavy editor
  * bundle loads afterwards. Apps that haven't yet shipped their own bridge
  * still trigger a `ready` event so SDK hosts can complete initialization.
+ *
+ * The bridge also subscribes to `/api/ipc/events?session=<sessionId>` so
+ * server-side lifecycle events (saved / dirtyChanged / selectionChange /
+ * error / closed) flow through to `window.parent`. The renderer's own
+ * transport (createPushHub in the editor bundles) opens its own SSE
+ * consumer on the same session; two parallel consumers is fine — the
+ * server broadcasts to every connected socket in the session.
  */
 const EMBED_BRIDGE = `
 (function () {
@@ -113,6 +121,28 @@ const EMBED_BRIDGE = `
       version: '0.9.0'
     });
   }
+  function subscribePush() {
+    var cfg = window.__GENOFFICE_EMBED__;
+    if (!cfg || !cfg.sessionId) return;
+    if (typeof EventSource === 'undefined') return;
+    try {
+      var es = new EventSource('/api/ipc/events?session=' + encodeURIComponent(cfg.sessionId));
+      es.onmessage = function (ev) {
+        var frame;
+        try { frame = JSON.parse(ev.data); } catch (e) { return; }
+        if (!frame || !frame.channel || !frame.args) return;
+        // Unwrap a single payload object from the args array so the host
+        // receives the same shape the renderer dispatches (e.g. {dirty:true}
+        // not [{dirty:true}]). Multi-arg events get forwarded as-is.
+        var p = frame.args.length === 1 ? frame.args[0] : frame.args;
+        post(frame.channel, p);
+      };
+      es.onerror = function () { /* SSE auto-reconnects; ignore transient */ };
+      window.addEventListener('beforeunload', function () {
+        try { es.close(); } catch (e) { /* ignore */ }
+      });
+    } catch (e) { /* EventSource construction failed; degrade to no-push */ }
+  }
   window.addEventListener('message', function (event) {
     var data = event.data;
     if (!data || data.v !== ENVELOPE_VERSION) return;
@@ -122,9 +152,16 @@ const EMBED_BRIDGE = `
   });
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(sendReady, 0);
+    setTimeout(subscribePush, 0);
   } else {
-    window.addEventListener('DOMContentLoaded', function () { setTimeout(sendReady, 0); });
-    window.addEventListener('load', function () { setTimeout(sendReady, 0); });
+    window.addEventListener('DOMContentLoaded', function () {
+      setTimeout(sendReady, 0);
+      setTimeout(subscribePush, 0);
+    });
+    window.addEventListener('load', function () {
+      setTimeout(sendReady, 0);
+      setTimeout(subscribePush, 0);
+    });
   }
 })();
 `
@@ -138,6 +175,9 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   const html = readFileSync(appIndexPath, 'utf-8')
   const safeToken = q.token.replace(/"/g, '&quot;').replace(/</g, '&lt;')
   const tokenTag = `\n<meta name="genoffice-token" content="${safeToken}">`
+  // Per-request sessionId for the embed iframe's SSE push channel. The bridge
+  // opens /api/ipc/events?session=<id> and forwards every frame to window.parent.
+  const sessionId = `embed-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const embedConfig = {
     docId,
     app: q.app,
@@ -146,10 +186,12 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
     lang: q.lang ?? 'en-US',
     toolbar: q.toolbar ?? 'full',
     title: q.title ?? null,
+    sessionId,
   }
   const configTag = `\n<meta name="genoffice-embed-config" content="${escapeAttr(JSON.stringify(embedConfig))}">`
+  const sessionTag = `\n<meta name="genoffice-session" content="${sessionId}">`
   const bridgeTag = `\n<script>window.__GENOFFICE_EMBED__=${JSON.stringify(embedConfig)};${EMBED_BRIDGE}</script>`
-  const injection = tokenTag + configTag + bridgeTag
+  const injection = tokenTag + configTag + sessionTag + bridgeTag
   // Case-insensitive match against `</head>` so a renderer with a `<HEAD>`
   // tag (rare but possible after build minification) still gets the bridge
   // injected. Without the `/i` flag a strict HTML renderer with an uppercase
@@ -167,6 +209,7 @@ function escapeAttr(s: string): string {
  * Return value:
  *   - `true` if the request matched `/embed/...` and was answered
  *   - `false` if the path doesn't match (caller falls through to SPA)
+ * @public
  */
 export function handleEmbed(request: IncomingMessage, response: ServerResponse, url: URL): boolean {
   if (!url.pathname.startsWith('/embed/')) return false

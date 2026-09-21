@@ -27,6 +27,8 @@ import { assertMagicMatchesExtension } from '../common/magic'
 import { atomicWriteFile } from '../common/atomic'
 import { recordRecentDoc } from '../common/document-stores'
 import { notifyFileSaved } from '../common/webhooks-store'
+import { sendIpcEvent } from '../common/event-broadcast'
+import { captureBeforeSave } from '../common/version-history'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
@@ -282,7 +284,7 @@ export function registerDocsHandlers(): void {
 
   registerHandle(
     'docs:save',
-    async (_event: unknown, filePath: unknown, data: unknown, _auto?: unknown) => {
+    async (event: unknown, filePath: unknown, data: unknown, _auto?: unknown) => {
       if (typeof filePath !== 'string') {
         return { ok: false, error: 'save target must be a string' }
       }
@@ -305,6 +307,12 @@ export function registerDocsHandlers(): void {
             contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
           })
         } else {
+          // Snapshot prior bytes BEFORE the atomic write so the renderer can
+          // roll back via files:restore-version. Swallowed on first save.
+          try {
+            const prev = readFileSync(canonical)
+            captureBeforeSave(basename(canonical), prev)
+          } catch { /* new file, nothing to snapshot */ }
           // Atomic: a crash mid-write cannot leave the document half-written on
           // disk. Uses the shared kernel implementation so the Windows
           // EPERM-retry behaviour matches the desktop build exactly.
@@ -328,6 +336,12 @@ export function registerDocsHandlers(): void {
           modified: true,
         })
         notifyFileSaved(filePath, { size: bytes.byteLength, format: 'docx' })
+        sendIpcEvent(event, 'saved', {
+          path: filePath,
+          version: Date.now(),
+          bytes: bytes.byteLength,
+          format: 'docx',
+        })
         return { ok: true, path: filePath }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -416,7 +430,7 @@ export function registerDocsHandlers(): void {
 
   registerHandle(
     'docs:save-new',
-    async (_event: unknown, defaultName?: unknown, data?: unknown, projectId?: unknown) => {
+    async (event: unknown, defaultName?: unknown, data?: unknown, projectId?: unknown) => {
       // Sanitize the renderer-supplied name up front: the previous code took
       // the raw defaultName and stored it in the project list / recents row,
       // so a path-traversal payload like '../../../etc/passwd.docx' survived
@@ -457,6 +471,12 @@ export function registerDocsHandlers(): void {
       // parent before each write — mkdirSync({recursive:true}) is a
       // no-op when the directory already exists.
       mkdirSync(FILES_DIR, { recursive: true })
+      // Snapshot prior bytes BEFORE the atomic write so a save-as-over-same-path
+      // flow produces a recoverable prior version. New file: readFileSync throws.
+      try {
+        const prev = readFileSync(path)
+        captureBeforeSave(basename(path), prev)
+      } catch { /* new file, nothing to snapshot */ }
       atomicWriteFile(path, bytes)
 
       // Mirror into the recents store so the new file shows up in the home
@@ -470,7 +490,12 @@ export function registerDocsHandlers(): void {
         modified: false,
       })
       notifyFileSaved(path, { size: bytes.byteLength, format: 'docx' })
-
+      sendIpcEvent(event, 'saved', {
+        path,
+        version: Date.now(),
+        bytes: bytes.byteLength,
+        format: 'docx',
+      })
       if (typeof projectId === 'string' && projectId) {
         const projects = loadProjects()
         const project = projects.find((p) => p.id === projectId)

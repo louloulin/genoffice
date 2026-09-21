@@ -19,6 +19,8 @@ import {
 } from '../common/index'
 import { recordRecentDoc } from '../common/document-stores'
 import { notifyFileSaved } from '../common/webhooks-store'
+import { sendIpcEvent } from '../common/event-broadcast'
+import { captureBeforeSave } from '../common/version-history'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
 import { WebSheetsSidecar } from './sidecar'
@@ -422,6 +424,14 @@ export function registerSheetsHandlers(): void {
     }
 
     try {
+      // Snapshot prior bytes BEFORE the sidecar overwrites requestedTarget
+      // so the renderer can roll back via files:restore-version. The sidecar
+      // does an atomic promote (tmp + rename) into requestedTarget; capture
+      // must run first.
+      try {
+        const prev = readFileSync(requestedTarget)
+        captureBeforeSave(basename(requestedTarget), prev)
+      } catch { /* new file, nothing to snapshot */ }
       const result = await saveWorkbookViaSidecar({
         client: sheetsSidecar,
         sourcePath,
@@ -476,8 +486,16 @@ export function registerSheetsHandlers(): void {
     }
   }
 
-  registerHandle('workbook:save', async (_event: unknown, request: unknown) => {
-    return runWorkbookSave({ request: (request ?? {}) as WorkbookSaveRequest })
+  registerHandle('workbook:save', async (event: unknown, request: unknown) => {
+    const result = await runWorkbookSave({ request: (request ?? {}) as WorkbookSaveRequest })
+    if (result.ok && result.path) {
+      sendIpcEvent(event, 'saved', {
+        path: result.path,
+        version: Date.now(),
+        format: 'xlsx',
+      })
+    }
+    return result
   })
 
   registerHandle('workbook:save-as', async (_event: unknown, request: unknown) => {

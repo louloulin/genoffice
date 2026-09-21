@@ -5,6 +5,7 @@
  * Top-level webhooks are org-wide subscriptions (e.g. "notify me when any
  * AI job completes") — store them in the same `webhooks.json` file but
  * keyed by a synthetic org id rather than a file id.
+ * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
@@ -19,6 +20,7 @@ import { requireScopeFromHeaders } from './auth'
  * **Required scope**: `webhooks:manage`
  *
  * **Errors**: `400 INVALID_ARGUMENT`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleWebhooksUpsert(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'webhooks:manage')
@@ -60,6 +62,7 @@ export async function handleWebhooksUpsert(ctx: { request: IncomingMessage; resp
  * **Required scope**: `webhooks:manage`
  *
  * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleWebhooksDelete(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const gate = requireScopeFromHeaders(ctx.request.headers, 'webhooks:manage')
@@ -76,6 +79,7 @@ export async function handleWebhooksDelete(ctx: { request: IncomingMessage; resp
 /**
  * Internal helper: invoke from any save / completion path to fan out
  * registered callbacks. Exported for the integration tests as well.
+ * @public
  */
 export { fireCallback, listCallbacks }
 
@@ -87,6 +91,7 @@ export { fireCallback, listCallbacks }
  * **Required scope**: `admin`
  *
  * **Errors**: `400 INVALID_ARGUMENT`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
  */
 export async function handleCallbacksFire(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   // Admin / test endpoint — fire a callback on demand without going through

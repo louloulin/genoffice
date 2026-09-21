@@ -99,29 +99,98 @@ export function deleteCallback(fileId: string): boolean {
  * advisory and shouldn't break the save pipeline. Callers can re-deliver
  * from a retry queue if durability is required.
  */
-export async function fireCallback(event: string, fileId: string, data: Record<string, unknown>): Promise<void> {
+export interface WebhookDeliveryResult {
+  url: string
+  event: string
+  attempts: number
+  delivered: boolean
+  finalStatus: number | null
+  error?: string
+}
+
+export interface WebhookDeliveryOptions {
+  /** Max delivery attempts (default 3: 1 initial + 2 retries). */
+  maxAttempts?: number
+  /** Initial backoff in ms; doubled each retry (default 250). */
+  initialBackoffMs?: number
+}
+
+/**
+ * Deliver a webhook with exponential-backoff retry.
+ *
+ * Retries on:
+ *   - network errors (fetch throws)
+ *   - 5xx server errors (target is having a bad time)
+ *   - 429 Too Many Requests (back off and try again)
+ *
+ * Does NOT retry on 2xx (success) or 4xx other than 429 (caller is at
+ * fault — retrying won't help). After maxAttempts exhausted, the
+ * failure is logged but the save pipeline stays unblocked; the caller
+ * can persist failed deliveries to a dead-letter queue if durability
+ * matters (sdk1.md §11.3 P2 follow-up).
+ *
+ * Per-attempt timeout is 5 s so a single slow target can't pile up
+ * deliveries; total worst-case wall time is roughly 5s × maxAttempts
+ * plus the sum of backoff delays.
+ */
+export async function fireCallback(
+  event: string,
+  fileId: string,
+  data: Record<string, unknown>,
+  opts: WebhookDeliveryOptions = {},
+): Promise<WebhookDeliveryResult | null> {
   const wh = getCallback(fileId)
-  if (!wh) return
-  if (wh.events.length > 0 && !wh.events.includes(event)) return
-  try {
-    const body = JSON.stringify({ v: '1.0', event, ts: Math.floor(Date.now() / 1000), fileId, data })
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (wh.secret) {
-      headers['X-GenOffice-Signature'] = signWebhookBody(wh.secret, body)
+  if (!wh) return null
+  if (wh.events.length > 0 && !wh.events.includes(event)) return null
+  const maxAttempts = Math.max(1, opts.maxAttempts ?? 3)
+  const initialBackoffMs = Math.max(0, opts.initialBackoffMs ?? 250)
+  const body = JSON.stringify({ v: '1.0', event, ts: Math.floor(Date.now() / 1000), fileId, data })
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (wh.secret) {
+    headers['X-GenOffice-Signature'] = signWebhookBody(wh.secret, body)
+  }
+
+  let lastError: string | undefined
+  let lastStatus: number | null = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(wh.url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (res.ok) {
+        return { url: wh.url, event, attempts: attempt, delivered: true, finalStatus: res.status }
+      }
+      lastStatus = res.status
+      // 4xx other than 429 are caller-fault; no retry.
+      const retryable = res.status >= 500 || res.status === 429
+      if (!retryable) {
+        console.warn(`[webhooks] ${wh.url} returned ${res.status} for ${event} (not retrying)`)
+        return { url: wh.url, event, attempts: attempt, delivered: false, finalStatus: res.status }
+      }
+      console.warn(`[webhooks] ${wh.url} returned ${res.status} for ${event} (attempt ${attempt}/${maxAttempts})`)
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
+      console.warn(`[webhooks] delivery attempt ${attempt}/${maxAttempts} to ${wh.url} failed:`, lastError)
     }
-    const res = await fetch(wh.url, {
-      method: 'POST',
-      headers,
-      body,
-      // 5-second cap so a slow webhook target doesn't pile up deliveries.
-      signal: AbortSignal.timeout(5_000),
-    })
-    if (!res.ok) {
-      // Log only — webhook delivery is advisory.
-      console.warn(`[webhooks] ${wh.url} returned ${res.status} for ${event}`)
+    if (attempt < maxAttempts) {
+      // Exponential backoff with full jitter: base * 2^(attempt-1), capped
+      // at 8s, then jitter to avoid thundering herd on a flapping target.
+      const base = initialBackoffMs * 2 ** (attempt - 1)
+      const capped = Math.min(base, 8_000)
+      const jitter = Math.floor(Math.random() * capped)
+      await new Promise((res) => setTimeout(res, jitter))
     }
-  } catch (err) {
-    console.warn(`[webhooks] failed to deliver ${event} to ${wh.url}:`, err instanceof Error ? err.message : err)
+  }
+  return {
+    url: wh.url,
+    event,
+    attempts: maxAttempts,
+    delivered: false,
+    finalStatus: lastStatus,
+    ...(lastError ? { error: lastError } : {}),
   }
 }
 
