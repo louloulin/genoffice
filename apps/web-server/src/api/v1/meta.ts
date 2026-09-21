@@ -29,6 +29,14 @@ function getPkgRoot(): string {
 
 const PKG_ROOT = getPkgRoot()
 
+/**
+ * Public health check — returns implementation metadata.
+ *
+ * @route GET /api/v1/health
+ * @summary (see above)
+ * @scope —
+ * @errors —
+ */
 export function handleHealth(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
   sendJson(ctx.response, 200, {
     status: 'ok',
@@ -41,6 +49,14 @@ export function handleHealth(ctx: { request: IncomingMessage; response: ServerRe
   return true
 }
 
+/**
+ * Public changelog endpoint.
+ *
+ * @route GET /api/v1/changelog
+ * @summary (see above)
+ * @scope —
+ * @errors —
+ */
 export function handleChangelog(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
   const candidates = [
     join(PKG_ROOT, 'CHANGELOG.md'),

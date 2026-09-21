@@ -176,6 +176,14 @@ export function hasScope(payload: JwtPayload | null | undefined, scope: string):
   return false
 }
 
+/**
+ * Mint a short-lived JWT for iframe embed / API consumers.
+ *
+ * @route POST /api/v1/auth/jwt
+ * @summary (see above)
+ * @scope ai:* / files:* / kb:* / webhooks:* / admin
+ * @errors INVALID_ARGUMENT / UNAUTHORIZED / INTERNAL
+ */
 export async function handleAuthJwt(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const { request, response } = ctx
   if (!SECRET) {
@@ -217,6 +225,14 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
   return true
 }
 
+/**
+ * OAuth 2.0 client_credentials grant (RFC 6749 §4.4).
+ *
+ * @route POST /api/v1/auth/oauth/token
+ * @summary (see above)
+ * @scope —
+ * @errors INVALID_ARGUMENT / UNAUTHORIZED
+ */
 export async function handleOAuthToken(ctx: { request: IncomingMessage; response: ServerResponse }): Promise<boolean> {
   const { request, response } = ctx
   if (!SECRET) {
