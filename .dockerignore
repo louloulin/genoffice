@@ -1,0 +1,36 @@
+# Repository-internal files that should never make it into a Docker image.
+node_modules
+dist
+.git
+.github
+.vscode
+.idea
+.husky
+.cache
+.turbo
+*.log
+coverage
+docs/.vitepress/cache
+docs/.vitepress/dist
+# fixtures are huge; web-server loads them lazily at runtime via DATA_DIR
+packages/docx-engine/fixtures
+packages/file-parse/fixtures
+packages/pdf2docx/fixtures
+packages/html2docx/fixtures
+packages/pptx-engine/fixtures
+# dev-only Playwright/E2E artifacts
+playwright-report
+test-results
+e2e/screenshots
+e2e/videos
+# the new open-sdk artifacts (these are build outputs of the SDK itself,
+# not part of the web-server image)
+apps/sdk/dist
+apps/sdk/node_modules
+# screenshot artifacts left over from earlier sessions
+*.png.bak
+home-page.png
+current-state.png
+saas1.md
+sdk1.md
+storage:/

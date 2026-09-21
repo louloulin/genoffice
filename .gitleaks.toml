@@ -1,0 +1,46 @@
+# gitleaks config — runs in `.github/workflows/security.yml`.
+# Blocks known secret patterns from being committed.
+
+title = "GenOffice secret scan"
+
+[extend]
+# Inherit the default ruleset so we don't have to list every AWS / GCP / GH
+# token pattern by hand. The defaults are tuned for false-positive rate;
+# extend.useDefault will pull them in.
+useDefault = true
+
+# Paths we never scan: vendored + generated artefacts.
+[[skip]]
+  paths = [
+    '''node_modules/''',
+    '''apps/*/dist/''',
+    '''apps/*/out/''',
+    '''apps/*/build/''',
+    '''packages/*/dist/''',
+    '''packages/*/coverage/''',
+    '''apps/web-server/dist/bundle/.*\.map$''',
+    '''CHANGELOG\.md$''',
+  ]
+
+# Allow-list the example JWT we ship in docs (it's clearly labelled).
+[[allowlists]]
+  description = "Documentation JWT (clearly labelled as a placeholder)"
+  regexes = [
+    '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+''',
+  ]
+  paths = [
+    '''docs/.*''',
+    '''examples/.*''',
+    '''apps/sdk/README\.md$''',
+  ]
+
+# Webhook test URL — clearly labelled `never-listening`.
+[[allowlists]]
+  description = "Webhook test URLs in unit tests"
+  regexes = [
+    '''http://127\.0\.0\.1:9/never-listening''',
+    '''http://127\.0\.0\.1:1/hook''',
+  ]
+  paths = [
+    '''apps/web-server/tests/.*''',
+  ]

@@ -86,3 +86,6 @@ apps/docs/tests/pagination-corpus/docx/07-page-breaks*.docx
 docs/api/_generated/
 docs/node_modules/
 /translation-dictionaries/
+.bak
+home-page.png
+current-state.png.bak
