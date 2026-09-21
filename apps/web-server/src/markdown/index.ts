@@ -17,6 +17,7 @@ import {
 import { NotFoundError } from '../ai/errors'
 import { storageKeyFromPath } from '../common/state'
 import { recordRecentDoc } from '../common/document-stores'
+import { notifyFileSaved } from '../common/webhooks-store'
 
 const MARKDOWN_ASSET_DIR = join(DATA_DIR, 'markdown-assets')
 const IMAGE_MIME: Record<string, string> = {
@@ -124,6 +125,7 @@ export function registerMarkdownHandlers(): void {
         name: existingName ?? basename(recentsKey),
         modified: true,
       })
+      notifyFileSaved(recentsKey, { size: Buffer.byteLength(value.text, 'utf8'), format: 'md' })
       return { ok: true, path: recentsKey }
     } catch (e) {
       return { ok: false, error: (e as Error).message }

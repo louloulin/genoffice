@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { DOCS_RECENT, FILES_DIR, loadRecentSlides, registerHandle, requireManagedPath, saveRecentSlides, writeBlankOfficeFile, isManagedPath } from '../common/index'
 import { recordRecentDoc } from '../common/document-stores'
+import { notifyFileSaved } from '../common/webhooks-store'
 import { openPptx, savePptxToFile } from '@genoffice/pptx-engine'
 import {
   registerSlidesSession,
@@ -300,6 +301,7 @@ export function registerSlidesCoreHandlers(): void {
             mkdirSync(dirname(canonical), { recursive: true })
             atomicWriteFile(canonical, bytes)
           }
+          notifyFileSaved(canonical, { size: bytes.byteLength, format: 'pptx' })
           return { ok: true, path: canonical }
         }
 

@@ -46,6 +46,9 @@ import { fileIndexStore } from './common/file-index-store'
 import { flushFileManagementState } from './common/document-stores'
 import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from './common/read-body'
 import { registerAiHandlers, AI_STREAM_SESSIONS, runProviderStream } from './ai/index'
+import { loadMarketplace } from './common/marketplace-loader'
+import { getDefaultProviderRegistry } from '@genoffice/ai-provider'
+import { getDefaultSkillRegistry } from '@genoffice/agent-skills'
 import { classifyWebError, ipcErrorStatus, InvalidArgumentError } from './ai/errors'
 import {
   handleTranslateBatchHttp,
@@ -68,6 +71,8 @@ import { registerEnterpriseHandlers } from './enterprise/index'
 import { registerAnydocHandlers } from './anydoc/index'
 import { registerWebHandlers } from './web/index'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
+import { handleApiV1 } from './api/v1/index'
+import { handleEmbed } from './embed/index'
 
 function authCookieHeader(): string | null {
   const token = process.env.WEB_TOKEN
@@ -112,6 +117,29 @@ initRecentState()
  * first request after a restart, not only after the next upload. */
 fileIndexStore.fromDiskSync()
 registerAiHandlers()
+// Third-party provider / skill marketplace: read genoffice.providers.json +
+// genoffice.skills.json (from env / DATA_DIR / cwd / repo) and dynamically
+// import each module. Failures are logged, not fatal. See
+// apps/web-server/src/common/marketplace-loader.ts.
+loadMarketplace({
+  providersRegistry: getDefaultProviderRegistry(),
+  skillRegistry: getDefaultSkillRegistry(),
+}).then((result) => {
+  if (result.providers.length > 0) {
+    console.log(`[marketplace] loaded ${result.providers.length} provider(s): ${result.providers.map((p) => p.plugin.id).join(', ')}`)
+  }
+  if (result.skills.length > 0) {
+    console.log(`[marketplace] loaded ${result.skills.length} skill(s): ${result.skills.map((s) => s.definition.id).join(', ')}`)
+  }
+  if (result.errors.length > 0) {
+    console.warn(`[marketplace] ${result.errors.length} failed to load:`)
+    for (const err of result.errors) {
+      console.warn(`[marketplace]   - ${err.entry.name}: ${err.error}`)
+    }
+  }
+}).catch((err: Error) => {
+  console.warn('[marketplace] loader crashed:', err.message)
+})
 registerProjectHandlers()
 registerDocsHandlers()
 registerSheetsHandlers()
@@ -365,6 +393,16 @@ const server = createServer(async (request, response) => {
       channels: listChannels(),
     })
     return
+  }
+
+  // ----- REST API v1 (stable, public-documented surface) -----
+  if (url.pathname.startsWith("/api/v1/")) {
+    try {
+      const handled = await handleApiV1({ request, response, pathname: url.pathname, method: request.method || "GET" })
+      if (handled) return
+    } catch (err) {
+      sendIpcError(response, err, true, url.pathname)
+    }
   }
 
   if (url.pathname === '/api/collab/sessions' && request.method === 'GET') {
@@ -702,6 +740,14 @@ const server = createServer(async (request, response) => {
     response.writeHead(204)
     response.end()
     return
+  }
+
+  // ----- iframe Embed endpoint (`/embed/:docId?token=...`) -----------------
+  // Stable v1 surface — see sdk1.md §2.1.C. Must run BEFORE the SPA fallback
+  // so the embed wrapper page wins over the shell home tab when a caller
+  // mounts `/embed/…` against a deployment that doesn't strip the prefix.
+  if (url.pathname.startsWith('/embed/') && request.method === 'GET') {
+    if (handleEmbed(request, response, url)) return
   }
 
   // ----- static / SPA fallback ---------------------------------------------

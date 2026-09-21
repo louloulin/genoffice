@@ -18,6 +18,7 @@ import {
   writeBlankOfficeFile,
 } from '../common/index'
 import { recordRecentDoc } from '../common/document-stores'
+import { notifyFileSaved } from '../common/webhooks-store'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
 import { WebSheetsSidecar } from './sidecar'
@@ -456,6 +457,7 @@ export function registerSheetsHandlers(): void {
       // disk but the home tile stayed clean and the user assumed nothing
       // had landed.
       await recordRecentDoc(requestedTarget, { modified: true })
+      notifyFileSaved(requestedTarget, { format: extname(requestedTarget).slice(1) || 'xlsx' })
       return {
         ok: true,
         path: requestedTarget,

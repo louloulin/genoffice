@@ -26,6 +26,7 @@ const PASTE_QUOTA_FILE = join(DATA_DIR, '.quotas', 'paste.json')
 import { assertMagicMatchesExtension } from '../common/magic'
 import { atomicWriteFile } from '../common/atomic'
 import { recordRecentDoc } from '../common/document-stores'
+import { notifyFileSaved } from '../common/webhooks-store'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
@@ -326,6 +327,7 @@ export function registerDocsHandlers(): void {
           name: existingName ?? basename(filePath),
           modified: true,
         })
+        notifyFileSaved(filePath, { size: bytes.byteLength, format: 'docx' })
         return { ok: true, path: filePath }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -467,6 +469,7 @@ export function registerDocsHandlers(): void {
         name: safeName,
         modified: false,
       })
+      notifyFileSaved(path, { size: bytes.byteLength, format: 'docx' })
 
       if (typeof projectId === 'string' && projectId) {
         const projects = loadProjects()

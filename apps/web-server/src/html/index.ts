@@ -21,6 +21,7 @@ import {
 } from '../common/index'
 import { atomicWriteFile } from '../common/atomic'
 import { recordRecentDoc } from '../common/document-stores'
+import { notifyFileSaved } from '../common/webhooks-store'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const HTML_DOC_DIR = join(DATA_DIR, 'html')
@@ -193,6 +194,7 @@ export function registerHtmlHandlers(): void {
       // emits an empty `text` field has lost its document model.
       atomicWriteFile(target, value.text)
       await recordRecentDoc(target, { modified: true })
+      notifyFileSaved(target, { size: Buffer.byteLength(value.text, 'utf8'), format: 'html' })
       return { ok: true, path: target }
     } catch (e) {
       return { ok: false, error: (e as Error).message }

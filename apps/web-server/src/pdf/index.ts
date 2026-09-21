@@ -9,6 +9,7 @@ import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
 import { atomicWriteFile } from '../common/atomic'
+import { notifyFileSaved } from '../common/webhooks-store'
 import { savePdfToPath } from '../../../pdf/src/main/save-pdf'
 import type { SavePdfRequest, SavePdfResult } from '../../../pdf/src/shared/ipc'
 
@@ -208,12 +209,13 @@ export function registerPdfHandlers(): void {
       // runs so the storage-backend write happens, but its result is
       // discarded here — keeping the return shape backwards-compatible with
       // the desktop contract the renderer already imports.
-      await publishPdfAfterSave(
+      const finalPath = await publishPdfAfterSave(
         typeof value.targetPath === 'string' && value.targetPath.length > 0
           ? value.targetPath
           : value.path,
         target,
       )
+      notifyFileSaved(finalPath, { format: 'pdf' })
       return {
         ok: true,
         ...(skippedTextEdits.length > 0 ? { skippedTextEdits } : {}),
