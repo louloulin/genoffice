@@ -31,13 +31,21 @@ Skills shipped by the GenOffice team as standalone npm packages under the
 
 ## Per-skill deep dives
 
-Each flagship Skill has a dedicated page with full input / output schemas, usage examples, and "when to use" guidance:
+Each official Skill has a dedicated page with full input / output schemas, usage examples, and "when to use" guidance:
 
 - [`genoffice.skill.doc-format` →](/skills/official/doc-format)
+- [`genoffice.skill.json-validate` →](/skills/official/json-validate)
+- [`genoffice.skill.markdown-format` →](/skills/official/markdown-format)
 - [`genoffice.skill.sheet-formula` →](/skills/official/sheet-formula)
 - [`genoffice.skill.slides-outline` →](/skills/official/slides-outline)
+- [`genoffice.skill.text-diff` →](/skills/official/text-diff)
+- [`genoffice.skill.text-summarize` →](/skills/official/text-summarize)
+- [`genoffice.skill.text-translate` →](/skills/official/text-translate)
+- [`genoffice.skill.text-translate-pairs` →](/skills/official/text-translate-pairs)
+- [`genoffice.skill.yaml-to-json` →](/skills/official/yaml-to-json)
+- [`genoffice.skill.yaml-validate` →](/skills/official/yaml-validate)
 
-The remaining 8 Skills share the same `SkillDefinition` contract; refer to the [Authoring Guide](/skills/authoring) for the full schema and use the marketplace loader (`genoffice.skills.json`) to bring all 11 in at boot.
+All 11 Skills share the same `SkillDefinition` contract; refer to the [Authoring Guide](/skills/authoring) for the full schema and use the marketplace loader (`genoffice.skills.json`) to bring all 11 in at boot.
 
 ## Installation
 

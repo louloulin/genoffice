@@ -22,13 +22,21 @@
 
 ## 单 Skill 详解
 
-每个旗舰 Skill 都有独立页面，含完整输入 / 输出 schema、使用示例与"适用场景"说明：
+每个官方 Skill 都有独立页面，含完整输入 / 输出 schema、使用示例与"适用场景"说明：
 
 - [`genoffice.skill.doc-format` →](/zh/skills/official/doc-format)
+- [`genoffice.skill.json-validate` →](/zh/skills/official/json-validate)
+- [`genoffice.skill.markdown-format` →](/zh/skills/official/markdown-format)
 - [`genoffice.skill.sheet-formula` →](/zh/skills/official/sheet-formula)
 - [`genoffice.skill.slides-outline` →](/zh/skills/official/slides-outline)
+- [`genoffice.skill.text-diff` →](/zh/skills/official/text-diff)
+- [`genoffice.skill.text-summarize` →](/zh/skills/official/text-summarize)
+- [`genoffice.skill.text-translate` →](/zh/skills/official/text-translate)
+- [`genoffice.skill.text-translate-pairs` →](/zh/skills/official/text-translate-pairs)
+- [`genoffice.skill.yaml-to-json` →](/zh/skills/official/yaml-to-json)
+- [`genoffice.skill.yaml-validate` →](/zh/skills/official/yaml-validate)
 
-其余 8 个 Skill 共享同一 `SkillDefinition` 契约；完整 schema 见 [Skill 编写指南](/zh/skills/authoring)，通过市场加载器（`genoffice.skills.json`）在启动时一键拉起全部 11 个。
+全部 11 个 Skill 共享同一 `SkillDefinition` 契约；完整 schema 见 [Skill 编写指南](/zh/skills/authoring)，通过市场加载器（`genoffice.skills.json`）在启动时一键拉起全部 11 个。
 
 ## 安装
 
