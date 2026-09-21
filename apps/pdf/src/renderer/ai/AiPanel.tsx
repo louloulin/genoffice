@@ -843,7 +843,7 @@ export function AiPanel({
                 const instruction = hasScopeSelection && scopeSel?.text ? scopeSel.text : ''
                 if (action === 'translate') {
                   if (!instruction) {
-                    send(t('aiChipTranslate'))
+                    send(t('aiQuickTipTranslate'))
                     return
                   }
                   const r = await window.pdfApi?.aiTranslate?.({
@@ -852,7 +852,7 @@ export function AiPanel({
                     preserveFormat: true,
                   })
                   if (!r?.ok) {
-                    send(t('aiChipTranslate'))
+                    send(t('aiQuickTipTranslate'))
                     return
                   }
                   setPrompt(r.translated ?? '')
@@ -883,12 +883,12 @@ export function AiPanel({
                 <button
                   key={action.id}
                   className="ai-quick-btn"
-                  title={action.id}
+                  title={action.tipKey ? t(action.tipKey) : action.id}
                   onClick={async () => {
                     if (action.id === 'translate') {
                       const instruction = hasScopeSelection && scopeSel?.text ? scopeSel.text : ''
                       if (!instruction) {
-                        send(t(action.promptKey))
+                        send(t('aiQuickTipTranslate'))
                         return
                       }
                       const r = await window.pdfApi?.aiTranslate?.({
@@ -897,7 +897,7 @@ export function AiPanel({
                         preserveFormat: true,
                       })
                       if (!r?.ok) {
-                        send(t(action.promptKey))
+                        send(t('aiQuickTipTranslate'))
                         return
                       }
                       setPrompt(r.translated ?? '')

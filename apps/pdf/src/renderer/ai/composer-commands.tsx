@@ -15,6 +15,8 @@ export interface PdfQuickAction {
   readonly trigger: string
   readonly labelKey: StringKey
   readonly promptKey: StringKey
+  /** tooltip key (i18n); AiPanel falls back to action.id when omitted */
+  readonly tipKey?: StringKey
   readonly icon: React.ReactNode
 }
 
@@ -48,6 +50,7 @@ export const PDF_QUICK_ACTIONS: readonly PdfQuickAction[] = [
     trigger: 'sum',
     labelKey: 'aiQuickSummary',
     promptKey: 'aiQuickSummaryPrompt',
+    tipKey: 'aiQuickTipSummary',
     icon: (
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
         <path d="M3 3h7M3 6h10M3 9h8M3 12h6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
@@ -59,6 +62,7 @@ export const PDF_QUICK_ACTIONS: readonly PdfQuickAction[] = [
     trigger: 'key',
     labelKey: 'aiQuickKeyPoints',
     promptKey: 'aiQuickKeyPointsPrompt',
+    tipKey: 'aiQuickTipKeyPoints',
     icon: (
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
         <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3" />
@@ -71,6 +75,7 @@ export const PDF_QUICK_ACTIONS: readonly PdfQuickAction[] = [
     trigger: 'tran',
     labelKey: 'aiChipTranslate',
     promptKey: 'aiChipTranslate',
+    tipKey: 'aiQuickTipTranslate',
     icon: (
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
         <path d="M2 3h6M5 3v1.5C5 7 3.5 8.5 2 9M6 5.5C5.5 7 4.5 8 3 8.5M9 13l2-5 2 5M9.7 11.5h2.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
