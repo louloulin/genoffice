@@ -32,7 +32,7 @@ export const fr = {
   aiChipShorten: 'Rendre ce passage plus concis',
   aiChipExpand: 'Développer ce passage',
   aiChipFixGrammar: 'Corriger la grammaire et les fautes',
-  aiChipTranslate: 'Traduire ce passage',
+  aiChipTranslate: 'Traduire tout le document',
   aiInlineLauncherTitle: 'Assistant IA',
   aiInlineLauncherPolish: 'Peaufiner',
   aiInlineLauncherExpand: 'Développer',

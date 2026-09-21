@@ -33,7 +33,7 @@ export const it = {
   aiChipShorten: 'Rendi questo passaggio più conciso',
   aiChipExpand: 'Espandi questo passaggio',
   aiChipFixGrammar: 'Correggi grammatica e refusi',
-  aiChipTranslate: 'Traduci questo passaggio',
+  aiChipTranslate: 'Traduci intero documento',
   aiInlineLauncherTitle: 'Assistente IA',
   aiInlineLauncherPolish: 'Perfeziona',
   aiInlineLauncherExpand: 'Espandi',

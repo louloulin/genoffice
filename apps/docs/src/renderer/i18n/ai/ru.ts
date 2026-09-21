@@ -31,7 +31,7 @@ export const ru = {
   aiChipShorten: 'Сделать фрагмент лаконичнее',
   aiChipExpand: 'Расширить этот фрагмент',
   aiChipFixGrammar: 'Исправить грамматику и опечатки',
-  aiChipTranslate: 'Перевести этот фрагмент',
+  aiChipTranslate: 'Перевести весь документ',
   aiInlineLauncherTitle: 'ИИ-ассистент',
   aiInlineLauncherPolish: 'Отполировать',
   aiInlineLauncherExpand: 'Расширить',

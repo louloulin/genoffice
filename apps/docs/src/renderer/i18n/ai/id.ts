@@ -31,7 +31,7 @@ export const id = {
   aiChipShorten: 'Buat bagian ini lebih ringkas',
   aiChipExpand: 'Kembangkan bagian ini',
   aiChipFixGrammar: 'Perbaiki tata bahasa dan salah ketik',
-  aiChipTranslate: 'Terjemahkan bagian ini',
+  aiChipTranslate: 'Terjemahkan seluruh dokumen',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

@@ -29,7 +29,7 @@ export const zh = {
   aiChipShorten: '精简这段文字',
   aiChipExpand: '扩写这段内容',
   aiChipFixGrammar: '修正语法和错别字',
-  aiChipTranslate: '翻译这段文字',
+  aiChipTranslate: '翻译全文',
   aiInlineLauncherTitle: 'AI 助手',
   aiInlineLauncherPolish: '润色',
   aiInlineLauncherExpand: '扩写',

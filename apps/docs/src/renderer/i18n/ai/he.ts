@@ -30,7 +30,7 @@ export const he = {
   aiChipShorten: 'קצר את הקטע הזה',
   aiChipExpand: 'הרחב את הקטע הזה',
   aiChipFixGrammar: 'תקן דקדוק ושגיאות הקלדה',
-  aiChipTranslate: 'תרגם קטע זה',
+  aiChipTranslate: 'תרגם את כל המסמך',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

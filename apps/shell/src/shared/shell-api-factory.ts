@@ -683,9 +683,34 @@ export function createShellProjectApi(t: IpcTransport): ProjectHomeApi {
     },
     async listFiles(projectId) {
       const result: unknown = await t.invoke(PROJECT_CHANNELS.files, { projectId })
-      return Array.isArray(result)
-        ? result.filter((path): path is string => typeof path === 'string')
-        : []
+      if (!Array.isArray(result)) return []
+      /* project:files returns FileInfo objects (id, name, path, size,
+       * mimeType, createdAt, updatedAt). The previous filter dropped every
+       * non-string row, so the project pane rendered empty even though the
+       * project.files array on disk was full. Map straight to RecentEntry so
+       * renderFileRow has name/ext/mtimeMs/sizeBytes without a second stat. */
+      return result.map((info): RecentEntry => {
+        const fileInfo = info as {
+          id?: string
+          name?: string
+          path?: string
+          size?: number
+          mimeType?: string
+          createdAt?: number
+          updatedAt?: number
+        }
+        const filePath = fileInfo.path ?? `storage://local/${fileInfo.id ?? ''}`
+        const fileName = fileInfo.name ?? (fileInfo.id ? fileInfo.id.split('/').pop() ?? fileInfo.id : filePath.split('/').pop() ?? '')
+        const fileExt = (filePath.split('.').pop() ?? '').toLowerCase()
+        return {
+          path: filePath,
+          name: fileName,
+          ext: fileExt,
+          mtimeMs: fileInfo.updatedAt ?? fileInfo.createdAt ?? Date.now(),
+          sizeBytes: typeof fileInfo.size === 'number' ? fileInfo.size : 0,
+          starred: false,
+        }
+      })
     },
     async createProject(name) {
       const result: unknown = await t.invoke(PROJECT_CHANNELS.create, { name })

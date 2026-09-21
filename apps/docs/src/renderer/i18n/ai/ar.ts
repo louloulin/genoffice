@@ -30,7 +30,7 @@ export const ar = {
   aiChipShorten: 'اجعل هذه الفقرة أكثر إيجازًا',
   aiChipExpand: 'وسّع هذه الفقرة',
   aiChipFixGrammar: 'صحّح القواعد والأخطاء الإملائية',
-  aiChipTranslate: 'ترجم هذا المقطع',
+  aiChipTranslate: 'ترجم المستند بالكامل',
   aiInlineLauncherTitle: 'مساعد الذكاء الاصطناعي',
   aiInlineLauncherPolish: 'تحسين',
   aiInlineLauncherExpand: 'توسيع',

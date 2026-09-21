@@ -30,7 +30,7 @@ export const th = {
   aiChipShorten: 'ทำให้ข้อความนี้กระชับขึ้น',
   aiChipExpand: 'ขยายความเนื้อหานี้',
   aiChipFixGrammar: 'แก้ไวยากรณ์และคำผิด',
-  aiChipTranslate: 'แปลส่วนนี้',
+  aiChipTranslate: 'แปลเอกสารทั้งหมด',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

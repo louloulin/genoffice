@@ -30,7 +30,7 @@ export const ko = {
   aiChipShorten: '이 문단 간결하게',
   aiChipExpand: '이 내용 확장하기',
   aiChipFixGrammar: '문법과 오탈자 수정',
-  aiChipTranslate: '이 부분 번역',
+  aiChipTranslate: '전체 문서 번역',
   aiInlineLauncherTitle: 'AI 도우미',
   aiInlineLauncherPolish: '다듬기',
   aiInlineLauncherExpand: '확장',

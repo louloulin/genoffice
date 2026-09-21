@@ -30,7 +30,7 @@ export const zhTW = {
   aiChipShorten: '精簡這段文字',
   aiChipExpand: '擴寫這段內容',
   aiChipFixGrammar: '修正語法和錯別字',
-  aiChipTranslate: '翻譯這段文字',
+  aiChipTranslate: '翻譯全文',
   aiInlineLauncherTitle: 'AI 助理',
   aiInlineLauncherPolish: '潤飾',
   aiInlineLauncherExpand: '擴寫',

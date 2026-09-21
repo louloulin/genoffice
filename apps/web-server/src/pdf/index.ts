@@ -3,8 +3,10 @@
  * main process (convert-office, password get/submit/cancel, save).
  */
 import { existsSync, readFileSync } from 'node:fs'
-import { isManagedPath, registerHandle, requireManagedPath } from '../common/index'
-import { NotFoundError } from '../ai/errors'
+import { isManagedPath, PATH_OUTSIDE_STORAGE, registerHandle } from '../common/index'
+import { InvalidArgumentError, NotFoundError } from '../ai/errors'
+import { getStorageBackend, storageKeyFromPath } from '../common/state'
+import { StorageNotFoundError } from '@genoffice/file-management'
 import { savePdfToPath } from '../../../pdf/src/main/save-pdf'
 import type { SavePdfRequest, SavePdfResult } from '../../../pdf/src/shared/ipc'
 
@@ -24,23 +26,48 @@ export function registerPdfHandlers(): void {
   registerHandle('pdf:list-edit-fonts', () => ['Arial', 'Calibri', 'Times New Roman', 'Helvetica'])
   registerHandle('pdf:dirty-changed', () => ({ ok: true }))
 
-  registerHandle('pdf:read-file', async (_event: unknown, filePath: unknown) => {
-    const path = requireManagedPath('pdf:read-file', filePath)
-    if (!existsSync(path)) {
-      throw new NotFoundError('pdf:read-file', `File not found: ${path}`)
+  /* Read PDF bytes from either a managed-path FILES_DIR entry (legacy
+   * desktop callers) or a `storage://<backend>/<key>` URI (the path the
+   * recents / project-files grid hands the renderer). The previous
+   * implementation only knew the managed-path shape, so opening any
+   * web-uploaded PDF landed in the "path is outside the web storage area"
+   * 400 from `requireManagedPath`. */
+  async function readPdfBytes(channel: string, filePath: string): Promise<Buffer> {
+    const key = storageKeyFromPath(filePath)
+    if (key) {
+      try {
+        const u8 = await getStorageBackend().get(key)
+        return Buffer.from(u8)
+      } catch (err) {
+        if (err instanceof StorageNotFoundError) {
+          throw new NotFoundError(channel, `File not found: ${filePath}`)
+        }
+        throw err
+      }
     }
-    const bytes = readFileSync(path)
+    if (isManagedPath(filePath) && existsSync(filePath)) {
+      return readFileSync(filePath)
+    }
+    /* Same containment refusal shape the previous `requireManagedPath` produced,
+     * so callers probing outside managed storage still see a 400, not a 404. */
+    throw new InvalidArgumentError(channel, PATH_OUTSIDE_STORAGE)
+  }
+
+  registerHandle('pdf:read-file', async (_event: unknown, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      throw new InvalidArgumentError('pdf:read-file', 'path is required')
+    }
+    const bytes = await readPdfBytes('pdf:read-file', filePath)
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
   })
 
   registerHandle('pdf:open-path', async (_event: unknown, filePath: unknown) => {
-    const path = requireManagedPath('pdf:open-path', filePath)
-    if (!existsSync(path)) {
-      throw new NotFoundError('pdf:open-path', `File not found: ${path}`)
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      throw new InvalidArgumentError('pdf:open-path', 'path is required')
     }
-    const bytes = readFileSync(path)
+    const bytes = await readPdfBytes('pdf:open-path', filePath)
     return {
-      path,
+      path: filePath,
       bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     }
   })

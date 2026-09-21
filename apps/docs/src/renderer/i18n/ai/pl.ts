@@ -31,7 +31,7 @@ export const pl = {
   aiChipShorten: 'Skróć ten fragment',
   aiChipExpand: 'Rozwiń ten fragment',
   aiChipFixGrammar: 'Popraw gramatykę i literówki',
-  aiChipTranslate: 'Przetłumacz ten fragment',
+  aiChipTranslate: 'Przetłumacz cały dokument',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

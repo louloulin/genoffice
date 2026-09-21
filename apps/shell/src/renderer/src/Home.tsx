@@ -1414,10 +1414,13 @@ export function Home() {
     }
     let active = true
     const api = window.aiOfficeProject!
-    void api.listFiles(selectedProjectId).then(async (paths) => {
-      const stats = await window.aiOffice.statPaths(paths)
+    /* listFiles now ships RecentEntry[] directly (FileInfo→RecentEntry
+     * happens inside shell-api-factory). Going via statPaths used to drop
+     * every project row because project:files returns objects, not paths,
+     * so the project pane rendered empty even when project.files was full. */
+    void api.listFiles(selectedProjectId).then((entries) => {
       if (!active) return
-      setProjectFileEntries(stats.sort((a, b) => b.mtimeMs - a.mtimeMs))
+      setProjectFileEntries(entries.sort((a, b) => b.mtimeMs - a.mtimeMs))
     })
     return () => {
       active = false

@@ -30,7 +30,7 @@ export const ja = {
   aiChipShorten: 'この文章を簡潔にする',
   aiChipExpand: 'この内容を膨らませる',
   aiChipFixGrammar: '文法と誤字を修正する',
-  aiChipTranslate: 'この部分を翻訳',
+  aiChipTranslate: '全文を翻訳',
   aiInlineLauncherTitle: 'AI アシスタント',
   aiInlineLauncherPolish: '推敲',
   aiInlineLauncherExpand: '拡充',

@@ -32,7 +32,7 @@ export const nl = {
   aiChipShorten: 'Maak deze passage beknopter',
   aiChipExpand: 'Breid deze passage uit',
   aiChipFixGrammar: 'Corrigeer grammatica en typefouten',
-  aiChipTranslate: 'Vertaal deze passage',
+  aiChipTranslate: 'Volledig document vertalen',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

@@ -32,7 +32,7 @@ export const de = {
   aiChipShorten: 'Diese Passage kürzen',
   aiChipExpand: 'Diese Passage ausbauen',
   aiChipFixGrammar: 'Grammatik und Tippfehler korrigieren',
-  aiChipTranslate: 'Diesen Abschnitt übersetzen',
+  aiChipTranslate: 'Gesamtes Dokument übersetzen',
   aiInlineLauncherTitle: 'KI-Assistent',
   aiInlineLauncherPolish: 'Überarbeiten',
   aiInlineLauncherExpand: 'Erweitern',

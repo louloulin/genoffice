@@ -31,7 +31,7 @@ export const hi = {
   aiChipShorten: 'इस अंश को संक्षिप्त करें',
   aiChipExpand: 'इस अंश का विस्तार करें',
   aiChipFixGrammar: 'व्याकरण और वर्तनी सुधारें',
-  aiChipTranslate: 'इस अंश का अनुवाद करें',
+  aiChipTranslate: 'पूरे दस्तावेज़ का अनुवाद करें',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',
