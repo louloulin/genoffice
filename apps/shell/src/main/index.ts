@@ -3359,9 +3359,37 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.cloudProjects, () => syncCloudProjects(cloudProjectsStorePath()))
 
-  ipcMain.handle(HOME_CHANNELS.openCloudProject, (_event, projectUrl: unknown) => {
-    const url = cloudProjectExternalUrl(projectUrl)
-    if (url) void shell.openExternal(url)
+  ipcMain.handle(
+    HOME_CHANNELS.openCloudProject,
+    (_event, projectUrl: unknown, options: unknown) => {
+      const url = cloudProjectExternalUrl(projectUrl)
+      if (!url) return
+      // Default = open inside the shell (tab mode). The modifier-key contract
+      // for the Home row: ⌘/Ctrl+click → window, Shift+click → external.
+      const mode: 'tab' | 'window' | 'external' =
+        options && typeof options === 'object' && 'mode' in options
+          ? ((options as { mode?: 'tab' | 'window' | 'external' }).mode ?? 'tab')
+          : 'tab'
+      if (mode === 'external') {
+        void shell.openExternal(url)
+        return
+      }
+      if (mode === 'window') {
+        // Single-purpose window: a bare BrowserWindow that just loads the URL.
+        // No menus, no chrome beyond the OS title bar; the user can close it
+        // to dismiss and the parent shell window keeps running.
+        const win = new BrowserWindow({
+          width: 1200,
+          height: 800,
+          title: url,
+        })
+        win.removeMenu()
+        void win.loadURL(url)
+        return
+      }
+      // 'tab' (default): open inside the shell's tab strip.
+      tabManager?.openWebTab(url)
+    },
   })
 }
 

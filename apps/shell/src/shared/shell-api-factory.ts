@@ -613,9 +613,9 @@ export function createShellHomeApi(t: IpcTransport, overrides: ShellApiOverrides
         return null
       }
     },
-    async openCloudProject(projectUrl) {
+    async openCloudProject(projectUrl, options) {
       if (typeof projectUrl !== 'string' || !projectUrl) throw new Error('Invalid project URL.')
-      await t.invoke(HOME_CHANNELS.openCloudProject, projectUrl)
+      await t.invoke(HOME_CHANNELS.openCloudProject, projectUrl, options)
     },
     // AI settings channels are registered once by the shell's aggregated docs handlers
     async getAiSettings() {
