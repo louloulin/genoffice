@@ -2,9 +2,8 @@
   "name": "@genoffice/agent-session",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
-  "description": "GenOffice session backends: SQLite for Electron hosts, IndexedDB for web hosts",
+  "description": "GenOffice session backends: SQLite for desktop hosts (Node), IndexedDB for web hosts (browser) \u2014 share agent state across hosts",
   "exports": {
     ".": "./src/index.ts",
     "./sqlite": "./src/sqlite.ts",
@@ -24,5 +23,26 @@
     "typescript": "^5.9.3",
     "vitest": "^4.1.11",
     "fake-indexeddb": "^6.2.5"
-  }
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/agent-session"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api",
+  "keywords": [
+    "agent session",
+    "ai",
+    "genoffice",
+    "office",
+    "sdk",
+    "sqlite",
+    "indexeddb"
+  ]
 }

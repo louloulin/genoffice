@@ -145,16 +145,16 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 | **路径净化** | `sanitizeFileName` 防 traversal / Unicode 规范化 | ✅ | `apps/web-server/src/common/paths.ts` |
 | **webhook 通知** | 7 个 save 通道触发 + HMAC-SHA256 签名 | ✅ | `apps/web-server/src/common/webhooks-store.ts:144` |
 | **加密备份** | web-server 自部署场景：操作员用 S3 备份 FILES_DIR | ⚠️ | 不在 monorepo 范围；运维指南 |
-| **版本历史** | 单文件 N 版本快照 | ⬜ | M4+ 路线图 |
-| **全文检索** | KB 索引（条目级）+ 简易文件搜索 | ✅（KB） / ⬜（全文） | `kb-format` + `shell/search.ts:74` |
+| **版本历史** | 单文件 N 版本快照 | ✅ | `apps/web-server/src/common/version-history.ts`（disk-backed, 10/文件）+ 4 IPC + 7 save pipeline 钩子 |
+| **全文检索** | KB 索引（条目级）+ 文件内容搜索 | ✅（KB） / ✅（文件内容）| `kb-format` + `shell/search.ts:74` (`search:files` 含 snippet 提取) |
 | **协作冲突解决** | CRDT / OT | ⬜ | M4（Week 16） |
 
-**结论**：文档管理 11/13 项 ✅，2 项明确列入未来 roadmap（加密备份 = 运维层；版本历史 + 协作 = M4+）。
+**结论**：文档管理 13/14 项 ✅（版本历史 + 全文检索本轮补齐），1 项列入 M4+ 路线图（协作 = CRDT/OT）。加密备份为运维层，不在 monorepo 范围。
 
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  52 文件 / 431 测试 全部通过  (26.88s wall)
+apps/web-server/tests/  →  60 文件 / 478 测试 全部通过  (~28s wall)
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -383,8 +383,8 @@ POST /your-endpoint
 | `@genoffice/ipc-bridge` | npm public | ✅ | Node-only（IPC 桥）；`npm publish --dry-run` 通过（tarball 30 kB）|
 | `@genoffice/i18n` | npm public | ✅ | 纯 TS；`npm publish --dry-run` 通过（tarball 5.1 kB）|
 | `@genoffice/ui` | npm public | ✅ | 纯 TS；`npm publish --dry-run` 通过（tarball 1.3 MB）|
-| `@genoffice/agent-runtime` | npm public | ⚠️ | 需先拆 Electron 依赖 |
-| `@genoffice/agent-session` | npm public | ⚠️ | 同上 |
+| `@genoffice/agent-runtime` | npm public | ✅ | 纯 TS + React 18 peerDep；`npm publish --dry-run` 通过（tarball 19.6 kB / 16 文件 / unpacked 75.3 kB）|
+| `@genoffice/agent-session` | npm public | ✅ | 纯 TS；SQLite (Node) + IndexedDB (web) 双 backend；`npm publish --dry-run` 通过（tarball 8.1 kB / 8 文件 / unpacked 28.5 kB）|
 | `apps/shell / apps/* / apps/web-server` | GitHub repo | ✅ | 整体开源 |
 | `@genoffice/agent-skills` | 内部 | ❌ | 先内部 |
 | `@genoffice/agent-telemetry` | 内部 | ❌ | 先内部 |
@@ -958,7 +958,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | **P0 · 必做** | Slides `apply-txn` 70+ element-level ops 真做（让"加文本框"真写盘）| `apps/web-server/src/slides/elements.ts` 改走 `@genoffice/pptx-ops` 的 `runTxn` | ✅ 完成（58 ops 全实做） |
 | **P0 · 必做** | Slides session LRU 上限（防 OOM）| `apps/web-server/src/slides/state.ts` `MAX_SLIDES_SESSIONS = 32` | ✅ 已实装 |
 | **P1 · 应做** | webhook 失败重试 + 死信队列 | `apps/web-server/src/common/webhooks-store.ts:fireCallback` 指数退避（最多 3 次） | ✅ 完成（重试部分；DLQ 留 backlog） |
-| **P1 · 应做** | 拆分 `agent-runtime` / `agent-session` 的 Electron 依赖，发布为 npm public | `packages/agent-runtime/`, `packages/agent-session/` | ⬜ 仍是 P3（Electron 依赖未拆） |
+| **P1 · 应做** | 拆分 `agent-runtime` / `agent-session` 的 Electron 依赖，发布为 npm public | `packages/agent-runtime/`, `packages/agent-session/` | ✅（§11.13）两包无 Electron 依赖、已加 npm 标准元数据、`npm publish --dry-run` 通过 |
 | **P1 · 应做** | `/api/v1/files/:id/jwt` 单次使用约束文档 + TTL 可配置 | `apps/web-server/src/api/v1/files.ts:handleFilesIssueJwt` + `auth.ts:verifyJwtWithRevocation` | ✅ 完成 |
 | **P2 · 改善** | 全文检索（文件级，非 KB）| `apps/web-server/src/shell/search.ts` 新增 `search:files` IPC handler | ✅ 完成 |
 | **P2 · 改善** | 文件版本历史（snapshot-on-save）| `apps/web-server/src/common/version-history.ts` + 7 save pipeline 钩子 | ✅ 完成（disk-backed，10/文件，自动 trim） |
@@ -1339,6 +1339,67 @@ sdk1.md                                   | §11.12 + §A.6 (counts)
 | 5. 路径越界必须结构化错误（`requireManagedPath`）| ✅ |
 
 
+### 11.13 本轮续作（v2 第 7 轮 commit，2026-09-22）
+
+§11.3 P1（拆分 agent-runtime / agent-session 的 Electron 依赖发布为 npm public）的最后一公里——两包经核实**根本没有 Electron 依赖**，只是 `private: true` 锁住了发布路径。本轮补齐 npm 标准元数据 + 移除 `private: true`，并把 sdk1.md 中 8 处遗留 stale 内容（§0.4 / §0.5 / §A.5 / §B.2）一次性刷成 ✅。
+
+#### 11.13.1 落点
+
+| 文件 | 改动 | 状态 |
+|---|---|---|
+| `packages/agent-runtime/package.json` | 删 `private: true` + 加 `engines.node` / `repository` / `bugs` / `homepage` / `keywords`（5 个 React 相关）| ✅ |
+| `packages/agent-session/package.json` | 删 `private: true` + 同上元数据（6 个 sqlite/indexeddb 相关 keyword）| ✅ |
+| `sdk1.md` | §11.3 P1 ⬜→✅ / §2.2 agent-runtime ⚠️→✅ / §2.2 agent-session ⚠️→✅ / §0.4 版本历史 ⬜→✅ / §0.4 全文检索 ⬜→✅ / §0.4 结论 11/13→13/14 / §0.5 测试数 52/431→60/478 / §A.5 #5 双语 ⬜→✅ / §B.2 #2/#4/#5 加 ✅ | ✅ |
+
+#### 11.13.2 验证
+
+```
+$ cd packages/agent-runtime && npm publish --dry-run
+npm notice package size: 19.6 kB
+npm notice unpacked size: 75.3 kB
+npm notice total files: 16
++ @genoffice/agent-runtime@0.1.0
+
+$ cd packages/agent-session && npm publish --dry-run
+npm notice package size: 8.1 kB
+npm notice unpacked size: 28.5 kB
+npm notice total files: 8
++ @genoffice/agent-session@0.1.0
+```
+
+测试 & typecheck：
+
+| 包 | typecheck | 测试 |
+|---|---|---|
+| `@genoffice/agent-runtime` | 1 个预存 `pdfjs-dist` 类型缺失错误，无新增 | 6 文件 / 43 测试 ✅（43/43，含 1 个 pi-goal-x 第三方 unhandled 异步噪音，不影响断言）|
+| `@genoffice/agent-session` | clean | 2 文件 / 30 测试 ✅ |
+| `apps/web-server`（消费方）| 无回归 | 60 文件 / 478 测试 ✅（`translate-coverage-e2e` 网络 flake 单独跑 5/5 ✅）|
+
+#### 11.13.3 设计要点
+
+- **"拆 Electron 依赖"是误诊**：`agent-runtime` 只有 `@earendil-works/pi-coding-agent` 等 4 个 MIT-licensed 上游 + React 18 peerDep；`agent-session` 只有 `@earendil-works/pi-agent-core` + `pi-session-backend-sqlite-node`（纯 Node SQLite 后端）。两包从设计上就不依赖 Electron（Electron 隔离在 `apps/shell`）。`private: true` 是占位默认值，本轮移除即可
+- **npm 元数据按 §2.2 标准字段对齐**：`engines.node >=22.12` / `repository` (git+github) / `bugs` (issues 链接) / `homepage` (docs/api) / `keywords`（描述包用途，方便 npm search 检索）
+- **不写 `files` 字段**：与 `ai-provider` 等 11 个已发布包保持一致——让 npm 默认打包 src/ + tests/ + tsconfig/vitest 配置，对外使用者可直接 `tsc --noEmit` 验证，tarball 体积可控（agent-runtime 19.6 kB / agent-session 8.1 kB）
+- **stale 内容一次性收口**：`sdk1.md` 之前几轮一直跑在前面，但遗留了 8 处状态描述未同步到最新代码。本轮在落地 P1 的同时把 §0.4 / §0.5 / §A.5 / §B.2 一起刷成 ✅，避免文档与代码漂移误导读者
+
+#### 11.13.4 §11.3 P1 收口后剩余
+
+| § | 项 | 状态 | 备注 |
+|---|---|---|---|
+| §11.3 P1 | agent-runtime / agent-session npm 公开 | ✅ | §11.13 |
+| §11.3 P1（未列）| agent-runtime / agent-session 文档站 / typedoc | ⬜ | 暂未生成 per-package 详解页；后续可加 `docs/api/packages/agent-runtime.md` |
+| §A.3 | Discord 服务器 / Office Hours | ⬜ | 外部服务，沙箱不可达 |
+| §B.1 | 协作（CRDT/OT）+ 移动端 H5 | ⬜ | M4（Week 16）|
+| §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
+
+#### 11.13.5 §11.6 M1 状态
+
+```
+M1 (2026-Q4):       P0 全部完成（Slides 真保存 + LRU + agent-runtime 拆分）  ← ✅ 本轮收口
+M2 (2026-Q4):       M4 启动 — CRDT 协作 + 移动端 H5
+```
+
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -1541,7 +1602,7 @@ sdk1.md                                   | §11.12 + §A.6 (counts)
    - VitePress sidebar 加入 `Generated API Reference` 入口链接到 `docs/api/_generated/README`
    - `.gitignore` 加入 `docs/api/_generated/`（避免 JSDoc 微调触发大量 churn diff）
    - `docs/package.json` 已声明 `typedoc@^0.28.0` + `typedoc-plugin-markdown@^4.6.0`
-5. **双语文档**：当前 EN-only 含少量 zh inline。
+5. **双语文档**：✅ A.4 全部双语（SDK README + 18 篇 Guide/API/Skills/About 全 ZH 翻译）；本条原描述为旧状态。
 6. **§2.2 全部 11 个 npm public 包可发布**（✅ 已完成）：
    - 把 `private: true` 翻成 `false` 并补齐 §2.2 标准字段（已完成于 `fb7e205`）
    - `ai-provider`：`listCodexModels` 移到 subpath `@genoffice/ai-provider/codex-app-server`，主 barrel 浏览器安全（已完成于 `fb7e205`）
@@ -1638,10 +1699,10 @@ web-server bundle 28.5 MB / `health` 200 / 552 IPC channels / marketplace boot �
 ### B.2 借鉴 WPS 的设计点
 
 1. **postMessage 协议**：WPS iframe 走标准化 postMessage 协议（init / ready / save / error）。GenOffice 已经定义在 `docs/api/postmessage-protocol.md`，✅ **本轮已落地**：iframe 父页面 handshake（`apps/sdk/src/editor.ts` 每会话随机 nonce → `?nonce=` 注入 → `ready` event 必须 echo 同一 nonce 否则触发 `HANDSHAKE_FAILED`），origin allowlist（`*` 通配 + `*.example.com` 单段通配）。
-2. **保存回调签名**：WPS 在保存触发后推 HMAC 签名 webhook。GenOffice 现有 webhook 缺签名，建议补 HMAC-SHA256(secret, body) 头 `X-GenOffice-Signature`，参考 GitHub / Stripe 模式。
+2. **保存回调签名**：✅ **本轮已落地**：`apps/web-server/src/common/webhooks-store.ts:signWebhookBody()` 出站请求带 `X-GenOffice-Signature: sha256=<hex>` 头（HMAC-SHA256，GitHub / Stripe 风格），`FileWebhook.secret` 字段持久化在 `webhooks.json`；5 个 webhook-signing 测试覆盖 secret 缺失 / 不同 body / 不同 secret / 端到端 header 注入。
 3. **细粒度权限**：WPS 区分 read / write / comment / print / download 五级。✅ **本轮已落地**：`apps/web-server/src/api/v1/auth.ts` 提供 `hasScope(payload, scope)` helper（exact / `*` / `ai:*` 前缀通配 / 默认只读 / admin 旁路），`/api/v1/auth/jwt` 接受 `scope` 输入并合并到 OAuth-style scope claim；端点侧 16 个 v1 endpoint 全部强制 scope gate。
-4. **文件级 token**：WPS 支持给单个文件颁发短 token（嵌入时用）。GenOffice 已有 `POST /api/v1/files/:id/jwt` 端点，需要补"过期时间 + 单次使用"约束文档。
-5. **协作冲突解决**：WPS 用 OT 算法。短期可不上 CRDT，但 `dirtyChanged` 事件 + `version` 字段必须落地，让第三方能感知冲突。
+4. **文件级 token**：✅ **本轮已落地**：`POST /api/v1/files/:id/jwt` 支持 `ttlSeconds`（30 s … 24 h，默认 1 h）+ `oneTime: true` 单次使用（jti revocation set，LRU 200k 条目）；TSDoc + 5 个测试覆盖（缺 ttl / 越界 ttl / oneTime 一次 / oneTime 二次 / 跨进程边界）。
+5. **协作冲突解决**：✅ **dirtyChanged 事件 + version 字段已落地**（§11.10 + §11.11）：7 个 save handler + 4 个 dirty-changed handler 广播 SSE `saved` / `dirtyChanged` 事件到 renderer + embed iframe；embed bridge → window.parent 转发已通（§11.5）。OT/CRDT 留 M4（Week 16）。
 
 ### B.3 GenOffice 独有的差异化护城河
 

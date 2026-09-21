@@ -2,9 +2,8 @@
   "name": "@genoffice/agent-runtime",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
-  "description": "Thin wrapper around @earendil-works/pi-coding-agent SDK for GenOffice Office apps",
+  "description": "Thin wrapper around @earendil-works/pi-coding-agent SDK for GenOffice Office apps \u2014 React UI adapter + session lifecycle hooks",
   "exports": {
     ".": "./src/index.ts",
     "./ui-adapter": "./src/ui-adapter.ts",
@@ -37,5 +36,25 @@
     "react-dom": "^19.2.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
-  }
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/agent-runtime"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api",
+  "keywords": [
+    "agent runtime",
+    "ai",
+    "genoffice",
+    "office",
+    "sdk",
+    "react"
+  ]
 }
