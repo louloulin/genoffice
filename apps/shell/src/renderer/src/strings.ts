@@ -20,6 +20,7 @@ export const strings = {
     cloudRetry: '重试',
     cloudLoadMore: '加载更多',
     cloudOpenInBrowser: '在浏览器中打开',
+    cloudOpenInAppTip: '在标签页中打开 · ⌘/Ctrl+点击 新窗口 · Shift+点击 浏览器',
     navTrash: '回收站',
     navTrashTip: '删除的文件在系统废纸篓中，可从那里还原',
     secQuickStart: '快速开始',
@@ -513,6 +514,7 @@ export const strings = {
     cloudRetry: 'Retry',
     cloudLoadMore: 'Load more',
     cloudOpenInBrowser: 'Open in browser',
+    cloudOpenInAppTip: 'Open in tab · ⌘/Ctrl+click new window · Shift+click browser',
     navTrash: 'Trash',
     navTrashTip: 'Deleted files go to the system Trash and can be restored there',
     secQuickStart: 'Quick start',
@@ -1013,6 +1015,7 @@ export const strings = {
     cloudRetry: '再試行',
     cloudLoadMore: 'もっと見る',
     cloudOpenInBrowser: 'ブラウザで開く',
+    cloudOpenInAppTip: 'タブで開く · ⌘/Ctrl+クリックで新しいウィンドウ · Shift+クリックでブラウザ',
     navTrash: 'ゴミ箱',
     navTrashTip: '削除したファイルはシステムのゴミ箱に移動され、そこから復元できます',
     // Section headings
@@ -1527,6 +1530,7 @@ export const strings = {
     cloudRetry: '다시 시도',
     cloudLoadMore: '더 보기',
     cloudOpenInBrowser: '브라우저에서 열기',
+    cloudOpenInAppTip: '탭에서 열기 · ⌘/Ctrl+클릭: 새 창 · Shift+클릭: 브라우저',
     navTrash: '휴지통',
     navTrashTip: '삭제된 파일은 시스템 휴지통으로 이동되며 그곳에서 복원할 수 있습니다',
     // Section headings
@@ -2033,6 +2037,7 @@ export const strings = {
     cloudRetry: 'Réessayer',
     cloudLoadMore: 'Charger plus',
     cloudOpenInBrowser: 'Ouvrir dans le navigateur',
+    cloudOpenInAppTip: 'Ouvrir dans un onglet · ⌘/Ctrl+clic : nouvelle fenêtre · Maj+clic : navigateur',
     navTrash: 'Corbeille',
     navTrashTip:
       'Les fichiers supprimés sont placés dans la corbeille du système et peuvent y être restaurés',
@@ -2552,6 +2557,7 @@ export const strings = {
     cloudRetry: 'Erneut versuchen',
     cloudLoadMore: 'Mehr laden',
     cloudOpenInBrowser: 'Im Browser öffnen',
+    cloudOpenInAppTip: 'Im Tab öffnen · ⌘/Strg+Klick: neues Fenster · Umschalt+Klick: Browser',
     navTrash: 'Papierkorb',
     navTrashTip:
       'Gelöschte Dateien werden in den System-Papierkorb verschoben und können dort wiederhergestellt werden',
@@ -3075,6 +3081,7 @@ export const strings = {
     cloudRetry: 'Reintentar',
     cloudLoadMore: 'Cargar más',
     cloudOpenInBrowser: 'Abrir en el navegador',
+    cloudOpenInAppTip: 'Abrir en pestaña · ⌘/Ctrl+clic: nueva ventana · Mayús+clic: navegador',
     navTrash: 'Papelera',
     navTrashTip:
       'Los archivos eliminados van a la papelera del sistema y pueden restaurarse desde allí',
@@ -3592,6 +3599,7 @@ export const strings = {
     cloudRetry: 'ลองอีกครั้ง',
     cloudLoadMore: 'โหลดเพิ่มเติม',
     cloudOpenInBrowser: 'เปิดในเบราว์เซอร์',
+    cloudOpenInAppTip: 'เปิดในแท็บ · ⌘/Ctrl+คลิก หน้าต่างใหม่ · Shift+คลิก เบราว์เซอร์',
     navTrash: 'ถังขยะ',
     navTrashTip: 'ไฟล์ที่ถูกลบจะถูกย้ายไปยังถังขยะของระบบ และสามารถกู้คืนได้จากที่นั่น',
     // Section headings
@@ -4096,6 +4104,7 @@ export const strings = {
     cloudRetry: 'Coba lagi',
     cloudLoadMore: 'Muat lebih banyak',
     cloudOpenInBrowser: 'Buka di browser',
+    cloudOpenInAppTip: 'Buka di tab · ⌘/Ctrl+klik jendela baru · Shift+klik browser',
     navTrash: 'Sampah',
     navTrashTip:
       'File yang dihapus akan dipindahkan ke tempat sampah sistem dan dapat dipulihkan dari sana',
@@ -4608,6 +4617,7 @@ export const strings = {
     cloudRetry: 'Повторить',
     cloudLoadMore: 'Загрузить ещё',
     cloudOpenInBrowser: 'Открыть в браузере',
+    cloudOpenInAppTip: 'Открыть во вкладке · ⌘/Ctrl+клик: новое окно · Shift+клик: браузер',
     navTrash: 'Корзина',
     navTrashTip: 'Удалённые файлы перемещаются в системную корзину, откуда их можно восстановить',
     // Section headings
@@ -5121,6 +5131,7 @@ export const strings = {
     cloudRetry: 'إعادة المحاولة',
     cloudLoadMore: 'تحميل المزيد',
     cloudOpenInBrowser: 'فتح في المتصفح',
+    cloudOpenInAppTip: 'فتح في علامة تبويب · ⌘/Ctrl+نقرة نافذة جديدة · Shift+نقرة متصفح',
     navTrash: 'سلة المهملات',
     navTrashTip: 'تُنقل الملفات المحذوفة إلى سلة مهملات النظام ويمكن استعادتها من هناك',
     // Section headings
@@ -5625,6 +5636,7 @@ export const strings = {
     cloudRetry: 'Tentar novamente',
     cloudLoadMore: 'Carregar mais',
     cloudOpenInBrowser: 'Abrir no navegador',
+    cloudOpenInAppTip: 'Abrir no separador · ⌘/Ctrl+clique nova janela · Shift+clique navegador',
     navTrash: 'Lixeira',
     navTrashTip:
       'Os arquivos excluídos vão para a lixeira do sistema e podem ser restaurados de lá',
@@ -6131,6 +6143,7 @@ export const strings = {
     cloudRetry: 'Riprova',
     cloudLoadMore: 'Carica altri',
     cloudOpenInBrowser: 'Apri nel browser',
+    cloudOpenInAppTip: 'Apri in scheda · ⌘/Ctrl+clic nuova finestra · Shift+clic browser',
     navTrash: 'Cestino',
     navTrashTip:
       'I file eliminati vengono spostati nel cestino di sistema e possono essere ripristinati da lì',
@@ -6636,6 +6649,7 @@ export const strings = {
     cloudRetry: 'Spróbuj ponownie',
     cloudLoadMore: 'Wczytaj więcej',
     cloudOpenInBrowser: 'Otwórz w przeglądarce',
+    cloudOpenInAppTip: 'Otwórz w karcie · ⌘/Ctrl+klik nowe okno · Shift+klik przeglądarka',
     navTrash: 'Kosz',
     navTrashTip: 'Usunięte pliki trafiają do systemowego kosza i można je stamtąd przywrócić',
     secQuickStart: 'Szybki start',
@@ -7138,6 +7152,7 @@ export const strings = {
     cloudRetry: 'Zkusit znovu',
     cloudLoadMore: 'Načíst další',
     cloudOpenInBrowser: 'Otevřít v prohlížeči',
+    cloudOpenInAppTip: 'Otevřít v záložce · ⌘/Ctrl+klik nové okno · Shift+klik prohlížeč',
     navTrash: 'Koš',
     navTrashTip: 'Odstraněné soubory se přesunou do systémového koše, odkud je lze obnovit',
     secQuickStart: 'Rychlý start',
@@ -7641,6 +7656,7 @@ export const strings = {
     cloudRetry: 'Opnieuw proberen',
     cloudLoadMore: 'Meer laden',
     cloudOpenInBrowser: 'Openen in browser',
+    cloudOpenInAppTip: 'Openen in tabblad · ⌘/Ctrl+klik nieuw venster · Shift+klik browser',
     navTrash: 'Prullenbak',
     navTrashTip:
       'Verwijderde bestanden gaan naar de systeemprullenbak en kunnen daar worden hersteld',
@@ -8145,6 +8161,7 @@ export const strings = {
     cloudRetry: 'Cuba lagi',
     cloudLoadMore: 'Muat lagi',
     cloudOpenInBrowser: 'Buka dalam pelayar',
+    cloudOpenInAppTip: 'Buka dalam tab · ⌘/Ctrl+klik tetingkap baharu · Shift+klik pelayar',
     navTrash: 'Tong sampah',
     navTrashTip:
       'Fail yang dipadamkan akan dipindahkan ke tong sampah sistem dan boleh dipulihkan dari sana',
@@ -8651,6 +8668,7 @@ export const strings = {
     cloudRetry: 'נסו שוב',
     cloudLoadMore: 'טענו עוד',
     cloudOpenInBrowser: 'פתיחה בדפדפן',
+    cloudOpenInAppTip: 'פתח בכרטיסייה · ⌘/Ctrl+לחיצה חלון חדש · Shift+לחיצה דפדפן',
     navTrash: 'אשפה',
     navTrashTip: 'קבצים שנמחקו עוברים לאשפה של המערכת וניתן לשחזר אותם משם',
     secQuickStart: 'התחלה מהירה',
@@ -9141,6 +9159,7 @@ export const strings = {
     cloudRetry: 'फिर से कोशिश करें',
     cloudLoadMore: 'और लोड करें',
     cloudOpenInBrowser: 'ब्राउज़र में खोलें',
+    cloudOpenInAppTip: 'टैब में खोलें · ⌘/Ctrl+क्लिक नई विंडो · Shift+क्लिक ब्राउज़र',
     navTrash: 'ट्रैश',
     navTrashTip: 'हटाई गई फ़ाइलें सिस्टम ट्रैश में जाती हैं और वहाँ से पुनर्स्थापित की जा सकती हैं',
     secQuickStart: 'त्वरित प्रारंभ',
@@ -9642,6 +9661,7 @@ export const strings = {
     cloudRetry: '重試',
     cloudLoadMore: '載入更多',
     cloudOpenInBrowser: '在瀏覽器中開啟',
+    cloudOpenInAppTip: '在分頁中開啟 · ⌘/Ctrl+點擊 新視窗 · Shift+點擊 瀏覽器',
     navTrash: '垃圾桶',
     navTrashTip: '刪除的檔案會移至系統垃圾桶，可從那裡還原',
     secQuickStart: '快速開始',

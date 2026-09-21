@@ -858,8 +858,16 @@ function CloudProjectsView() {
     setRevealed(CLOUD_REVEAL_STEP)
   }
 
-  const openProject = (projectUrl: string) => {
-    void window.aiOffice.openCloudProject?.(projectUrl)
+  /**
+   * Default = open inside the shell (same window, new tab). The user can
+   * override per-click with modifier keys, matching how Chrome / VS Code /
+   * Notion open links from in-app lists:
+   *   plain click     → 'tab'      (stay in the shell, the default the user wants)
+   *   ⌘/Ctrl + click  → 'window'   (a separate BrowserWindow)
+   *   Shift + click   → 'external' (defer to the OS browser; fallback only)
+   */
+  const openProject = (projectUrl: string, mode?: 'tab' | 'window' | 'external') => {
+    void window.aiOffice.openCloudProject?.(projectUrl, mode ? { mode } : undefined)
   }
 
   // filter / search / sort are all local over the snapshot — no requests
@@ -876,10 +884,14 @@ function CloudProjectsView() {
         <li key={proj.projectId}>
           <button
             className="cloud-row"
-            data-tip={t('cloudOpenInBrowser')}
+            data-tip={t('cloudOpenInAppTip')}
             data-tip-anchor=".cloud-row-external"
             data-tip-place="right"
-            onClick={() => openProject(proj.projectUrl)}
+            onClick={(event) => {
+              if (event.shiftKey) openProject(proj.projectUrl, 'external')
+              else if (event.metaKey || event.ctrlKey) openProject(proj.projectUrl, 'window')
+              else openProject(proj.projectUrl, 'tab')
+            }}
           >
             <FileBadge ext={CLOUD_KIND_EXT[proj.kind] ?? ''} size={24} />
             <span className="cloud-row-main">
