@@ -166,6 +166,14 @@ if (!isElectronRuntime()) {
 
   const tabChannel = new BroadcastChannel(TAB_CHANNEL_NAME)
   let tabsCache = loadTabs(localStorage)
+  /* Re-hydrate `tabMeta` from the localStorage rows: the path a TabBar
+   * click needs to focus a window lives on the tab row itself when it was
+   * written by a newer shell. Older rows are missing it and stay cold —
+   * `tabsActivate` will then fall back to a focus-request handshake. */
+  type PersistedTab = WebTab & { path?: string }
+  for (const row of tabsCache as PersistedTab[]) {
+    if (row.path) tabMeta.set(row.id, { kind: row.kind, path: row.path })
+  }
   const restoredIds = tabsCache.map((t) => t.id)
   for (const id of restoredIds) markTabLive(id, Date.now() - (TAB_STALE_MS - BOOT_GRACE_MS))
 
@@ -211,7 +219,13 @@ if (!isElectronRuntime()) {
     displayTitle?: string,
   ): WebTab => {
     const title = displayTitle || (path ? moduleFileName(path) : MODULE_LABEL[kind])
-    const tab: WebTab = { id, kind, title, windowId: id }
+    /* Carry `path` on the row so a reload can rebuild the URL a TabBar
+     * click needs. The ipc-bridge `WebTab` type deliberately omits it
+     * (the kind/title pair is the dedupe key the TabBar renders), so the
+     * cast stays local to the shell. */
+    const tab = { id, kind, title, windowId: id, ...(path ? { path } : {}) } as WebTab & {
+      path?: string
+    }
     markTabLive(id)
     tabMeta.set(id, { kind, ...(path !== undefined && { path }) })
     if (win) {
@@ -835,14 +849,29 @@ if (!isElectronRuntime()) {
        * a new one (and we cache its handle for next time). The user-gesture
        * token is live on the click that fires this call. */
       const meta = tabMeta.get(id)
-      if (!meta) return
-      /* `meta.path` is undefined for tabs that loaded before their file was
-       * created (e.g. an AI Docs tab mid-creation). Fall back to the same
-       * "no file yet" URL `openFreshTab` uses so the focus call always has
-       * a valid URL to pass to `window.open`. */
-      const url = meta.path
-        ? moduleUrl(meta.kind, meta.path, id)
-        : `/${meta.kind}/?mode=tab&tab=${id}`
+      let url: string
+      if (meta) {
+        /* `meta.path` is undefined for tabs that loaded before their file was
+         * created (e.g. an AI Docs tab mid-creation). Fall back to the same
+         * "no file yet" URL `openFreshTab` uses so the focus call always has
+         * a valid URL to pass to `window.open`. */
+        url = meta.path
+          ? moduleUrl(meta.kind, meta.path, id)
+          : `/${meta.kind}/?mode=tab&tab=${id}`
+      } else {
+        /* Cold cache (shell reloaded under an open editor) and no rehydrated
+         * meta: try to surface the window by name so a focus call can still
+         * reach it. The live guest acks the request, marking itself alive;
+         * the window.open below then focuses the existing named window or
+         * silently no-ops if the row was a phantom (the periodic sweep will
+         * retire it). */
+        const row = tabsCache.find((t) => t.id === id) as (WebTab & { path?: string }) | undefined
+        if (!row) return
+        tabChannel.postMessage({ type: 'focus-request', id } satisfies TabChannelMessage)
+        url = row.path
+          ? moduleUrl(row.kind, row.path, id)
+          : `/${row.kind}/?mode=tab&tab=${encodeURIComponent(id)}`
+      }
       setActiveTab(id)
       focusNamedTab(id, url)
       markTabLive(id)
