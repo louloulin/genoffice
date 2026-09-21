@@ -942,10 +942,19 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
+| ipc-bridge | 1 | 60 | ✅ |
+| file-parse | 1 | 38 | ✅ |
+| file-management | 1 | 219 | ✅ |
+| pptx-engine | 1 | 957 | ✅ |
+| docx-engine | 1 | 1317 | ✅ |
+| i18n | 1 | 18 | ✅ |
+| ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
 | web-sdk（含 handshake / origin allowlist）| 3 | 20 | ✅ |
-| **总计** | **130** | **1360** | ✅ |
+| **总计** | **144** | **4108** | ✅ |
+
+注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.2 MB / `health` 200 / 546 IPC channels / marketplace boot 日志 OK。
 新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）。
