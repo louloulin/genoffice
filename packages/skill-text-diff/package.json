@@ -1,7 +1,7 @@
 {
   "name": "@genoffice/skill-text-diff",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill — computes a unified-diff style change list between two plain-text inputs.",
+  "description": "Standalone GenOffice Skill \u2014 computes a unified-diff style change list between two plain-text inputs.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,21 +14,48 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
-  "keywords": ["genoffice", "skill", "diff", "text", "patch"],
-  "engines": { "node": ">=18.0.0" },
+  "keywords": [
+    "ai",
+    "diff",
+    "embed",
+    "genoffice",
+    "iframe",
+    "office",
+    "patch",
+    "sdk",
+    "skill",
+    "text"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "build": "tsc && node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "peerDependenciesMeta": {
-    "@genoffice/agent-skills": { "optional": true }
+    "@genoffice/agent-skills": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "esbuild": "^0.25.12",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/skill-text-diff"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api"
 }

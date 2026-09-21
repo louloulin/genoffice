@@ -1,7 +1,7 @@
 {
-  "name": "@genoffice/skill-slides-outline",
+  "name": "@genoffice/provider-ollama",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill \u2014 converts long-form text into a structured slide outline (titles + bullets).",
+  "description": "Ollama provider plugin for GenOffice \u2014 runs local LLMs via Ollama's OpenAI-compatible /v1/chat/completions endpoint (default http://localhost:11434/v1).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,12 +24,12 @@
     "embed",
     "genoffice",
     "iframe",
+    "llm",
+    "local",
     "office",
-    "outline",
-    "presentation",
-    "sdk",
-    "skill",
-    "slides"
+    "ollama",
+    "provider",
+    "sdk"
   ],
   "engines": {
     "node": ">=22.12"
@@ -39,10 +39,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "peerDependenciesMeta": {
-    "@genoffice/agent-skills": {
-      "optional": true
-    }
+  "dependencies": {
+    "@genoffice/provider-openai-compatible": "*"
+  },
+  "peerDependencies": {
+    "@genoffice/ai-provider": "*"
   },
   "devDependencies": {
     "esbuild": "^0.25.12",
@@ -52,7 +53,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/genspark-ai/genoffice.git",
-    "directory": "packages/skill-slides-outline"
+    "directory": "packages/provider-ollama"
   },
   "bugs": {
     "url": "https://github.com/genspark-ai/genoffice/issues"

@@ -1,7 +1,7 @@
 {
   "name": "@genoffice/skill-doc-format",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill — normalises whitespace, smart quotes, and punctuation in plain-text documents.",
+  "description": "Standalone GenOffice Skill \u2014 normalises whitespace, smart quotes, and punctuation in plain-text documents.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,21 +14,48 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
-  "keywords": ["genoffice", "skill", "document", "format", "typography"],
-  "engines": { "node": ">=18.0.0" },
+  "keywords": [
+    "ai",
+    "document",
+    "embed",
+    "format",
+    "genoffice",
+    "iframe",
+    "office",
+    "sdk",
+    "skill",
+    "typography"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "build": "tsc && node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "peerDependenciesMeta": {
-    "@genoffice/agent-skills": { "optional": true }
+    "@genoffice/agent-skills": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "esbuild": "^0.25.12",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/skill-doc-format"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api"
 }

@@ -1,7 +1,7 @@
 {
-  "name": "@genoffice/skill-slides-outline",
+  "name": "@genoffice/provider-openai",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill \u2014 converts long-form text into a structured slide outline (titles + bullets).",
+  "description": "OpenAI provider plugin for GenOffice \u2014 implements AiProviderPlugin.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,13 +23,13 @@
     "ai",
     "embed",
     "genoffice",
+    "gpt",
     "iframe",
+    "llm",
     "office",
-    "outline",
-    "presentation",
-    "sdk",
-    "skill",
-    "slides"
+    "openai",
+    "provider",
+    "sdk"
   ],
   "engines": {
     "node": ">=22.12"
@@ -39,20 +39,17 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "peerDependenciesMeta": {
-    "@genoffice/agent-skills": {
-      "optional": true
-    }
+  "peerDependencies": {
+    "@genoffice/ai-provider": "*"
   },
   "devDependencies": {
-    "esbuild": "^0.25.12",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/genspark-ai/genoffice.git",
-    "directory": "packages/skill-slides-outline"
+    "directory": "packages/provider-openai"
   },
   "bugs": {
     "url": "https://github.com/genspark-ai/genoffice/issues"

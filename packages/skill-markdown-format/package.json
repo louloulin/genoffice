@@ -1,7 +1,7 @@
 {
-  "name": "@genoffice/skill-slides-outline",
+  "name": "@genoffice/skill-markdown-format",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill \u2014 converts long-form text into a structured slide outline (titles + bullets).",
+  "description": "Standalone GenOffice Skill \u2014 formats Markdown (normalises headings, lists, code fences, link style).",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,14 +22,14 @@
   "keywords": [
     "ai",
     "embed",
+    "format",
     "genoffice",
     "iframe",
+    "linter",
+    "markdown",
     "office",
-    "outline",
-    "presentation",
     "sdk",
-    "skill",
-    "slides"
+    "skill"
   ],
   "engines": {
     "node": ">=22.12"
@@ -52,7 +52,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/genspark-ai/genoffice.git",
-    "directory": "packages/skill-slides-outline"
+    "directory": "packages/skill-markdown-format"
   },
   "bugs": {
     "url": "https://github.com/genspark-ai/genoffice/issues"

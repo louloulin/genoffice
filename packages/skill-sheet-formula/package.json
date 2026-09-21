@@ -1,7 +1,7 @@
 {
   "name": "@genoffice/skill-sheet-formula",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill — parses an Excel-style formula, explains it in plain English, and flags common mistakes.",
+  "description": "Standalone GenOffice Skill \u2014 parses an Excel-style formula, explains it in plain English, and flags common mistakes.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,21 +14,48 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
-  "keywords": ["genoffice", "skill", "spreadsheet", "formula", "excel"],
-  "engines": { "node": ">=18.0.0" },
+  "keywords": [
+    "ai",
+    "embed",
+    "excel",
+    "formula",
+    "genoffice",
+    "iframe",
+    "office",
+    "sdk",
+    "skill",
+    "spreadsheet"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "build": "tsc && node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "peerDependenciesMeta": {
-    "@genoffice/agent-skills": { "optional": true }
+    "@genoffice/agent-skills": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "esbuild": "^0.25.12",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/skill-sheet-formula"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api"
 }

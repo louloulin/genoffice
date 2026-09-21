@@ -1,7 +1,7 @@
 {
-  "name": "@genoffice/skill-slides-outline",
+  "name": "@genoffice/skill-text-summarize",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill \u2014 converts long-form text into a structured slide outline (titles + bullets).",
+  "description": "Standalone GenOffice Skill \u2014 summarises long text via the host's LLM.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -25,11 +25,10 @@
     "genoffice",
     "iframe",
     "office",
-    "outline",
-    "presentation",
     "sdk",
     "skill",
-    "slides"
+    "summary",
+    "text"
   ],
   "engines": {
     "node": ">=22.12"
@@ -52,7 +51,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/genspark-ai/genoffice.git",
-    "directory": "packages/skill-slides-outline"
+    "directory": "packages/skill-text-summarize"
   },
   "bugs": {
     "url": "https://github.com/genspark-ai/genoffice/issues"

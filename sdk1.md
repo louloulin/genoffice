@@ -824,6 +824,19 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - A.3 "RFC 模板 + accepted/" 状态从 ⬜ 升级到 ✅
 8. **A.1 双语 SDK README**：从 🟡 升级到 ✅，`apps/sdk/README.md` 与 `apps/sdk/README.zh-CN.md` 一一对应。
 
+#### ✅ 本轮再次新增解决（§2.2 npm 发布策略 · 标准元数据对齐）
+
+9. **`package.json` 标准元数据（§2.2 标准字段）已对齐**：
+   - 17 个 npm 可发布包全部填齐：`license` / `repository` / `bugs` / `homepage` / `keywords` / `engines.node`
+   - 涉及范围：1 个 web-sdk + 5 个 provider + 11 个 standalone skill
+   - `repository` 指向 `https://github.com/genspark-ai/genoffice.git` + 对应的 `directory` 子路径
+   - `bugs` 指向 `https://github.com/genspark-ai/genoffice/issues`
+   - `homepage` 区分 SDK（`/docs/sdk`）与 provider / skill（`/docs/api`）
+   - `keywords` 在既有包关键词基础上合并 `genoffice` + `office` / `ai` / `sdk` / `embed` / `iframe`，便于 npm 检索
+   - `engines.node` 统一到 `>=22.12`，与 §2.3 Tier 1 浏览器矩阵对齐
+   - 脚本（`/tmp/standardize_pkgjson.py`）幂等——已存在的字段不会被覆盖
+   - 覆盖后 `npm publish --provenance --dry-run` 在 17/17 包上都应能生成正确的 tarball 元数据（依赖 CI 执行；本沙箱无外网）
+
 #### ⬜ 仍未做（按优先级排序）
 
 1. ~~**5+ 个额外的官方 skill**~~：✅ 已完成，见上面第 5 项（11 standalone = 7 原有 + 4 新增）。

@@ -1,7 +1,7 @@
 {
-  "name": "@genoffice/skill-slides-outline",
+  "name": "@genoffice/skill-yaml-validate",
   "version": "0.1.0",
-  "description": "Standalone GenOffice Skill \u2014 converts long-form text into a structured slide outline (titles + bullets).",
+  "description": "Standalone GenOffice Skill \u2014 validates YAML text against a JSON-schema-style rule set and reports structured errors.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,12 +24,12 @@
     "embed",
     "genoffice",
     "iframe",
+    "lint",
     "office",
-    "outline",
-    "presentation",
     "sdk",
     "skill",
-    "slides"
+    "validate",
+    "yaml"
   ],
   "engines": {
     "node": ">=22.12"
@@ -52,7 +52,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/genspark-ai/genoffice.git",
-    "directory": "packages/skill-slides-outline"
+    "directory": "packages/skill-yaml-validate"
   },
   "bugs": {
     "url": "https://github.com/genspark-ai/genoffice/issues"
