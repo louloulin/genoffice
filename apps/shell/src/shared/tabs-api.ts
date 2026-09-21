@@ -58,3 +58,13 @@ export const TABS_CHANNELS = {
   changed: 'tabs:changed',
   chromePressed: 'tabs:chrome-pressed',
 } as const
+export type TabKind =
+  | 'home'
+  | 'docs'
+  | 'sheets'
+  | 'slides'
+  | 'pdf'
+  | 'markdown'
+  | 'html'
+  /** in-app browser tab for cloud / external URLs that the user wants kept inside the shell */
+  | 'web'

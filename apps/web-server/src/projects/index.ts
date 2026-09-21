@@ -269,11 +269,35 @@ export function registerProjectHandlers(): void {
 
     for (const entry of incoming) {
       const rawName = typeof entry.name === 'string' ? entry.name : ''
-      if (typeof entry.bytes !== 'object' || !entry.bytes || !(entry.bytes as ArrayBuffer).byteLength && (entry.bytes as ArrayBuffer).byteLength !== 0) {
+      /* The IPC transport decoder only unwraps `tag=b64` records at the top
+       * level of an `args` entry — the nested `entry.bytes` arrives still
+       * tagged. Decode it here so the validation below sees real bytes. */
+      const taggedBytes = entry.bytes as { tag?: unknown; b64?: unknown } | null
+      let entryBytes: unknown = entry.bytes
+      if (
+        taggedBytes &&
+        typeof taggedBytes === 'object' &&
+        typeof taggedBytes.tag === 'string' &&
+        typeof taggedBytes.b64 === 'string'
+      ) {
+        entryBytes = Buffer.from(taggedBytes.b64, 'base64')
+      }
+      /* Accept ArrayBuffer (over HTTP/JSON), Uint8Array (browser FileReader),
+       * Node Buffer, and plain string (a debug fallback). Anything else
+       * (null, undefined, an object) is rejected with a clear reason. */
+      let bytes: Buffer
+      if (entryBytes instanceof ArrayBuffer) {
+        bytes = Buffer.from(entryBytes)
+      } else if (entryBytes instanceof Uint8Array) {
+        bytes = Buffer.from(entryBytes)
+      } else if (typeof entryBytes === 'string') {
+        bytes = Buffer.from(entryBytes, 'utf-8')
+      } else if (entryBytes && typeof (entryBytes as { byteLength?: unknown }).byteLength === 'number') {
+        bytes = Buffer.from(entryBytes as ArrayBufferView)
+      } else {
         skipped.push({ name: rawName, reason: 'invalid bytes' })
         continue
       }
-      const bytes = entry.bytes as ArrayBuffer
       if (bytes.byteLength === 0) {
         skipped.push({ name: rawName, reason: 'empty file' })
         continue

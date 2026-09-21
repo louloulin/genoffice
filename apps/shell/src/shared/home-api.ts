@@ -275,7 +275,22 @@ export interface HomeApi {
   /** sync the full list from Genspark and return it (1 request when nothing changed); null when the sync failed */
   cloudProjectsSync(): Promise<CloudProjectsSnapshot | null>
   /** open a cloud project (relative '/agents?id=...' URL) in the default browser */
-  openCloudProject(projectUrl: string): Promise<void>
+  openCloudProject(projectUrl: string, options?: OpenCloudProjectOptions): Promise<void>
+
+/**
+ * How a cloud / external URL is opened when the user clicks it from Home.
+ *  - `tab`: open inside the shell's tab strip (the new tab joins the same
+ *    window — the modifier-free default; keeps the user inside the app).
+ *  - `window`: open in a fresh standalone BrowserWindow.
+ *  - `external`: defer to the system default browser (legacy behaviour,
+ *    kept as an escape hatch for sites the embedded view can't render).
+ */
+export type OpenCloudMode = 'tab' | 'window' | 'external'
+
+export interface OpenCloudProjectOptions {
+  /** defaults to 'tab' */
+  mode?: OpenCloudMode
+}
   /** AI settings (userData/ai-settings.json, shared by every editor); the genspark key never appears here */
   getAiSettings(): Promise<AiSettings>
   /** persist AI settings; open editors pick the change up on their next settings read */
@@ -405,8 +420,6 @@ export interface HomeApi {
      */
     dictionaryPath?: string
   }): Promise<TranslateFileResult>
-}
-
 /** one capability entry — see home:ai-capabilities */
 export interface AiCapabilityEntry {
   /** true when at least one backend can serve the request right now */

@@ -53,10 +53,28 @@ interface TabRecord {
   view: WebContentsView | null
   title: string
   filePath?: string
+  /** web-tab only: the URL the embedded view was opened with, so reload can re-navigate */
+  url?: string
   /** chrome-free Present tab: no file, no editor menu or save/export targets */
   present?: boolean
 }
 
+/**
+ * Bare WebContentsView that just navigates a URL. Used by the cloud-project
+ * entry on Home: lets the user open a genspark.ai URL inside the shell's tab
+ * strip instead of bouncing out to the system browser.
+ */
+function createWebView(url: string): WebContentsView {
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  void view.webContents.loadURL(url)
+  return view
+}
 /** must match the tab strip's rendered height (apps/shell/src/renderer/src/TabBar.tsx) */
 const TAB_STRIP_HEIGHT = 40
 const HOME_ID = 'home'
@@ -337,6 +355,29 @@ export class TabManager {
       title: title || this.untitled('html', 'AI HTML'),
       present: true,
     })
+    this.activateTab(id)
+    return id
+  }
+
+  /**
+   * Open an external URL inside the shell's tab strip instead of bouncing
+   * it out to the system browser. Title is the hostname + first path segment
+   * — enough to tell tabs apart without re-fetching the page.
+   */
+  openWebTab(url: string): string {
+    const view = createWebView(url)
+    const id = `t${this.nextId++}`
+    this.shellWindow.contentView.addChildView(view)
+    view.setVisible(false)
+    this.trackHtmlFullScreen(id, view)
+    let host = url
+    try {
+      const u = new URL(url)
+      host = u.hostname + (u.pathname !== '/' ? u.pathname : '')
+    } catch {
+      // not a parseable URL — leave the raw string as the title
+    }
+    this.tabs.push({ id, kind: 'web', view, title: host || url, url })
     this.activateTab(id)
     return id
   }
