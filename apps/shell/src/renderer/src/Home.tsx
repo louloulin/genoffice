@@ -1665,6 +1665,51 @@ export function Home() {
     void window.aiOffice.newPdf(selectedProjectId ? { projectId: selectedProjectId } : undefined)
   }
 
+  /* Pure upload: pick one or more files via the browser <input type="file">
+   * API and send the bytes to `project:upload`. Never opens an editor tab —
+   * the previous FAB pointed at `browse()` which always opens the first
+   * file, hiding the "upload" intent the button promised. The web-only path
+   * lives inside a feature check so the same Home component still works in
+   * Electron builds that haven't shipped the upload-only picker yet. */
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null)
+  const handleUpload = async () => {
+    const api = window.aiOfficeProject
+    if (!api?.uploadFiles) {
+      window.alert('当前环境不支持纯上传，请使用「打开本地文件」按钮')
+      return
+    }
+    const picker = (window as unknown as { pickFileBytes?: (accept?: string, multiple?: boolean) => Promise<Array<{ name: string; bytes: ArrayBuffer }> | null> }).pickFileBytes
+    if (!picker) {
+      window.alert('当前环境不支持纯上传，请使用「打开本地文件」按钮')
+      return
+    }
+    const picked = await picker(undefined, true)
+    if (!picked || picked.length === 0) return
+    setUploadStatus(`正在上传 ${picked.length} 个文件…`)
+    try {
+      const result = await api.uploadFiles({
+        projectId: selectedProjectId,
+        files: picked.map((f) => ({ name: f.name, bytes: f.bytes })),
+      })
+      setUploadStatus(null)
+      const ok = result.uploaded.length
+      const fail = result.skipped.length
+      if (ok > 0 && fail === 0) {
+        window.alert(`已上传 ${ok} 个文件到项目`)
+      } else if (ok > 0 && fail > 0) {
+        window.alert(`已上传 ${ok} 个文件，${fail} 个失败：\n` + result.skipped.map((s) => `${s.name}: ${s.reason}`).join('\n'))
+      } else {
+        window.alert(`上传失败：\n` + result.skipped.map((s) => `${s.name}: ${s.reason}`).join('\n'))
+      }
+      window.dispatchEvent(new Event('genoffice:recents-changed'))
+      setProjectTick((t) => t + 1)
+      void refresh()
+    } catch (err) {
+      setUploadStatus(null)
+      window.alert(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   const [moduleOrder, setModuleOrder] = useState<
     { id: ModuleKind; ext: string; title: string; sub: string; action: () => void }[]
   >([])
@@ -2437,6 +2482,33 @@ export function Home() {
           </div>
         </div>
       )}
+
+      <button
+        type="button"
+        className="home-upload-fab"
+        onClick={() => void handleUpload()}
+        data-tip={OPEN_LOCAL_EXTENSIONS}
+        aria-label={t('openLocal')}
+        disabled={Boolean(uploadStatus)}
+      >
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M12 16V4M12 4l-4 4M12 4l4 4"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M5 17v2.2A1.8 1.8 0 0 0 6.8 21h10.4a1.8 1.8 0 0 0 1.8-1.8V17"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="home-upload-fab-label">{uploadStatus ?? t('openLocal')}</span>
+      </button>
 
       <DropToOpenOverlay />
     </div>

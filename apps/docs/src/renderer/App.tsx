@@ -4231,6 +4231,14 @@ export function App() {
     setAiPreset({ text: t('ribbonEditorPrompt'), nonce: Date.now(), autoRun: true })
   }, [])
 
+  // ⌥⌘T / Ctrl+Alt+T shortcut → same prompt the Genspark AI Translate button
+  // sends (selection-only if a range is active, otherwise the full document,
+  // with explicit instructions to preserve the original formatting).
+  const runAiTranslate = useCallback(() => {
+    setShowAi(true)
+    setAiPreset({ text: t('aiTranslatePrompt'), nonce: Date.now(), autoRun: true })
+  }, [])
+
   // "has unsaved changes" check shared by the close guard and autosave; refreshed on every
   // render (all edit paths forceRender), so the guard's query reads the latest value
   const anyDirtyRef = useRef(false)
@@ -4521,6 +4529,12 @@ export function App() {
         e.preventDefault()
         runAiProofread()
       }
+      // Translate ⌥⌘T / Ctrl+Alt+T (Word's Translate chord); runs even when
+      // the editor is read-only because translation is a display-only view.
+      if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === 'KeyT' && doc) {
+        e.preventDefault()
+        runAiTranslate()
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -4535,6 +4549,7 @@ export function App() {
     insertNote,
     insertField,
     runAiProofread,
+    runAiTranslate,
     trackChangesForced,
   ])
 

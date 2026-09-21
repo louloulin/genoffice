@@ -156,6 +156,10 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'track-changes', group: 'review', labelKey: 'ribbonTrackChanges', keys: '⇧⌘E' },
   { id: 'word-count', group: 'review', labelKey: 'appWordCountTitle', keys: '⇧⌘G' },
   { id: 'proofread', group: 'review', labelKey: 'appScProofread', keys: 'F7' },
+  // ⌥⌘T / Ctrl+Alt+T — same chord as Microsoft Word's Translate; reuses the
+  // Genspark AI Translate button's style-preserving prompt (selection-only if a
+  // range is active, otherwise the full document).
+  { id: 'translate', group: 'review', labelKey: 'aiTranslateBtn', keys: '⌥⌘T' },
   { id: 'update-fields', group: 'review', labelKey: 'appUpdateField', keys: 'F9' },
 
   // ---- View ----

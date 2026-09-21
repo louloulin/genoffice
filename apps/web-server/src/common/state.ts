@@ -606,3 +606,72 @@ export interface TabRecord {
 }
 
 export const TABS: Map<string, TabRecord> = new Map()
+
+// ----- Storage backend ---------------------------------------------------
+/**
+ * The web-server persists document bytes through a single
+ * {@link StorageBackend}, chosen at boot. The default is `local`, which writes
+ * to `FILES_DIR`; operators that want a remote bucket set `GENOFFICE_STORAGE`
+ * (or pass an explicit `mimo.endpoint`) and the factory in
+ * `@genoffice/file-management` picks the right implementation.
+ *
+ * Keeping the backend on `state` rather than a singleton module keeps the
+ * existing `FILES_INDEX` / `loadProjects` singletons honest: every channel
+ * that needs to read bytes asks `storageBackend` rather than `readFileSync`,
+ * and the file-index store's `path` field can legitimately point at a
+ * non-local URL without surprising anyone.
+ */
+import {
+  createStorageBackend as createFileBackend,
+  type StorageBackend,
+} from '@genoffice/file-management'
+
+let _storageBackend: StorageBackend | null = null
+
+export function getStorageBackend(): StorageBackend {
+  if (_storageBackend) return _storageBackend
+  const want = (process.env.GENOFFICE_STORAGE ?? 'local').toLowerCase()
+  const publicBaseUrl = process.env.GENOFFICE_FILES_BASE_URL
+    ?? `${process.env.GENOFFICE_PUBLIC_URL ?? ''}/files`.replace(/\/+$/, '')
+  const wantBackend: 'local' | 'mimo' | 's3' | 'rustfs' =
+    want === 'mimo' || want === 's3' || want === 'rustfs' ? want : 'local'
+  _storageBackend = createFileBackend({
+    backend: wantBackend,
+    filesDir: FILES_DIR,
+    publicBaseUrl,
+    mimo: {
+      endpoint: process.env.MIMO_STORAGE_ENDPOINT ?? '',
+      apiKey: process.env.MIMO_STORAGE_API_KEY,
+      bucket: process.env.MIMO_STORAGE_BUCKET,
+      timeoutMs: process.env.MIMO_STORAGE_TIMEOUT_MS
+        ? Number(process.env.MIMO_STORAGE_TIMEOUT_MS)
+        : undefined,
+    },
+    s3: {
+      endpoint: process.env.S3_ENDPOINT,
+      region: process.env.S3_REGION,
+      bucket: process.env.S3_BUCKET,
+      accessKeyId: process.env.S3_ACCESS_KEY_ID,
+      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === '1',
+      timeoutMs: process.env.S3_TIMEOUT_MS ? Number(process.env.S3_TIMEOUT_MS) : undefined,
+    },
+    rustfs: {
+      endpoint: process.env.RUSTFS_ENDPOINT,
+      region: process.env.RUSTFS_REGION,
+      bucket: process.env.RUSTFS_BUCKET,
+      accessKeyId: process.env.RUSTFS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.RUSTFS_SECRET_ACCESS_KEY,
+      forcePathStyle: process.env.RUSTFS_FORCE_PATH_STYLE !== '0', /* default true */
+      timeoutMs: process.env.RUSTFS_TIMEOUT_MS ? Number(process.env.RUSTFS_TIMEOUT_MS) : undefined,
+    },
+  })
+  return _storageBackend
+}
+
+/** True iff the active backend is something other than the local filesystem.
+ *  Used by handlers that need to be aware of remote-only quirks (no inotify
+ *  watch, signed-URL refresh, etc.). */
+export function isRemoteStorage(): boolean {
+  return getStorageBackend().id !== 'local'
+}

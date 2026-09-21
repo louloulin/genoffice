@@ -1876,6 +1876,82 @@ body.vib .home {
   }
 }
 
+/* ---- floating "upload" action button (bottom-right FAB) ---- */
+.home-upload-fab {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent, #4f7cff) 28%, transparent);
+  border-radius: 999px;
+  background: var(--accent, #4f7cff);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(20, 30, 60, 0.18), 0 2px 6px rgba(20, 30, 60, 0.12);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.home-upload-fab:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(20, 30, 60, 0.22), 0 4px 10px rgba(20, 30, 60, 0.14);
+  background: color-mix(in srgb, var(--accent, #4f7cff) 90%, white);
+}
+
+.home-upload-fab:active {
+  transform: translateY(0);
+  box-shadow: 0 4px 12px rgba(20, 30, 60, 0.2);
+}
+
+.home-upload-fab:disabled,
+.home-upload-fab[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.85;
+  transform: none;
+}
+
+.home-upload-fab:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #4f7cff) 60%, white);
+  outline-offset: 3px;
+}
+
+.home-upload-fab svg {
+  flex: 0 0 auto;
+  display: block;
+}
+
+.home-upload-fab-label {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .home-upload-fab {
+    right: 16px;
+    bottom: 16px;
+    padding: 10px 14px 10px 12px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  .home-upload-fab-label {
+    display: none;
+  }
+  .home-upload-fab {
+    padding: 12px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

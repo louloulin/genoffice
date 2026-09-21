@@ -878,8 +878,36 @@ export interface ProjectHomeApi {
   deleteProject(id: string): Promise<void>
   /** move a file into the given project */
   moveFile(filePath: string, projectId: string): Promise<void>
+  /**
+   * Upload one or more picked files into a project. Pure upload — never opens
+   * the files in an editor tab. `projectId === null` falls back to the
+   * default project on the server side, so the call always lands somewhere.
+   * Returns per-file outcomes so the renderer can show a partial-success
+   * toast instead of a single all-or-nothing alert.
+   */
+  uploadFiles(args: {
+    projectId: string | null
+    files: Array<{ name: string; bytes: ArrayBuffer; mimeType?: string }>
+  }): Promise<UploadProjectResult>
   /** fetch the project timeline */
   getTimeline(projectId: string, limit?: number): Promise<TimelineEntryItem[]>
+}
+
+export interface UploadProjectFile {
+  id: string
+  /** storage://<backend>/<key> — opaque, do not parse */
+  path: string
+  name: string
+  size: number
+  mimeType: string
+  projectId: string
+}
+
+export interface UploadProjectResult {
+  ok: true
+  uploaded: UploadProjectFile[]
+  skipped: Array<{ name: string; reason: string }>
+  projectId: string
 }
 
 export const HOME_CHANNELS = {
@@ -980,5 +1008,6 @@ export const PROJECT_CHANNELS = {
   rename: 'project:rename',
   delete: 'project:delete',
   moveFile: 'project:moveFile',
+  upload: 'project:upload',
   timeline: 'project:timeline',
 } as const

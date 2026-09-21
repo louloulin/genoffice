@@ -14,6 +14,7 @@ import {
   pickFileBytes,
   uploadFileToServer,
 } from '@genoffice/ipc-bridge/web-native'
+import { PROJECT_CHANNELS } from '../shared/home-api'
 import {
   createShellHomeApi,
   createShellProjectApi,
@@ -48,6 +49,40 @@ if (!isElectronRuntime()) {
   // back through window.aiOffice*, so modelling Window as a bag holding exactly
   // the values we install is correct at runtime even though TypeScript cannot
   // prove it from the lib.dom types alone.
+  /* Expose `pickFileBytes` so the Home FAB can implement pure-upload
+   * (pick → upload → never open). The legacy `browse()` always opens the
+   * first picked file, which is what the user complained about. */
+  ;(window as unknown as { pickFileBytes: typeof pickFileBytes }).pickFileBytes = pickFileBytes
+
+  /* `uploadFilesToProject` ships a batch of picked files to the
+   * `project:upload` channel — pure upload, never opens an editor tab. */
+  const uploadFilesToProject = async (
+    projectId: string | null,
+    files: Array<{ name: string; bytes: ArrayBuffer; mimeType?: string }>,
+  ): Promise<{
+    ok: true
+    uploaded: Array<{ id: string; path: string; name: string; size: number; mimeType: string; projectId: string }>
+    skipped: Array<{ name: string; reason: string }>
+    projectId: string
+  }> => {
+    const result = (await transport.invoke(PROJECT_CHANNELS.upload, {
+      projectId,
+      files,
+    })) as {
+      ok?: boolean
+      uploaded?: Array<{ id: string; path: string; name: string; size: number; mimeType: string; projectId: string }>
+      skipped?: Array<{ name: string; reason: string }>
+      projectId?: string
+    }
+    return {
+      ok: true,
+      uploaded: result?.uploaded ?? [],
+      skipped: result?.skipped ?? [],
+      projectId: result?.projectId ?? projectId ?? '',
+    }
+  }
+  ;(window as unknown as { uploadFilesToProject: typeof uploadFilesToProject }).uploadFilesToProject = uploadFilesToProject
+
   const bridgedWindow = window as unknown as Record<string, unknown>
 
   /* ── Web-native tab tracking ─────────────────────────────────────────

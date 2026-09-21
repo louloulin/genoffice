@@ -30,6 +30,7 @@ import {
 import type { FileInfo } from '../common/index'
 import { atomicWriteFile } from '../common/atomic'
 import { recordRecentDoc } from '../common/document-stores'
+import { getStorageBackend } from '../common/state'
 import { fileIndexStore } from '../common/file-index-store'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
@@ -100,37 +101,38 @@ export function registerWebHandlers(): void {
 
     const safeName = sanitizeFileName(name, 'file')
     const fileId = fileIndexStore.nextId(safeName)
-    const filePath = join(FILES_DIR, fileId)
     const buffer = Buffer.from(bytes)
-    const stats = { size: buffer.byteLength, mimeType: MIME_TYPES[extname(safeName).toLowerCase()] || 'application/octet-stream' }
+    const contentType = MIME_TYPES[extname(safeName).toLowerCase()] || 'application/octet-stream'
 
     /* Atomic: a crash mid-upload leaves either no file or the complete one,
-     * never a half-written document that looks openable. */
-    atomicWriteFile(filePath, buffer)
+     * never a half-written document that looks openable. The storage backend
+     * (local FS by default; mimo/S3 via env) owns the temp-and-rename kernel,
+     * so the web:save-file channel stays backend-agnostic. */
+    const stored = await getStorageBackend().put(fileId, new Uint8Array(bytes), { contentType })
 
     /* Index the upload so `files:read({id})` can resolve it — including after
-     * a restart, which is what `fileIndexStore.flushNow` below persists. */
+     * a restart, which is what `fileIndexStore.flushNow` below persists. The
+     * `path` is a synthetic one — the active backend may store the bytes
+     * somewhere else entirely (mimo/S3). handlers that need the bytes
+     * themselves must go through the backend, not readFileSync. */
     const info: FileInfo = {
       id: fileId,
       name: safeName,
-      path: filePath,
-      size: stats.size,
-      mimeType: stats.mimeType,
+      path: `storage://${getStorageBackend().id}/${fileId}`,
+      size: stored.size,
+      mimeType: contentType,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
     fileIndexStore.set(info)
 
     // Mirror the save into the home page recents list so the upload shows
-    // up immediately on the shell home tab. Keys are paths and the FILES_DIR
-    // name embeds a timestamp, so every upload gets its own row: re-uploading
-    // the same logical file adds a newer row instead of replacing the older
-    // one. That is intentional — recents is a history, and the older row still
-    // points at bytes that really are on disk.
-    // `recordRecentDoc` writes both the legacy in-session mirror and the
-    // restart-safe store; awaiting it means the caller cannot observe the
-    // entry as missing.
-    await recordRecentDoc(filePath, {
+    // up immediately on the shell home tab. The recents key is the synthetic
+    // storage URI so a backend swap doesn't strand rows on disk that no
+    // longer resolve. `recordRecentDoc` writes both the legacy in-session
+    // mirror and the restart-safe store; awaiting it means the caller cannot
+    // observe the entry as missing.
+    await recordRecentDoc(info.path, {
       id: basename(fileId, extname(fileId)),
       name: safeName,
       modified: false,
@@ -148,6 +150,8 @@ export function registerWebHandlers(): void {
       }
     }
 
-    return { id: fileId, path: filePath, name: safeName }
+    /* `path` is the synthetic storage URI: callers that need to read the
+     * bytes back must round-trip through the backend (or `files:read`). */
+    return { id: fileId, path: info.path, name: safeName, size: stored.size, mimeType: contentType }
   })
 }

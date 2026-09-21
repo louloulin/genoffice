@@ -91,3 +91,6 @@ export {
   sanitizeFileName,
   WINDOWS_RESERVED,
 } from './paths'
+
+export { fileIndexStore, FILES_INDEX_FILE } from './file-index-store'
+export { recordRecentDoc } from './document-stores'

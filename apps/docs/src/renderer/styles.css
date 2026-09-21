@@ -8503,6 +8503,40 @@ body.docs-crop-active
   white-space: nowrap;
 }
 
+/* AI hint chip — surfaces the equivalent `/<trigger>` slash command for
+   shortcuts that trigger a docs AI action or skill, so the shortcut sheet
+   and the AI panel stay discoverable from each other. */
+.modal-shortcuts .sc-ai-hint {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: 10px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  background: var(--hover);
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.modal-shortcuts .sc-ai-hint-tag {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--word-blue);
+}
+
+.modal-shortcuts .sc-ai-hint-cmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+.modal-shortcuts .sc-ai-hint-name {
+  color: var(--text-dim);
+}
+
 .modal-shortcuts .sc-empty {
   margin: 24px 0;
   text-align: center;

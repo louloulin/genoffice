@@ -2,7 +2,7 @@
  * Generic file CRUD — pick/add/read/create/update/delete for the shell's
  * file-picker surface and the renderer-side preview hooks.
  */
-import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { basename, extname } from 'node:path'
 import {
   FILES_INDEX,
@@ -15,6 +15,37 @@ import {
   saveProjects,
 } from '../common/index'
 import type { FileInfo } from '../common/index'
+import { getStorageBackend } from '../common/state'
+import { StorageNotFoundError } from '@genoffice/file-management'
+
+
+/** Resolve a stored-file reference — either a synthetic `storage://backend/key`
+ *  URI (the new convention) or a managed-path FILES_DIR entry — to a key the
+ *  backend can fetch. Returns null when the path doesn't belong to the
+ *  storage layer (legacy callers). */
+function storageKeyFromPath(filePath: string): string | null {
+  if (filePath.startsWith('storage://')) {
+    const rest = filePath.slice('storage://'.length)
+    const slash = rest.indexOf('/')
+    return slash === -1 ? rest : rest.slice(slash + 1)
+  }
+  if (filePath.startsWith(FILES_DIR + '/')) {
+    return filePath.slice(FILES_DIR.length + 1)
+  }
+  return null
+}
+
+async function readBytesFor(filePath: string): Promise<Buffer | null> {
+  const key = storageKeyFromPath(filePath)
+  if (!key) return null
+  try {
+    const u8 = await getStorageBackend().get(key)
+    return Buffer.from(u8)
+  } catch (err) {
+    if (err instanceof StorageNotFoundError) return null
+    throw err
+  }
+}
 
 export function registerFilesHandlers(): void {
   registerHandle('files:pick', () => ({
@@ -35,14 +66,17 @@ export function registerFilesHandlers(): void {
       if (isManagedPath(originalPath) && existsSync(originalPath)) {
         const stats = statSync(originalPath)
         const fileId = `${Date.now()}-${basename(originalPath)}`
-        const destPath = FILES_DIR + '/' + fileId
-        writeFileSync(destPath, readFileSync(originalPath))
+        const contentType = MIME_TYPES[extname(originalPath)] || 'application/octet-stream'
+        /* Route through the storage backend so a remote backend (mimo/S3) gets
+         * the bytes too, instead of silently dropping them onto the local FS
+         * that the backend would never look at. */
+        await getStorageBackend().put(fileId, new Uint8Array(readFileSync(originalPath)), { contentType })
         const fileInfo: FileInfo = {
           id: fileId,
           name: basename(originalPath),
-          path: destPath,
+          path: `storage://${getStorageBackend().id}/${fileId}`,
           size: stats.size,
-          mimeType: MIME_TYPES[extname(originalPath)] || 'application/octet-stream',
+          mimeType: contentType,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }
@@ -55,8 +89,8 @@ export function registerFilesHandlers(): void {
 
   registerHandle('files:read-image', async (_event: unknown, path: unknown) => {
     if (typeof path !== 'string' || !isManagedPath(path)) return null
-    if (existsSync(path)) {
-      const bytes = readFileSync(path)
+    const bytes = await readBytesFor(path)
+    if (bytes) {
       return {
         base64: bytes.toString('base64'),
         mimeType: MIME_TYPES[extname(path)] || 'image/png',
@@ -66,7 +100,7 @@ export function registerFilesHandlers(): void {
     return null
   })
 
-  registerHandle('files:create', (_event: unknown, args: unknown) => {
+  registerHandle('files:create', async (_event: unknown, args: unknown) => {
     const { name, content, type, projectId } = (args || {}) as {
       name?: string
       content?: string
@@ -74,20 +108,23 @@ export function registerFilesHandlers(): void {
       projectId?: string
     }
 
-    const fileId = `file-${Date.now()}`
+    const fileId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const fileName = name || `新建文件${Date.now()}`
-    const filePath = FILES_DIR + '/' + fileId
     const fileContent = content || ''
+    const mimeType = type || MIME_TYPES[extname(fileName)] || 'application/octet-stream'
+    const bytes = new TextEncoder().encode(fileContent)
 
-    writeFileSync(filePath, fileContent, 'utf-8')
-    const stats = statSync(filePath)
+    /* Atomic write via the active backend; never call writeFileSync here —
+     * a crash mid-write would leave a half-written file the renderer would
+     * then try to parse as a real document. */
+    await getStorageBackend().put(fileId, bytes, { contentType: mimeType })
 
-    const fileInfo = {
+    const fileInfo: FileInfo = {
       id: fileId,
       name: fileName,
-      path: filePath,
-      size: stats.size,
-      mimeType: type || MIME_TYPES[extname(fileName)] || 'application/octet-stream',
+      path: `storage://${getStorageBackend().id}/${fileId}`,
+      size: bytes.byteLength,
+      mimeType,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
@@ -109,31 +146,45 @@ export function registerFilesHandlers(): void {
     return fileInfo
   })
 
-  registerHandle('files:read', (_event: unknown, args: unknown) => {
+  registerHandle('files:read', async (_event: unknown, args: unknown) => {
     const { id, path } = (args || {}) as { id?: string; path?: string }
 
     /* Ids come from `fileIndexStore`, which is rehydrated from disk at boot,
      * so an id issued before a restart still resolves here. */
     if (id && FILES_INDEX.has(id)) {
       const fileInfo = FILES_INDEX.get(id)!
-      if (existsSync(fileInfo.path)) {
+      const bytes = await readBytesFor(fileInfo.path)
+      if (bytes) {
+        /* Binary formats (PDF, XLSX, PPTX) are not safe to ship as utf-8; the
+         * renderer used to get a corrupted "content" field for those. Encode
+         * as base64 with a marker and let the renderer decode. */
+        const isText = fileInfo.mimeType.startsWith('text/') ||
+          ['application/json', 'application/javascript'].includes(fileInfo.mimeType)
         return {
           ...fileInfo,
-          content: readFileSync(fileInfo.path, 'utf-8'),
+          content: isText ? bytes.toString('utf-8') : bytes.toString('base64'),
+          isBase64: !isText,
         }
       }
     }
 
     if (path && isManagedPath(path) && existsSync(path)) {
-      const bytes = readFileSync(path)
-      return {
-        id: `file-${Date.now()}`,
-        name: basename(path),
-        path,
-        size: bytes.length,
-        mimeType: MIME_TYPES[extname(path)] || 'application/octet-stream',
-        content: bytes.toString('base64'),
-        isBase64: true,
+      /* Path-based reads are only meaningful for the local backend — remote
+       * backends have no concept of "the absolute path" the caller supplies.
+       * Fall back to the backend lookup by basename so the same call site works
+       * regardless of where the bytes live. */
+      if (getStorageBackend().id === 'local') {
+        const { readFileSync } = require('node:fs') as typeof import('node:fs')
+        const bytes = readFileSync(path)
+        return {
+          id: `file-${Date.now()}`,
+          name: basename(path),
+          path,
+          size: bytes.length,
+          mimeType: MIME_TYPES[extname(path)] || 'application/octet-stream',
+          content: bytes.toString('base64'),
+          isBase64: true,
+        }
       }
     }
 
@@ -149,7 +200,13 @@ export function registerFilesHandlers(): void {
 
     const fileInfo = FILES_INDEX.get(id)!
     if (content !== undefined) {
-      writeFileSync(fileInfo.path, content, 'utf-8')
+      const bytes = typeof content === 'string'
+        ? Buffer.from(content, 'utf-8')
+        : Buffer.from(content as ArrayBuffer)
+      await getStorageBackend().put(fileInfo.id, new Uint8Array(bytes), {
+        contentType: fileInfo.mimeType,
+      })
+      fileInfo.size = bytes.byteLength
     }
     if (name) {
       fileInfo.name = name
@@ -159,14 +216,12 @@ export function registerFilesHandlers(): void {
     return { ok: true, ...fileInfo }
   })
 
-  registerHandle('files:delete', (_event: unknown, args: unknown) => {
+  registerHandle('files:delete', async (_event: unknown, args: unknown) => {
     const { id, path } = (args || {}) as { id?: string; path?: string }
 
     if (id && FILES_INDEX.has(id)) {
       const fileInfo = FILES_INDEX.get(id)!
-      if (existsSync(fileInfo.path)) {
-        unlinkSync(fileInfo.path)
-      }
+      await getStorageBackend().delete(fileInfo.id)
       FILES_INDEX.delete(id)
       return { ok: true, deleted: id }
     }
@@ -175,6 +230,11 @@ export function registerFilesHandlers(): void {
       // A delete is destructive, so an unmanaged path is refused before the
       // existence check — otherwise this channel unlinks any file on the host.
       if (!isManagedPath(path)) return { ok: false, error: PATH_OUTSIDE_STORAGE }
+      const key = storageKeyFromPath(path)
+      if (key) {
+        await getStorageBackend().delete(key)
+        return { ok: true, deleted: path }
+      }
       if (existsSync(path)) {
         unlinkSync(path)
         return { ok: true, deleted: path }
@@ -188,10 +248,10 @@ export function registerFilesHandlers(): void {
     const { filePath } = args as { filePath: string; width?: number; height?: number; format?: 'thumbnail' | 'full' }
 
     if (typeof filePath !== 'string' || !isManagedPath(filePath)) return null
-    if (!existsSync(filePath)) return null
+    const bytes = await readBytesFor(filePath)
+    if (!bytes) return null
 
     const ext = extname(filePath).toLowerCase()
-    const bytes = readFileSync(filePath)
 
     if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].includes(ext)) {
       return {

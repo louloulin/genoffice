@@ -25,6 +25,8 @@ export interface DocsQuickAction {
   readonly trigger: string
   readonly labelKey: StringKey
   readonly promptKey: StringKey
+  /** id of the matching entry in `SHORTCUTS`; the shortcut sheet reverse-looks it up to surface this action as a chip next to its chord */
+  readonly shortcutId?: string
   readonly icon: React.ReactNode
 }
 
@@ -70,6 +72,7 @@ export const DOCS_QUICK_ACTIONS: readonly DocsQuickAction[] = [
     trigger: 'tran',
     labelKey: 'aiTranslateBtn',
     promptKey: 'aiTranslatePrompt',
+    shortcutId: 'translate',
     icon: (
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
         <path
@@ -107,6 +110,8 @@ export interface DocsSkillOption {
   readonly trigger: string
   readonly labelKey: StringKey
   readonly descriptionKey: StringKey
+  /** id of the matching entry in `SHORTCUTS`; the shortcut sheet reverse-looks it up to surface this skill as a chip next to its chord */
+  readonly shortcutId?: string
   /** false renders the row disabled (the capability exists but is unusable now) */
   readonly available: boolean
   readonly keywords: readonly string[]

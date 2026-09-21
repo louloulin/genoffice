@@ -686,6 +686,20 @@ export function createShellProjectApi(t: IpcTransport): ProjectHomeApi {
     async moveFile(filePath, projectId) {
       await t.invoke(PROJECT_CHANNELS.moveFile, { filePath, projectId })
     },
+    async uploadFiles(args) {
+      const result = (await t.invoke(PROJECT_CHANNELS.upload, args)) as {
+        ok?: boolean
+        uploaded?: Array<{ id: string; path: string; name: string; size: number; mimeType: string; projectId: string }>
+        skipped?: Array<{ name: string; reason: string }>
+        projectId?: string
+      }
+      return {
+        ok: true,
+        uploaded: Array.isArray(result?.uploaded) ? result!.uploaded : [],
+        skipped: Array.isArray(result?.skipped) ? result!.skipped : [],
+        projectId: result?.projectId ?? args.projectId ?? '',
+      }
+    },
     async getTimeline(projectId, limit) {
       const result: unknown = await t.invoke(PROJECT_CHANNELS.timeline, {
         projectId,

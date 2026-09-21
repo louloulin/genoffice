@@ -14,6 +14,21 @@
  *   • the IPC handlers are thin adapters that parse args and format results.
  */
 export { atomicWriteFile, atomicWriteJson } from './atomic'
+export {
+  createStorageBackend,
+  LocalStorageBackend,
+  MimoStorageBackend,
+  S3StorageBackend,
+  StorageNotFoundError,
+} from './storage/factory'
+export type {
+  HeadResult,
+  ListEntry,
+  PutOptions,
+  SignedUrlOptions,
+  StorageBackend,
+  StorageBackendConfig,
+} from './storage/backend'
 
 export { UnifiedRecents } from './recents'
 export type { RecentEntry, RecentsOptions } from './recents'
