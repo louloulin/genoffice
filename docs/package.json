@@ -1,0 +1,23 @@
+{
+  "name": "@genoffice/docs-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VitePress site for GenOffice — published to genoffice.app via GitHub Pages.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "docs:dev": "vitepress dev",
+    "docs:build": "node scripts/gen-typedoc.mjs && vitepress build",
+    "docs:preview": "vitepress preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@genoffice/web-server": "*",
+    "typedoc": "^0.28.0",
+    "typedoc-plugin-markdown": "^4.6.0",
+    "typescript": "^5.9.3",
+    "vitepress": "^1.6.0",
+    "vue": "^3.5.0"
+  }
+}
