@@ -953,7 +953,11 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
 | web-sdk（含 handshake / origin allowlist）| 3 | 20 | ✅ |
-| **总计** | **145** | **4108** | ✅ |
+| agent-runtime | 6 | 43 | ✅ |
+| agent-session | 2 | 30 | ✅ |
+| agent-telemetry | 1 | 14 | ✅ |
+| chat-runtime | 4 | 33 | ✅ |
+| **总计** | **161** | **4228** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
