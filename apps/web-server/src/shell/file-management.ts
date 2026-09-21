@@ -43,16 +43,16 @@ export function registerFileManagementHandlers(): void {
 
   /* ── Trash ─────────────────────────────────────────────────────────── */
 
-  registerHandle('home:list-trash', () => trash.list())
+  registerHandle('home:list-trash', async () => trash.list())
 
-  registerHandle('home:restore-from-trash', (_event: unknown, id: unknown) => {
+  registerHandle('home:restore-from-trash', async (_event: unknown, id: unknown) => {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid trash id' }
     return trash.restore(id)
   })
 
-  registerHandle('home:purge-trash-entry', (_event: unknown, id: unknown) => {
+  registerHandle('home:purge-trash-entry', async (_event: unknown, id: unknown) => {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid trash id' }
-    return { ok: trash.purge(id) }
+    return { ok: await trash.purge(id) }
   })
 
   /* ── Search & properties ───────────────────────────────────────────── */

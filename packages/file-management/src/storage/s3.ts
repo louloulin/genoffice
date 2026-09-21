@@ -1,22 +1,23 @@
 /**
  * S3-compatible {@link StorageBackend}.
  *
- * Two backends share this implementation because rustfs is wire-compatible
- * with S3 (https://github.com/rustfs/rustfs) and minio is too — the only
- * thing that changes between `s3` and `rustfs` is the default endpoint and a
- * few opinionated settings. The factory picks this class for both ids and
- * applies a small set of defaults keyed on `backend.id`; everything operator-
- * configurable wins over the defaults.
+ * Three backends share this implementation because rustfs and MinIO are both
+ * wire-compatible with AWS S3 — the only thing that changes between
+ * `s3` / `rustfs` / `minio` is the default endpoint, the default addressing
+ * style, and the env-var prefix operators use to configure them. The factory
+ * picks this class for all three ids and applies a small set of defaults
+ * keyed on `backend.id`; everything operator-configurable wins over the
+ * defaults.
  *
  * The package depends on `@aws-sdk/client-s3` and
  * `@aws-sdk/s3-request-presigner` rather than the bare SigV4 spec because
- *   - the AWS SDK already handles path-style addressing for rustfs/minio,
+ *   - the AWS SDK already handles path-style addressing for rustfs/MinIO,
  *   - it already handles SigV4 streaming uploads and multipart,
  *   - we already depend on a slice of `@aws-sdk/*` transitively for Bedrock.
  *
  * The implementation intentionally does not call any AWS-only APIs
  * (`BucketLifecycleConfiguration`, `AccessControlPolicy`, etc.) so it stays
- * portable against rustfs.
+ * portable against rustfs and MinIO.
  */
 import {
   DeleteObjectCommand,
@@ -38,6 +39,8 @@ import {
   type StorageBackendConfig,
 } from './backend'
 
+type S3Kind = 's3' | 'rustfs' | 'minio'
+
 interface ResolvedS3Config {
   endpoint?: string
   region: string
@@ -48,33 +51,70 @@ interface ResolvedS3Config {
   timeoutMs: number
 }
 
-function resolveS3Config(raw: StorageBackendConfig & { s3?: Partial<ResolvedS3Config>; rustfs?: Partial<ResolvedS3Config> }): ResolvedS3Config {
-  /* `raw.s3` and `raw.rustfs` are both accepted — the factory already
-   * populates the right one based on the requested id, but we accept both
-   * keys so an operator can pass either through `process.env` indirection. */
-  const isRust = raw.backend === 'rustfs'
+function kindFromBackend(b: StorageBackendConfig['backend']): S3Kind {
+  return b === 'rustfs' ? 'rustfs' : b === 'minio' ? 'minio' : 's3'
+}
+
+function defaultEndpoint(kind: S3Kind): string | undefined {
+  /* rustfs and minio both default to a locally-running, unsigned HTTP server
+   * on port 9000 with path-style addressing. Pure AWS S3 has no useful
+   * default endpoint — the SDK derives one from the region. */
+  return kind === 's3' ? undefined : 'http://127.0.0.1:9000'
+}
+
+function defaultAccessKeyEnvPrefix(kind: S3Kind): { key: string; secret: string } {
+  /* rustfs and minio historically expect the same env-var names as the AWS
+   * CLI when pointing at themselves, but to keep the configuration self-
+   * documenting we use MINIO_* for minio. */
+  if (kind === 'minio') return { key: 'MINIO_ACCESS_KEY', secret: 'MINIO_SECRET_KEY' }
+  if (kind === 'rustfs') return { key: 'RUSTFS_ACCESS_KEY_ID', secret: 'RUSTFS_SECRET_ACCESS_KEY' }
+  return { key: 'S3_ACCESS_KEY_ID', secret: 'S3_SECRET_ACCESS_KEY' }
+}
+
+function resolveS3Config(raw: StorageBackendConfig): ResolvedS3Config {
+  const kind = kindFromBackend(raw.backend)
   const s = raw.s3
   const r = raw.rustfs
-  const envPrefix = isRust ? 'RUSTFS' : 'S3'
+  const m = raw.minio
+  const isSelfHosted = kind !== 's3'
+  /* The factory populates the matching config block (`minio` / `rustfs` /
+   * `s3`), but we accept any of the three here so the same code path works
+   * whether the operator passed the config inline or set it via env. */
   const merged: ResolvedS3Config = {
-    endpoint: r?.endpoint ?? s?.endpoint ?? process.env[`${envPrefix}_ENDPOINT`],
-    region: r?.region ?? s?.region ?? process.env[`${envPrefix}_REGION`] ?? 'us-east-1',
-    bucket: r?.bucket ?? s?.bucket ?? process.env[`${envPrefix}_BUCKET`] ?? 'genoffice',
-    accessKeyId: r?.accessKeyId ?? s?.accessKeyId ?? process.env[`${envPrefix}_ACCESS_KEY_ID`],
-    secretAccessKey: r?.secretAccessKey ?? s?.secretAccessKey ?? process.env[`${envPrefix}_SECRET_ACCESS_KEY`],
-    forcePathStyle: r?.forcePathStyle ?? s?.forcePathStyle ?? isRust,
-    timeoutMs: r?.timeoutMs ?? s?.timeoutMs ?? 30_000,
+    endpoint:
+      m?.endpoint ?? r?.endpoint ?? s?.endpoint ??
+      process.env[`${kind === 'minio' ? 'MINIO' : kind === 'rustfs' ? 'RUSTFS' : 'S3'}_ENDPOINT`] ??
+      defaultEndpoint(kind),
+    region:
+      m?.region ?? r?.region ?? s?.region ??
+      process.env[`${kind === 'minio' ? 'MINIO' : kind === 'rustfs' ? 'RUSTFS' : 'S3'}_REGION`] ??
+      'us-east-1',
+    bucket:
+      m?.bucket ?? r?.bucket ?? s?.bucket ??
+      process.env[`${kind === 'minio' ? 'MINIO' : kind === 'rustfs' ? 'RUSTFS' : 'S3'}_BUCKET`] ??
+      'genoffice',
+    accessKeyId:
+      m?.accessKeyId ?? r?.accessKeyId ?? s?.accessKeyId ??
+      process.env[defaultAccessKeyEnvPrefix(kind).key],
+    secretAccessKey:
+      m?.secretAccessKey ?? r?.secretAccessKey ?? s?.secretAccessKey ??
+      process.env[defaultAccessKeyEnvPrefix(kind).secret],
+    forcePathStyle:
+      m?.forcePathStyle ?? r?.forcePathStyle ?? s?.forcePathStyle ?? isSelfHosted,
+    timeoutMs:
+      m?.timeoutMs ?? r?.timeoutMs ?? s?.timeoutMs ?? 30_000,
   }
   if (!merged.bucket) {
     throw new Error(
-      `S3StorageBackend (${isRust ? 'rustfs' : 's3'}): bucket is required ` +
-        `(set ${isRust ? 'RUSTFS_BUCKET' : 'S3_BUCKET'} or pass it via config)`,
+      `S3StorageBackend (${kind}): bucket is required ` +
+        `(set ${kind === 'minio' ? 'MINIO_BUCKET' : kind === 'rustfs' ? 'RUSTFS_BUCKET' : 'S3_BUCKET'} or pass it via config)`,
     )
   }
   if (!merged.accessKeyId || !merged.secretAccessKey) {
+    const envNames = defaultAccessKeyEnvPrefix(kind)
     throw new Error(
-      `S3StorageBackend (${isRust ? 'rustfs' : 's3'}): accessKeyId and secretAccessKey are required ` +
-        `(set ${isRust ? 'RUSTFS_ACCESS_KEY_ID/RUSTFS_SECRET_ACCESS_KEY' : 'S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY'})`,
+      `S3StorageBackend (${kind}): accessKeyId and secretAccessKey are required ` +
+        `(set ${envNames.key}/${envNames.secret})`,
     )
   }
   return merged as ResolvedS3Config
@@ -87,13 +127,15 @@ function notFound(err: unknown): boolean {
 }
 
 export class S3StorageBackend implements StorageBackend {
-  readonly id: 's3' | 'rustfs'
+  readonly id: S3Kind
   private readonly cfg: ResolvedS3Config
   private readonly client: S3Client
+  private readonly kindLabel: string
 
   constructor(config: StorageBackendConfig) {
+    this.id = kindFromBackend(config.backend)
+    this.kindLabel = this.id
     this.cfg = resolveS3Config(config)
-    this.id = (config.backend === 'rustfs' ? 'rustfs' : 's3') as 's3' | 'rustfs'
     const clientConfig: S3ClientConfig = {
       region: this.cfg.region,
       forcePathStyle: this.cfg.forcePathStyle,
@@ -105,6 +147,11 @@ export class S3StorageBackend implements StorageBackend {
     }
     if (this.cfg.endpoint) clientConfig.endpoint = this.cfg.endpoint
     this.client = new S3Client(clientConfig)
+  }
+
+  async exists(key: string): Promise<boolean> {
+    const res = await this.head(key)
+    return res.exists
   }
 
   async get(key: string): Promise<Uint8Array> {

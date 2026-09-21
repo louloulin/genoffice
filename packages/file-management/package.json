@@ -6,7 +6,8 @@
   "type": "module",
   "description": "Shared file-lifecycle kernel for the web-server and desktop builds: atomic writes, restart-safe recents, trash, save locations, file search/properties, and the DocumentStore interface the per-format stores implement",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./storage/key": "./src/storage/key.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

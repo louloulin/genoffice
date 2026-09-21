@@ -85,6 +85,13 @@ export interface FileInfo {
   mimeType: string
   createdAt: number
   updatedAt: number
+  /** The id of the storage backend that holds the bytes. Captured at upload
+   *  time so a switch of `GENOFFICE_STORAGE` between restarts can't make
+   *  the renderer follow a stale `storage://` reference into a bucket
+   *  that no longer applies — the loader drops rows whose backendId
+   *  doesn't match the active backend (the files are still on disk in
+   *  some form, just not where this server now reads from). */
+  backendId?: string
 }
 
 export const FILES_INDEX: Map<string, FileInfo> = new Map()
@@ -455,21 +462,6 @@ export function initDefaultTemplates(): void {
   }
 }
 
-// ----- Enterprise / shell state --------------------------------------------
-export const CLOUD_FILES: Map<
-  string,
-  {
-    id: string
-    name: string
-    size: number
-    type: string
-    url: string
-    createdAt: number
-    updatedAt: number
-    public: boolean
-  }
-> = new Map()
-
 export const OFFLINE_QUEUE: Map<
   string,
   {
@@ -612,7 +604,7 @@ export const TABS: Map<string, TabRecord> = new Map()
  * The web-server persists document bytes through a single
  * {@link StorageBackend}, chosen at boot. The default is `local`, which writes
  * to `FILES_DIR`; operators that want a remote bucket set `GENOFFICE_STORAGE`
- * (or pass an explicit `mimo.endpoint`) and the factory in
+ * (`minio`/`s3`/`rustfs`) and the factory in
  * `@genoffice/file-management` picks the right implementation.
  *
  * Keeping the backend on `state` rather than a singleton module keeps the
@@ -633,19 +625,20 @@ export function getStorageBackend(): StorageBackend {
   const want = (process.env.GENOFFICE_STORAGE ?? 'local').toLowerCase()
   const publicBaseUrl = process.env.GENOFFICE_FILES_BASE_URL
     ?? `${process.env.GENOFFICE_PUBLIC_URL ?? ''}/files`.replace(/\/+$/, '')
-  const wantBackend: 'local' | 'mimo' | 's3' | 'rustfs' =
-    want === 'mimo' || want === 's3' || want === 'rustfs' ? want : 'local'
+  const wantBackend: 'local' | 'minio' | 's3' | 'rustfs' =
+    want === 'minio' || want === 's3' || want === 'rustfs' ? want : 'local'
   _storageBackend = createFileBackend({
     backend: wantBackend,
     filesDir: FILES_DIR,
     publicBaseUrl,
-    mimo: {
-      endpoint: process.env.MIMO_STORAGE_ENDPOINT ?? '',
-      apiKey: process.env.MIMO_STORAGE_API_KEY,
-      bucket: process.env.MIMO_STORAGE_BUCKET,
-      timeoutMs: process.env.MIMO_STORAGE_TIMEOUT_MS
-        ? Number(process.env.MIMO_STORAGE_TIMEOUT_MS)
-        : undefined,
+    minio: {
+      endpoint: process.env.MINIO_ENDPOINT,
+      region: process.env.MINIO_REGION,
+      bucket: process.env.MINIO_BUCKET,
+      accessKeyId: process.env.MINIO_ACCESS_KEY,
+      secretAccessKey: process.env.MINIO_SECRET_KEY,
+      forcePathStyle: process.env.MINIO_FORCE_PATH_STYLE !== '0', /* default true */
+      timeoutMs: process.env.MINIO_TIMEOUT_MS ? Number(process.env.MINIO_TIMEOUT_MS) : undefined,
     },
     s3: {
       endpoint: process.env.S3_ENDPOINT,
@@ -667,6 +660,24 @@ export function getStorageBackend(): StorageBackend {
     },
   })
   return _storageBackend
+}
+
+/** Resolve a stored-file reference — either a synthetic `storage://backend/key`
+ *  URI (the new convention) or a managed-path FILES_DIR entry — to the key the
+ *  backend can fetch. Returns null when the path doesn't belong to the
+ *  storage layer (legacy callers). The handler in `projects/index.ts` and
+ *  the one in `shell/files.ts` both delegate here so the resolution rules
+ *  stay in sync. */
+export function storageKeyFromPath(filePath: string): string | null {
+  if (filePath.startsWith('storage://')) {
+    const rest = filePath.slice('storage://'.length)
+    const slash = rest.indexOf('/')
+    return slash === -1 ? rest : rest.slice(slash + 1)
+  }
+  if (filePath.startsWith(FILES_DIR + '/')) {
+    return filePath.slice(FILES_DIR.length + 1)
+  }
+  return null
 }
 
 /** True iff the active backend is something other than the local filesystem.

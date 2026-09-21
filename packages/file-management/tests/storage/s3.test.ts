@@ -150,7 +150,7 @@ describe('S3StorageBackend', () => {
     expect(listed.map((l) => l.key).sort()).toEqual(['alpha-1.txt', 'alpha-2.txt'])
   })
 
-  it('id is "s3" by default and "rustfs" when configured', () => {
+  it('id is "s3" by default, "rustfs" or "minio" when configured', () => {
     expect(makeBackend({}).id).toBe('s3')
     const rustfs = new S3StorageBackend({
       filesDir: '/unused',
@@ -158,6 +158,12 @@ describe('S3StorageBackend', () => {
       rustfs: { endpoint: url, accessKeyId: 'k', secretAccessKey: 's', bucket: 'b' },
     })
     expect(rustfs.id).toBe('rustfs')
+    const minio = new S3StorageBackend({
+      filesDir: '/unused',
+      backend: 'minio',
+      minio: { endpoint: url, accessKeyId: 'k', secretAccessKey: 's', bucket: 'b' },
+    })
+    expect(minio.id).toBe('minio')
   })
 
   it('getSignedUrl issues a presigned URL', async () => {

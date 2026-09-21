@@ -43,15 +43,37 @@ export class LocalStorageBackend implements StorageBackend {
     /* Refuse absolute paths and `..` segments: a key is supposed to be an
      * opaque identifier (e.g. "<counter>-<ts>-<rand>-name.docx"), and
      * letting the caller escape `filesDir` defeats the managed-path guard
-     * the web-server already enforces. */
-    if (key.includes('/') || key.includes('\\') || key.startsWith('.')) {
+     * the web-server already enforces.
+     *
+     * Hierarchical keys (forward slashes) are now allowed so the local
+     * backend can mirror the layout the remote bucket uses —
+     * `<yyyy>/<mm>/<dd>/<sha256>.<ext>`. The basename still can't start
+     * with a dot (trash namespace, `.meta.json` sidecars) and the
+     * resolved path must stay under `filesDir` after joining. */
+    const segments = key.split(/[\\/]+/)
+    if (key.startsWith('.') || segments.some((seg) => seg === '..' || seg.startsWith('.') || seg === '')) {
       throw new Error(`LocalStorageBackend: refusing unsafe key "${key}"`)
     }
-    return join(this.filesDir, key)
+    const safe = join(this.filesDir, key)
+    if (safe !== this.filesDir && !safe.startsWith(this.filesDir + '/')) {
+      throw new Error(`LocalStorageBackend: refusing path traversal in key "${key}"`)
+    }
+    return safe
   }
 
   private metaPathFor(key: string): string {
     return this.pathFor(key) + META_SUFFIX
+  }
+
+  async exists(key: string): Promise<boolean> {
+    /* pathFor throws on unsafe keys; treat that as "not present" so a
+     * crafted id from the renderer can't probe arbitrary files. */
+    try {
+      const res = await this.head(key)
+      return res.exists
+    } catch {
+      return false
+    }
   }
 
   async get(key: string): Promise<Uint8Array> {
@@ -102,20 +124,42 @@ export class LocalStorageBackend implements StorageBackend {
 
   async list(prefix = ''): Promise<ListEntry[]> {
     if (!existsSync(this.filesDir)) return []
-    const entries: ListEntry[] = []
-    for (const name of readdirSync(this.filesDir)) {
-      if (name.endsWith(META_SUFFIX)) continue
-      if (prefix && !name.startsWith(prefix)) continue
-      const path = join(this.filesDir, name)
+    /* Recursive walker so hierarchical content-addressed keys
+     * (`<yyyy>/<mm>/<dd>/<sha256>.<ext>`) surface in `list()`. Depth is
+     * bounded by the date-prefix layout (3 segments deep at most), but
+     * we cap at 8 anyway as a guard against a future prefix scheme. */
+    const MAX_DEPTH = 8
+    const out: ListEntry[] = []
+
+    const walk = (dir: string, relPrefix: string, depth: number): void => {
+      let names: string[]
       try {
-        const stats = statSync(path)
-        if (!stats.isFile()) continue
-        entries.push({ key: name, size: stats.size, modifiedAt: stats.mtime.toISOString() })
+        names = readdirSync(dir)
       } catch {
-        /* a vanished file between readdir and stat is fine; skip */
+        return
+      }
+      for (const name of names) {
+        if (name.endsWith(META_SUFFIX)) continue
+        if (name.startsWith('.')) continue
+        const path = join(dir, name)
+        const rel = relPrefix ? `${relPrefix}/${name}` : name
+        let stats
+        try {
+          stats = statSync(path)
+        } catch {
+          continue
+        }
+        if (stats.isDirectory()) {
+          if (depth >= MAX_DEPTH) continue
+          walk(path, rel, depth + 1)
+        } else if (stats.isFile()) {
+          if (prefix && !rel.startsWith(prefix)) continue
+          out.push({ key: rel, size: stats.size, modifiedAt: stats.mtime.toISOString() })
+        }
       }
     }
-    return entries
+    walk(this.filesDir, '', 0)
+    return out
   }
 
   async getSignedUrl(key: string): Promise<string> {

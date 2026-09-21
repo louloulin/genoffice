@@ -128,10 +128,10 @@ describe.skipIf(!haveBundle)('file-management IPC handlers', () => {
     expect(existsSync(target)).toBe(false)
 
     const list = (await invoke(base, 'home:list-trash', [])).body as {
-      result?: Array<{ id: string; originalPath: string; name: string }>
+      result?: Array<{ id: string; originalKey: string; name: string }>
     }
     const entries = list?.result ?? []
-    const entry = entries.find((e) => e.originalPath === target)
+    const entry = entries.find((e) => e.originalKey === target)
     expect(entry, 'expected the doomed file to be in the trash').toBeTruthy()
 
     if (entry) {
@@ -282,13 +282,28 @@ describe.skipIf(!haveBundle)(
         result?: { ok?: boolean; id?: string; path?: string; name?: string }
       }
       expect(result?.result?.path).toBeTruthy()
-      const written = readFileSync(result.result!.path!)
+      /* web:save-file now returns a `storage://` URI; the backend key
+       * is the URL-decoded bit after the scheme. The local backend
+       * writes the bytes to `${FILES_DIR}/<key>` and the key can be
+         * hierarchical (`<yyyy>/<mm>/<dd>/<sha256>.<ext>`), so we read
+         * via the same key the response carries. */
+      const path = result.result!.path!
+      const id = path.startsWith('storage://') ? path.split('/').slice(3).join('/') : path.split('/').pop()!
+      const written = readFileSync(join(dataDir, 'files', id))
       expect(written.toString('utf8')).toBe('hello atomic')
       // No .tmp file should be left behind after a successful atomic write.
-      const dir = result.result!.path!.split('/').slice(0, -1).join('/')
-      const tmpFiles = require('node:fs')
-        .readdirSync(dir)
-        .filter((n: string) => n.includes('.tmp'))
+      // The walk is recursive because content-addressed keys live under
+      // a `<yyyy>/<mm>/<dd>/` subtree, not at the FILES_DIR root.
+      const collectAllFiles = (dir: string): string[] => {
+        const out: string[] = []
+        for (const entry of require('node:fs').readdirSync(dir, { withFileTypes: true })) {
+          const full = require('node:path').join(dir, entry.name)
+          if (entry.isDirectory()) out.push(...collectAllFiles(full))
+          else out.push(entry.name)
+        }
+        return out
+      }
+      const tmpFiles = collectAllFiles(join(dataDir, 'files')).filter((n: string) => n.includes('.tmp'))
       expect(tmpFiles).toEqual([])
     })
 

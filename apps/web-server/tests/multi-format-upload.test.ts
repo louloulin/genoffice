@@ -150,10 +150,18 @@ describe.skipIf(!haveBundle)('multi-format upload + open', () => {
       }
       expect(body.ok).toBe(true)
       expect(body.result.path).toMatch(new RegExp(`\\.${c.ext}$`))
-      expect(existsSync(body.result.path)).toBe(true)
+      /* `web:save-file` now returns a `storage://` URI rather than an
+       * absolute filesystem path. The backend key (`id`) is the last
+       * `<yyyy>/<mm>/<dd>/<sha256>.<ext>` portion of the URI; the
+       * local backend writes the bytes to `${FILES_DIR}/${id}`. */
+      const id = body.result.path.startsWith('storage://')
+        ? body.result.path.split('/').slice(3).join('/')
+        : body.result.path
+      const fsPath = join(dataDir, 'files', id)
+      expect(existsSync(fsPath)).toBe(true)
       /* The byte length on disk must match what we sent — covers the
        * "upload silently truncated to 0 bytes" bug class. */
-      const onDisk = readFileSync(body.result.path)
+      const onDisk = readFileSync(fsPath)
       expect(onDisk.byteLength).toBe(bytes.byteLength)
       uploaded.push({ ext: c.ext, path: body.result.path, name: body.result.name })
     }

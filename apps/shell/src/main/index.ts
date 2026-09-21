@@ -208,6 +208,7 @@ import {
 import type {
   AccountLoginEvent,
   AutoSaveDefault,
+  OpenCloudMode,
   RecentEntry,
   RecentPage,
   RenameResult,
@@ -386,6 +387,15 @@ function currentUpdateChannel(): UpdateChannel {
   const saved = readAppSettings(APP_SETTINGS_PATH()).updateChannel
   cachedUpdateChannel = isUpdateChannel(saved) ? saved : 'stable'
   return cachedUpdateChannel
+}
+
+let cachedCloudOpenMode: OpenCloudMode | null = null
+
+function currentCloudOpenMode(): OpenCloudMode {
+  if (cachedCloudOpenMode) return cachedCloudOpenMode
+  const saved = readAppSettings(APP_SETTINGS_PATH()).cloudOpenMode
+  cachedCloudOpenMode = saved === 'window' || saved === 'external' ? saved : 'tab'
+  return cachedCloudOpenMode
 }
 
 let cachedTheme: UiTheme | null = null
@@ -3297,6 +3307,19 @@ function registerHomeIpc(): void {
     return picked
   })
 
+  ipcMain.handle(HOME_CHANNELS.getCloudOpenMode, (): OpenCloudMode => currentCloudOpenMode())
+
+  ipcMain.handle(HOME_CHANNELS.setCloudOpenMode, (_event, mode: unknown): OpenCloudMode => {
+    if (mode !== 'tab' && mode !== 'window' && mode !== 'external') return currentCloudOpenMode()
+    if (mode === currentCloudOpenMode()) return mode
+    cachedCloudOpenMode = mode
+    writeAppSetting(APP_SETTINGS_PATH(), 'cloudOpenMode', mode)
+    for (const wc of webContents.getAllWebContents()) {
+      wc.send('app:cloud-open-mode-changed', mode)
+    }
+    return mode
+  })
+
   ipcMain.handle(HOME_CHANNELS.openGenTeam, () => {
     shell.openExternal(GENTEAM_URL).catch(() => {
       // no browser handler available; nothing actionable for the user here
@@ -3364,12 +3387,13 @@ function registerHomeIpc(): void {
     (_event, projectUrl: unknown, options: unknown) => {
       const url = cloudProjectExternalUrl(projectUrl)
       if (!url) return
-      // Default = open inside the shell (tab mode). The modifier-key contract
-      // for the Home row: ⌘/Ctrl+click → window, Shift+click → external.
+      // The renderer's Home row sends an explicit mode chosen by the
+      // modifier keys (none / ⌘ / Shift). When none was sent, fall back to
+      // the user-configured default in Settings → cloudOpenMode.
       const mode: 'tab' | 'window' | 'external' =
         options && typeof options === 'object' && 'mode' in options
-          ? ((options as { mode?: 'tab' | 'window' | 'external' }).mode ?? 'tab')
-          : 'tab'
+          ? ((options as { mode?: 'tab' | 'window' | 'external' }).mode ?? currentCloudOpenMode())
+          : currentCloudOpenMode()
       if (mode === 'external') {
         void shell.openExternal(url)
         return
@@ -3390,8 +3414,7 @@ function registerHomeIpc(): void {
       // 'tab' (default): open inside the shell's tab strip.
       tabManager?.openWebTab(url)
     },
-  })
-}
+  )
 
 function stringPaths(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((p): p is string => typeof p === 'string') : []
@@ -4422,6 +4445,7 @@ void installHttpIpcBridge({
 registerAiIpc()
 registerProjectIpc()
 registerDocsIpc()
+}
 registerHomeIpc()
 registerIntegrationsIpc({
   settingsPath: APP_SETTINGS_PATH,

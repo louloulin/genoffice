@@ -569,6 +569,20 @@ export function createShellHomeApi(t: IpcTransport, overrides: ShellApiOverrides
       const result: unknown = await t.invoke(HOME_CHANNELS.pickDefaultSaveDir)
       return typeof result === 'string' && result ? result : null
     },
+    async getCloudOpenMode() {
+      const result: unknown = await t.invoke(HOME_CHANNELS.getCloudOpenMode)
+      return result === 'window' || result === 'external' ? result : 'tab'
+    },
+    async setCloudOpenMode(mode) {
+      if (mode !== 'tab' && mode !== 'window' && mode !== 'external')
+        throw new Error('Invalid cloud open mode.')
+      await t.invoke(HOME_CHANNELS.setCloudOpenMode, mode)
+    },
+    onCloudOpenModeChanged(handler) {
+      return t.on('app:cloud-open-mode-changed', (mode) => {
+        if (mode === 'tab' || mode === 'window' || mode === 'external') handler(mode)
+      })
+    },
     onThemeChanged(handler) {
       return t.on('app:theme-changed', (theme) => {
         if (theme === 'light' || theme === 'dark' || theme === 'system') handler(theme)

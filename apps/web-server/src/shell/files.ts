@@ -15,25 +15,10 @@ import {
   saveProjects,
 } from '../common/index'
 import type { FileInfo } from '../common/index'
-import { getStorageBackend } from '../common/state'
+import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
 
 
-/** Resolve a stored-file reference — either a synthetic `storage://backend/key`
- *  URI (the new convention) or a managed-path FILES_DIR entry — to a key the
- *  backend can fetch. Returns null when the path doesn't belong to the
- *  storage layer (legacy callers). */
-function storageKeyFromPath(filePath: string): string | null {
-  if (filePath.startsWith('storage://')) {
-    const rest = filePath.slice('storage://'.length)
-    const slash = rest.indexOf('/')
-    return slash === -1 ? rest : rest.slice(slash + 1)
-  }
-  if (filePath.startsWith(FILES_DIR + '/')) {
-    return filePath.slice(FILES_DIR.length + 1)
-  }
-  return null
-}
 
 async function readBytesFor(filePath: string): Promise<Buffer | null> {
   const key = storageKeyFromPath(filePath)
@@ -67,7 +52,7 @@ export function registerFilesHandlers(): void {
         const stats = statSync(originalPath)
         const fileId = `${Date.now()}-${basename(originalPath)}`
         const contentType = MIME_TYPES[extname(originalPath)] || 'application/octet-stream'
-        /* Route through the storage backend so a remote backend (mimo/S3) gets
+        /* Route through the storage backend so a remote backend (minio/S3) gets
          * the bytes too, instead of silently dropping them onto the local FS
          * that the backend would never look at. */
         await getStorageBackend().put(fileId, new Uint8Array(readFileSync(originalPath)), { contentType })

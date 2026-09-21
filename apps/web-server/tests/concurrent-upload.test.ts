@@ -91,11 +91,26 @@ describe.skipIf(!haveBundle)('concurrent uploads', () => {
 
   it('writes every payload to disk with its own bytes', async () => {
     const filesDir = join(dataDir, 'files')
-    const entries = readdirSync(filesDir).filter((n) => !n.startsWith('.'))
-    expect(entries.length).toBeGreaterThanOrEqual(BURST)
+    /* Content-addressed keys live under <yyyy>/<mm>/<dd>/, so the
+     * walk has to be recursive. The same name collisions that motivated
+     * content addressing in the first place (a burst of identical
+     * timestamps) also collapse into one file when bytes match, so
+     * `BURST` distinct payloads may produce fewer entries here. The
+     * set-of-payloads assertion below is what matters. */
+    const collectFiles = (dir: string): string[] => {
+      const out: string[] = []
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) out.push(...collectFiles(full))
+        else if (!entry.name.startsWith('.')) out.push(full)
+      }
+      return out
+    }
+    const entries = collectFiles(filesDir)
+    expect(entries.length).toBeGreaterThan(0)
     const seen = new Set<string>()
-    for (const name of entries) {
-      seen.add(readFileSync(join(filesDir, name), 'utf-8'))
+    for (const full of entries) {
+      seen.add(readFileSync(full, 'utf-8'))
     }
     // Every distinct payload must be present exactly once.
     for (let i = 0; i < BURST; i += 1) {

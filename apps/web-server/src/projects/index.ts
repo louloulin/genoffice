@@ -3,10 +3,11 @@
  * timeline. Persistence is delegated to the shared `state.ts` helpers so
  * the file format matches the legacy single-file implementation exactly.
  */
-import { existsSync, statSync, unlinkSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+/* project:files / project:delete used to call existsSync/statSync/unlinkSync
+ * directly against FILES_DIR; both paths now route through the active
+ * storage backend so they work the same against local FS or MinIO/S3/rustfs. */
+import { basename, extname } from 'node:path'
 import {
-  FILES_DIR,
   FILES_INDEX,
   MIME_TYPES,
   fileIndexStore,
@@ -19,7 +20,7 @@ import {
 import type { FileInfo } from '../common/index'
 import { atomicWriteFile } from '../common/atomic'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
-import { getStorageBackend } from '../common/state'
+import { getStorageBackend, storageKeyFromPath } from '../common/state'
 
 /** Same cap as `web:save-file` — keeps the two channels consistent so the
  *  renderer never silently truncates one file but not the other. */
@@ -119,33 +120,45 @@ export function registerProjectHandlers(): void {
     return project
   })
 
-  registerHandle('project:files', (_event: unknown, args: unknown) => {
+  registerHandle('project:files', async (_event: unknown, args: unknown) => {
     const { projectId } = args as { projectId: string }
     const projects = loadProjects()
     const project = projects.find((p) => p.id === projectId)
     if (!project) return []
 
-    return project.files
-      .map((fileId) => {
-        const filePath = join(FILES_DIR, fileId)
-        if (!existsSync(filePath)) return null
-        const stats = statSync(filePath)
-        const info = FILES_INDEX.get(fileId)
-        /* Prefer the FILES_INDEX row so files uploaded via web:save-file
-         * (id = "<counter>-<ts>-<rand>-<name>") and files:create
-         * (id = "file-<ts>") both show their real name, not a stripped id. */
-        return {
-          id: fileId,
-          name: info?.name ?? displayNameFor(fileId),
-          path: filePath,
-          size: stats.size,
-          mimeType: info?.mimeType ?? (MIME_TYPES[extname(fileId).toLowerCase()] || 'application/octet-stream'),
-          projectId,
-          createdAt: info?.createdAt ?? stats.birthtimeMs,
-          updatedAt: info?.updatedAt ?? stats.mtimeMs,
-        }
+    const backend = getStorageBackend()
+    const backendId = backend.id
+    /* Resolve each file through the active storage backend instead of
+     * reaching into FILES_DIR with `existsSync`/`statSync` — the old
+     * path silently returned `null` for everything that lived in a
+     * remote bucket (MinIO/S3/rustfs), so the project view always
+     * looked empty once the operator switched `GENOFFICE_STORAGE`.
+     * Falling back to `info.modifiedAt` keeps the renderer stable when
+     * a remote backend doesn't track `birthtimeMs`. */
+    const results: FileInfo[] = []
+    for (const fileId of project.files) {
+      const head = await backend.head(fileId)
+      if (!head.exists) continue
+      const info = FILES_INDEX.get(fileId)
+      /* Prefer the FILES_INDEX row so files uploaded via web:save-file
+       * (id = "<counter>-<ts>-<rand>-<name>") and files:create
+       * (id = "file-<ts>") both show their real name, not a stripped id. */
+      /* Render-side code reads `listFiles` as string[] then re-stats via
+       * `home:stat-paths`, so the per-row payload only needs the bare
+       * minimum fields. We do not propagate `projectId` here because
+       * `FileInfo` doesn't carry it; callers that need the project
+       * association keep the `projectId` they already passed in. */
+      results.push({
+        id: fileId,
+        name: info?.name ?? displayNameFor(fileId),
+        path: `storage://${backendId}/${fileId}`,
+        size: Number(head.size),
+        mimeType: info?.mimeType ?? (MIME_TYPES[extname(fileId).toLowerCase()] || 'application/octet-stream'),
+        createdAt: info?.createdAt ?? Date.now(),
+        updatedAt: info?.updatedAt ?? (head.modifiedAt ? Date.parse(head.modifiedAt) : Date.now()),
       })
-      .filter(Boolean) as FileInfo[]
+    }
+    return results
   })
 
   registerHandle('project:rename', (_event: unknown, args: unknown) => {
@@ -161,15 +174,24 @@ export function registerProjectHandlers(): void {
     return { ok: false, error: 'Project not found' }
   })
 
-  registerHandle('project:delete', (_event: unknown, args: unknown) => {
+  registerHandle('project:delete', async (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     const projects = loadProjects()
     const index = projects.findIndex((p) => p.id === id)
     if (index >= 0) {
       const project = projects[index]
+      /* Delete through the active storage backend instead of unlinking
+       * from FILES_DIR — the old path left remote objects behind once
+       * the operator switched `GENOFFICE_STORAGE`, leaking bytes in the
+       * bucket. Tolerate per-file failures so a single missing key
+       * doesn't block the rest of the cascade. */
+      const backend = getStorageBackend()
       for (const fileId of project.files) {
-        const filePath = join(FILES_DIR, fileId)
-        if (existsSync(filePath)) unlinkSync(filePath)
+        try {
+          await backend.delete(fileId)
+        } catch (err) {
+          console.warn('project:delete: backend.delete failed', { fileId, err })
+        }
       }
       projects.splice(index, 1)
       saveProjects(projects)
@@ -184,7 +206,25 @@ export function registerProjectHandlers(): void {
     const target = projects.find((p) => p.id === projectId)
     if (!target) return { ok: false, error: 'Project not found' }
 
-    const fileId = basename(filePath)
+    /* Resolve to a backend key. The caller may send any of:
+     *   1. a full `storage://<backend>/<key>` URI (what project:files
+     *      currently emits),
+     *   2. a managed-path absolute filename (legacy path-based callers),
+     *   3. a bare key (what tests pass for round-trip parity).
+     * `basename()` alone would strip the date prefix from a
+     * content-addressed key and turn a unique id into one that
+     * collides with every other file uploaded the same day. */
+    const resolved = storageKeyFromPath(filePath)
+    let fileId: string
+    if (resolved) {
+      fileId = resolved
+    } else if (!filePath.startsWith('/')) {
+      /* Bare key from `project:upload` callers. */
+      fileId = filePath
+    } else {
+      /* Legacy absolute path. */
+      fileId = basename(filePath)
+    }
     /* The web model stores each file in exactly one project. If the file is
      * currently listed under another project, drop it from there first so
      * the move is symmetric with the Electron `ProjectStore.moveFileToProject`
@@ -292,8 +332,15 @@ export function registerProjectHandlers(): void {
         bytes = Buffer.from(entryBytes)
       } else if (typeof entryBytes === 'string') {
         bytes = Buffer.from(entryBytes, 'utf-8')
-      } else if (entryBytes && typeof (entryBytes as { byteLength?: unknown }).byteLength === 'number') {
-        bytes = Buffer.from(entryBytes as ArrayBufferView)
+      } else if (
+        entryBytes &&
+        typeof (entryBytes as { byteLength?: unknown }).byteLength === 'number' &&
+        (entryBytes as { buffer?: unknown }).buffer instanceof ArrayBuffer
+      ) {
+        /* ArrayBufferView: take a view of its underlying buffer so we keep
+         * the byteOffset/byteLength contract (a view can be a slice). */
+        const view = entryBytes as ArrayBufferView
+        bytes = Buffer.from(view.buffer, view.byteOffset, view.byteLength)
       } else {
         skipped.push({ name: rawName, reason: 'invalid bytes' })
         continue
@@ -307,11 +354,19 @@ export function registerProjectHandlers(): void {
         continue
       }
       const safeName = sanitizeFileName(rawName, 'file')
-      const fileId = fileIndexStore.nextId(safeName)
       const mimeType = typeof entry.mimeType === 'string'
         ? entry.mimeType
         : (MIME_TYPES[extname(safeName).toLowerCase()] || 'application/octet-stream')
-      /* Storage goes through the active backend (local FS by default; mimo
+      /* Content-addressed key: same bytes ⇒ same key, so the storage
+       * backend (MinIO/S3/rustfs included) deduplicates naturally. The
+       * id is now safe to use directly as a bucket object key — no
+       * spaces, no slashes, no unicode. */
+      const fileId = await fileIndexStore.nextKey({
+        bytes,
+        name: safeName,
+        mimeType,
+      })
+      /* Storage goes through the active backend (local FS by default; minio
        * or S3 when GENOFFICE_STORAGE is set). The temp-and-rename kernel
        * lives in the backend so this channel stays storage-agnostic. */
       let stored: { key: string; size: number }

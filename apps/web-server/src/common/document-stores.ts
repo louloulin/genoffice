@@ -27,16 +27,40 @@ import {
   saveProjects,
   saveRecentDocs,
 } from './state'
+import { getStorageBackend } from './state'
 
 export const RECENTS_FILE = join(DATA_DIR, 'recents.json')
 
 /** Restart-safe recents. Debounced, so a burst of saves is one write. */
 export const unifiedRecents = new UnifiedRecents(RECENTS_FILE, { debounceMs: 250 })
 
-export const trash = new Trash(DATA_DIR)
+/** Lazily-initialised Trash that wires the active storage backend.
+ *  Re-evaluated each call so a backend swap at runtime (e.g. an operator
+ *  editing env and restarting) lands on the next request without needing
+ *  to reload the singleton module. */
+let _trash: Trash | null = null
+export function getTrash(): Trash {
+  if (!_trash) _trash = new Trash(DATA_DIR, getStorageBackend())
+  return _trash
+}
+
+/** Back-compat alias. New callers should prefer `getTrash()` so the
+ *  backend is read on each call rather than captured at module load. */
+export const trash = {
+  delete: (key: string) => getTrash().delete(key),
+  list: () => getTrash().list(),
+  restore: (id: string) => getTrash().restore(id),
+  purge: (id: string) => getTrash().purge(id),
+  has: (key: string) => getTrash().has(key),
+  storedKeys: () => getTrash().storedKeys(),
+}
 
 export const saveLocations = new SaveLocations(join(DATA_DIR, 'save-locations.json'))
 
+/** VersionHistory is still local-only in this iteration — the snapshot
+ *  semantics (`<key>.v<n>` siblings) work but the dedupe logic depends on
+ *  listing the snapshot directory, which only the local backend supports
+ *  cheaply. Wire the backend here once that lands. */
 export const versions = new VersionHistory(DATA_DIR)
 
 /** Record `path` in the project's file list, creating the list if needed. */

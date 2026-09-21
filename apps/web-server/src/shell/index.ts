@@ -1,6 +1,6 @@
 /**
  * Shell module entry — wires every shell sub-domain (app info, home,
- * tabs, devices, search, speech, notifications, cloud, offline, charts,
+ * tabs, devices, search, speech, notifications, offline, charts,
  * files, clipboard, windows) into the shared registry.
  */
 import { registerAppInfoHandlers } from './app-info'
@@ -8,7 +8,6 @@ import { registerChartHandlers } from './charts'
 import { ensureLumosSkillsRegistered, ensureSkillDirRegistered, ensureBuiltInSkillsMaterialized, ensureTranslateSuiteMaterialized } from './pi-resources'
 import { registerPiSessionHandlers } from './pi-session'
 import { registerClipboardHandlers } from './clipboard'
-import { registerCloudHandlers } from './cloud'
 import { registerMobileHandlers, registerMultimodalHandlers } from './devices'
 import { registerFileManagementHandlers } from './file-management'
 import { registerFilesHandlers } from './files'
@@ -43,7 +42,6 @@ export function registerShellHandlers(): void {
   registerFilesHandlers()
   registerFileManagementHandlers()
   registerNotificationHandlers()
-  registerCloudHandlers()
   registerOfflineHandlers()
   registerMobileHandlers()
   registerMultimodalHandlers()

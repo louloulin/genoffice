@@ -72,10 +72,45 @@ export class FileIndexStore {
       : parsed && typeof parsed === 'object'
         ? Object.values(parsed as Record<string, unknown>)
         : []
+    /* Resolve the active backend once at load time: rows whose
+     * backendId doesn't match get dropped (with a console warning) so
+     * an operator who switched `GENOFFICE_STORAGE` mid-life doesn't
+     * silently serve dangling `storage://<other-backend>/...` references
+     * that the new backend can't resolve. Rows from older builds that
+     * never recorded `backendId` are kept — the path itself tells us
+     * which backend, when it's `storage://...`; bare absolute paths
+     * are assumed to be the local backend. */
+    let activeBackendId = 'local'
+    let dropMismatched: ((row: { backendId?: string; path?: string }) => boolean) | null = null
+    try {
+      const { getStorageBackend } = require('./state') as typeof import('./state')
+      activeBackendId = getStorageBackend().id
+    } catch {
+      /* unit test path — accept everything. */
+    }
+    dropMismatched = (row): boolean => {
+      const path = row.path ?? ''
+      const recorded = row.backendId
+      if (!recorded) {
+        /* legacy row: infer from path shape. */
+        if (path.startsWith('storage://')) {
+          const declared = path.split('/')[2]
+          return declared === activeBackendId
+        }
+        return true /* absolute paths assumed local — match whatever backend is local */
+      }
+      return recorded === activeBackendId
+    }
     for (const row of rows) {
       if (!row || typeof row !== 'object') continue
       const info = row as Partial<FileInfo>
       if (typeof info.id !== 'string' || typeof info.path !== 'string') continue
+      if (!dropMismatched(info)) {
+        console.warn(
+          `file-index-store: dropping ${info.id} — backend "${info.backendId ?? info.path.split('/')[2] ?? '?'}" != active "${activeBackendId}"`,
+        )
+        continue
+      }
       FILES_INDEX.set(info.id, {
         id: info.id,
         path: info.path,
@@ -84,12 +119,29 @@ export class FileIndexStore {
         mimeType: typeof info.mimeType === 'string' ? info.mimeType : 'application/octet-stream',
         createdAt: typeof info.createdAt === 'number' ? info.createdAt : Date.now(),
         updatedAt: typeof info.updatedAt === 'number' ? info.updatedAt : Date.now(),
+        /* `backendId` is preserved verbatim when present; legacy rows
+         * (written before the field existed) come back undefined so the
+         * existing `rehydrates every field` test stays accurate. */
+        backendId: typeof info.backendId === 'string' ? info.backendId : undefined,
       })
     }
   }
 
-  /** Record an entry and mark the index dirty. */
+  /** Record an entry and mark the index dirty. The active storage
+   *  backend id is captured here (when the import is present) so the
+   *  row survives a backend switch only when the bytes really did land
+   *  in the new backend. */
   set(info: FileInfo): void {
+    try {
+      /* Lazy import to avoid a circular dep: state.ts already imports
+       * file-index-store at boot, so we resolve the backend on demand
+       * rather than passing it through the constructor. */
+      const { getStorageBackend } = require('./state') as typeof import('./state')
+      if (!info.backendId) info.backendId = getStorageBackend().id
+    } catch {
+      /* If state.ts failed to load (e.g. a unit test that fakes
+       * FILES_INDEX without booting the server), leave the field off. */
+    }
     FILES_INDEX.set(info.id, info)
     this.gen += 1
   }
@@ -101,10 +153,24 @@ export class FileIndexStore {
   }
 
   /**
-   * Build an id that cannot collide under a same-millisecond burst:
-   * counter (per-process monotonic) + timestamp (sortable across restarts) +
-   * random suffix (distinct across concurrent servers sharing a DATA_DIR).
+   * Bucket-friendly content-addressed key. Same bytes ⇒ same key, so
+   * the storage backend naturally dedupes across uploads. The `<name>`
+   * argument is only used to derive the file extension; the body hash
+   * dominates so renaming a file can't make its storage path unstable.
+   *
+   * Marked async because the actual hashing lives in
+   * `@genoffice/file-management/storage/key` and the import is wired
+   * lazily to keep this module free of a hard dep at construction time.
    */
+  async nextKey(opts: { bytes: Uint8Array; name: string; mimeType?: string }): Promise<string> {
+    const { keyForFile } = await import('@genoffice/file-management/storage/key')
+    this.counter += 1
+    return keyForFile(opts)
+  }
+
+  /** Legacy synchronous id mint kept for callers that don't have the
+   *  bytes at id-mint time (currently none — every upload path now
+   *  reads the bytes before calling this). */
   nextId(name: string): string {
     this.counter += 1
     return `${this.counter}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${name}`

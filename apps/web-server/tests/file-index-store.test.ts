@@ -99,6 +99,34 @@ describe('fromDiskSync', () => {
     expect(FILES_INDEX.get('x')?.name).toBe('named.txt')
   })
 
+  it('drops rows whose backendId does not match the active backend', () => {
+    /* Simulates the operator switching GENOFFICE_STORAGE from 'minio'
+     * to 'local' between restarts: the row pointing at the old bucket
+     * would silently dangle. The loader drops it instead. */
+    writeFileSync(
+      indexFile,
+      JSON.stringify([
+        { id: 'remote', name: 'remote.txt', path: 'storage://minio/abc', backendId: 'minio' },
+        { id: 'local', name: 'local.txt', path: 'storage://local/abc', backendId: 'local' },
+        { id: 'legacy-absolute', name: 'legacy.txt', path: join(dir, 'files', 'legacy') },
+      ]),
+    )
+    const errors: string[] = []
+    const orig = console.warn
+    console.warn = (...args: unknown[]) => { errors.push(String(args[0])) }
+    try {
+      new FileIndexStore(indexFile).fromDiskSync()
+    } finally {
+      console.warn = orig
+    }
+    /* The mismatched remote row is dropped, the matching local row and
+     * the legacy absolute-path row both survive. */
+    expect(FILES_INDEX.get('remote')).toBeUndefined()
+    expect(FILES_INDEX.get('local')).toBeDefined()
+    expect(FILES_INDEX.get('legacy-absolute')).toBeDefined()
+    expect(errors.some((m) => m.includes('remote'))).toBe(true)
+  })
+
   it('backfills a missing size and mimeType with safe defaults', () => {
     writeFileSync(indexFile, JSON.stringify([{ id: 'x', path: join(dir, 'files', 'x') }]))
     new FileIndexStore(indexFile).fromDiskSync()

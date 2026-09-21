@@ -163,6 +163,12 @@ export interface HomeApi {
   getDefaultSaveDir(): Promise<string>
   /** directory picker to change the default save folder; resolves to the new folder, or null when canceled or the pick was unusable */
   pickDefaultSaveDir(): Promise<string | null>
+  /** User-configured default for opening cloud / external URLs from Home.
+   *  ⌘/Ctrl+click and Shift+click on a Home row still override per-click. */
+  getCloudOpenMode(): Promise<OpenCloudMode>
+  setCloudOpenMode(mode: OpenCloudMode): Promise<void>
+  /** cloud-open-mode changed (broadcast from the main process) */
+  onCloudOpenModeChanged(handler: (mode: OpenCloudMode) => void): () => void
   /** theme switched anywhere (broadcast from the main process) */
   onThemeChanged(handler: (theme: UiTheme) => void): () => void
   /** open the GenTeam community page in the default browser */
@@ -276,21 +282,6 @@ export interface HomeApi {
   cloudProjectsSync(): Promise<CloudProjectsSnapshot | null>
   /** open a cloud project (relative '/agents?id=...' URL) in the default browser */
   openCloudProject(projectUrl: string, options?: OpenCloudProjectOptions): Promise<void>
-
-/**
- * How a cloud / external URL is opened when the user clicks it from Home.
- *  - `tab`: open inside the shell's tab strip (the new tab joins the same
- *    window — the modifier-free default; keeps the user inside the app).
- *  - `window`: open in a fresh standalone BrowserWindow.
- *  - `external`: defer to the system default browser (legacy behaviour,
- *    kept as an escape hatch for sites the embedded view can't render).
- */
-export type OpenCloudMode = 'tab' | 'window' | 'external'
-
-export interface OpenCloudProjectOptions {
-  /** defaults to 'tab' */
-  mode?: OpenCloudMode
-}
   /** AI settings (userData/ai-settings.json, shared by every editor); the genspark key never appears here */
   getAiSettings(): Promise<AiSettings>
   /** persist AI settings; open editors pick the change up on their next settings read */
@@ -420,6 +411,23 @@ export interface OpenCloudProjectOptions {
      */
     dictionaryPath?: string
   }): Promise<TranslateFileResult>
+}
+
+/**
+ * How a cloud / external URL is opened when the user clicks it from Home.
+ *  - `tab`: open inside the shell's tab strip (the new tab joins the same
+ *    window — the modifier-free default; keeps the user inside the app).
+ *  - `window`: open in a fresh standalone BrowserWindow.
+ *  - `external`: defer to the system default browser (legacy behaviour,
+ *    kept as an escape hatch for sites the embedded view can't render).
+ */
+export type OpenCloudMode = 'tab' | 'window' | 'external'
+
+export interface OpenCloudProjectOptions {
+  /** defaults to 'tab' */
+  mode?: OpenCloudMode
+}
+
 /** one capability entry — see home:ai-capabilities */
 export interface AiCapabilityEntry {
   /** true when at least one backend can serve the request right now */
@@ -964,6 +972,8 @@ export const HOME_CHANNELS = {
   setAiPanelPrefs: 'home:set-ai-panel-prefs',
   getDefaultSaveDir: 'home:get-default-save-dir',
   pickDefaultSaveDir: 'home:pick-default-save-dir',
+  getCloudOpenMode: 'home:get-cloud-open-mode',
+  setCloudOpenMode: 'home:set-cloud-open-mode',
   openGenTeam: 'home:open-genteam',
   openCreditUsage: 'home:open-credit-usage',
   openGitHubRepo: 'home:open-github-repo',

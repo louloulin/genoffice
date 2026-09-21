@@ -9,13 +9,13 @@ import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'n
 /** Map a DocInfo record to the RecentEntry shape the home renderer expects,
  *  stat-ing the file for size/mtime. Files that fail to stat are flagged
  *  `missing` instead of being dropped (mirrors the desktop behaviour). */
-function toRecentEntry(d: {
+async function toRecentEntry(d: {
   id: string
   path: string
   name: string
   openedAt?: number
   modified?: boolean
-}): {
+}): Promise<{
   path: string
   name: string
   ext: string
@@ -23,12 +23,43 @@ function toRecentEntry(d: {
   sizeBytes: number
   starred: boolean
   missing?: boolean
-} {
+}> {
   const ext =
     d.path
       .split(/[\\./]/)
       .pop()
       ?.toLowerCase() ?? ''
+  /* Storage-backed URIs (`storage://<backend>/<key>`) go through the
+   * active backend so MinIO/S3/rustfs files surface with the same
+   * shape as a local file. The legacy fs path keeps its previous
+   * behaviour for absolute paths. */
+  const key = storageKeyFromPath(d.path)
+  if (key) {
+    try {
+      const head = await getStorageBackend().head(key)
+      if (head.exists) {
+        return {
+          path: d.path,
+          name: d.name,
+          ext,
+          mtimeMs: head.modifiedAt ? Date.parse(head.modifiedAt) : Date.now(),
+          sizeBytes: Number(head.size),
+          starred: DOCS_STARRED.has(d.path),
+        }
+      }
+    } catch {
+      /* fall through to missing */
+    }
+    return {
+      path: d.path,
+      name: d.name,
+      ext,
+      mtimeMs: d.openedAt ?? 0,
+      sizeBytes: 0,
+      starred: DOCS_STARRED.has(d.path),
+      missing: true,
+    }
+  }
   try {
     if (existsSync(d.path)) {
       const s = statSync(d.path)
@@ -65,6 +96,7 @@ import {
   saveStarredDocs,
 } from '../common/index'
 import { atomicWriteFile } from '../common/atomic'
+import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import {
   forgetRecentDoc,
   mirrorRecentDoc,
@@ -144,7 +176,7 @@ export function registerHomeHandlers(): void {
     language: lang,
   }))
 
-  registerHandle('home:recents', (_event: unknown, args: unknown) => {
+  registerHandle('home:recents', async (_event: unknown, args: unknown) => {
     const {
       offset = 0,
       limit = 50,
@@ -183,7 +215,7 @@ export function registerHomeHandlers(): void {
     /* Newest first, so the union order does not depend on Map insertion. */
     filtered.sort((a, b) => (b.openedAt ?? 0) - (a.openedAt ?? 0))
     const sliced = filtered.slice(offset, offset + limit)
-    const entries = sliced.map((d) => toRecentEntry(d))
+    const entries = await Promise.all(sliced.map((d) => toRecentEntry(d)))
     return {
       entries,
       total: filtered.length,
@@ -191,7 +223,7 @@ export function registerHomeHandlers(): void {
     }
   })
 
-  registerHandle('home:starred', (_event: unknown, args: unknown) => {
+  registerHandle('home:starred', async (_event: unknown, args: unknown) => {
     const {
       offset = 0,
       limit = 50,
@@ -204,7 +236,7 @@ export function registerHomeHandlers(): void {
       .filter((d): d is NonNullable<typeof d> => Boolean(d))
     const filtered = ext ? all.filter((d) => d.path.toLowerCase().endsWith('.' + ext)) : all
     const sliced = filtered.slice(offset, offset + limit)
-    const entries = sliced.map((d) => toRecentEntry(d))
+    const entries = await Promise.all(sliced.map((d) => toRecentEntry(d)))
     return {
       entries,
       total: filtered.length,
@@ -261,7 +293,10 @@ export function registerHomeHandlers(): void {
       // Soft delete: the file moves into `.trash/` with an index entry, so a
       // mis-click is recoverable through home:restore-from-trash. The previous
       // `unlinkSync` destroyed the document outright.
-      if (trash.delete(path)) {
+      /* The Trash backend moved from sync rename to async
+       * (storage.get/put/delete) so remote buckets get the right
+       * semantics. Await before reporting success. */
+      if (await trash.delete(path)) {
         deleted += 1
         /* Drop the path from both the in-session mirror and the restart-safe
          * store, or the home grid keeps offering a row for a file the user
@@ -596,14 +631,42 @@ export function registerHomeHandlers(): void {
   registerHandle('home:open-credit-usage', () => ({ ok: true }))
   registerHandle('home:open-github-repo', () => ({ ok: true }))
 
-  registerHandle('home:stat-paths', (_event: unknown, paths: unknown) => {
-    // Probing an arbitrary path would disclose whether a host file exists and
-    // how big it is; an unmanaged path reports the same shape as a missing one.
-    return (Array.isArray(paths) ? paths : []).map((p) => ({
-      path: p,
-      exists: typeof p === 'string' && isManagedPath(p) && existsSync(p),
-      size: typeof p === 'string' && isManagedPath(p) && existsSync(p) ? statSync(p).size : 0,
-    }))
+  registerHandle('home:stat-paths', async (_event: unknown, paths: unknown) => {
+    /* Probing an arbitrary path would disclose whether a host file exists
+     * and how big it is; an unmanaged path reports the same shape as a
+     * missing one. `storage://<backend>/<key>` URIs go through the
+     * active backend so MinIO/S3/rustfs files surface with the same
+     * shape the local filesystem would. */
+    const list = Array.isArray(paths) ? paths : []
+    const out: Array<{ path: unknown; exists: boolean; size: number }> = []
+    for (const p of list) {
+      if (typeof p !== 'string') {
+        out.push({ path: p, exists: false, size: 0 })
+        continue
+      }
+      if (storageKeyFromPath(p)) {
+        /* Backend-stored URI: head() the key. */
+        try {
+          const head = await getStorageBackend().head(storageKeyFromPath(p)!)
+          out.push({ path: p, exists: head.exists, size: Number(head.size) })
+        } catch {
+          out.push({ path: p, exists: false, size: 0 })
+        }
+        continue
+      }
+      if (isManagedPath(p)) {
+        try {
+          if (existsSync(p)) {
+            out.push({ path: p, exists: true, size: statSync(p).size })
+            continue
+          }
+        } catch {
+          /* fall through */
+        }
+      }
+      out.push({ path: p, exists: false, size: 0 })
+    }
+    return out
   })
 
   registerHandle('home:browse', () => ({ canceled: false, filePaths: [] }))

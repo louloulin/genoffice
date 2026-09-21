@@ -100,20 +100,28 @@ export function registerWebHandlers(): void {
     }
 
     const safeName = sanitizeFileName(name, 'file')
-    const fileId = fileIndexStore.nextId(safeName)
-    const buffer = Buffer.from(bytes)
     const contentType = MIME_TYPES[extname(safeName).toLowerCase()] || 'application/octet-stream'
+    /* Bucket-friendly content-addressed key: same bytes ⇒ same key, so
+     * a second upload of an identical file dedupes naturally. The key
+     * has the form `<yyyy>/<mm>/<dd>/<sha256>.<ext>` and is safe to
+     * drop into any S3-compatible bucket without sanitisation. */
+    const fileId = await fileIndexStore.nextKey({
+      bytes: new Uint8Array(bytes),
+      name: safeName,
+      mimeType: contentType,
+    })
+    const buffer = Buffer.from(bytes)
 
     /* Atomic: a crash mid-upload leaves either no file or the complete one,
      * never a half-written document that looks openable. The storage backend
-     * (local FS by default; mimo/S3 via env) owns the temp-and-rename kernel,
+     * (local FS by default; minio/S3 via env) owns the temp-and-rename kernel,
      * so the web:save-file channel stays backend-agnostic. */
     const stored = await getStorageBackend().put(fileId, new Uint8Array(bytes), { contentType })
 
     /* Index the upload so `files:read({id})` can resolve it — including after
      * a restart, which is what `fileIndexStore.flushNow` below persists. The
      * `path` is a synthetic one — the active backend may store the bytes
-     * somewhere else entirely (mimo/S3). handlers that need the bytes
+     * somewhere else entirely (minio/S3). handlers that need the bytes
      * themselves must go through the backend, not readFileSync. */
     const info: FileInfo = {
       id: fileId,

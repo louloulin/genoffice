@@ -41,7 +41,6 @@ export {
   DOC_COMMENTS,
   TEMPLATES,
   initDefaultTemplates,
-  CLOUD_FILES,
   OFFLINE_QUEUE,
   SEARCH_INDEX,
   USERS,

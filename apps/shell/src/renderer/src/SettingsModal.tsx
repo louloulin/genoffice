@@ -3965,6 +3965,7 @@ export function SettingsModal({
   const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
   const [appVersion, setAppVersion] = useState('')
   const [githubStars, setGithubStars] = useState<number | null>(null)
+  const [cloudOpenMode, setCloudOpenMode] = useState<'tab' | 'window' | 'external'>('tab')
 
   useEffect(() => {
     let alive = true
@@ -3991,6 +3992,9 @@ export function SettingsModal({
     })
     void window.aiOffice.githubStars?.().then((n) => {
       if (alive && n !== null) setGithubStars(n)
+    })
+    void window.aiOffice.getCloudOpenMode?.().then((m) => {
+      if (alive) setCloudOpenMode(m)
     })
     return () => {
       alive = false
@@ -4245,6 +4249,29 @@ export function SettingsModal({
                         })
                         .catch(() => {})
                         .finally(() => setAnalyticsSaving(false))
+                    }}
+                  />
+                </div>
+                <div className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <div className="set-field-label">{t('setCloudOpenMode')}</div>
+                      <div className="set-field-desc">{t('setCloudOpenModeDesc')}</div>
+                    </div>
+                  </div>
+                  <Dropdown
+                    className="set-dd"
+                    value={cloudOpenMode}
+                    ariaLabel={t('setCloudOpenMode')}
+                    options={[
+                      { value: 'tab', label: t('setCloudOpenModeTab') },
+                      { value: 'window', label: t('setCloudOpenModeWindow') },
+                      { value: 'external', label: t('setCloudOpenModeExternal') },
+                    ]}
+                    onPick={(v) => {
+                      const next = v as 'tab' | 'window' | 'external'
+                      setCloudOpenMode(next)
+                      void window.aiOffice.setCloudOpenMode?.(next).catch(() => {})
                     }}
                   />
                 </div>

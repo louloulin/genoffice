@@ -17,10 +17,11 @@ export { atomicWriteFile, atomicWriteJson } from './atomic'
 export {
   createStorageBackend,
   LocalStorageBackend,
-  MimoStorageBackend,
+
   S3StorageBackend,
   StorageNotFoundError,
 } from './storage/factory'
+export { keyForFile } from './storage/key'
 export type {
   HeadResult,
   ListEntry,

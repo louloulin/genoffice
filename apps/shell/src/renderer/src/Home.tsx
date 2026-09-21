@@ -799,6 +799,8 @@ function CloudProjectsView() {
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
   const [revealed, setRevealed] = useState(CLOUD_REVEAL_STEP)
   const sortRef = useRef<HTMLDivElement>(null)
+  // User-configured default for plain clicks; modifier keys still override per-click
+  const [defaultOpenMode, setDefaultOpenMode] = useState<'tab' | 'window' | 'external'>('tab')
 
   // the local store paints instantly; a background sync replaces it when done.
   // a failed sync keeps whatever is shown; with nothing shown the
@@ -824,6 +826,16 @@ function CloudProjectsView() {
     startSyncRef.current()
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  // Settings → cloudOpenMode: load once, then follow broadcasts so the user's
+  // Settings change reflects without reloading the home view
+  useEffect(() => {
+    void window.aiOffice.getCloudOpenMode?.().then((m) => setDefaultOpenMode(m))
+    const off = window.aiOffice.onCloudOpenModeChanged?.((m) => setDefaultOpenMode(m))
+    return () => {
+      off?.()
     }
   }, [])
 
@@ -890,7 +902,7 @@ function CloudProjectsView() {
             onClick={(event) => {
               if (event.shiftKey) openProject(proj.projectUrl, 'external')
               else if (event.metaKey || event.ctrlKey) openProject(proj.projectUrl, 'window')
-              else openProject(proj.projectUrl, 'tab')
+              else openProject(proj.projectUrl, defaultOpenMode)
             }}
           >
             <FileBadge ext={CLOUD_KIND_EXT[proj.kind] ?? ''} size={24} />
@@ -1695,21 +1707,39 @@ export function Home() {
       window.alert('当前环境不支持纯上传，请使用「打开本地文件」按钮')
       return
     }
+    /* Resolve the target project BEFORE picking files so a Home-page user
+     * (no project selected) lands in the default project on the first
+     * upload. Picking first and resolving after would still hit the same
+     * fallback on the server, but the UI would never switch to the project
+     * view and the user would only see the row appear in "Recent" — the
+     * exact bug the upload FAB was rebuilt to fix. */
+    const targetProject =
+      (selectedProjectId && projects.find((p) => p.id === selectedProjectId)) ||
+      projects.find((p) => p.isDefault) ||
+      projects[0] ||
+      null
+    const targetProjectId = targetProject?.id ?? null
     const picked = await picker(undefined, true)
     if (!picked || picked.length === 0) return
     setUploadStatus(`正在上传 ${picked.length} 个文件…`)
     try {
       const result = await api.uploadFiles({
-        projectId: selectedProjectId,
+        projectId: targetProjectId,
         files: picked.map((f) => ({ name: f.name, bytes: f.bytes })),
       })
       setUploadStatus(null)
+      /* Reflect the actual landing project (the server may have rebounded to a
+       * different default) in both the selector state and the visible view. */
+      const landedId = result.projectId || targetProjectId
+      if (landedId && landedId !== selectedProjectId) setSelectedProjectId(landedId)
       const ok = result.uploaded.length
       const fail = result.skipped.length
+      const landedName =
+        projects.find((p) => p.id === landedId)?.name ?? t('defaultProject')
       if (ok > 0 && fail === 0) {
-        window.alert(`已上传 ${ok} 个文件到项目`)
+        window.alert(`已上传 ${ok} 个文件到「${landedName}」`)
       } else if (ok > 0 && fail > 0) {
-        window.alert(`已上传 ${ok} 个文件，${fail} 个失败：\n` + result.skipped.map((s) => `${s.name}: ${s.reason}`).join('\n'))
+        window.alert(`已上传 ${ok} 个文件到「${landedName}」，${fail} 个失败：\n` + result.skipped.map((s) => `${s.name}: ${s.reason}`).join('\n'))
       } else {
         window.alert(`上传失败：\n` + result.skipped.map((s) => `${s.name}: ${s.reason}`).join('\n'))
       }
@@ -2499,8 +2529,8 @@ export function Home() {
         type="button"
         className="home-upload-fab"
         onClick={() => void handleUpload()}
-        data-tip={OPEN_LOCAL_EXTENSIONS}
-        aria-label={t('openLocal')}
+        data-tip={t('uploadHint')}
+        aria-label={t('uploadFile')}
         disabled={Boolean(uploadStatus)}
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -2519,7 +2549,7 @@ export function Home() {
             strokeLinejoin="round"
           />
         </svg>
-        <span className="home-upload-fab-label">{uploadStatus ?? t('openLocal')}</span>
+        <span className="home-upload-fab-label">{uploadStatus ?? t('uploadFile')}</span>
       </button>
 
       <DropToOpenOverlay />
