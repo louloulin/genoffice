@@ -104,12 +104,51 @@ export default defineConfig({
     // zh-CN localized sidebar — maps to /zh/* VitePress locale routes.
     sidebarZH: {
       '/zh/guide/': [
-        { text: 'Getting Started', items: [
-          { text: 'Installation', link: '/zh/guide/installation' },
-          { text: 'Quick Start — Web', link: '/zh/guide/quick-start-web' },
-          { text: 'Quick Start — Embed', link: '/zh/guide/quick-start-embed' },
-          { text: 'Quick Start — SDK', link: '/zh/guide/quick-start-sdk' },
-          { text: 'Getting Started', link: '/zh/guide/getting-started' },
+        { text: '快速上手', items: [
+          { text: '安装', link: '/zh/guide/installation' },
+          { text: '快速上手 — Web', link: '/zh/guide/quick-start-web' },
+          { text: '快速上手 — 嵌入', link: '/zh/guide/quick-start-embed' },
+          { text: '快速上手 — SDK', link: '/zh/guide/quick-start-sdk' },
+          { text: '快速开始', link: '/zh/guide/getting-started' },
+        ] },
+        { text: '部署', items: [
+          { text: 'Docker', link: '/zh/guide/deployment-docker' },
+          { text: 'Kubernetes', link: '/zh/guide/deployment-kubernetes' },
+        ] },
+        { text: '运维', items: [
+          { text: '安全最佳实践', link: '/zh/guide/security-best-practices' },
+        ] },
+      ],
+      '/zh/api/': [
+        { text: '公开 API', items: [
+          { text: 'REST API v1', link: '/zh/api/rest-api' },
+          { text: 'JavaScript SDK', link: '/zh/api/sdk-typescript' },
+          { text: 'postMessage 协议', link: '/zh/api/postmessage-protocol' },
+          { text: '市场', link: '/zh/api/marketplace' },
+        ] },
+        { text: '扩展性', items: [
+          { text: 'Provider 插件', link: '/zh/api/provider-plugins' },
+          { text: 'AI & Skills 协议', link: '/zh/api/ai-skills-protocol' },
+          { text: 'Agent 协议 v1', link: '/zh/api/agent-protocol' },
+          { text: 'KB / TM 格式', link: '/zh/api/kb-tm-format' },
+        ] },
+        { text: '参考', items: [
+          { text: 'IPC 通道 (514)', link: '/zh/api/ipc-channels' },
+        ] },
+      ],
+      '/zh/skills/': [
+        { text: 'Skills', items: [
+          { text: '官方 Skills', link: '/zh/skills/official' },
+          { text: '社区 Skills', link: '/zh/skills/community' },
+          { text: '编写指南', link: '/zh/skills/authoring' },
+        ] },
+      ],
+      '/zh/about/': [
+        { text: '关于', items: [
+          { text: '架构', link: '/zh/about/architecture' },
+          { text: '路线图', link: '/zh/about/roadmap' },
+          { text: '治理', link: '/zh/about/governance' },
+          { text: '常见问题', link: '/zh/about/faq' },
         ] },
       ],
     },

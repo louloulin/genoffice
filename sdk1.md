@@ -766,7 +766,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | API 参考 9 篇 | ✅ | rest-api / sdk-typescript / postmessage-protocol / ipc-channels / ai-skills-protocol / kb-tm-format / provider-plugins / marketplace / agent-protocol |
 | Skills 文档 3 篇 | ✅ | official / authoring / community |
 | typedoc 实际执行 | ✅ | 199 个 MD 文件本地跑通，sidebar 链接 + .gitignore + JSDoc 全部就绪 |
-| 双语（中英）全覆盖 | 🟡 | SDK README 双语完成；`docs/zh/guide/{installation,getting-started}.md` 上线；VitePress `sidebarZH` 已配；其余 API / Skills / About 仍是 EN |
+| 双语（中英）全覆盖 | ✅ | SDK README + 18 篇 Guide/API/Skills/About 全部双语；VitePress `sidebarZH` 已覆盖 Guide / API / Skills / About 四大分区 |
 
 ### A.5 已知未做（更新于本轮实施后）
 
@@ -801,9 +801,17 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - 统一所有 skill 的 `export { pkg, skill }` 模式（避免与已有 `export function` 同名重复导出）
    - 候选（未做但可选）：`slide-deck`（整套大纲生成）/ `ocr` / `web-search`，11 standalone 已超目标
 
-#### ✅ 本轮再次新增解决（双语文档 + RFC）
+#### ✅ 本轮再次新增解决（双语文档 + RFC + 完整 zh-CN 站点）
 
-6. **双语文档（首批双语上线）**：
+6. **双语文档（首批双语上线 → 全站双语）**：
+   - 首轮（commit `f5bbc79`）：`apps/sdk/README.zh-CN.md` + `docs/zh/guide/{installation,getting-started}.md`
+   - 本轮扩展到 18 篇双语文档：
+     - `docs/zh/guide/` — quick-start-web · quick-start-embed · quick-start-sdk · deployment-docker · deployment-kubernetes · security-best-practices（6 篇）
+     - `docs/zh/api/` — rest-api · sdk-typescript · postmessage-protocol · marketplace · provider-plugins · ai-skills-protocol · agent-protocol · kb-tm-format · ipc-channels（9 篇）
+     - `docs/zh/skills/` — official · authoring · community（3 篇）
+     - `docs/zh/about/` — architecture · roadmap · governance · faq（4 篇）
+   - VitePress `docs/.vitepress/config.ts` `sidebarZH` 现已覆盖 Guide / API / Skills / About 四大分区，每个分区都映射到 `/zh/*` 路由
+   - A.4 "双语全覆盖" 从 ⬜ → 🟡 → ✅
    - `apps/sdk/README.zh-CN.md` — `@genoffice/web-sdk` 中文 README（112 行，与 EN 一一对应）
    - `docs/zh/guide/installation.md` — 中文安装文档
    - `docs/zh/guide/getting-started.md` — 中文快速开始
