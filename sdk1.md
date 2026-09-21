@@ -745,7 +745,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | `@genoffice/skill-text-translate-pairs` | ✅ | 5 测试 |
 | `@genoffice/skill-json-validate` | ✅ | 6 测试 |
 | `@genoffice/skill-yaml-to-json` | ✅ | 5 测试 |
-| `streamForProvider` 走 `getDefaultProviderRegistry` | ⬜ | **关键未做**：legacy `getProviderAdapter` 仍是 fixed-list；插件注册后 chat 路径看不见 |
+| `streamForProvider` / `chatForProvider` 走 `getDefaultProviderRegistry` | ✅ | `packages/ai-provider/src/stream.ts` + `chat.ts` plugin-fallback 已实现；6 个 `plugin-routing.test.ts` + 2 个 `plugin-e2e.test.ts` 端到端测试 |
 
 ### A.3 Tier 3 — 社区实施状态
 
@@ -769,7 +769,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | zh-CN locale | ✅ | nav + sidebar 已配 |
 | Guide 目录 8 篇 | ✅ | getting-started / installation / quick-start-{web,embed,sdk} / deployment-{docker,kubernetes} / security-best-practices |
 | API 参考 9 篇 | ✅ | rest-api / sdk-typescript / postmessage-protocol / ipc-channels / ai-skills-protocol / kb-tm-format / provider-plugins / marketplace / agent-protocol |
-| Skills 文档 3 篇 | ✅ | official / authoring / community |
+| Skills 文档 14 篇 | ✅ | official / marketplace / authoring / community + 11 个 per-skill 详解页（EN + ZH）|
 | typedoc 实际执行 | ✅ | 199 个 MD 文件本地跑通，sidebar 链接 + .gitignore + JSDoc 全部就绪 |
 | 双语（中英）全覆盖 | ✅ | SDK README + 18 篇 Guide/API/Skills/About 全部双语；VitePress `sidebarZH` 已覆盖 Guide / API / Skills / About 四大分区 |
 
