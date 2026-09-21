@@ -1387,7 +1387,7 @@ npm notice total files: 8
 | § | 项 | 状态 | 备注 |
 |---|---|---|---|
 | §11.3 P1 | agent-runtime / agent-session npm 公开 | ✅ | §11.13 |
-| §11.3 P1（未列）| agent-runtime / agent-session 文档站 / typedoc | ⬜ | 暂未生成 per-package 详解页；后续可加 `docs/api/packages/agent-runtime.md` |
+| §11.3 P1（未列）| agent-runtime / agent-session 文档站 / typedoc | ✅ | `docs/api/agent-{runtime,session}.md` + ZH 译本 + VitePress sidebar `Packages` 段（§11.14）|
 | §A.3 | Discord 服务器 / Office Hours | ⬜ | 外部服务，沙箱不可达 |
 | §B.1 | 协作（CRDT/OT）+ 移动端 H5 | ⬜ | M4（Week 16）|
 | §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
@@ -1398,6 +1398,68 @@ npm notice total files: 8
 M1 (2026-Q4):       P0 全部完成（Slides 真保存 + LRU + agent-runtime 拆分）  ← ✅ 本轮收口
 M2 (2026-Q4):       M4 启动 — CRDT 协作 + 移动端 H5
 ```
+
+
+### 11.14 本轮续作（v2 第 8 轮 commit，2026-09-22）
+
+把 §11.13 #3 的"per-package 文档页"也收口了。`@genoffice/agent-runtime` 和 `@genoffice/agent-session` 已经可以 npm 公开，但文档站上没有任何入口——集成的用户读不到接口约定、兼容性矩阵、React 绑定示例。本轮补齐 EN + ZH 两个版本，并接入 VitePress sidebar 的 `Packages` 段。
+
+#### 11.14.1 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `docs/api/agent-runtime.md` | 新增 · 178 行（EN）| +178 |
+| `docs/api/agent-session.md` | 新增 · 149 行（EN）| +149 |
+| `docs/zh/api/agent-runtime.md` | 新增 · 176 行（ZH 译本）| +176 |
+| `docs/zh/api/agent-session.md` | 新增 · 144 行（ZH 译本）| +144 |
+| `docs/.vitepress/config.ts` | sidebar `/api/` 与 `/zh/api/` 在 `Extensibility` 之后新增 `Packages` 段，含 2 条链接 | +6 |
+
+#### 11.14.2 文档覆盖
+
+每页统一模板：
+
+1. **标题** — 包名 + npm 链接 + tarball 体积
+2. **适用场景** — 何时用 / 何时改用相邻包（如 agent-runtime ↔ agent-session 互引）
+3. **公开接口** — `index.ts` 的 export 列表（运行时 + 类型）
+4. **核心函数签名** — `createOfficeSession` / `createElectronSessionBackend` / `createWebSessionBackend`，含 `OfficeSessionOptions` / `ElectronSessionBackendOptions` / `WebSessionBackendOptions` 三张字段表
+5. **React 绑定 / JSONL 工具** — 适用哪个包就展示哪个（agent-runtime 有 React hooks；agent-session 有 fromJsonl/toJsonl）
+6. **安装命令** + 双 target（`./sqlite` Node-only、`./indexeddb` browser-only）说明
+7. **兼容性矩阵** — Node / Electron / Browser / Bun 四列，标记 ✅ / ❌
+8. **测试覆盖** — 文件数 / 测试数 / 列表（`2 files / 30 tests`）
+9. **相关** — 互链 + 上游 `@earendil-works/pi-coding-agent` 链接
+
+#### 11.14.3 VitePress sidebar 接入
+
+```ts
+// docs/.vitepress/config.ts (节选)
+'/api/': [
+  { text: 'Public API', items: [/* ... */] },
+  { text: 'Extensibility', items: [/* ... */] },
+  { text: 'Packages', items: [       // ← 新增段
+    { text: '@genoffice/agent-runtime', link: '/api/agent-runtime' },
+    { text: '@genoffice/agent-session', link: '/api/agent-session' },
+  ] },
+  { text: 'Reference', items: [/* ... */] },
+],
+```
+
+`/zh/api/` 同样在 `扩展性` 段后插入 `包` 段，链路一一对应。
+
+#### 11.14.4 验证
+
+- 4 个新 markdown 文件均以 H1 开头、行数 > 50
+- 所有内部链接（`./agent-session.md` / `../api/provider-plugins.md` 等）目标文件存在
+- sidebar 配置在 EN/ZH 两侧分别含 4 条新条目（agent-runtime × 2 locale + agent-session × 2 locale）
+- `vitepress build docs` 中 `docs/api/_generated/`（gitignored）有预存的 typedoc 输出错误，与本轮新增页面无关
+
+#### 11.14.5 §11.13 剩余 → §11.14 后
+
+| § | 项 | 状态 | 备注 |
+|---|---|---|---|
+| §11.13 #3 | agent-runtime / agent-session 文档站 / typedoc | ✅ | §11.14 |
+| §A.3 | Discord 服务器 / Office Hours | ⬜ | 外部服务，沙箱不可达 |
+| §B.1 | 协作（CRDT/OT）+ 移动端 H5 | ⬜ | M4（Week 16）|
+| §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
 
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）

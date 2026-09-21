@@ -77,6 +77,10 @@ export default defineConfig({
           { text: 'Agent Protocol v1', link: '/api/agent-protocol' },
           { text: 'KB / TM Format', link: '/api/kb-tm-format' },
         ] },
+        { text: 'Packages', items: [
+          { text: '@genoffice/agent-runtime', link: '/api/agent-runtime' },
+          { text: '@genoffice/agent-session', link: '/api/agent-session' },
+        ] },
         { text: 'Reference', items: [
           { text: 'IPC Channels (514)', link: '/api/ipc-channels' },
           { text: 'IPC Channels (auto)', link: '/api/ipc-channels-auto' },
@@ -151,6 +155,10 @@ export default defineConfig({
           { text: 'AI & Skills 协议', link: '/zh/api/ai-skills-protocol' },
           { text: 'Agent 协议 v1', link: '/zh/api/agent-protocol' },
           { text: 'KB / TM 格式', link: '/zh/api/kb-tm-format' },
+        ] },
+        { text: '包', items: [
+          { text: '@genoffice/agent-runtime', link: '/zh/api/agent-runtime' },
+          { text: '@genoffice/agent-session', link: '/zh/api/agent-session' },
         ] },
         { text: '参考', items: [
           { text: 'IPC 通道 (514)', link: '/zh/api/ipc-channels' },
