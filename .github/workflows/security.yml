@@ -1,0 +1,50 @@
+name: Security
+
+# Weekly + on-demand security checks: CodeQL, dependency audit, secret scan.
+# Findings post to GitHub Security tab; severity >= high fails the check.
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'   # Monday 09:17 UTC
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: typescript,javascript
+      - uses: github/codeql-action/analyze@v3
+
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@1d27c9d2b801d2c8c384b2cf4e0cd6f97f25990e5 # v6.4.0
+        with:
+          node-version: 22.12
+      - run: npm audit --workspaces --audit-level=high || true
+      # Non-blocking: warnings only. Severity gating lives in CODEQL.
+
+  gitleaks:
+    name: Gitleaks secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

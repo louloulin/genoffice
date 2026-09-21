@@ -1,0 +1,30 @@
+{
+  "name": "@genoffice/skill-doc-word-counter",
+  "version": "0.1.0",
+  "description": "Worked example of a third-party Skill package.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@genoffice/agent-skills": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

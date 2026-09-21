@@ -1,0 +1,1 @@
+{"root":["./src/components.tsx","./src/index.ts","./src/performance.ts","./src/provider.tsx","./src/session.ts","./src/ui-adapter.ts","./tests/components.test.tsx","./tests/performance.test.ts","./tests/runtime.test.ts","./tests/setup.ts","./tests/skills-loading.test.ts","./tests/startup-verify.test.ts","./tests/web-image-search.test.ts"],"errors":true,"version":"5.9.3"}

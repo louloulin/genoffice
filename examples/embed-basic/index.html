@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GenOffice Embed — Basic Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; max-width: 960px; }
+    h1 { margin: 0 0 16px; }
+    .form { display: grid; grid-template-columns: 120px 1fr; gap: 8px; margin-bottom: 16px; align-items: center; }
+    input, select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; }
+    button { padding: 8px 16px; border: 0; border-radius: 6px; background: #2d6cdf; color: #fff; cursor: pointer; }
+    button:disabled { background: #999; cursor: not-allowed; }
+    .frame-wrap { height: 600px; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+    iframe { width: 100%; height: 100%; border: 0; }
+    .log { margin-top: 16px; padding: 12px; background: #f5f5f5; border-radius: 6px; font-family: ui-monospace, monospace; font-size: 12px; max-height: 200px; overflow: auto; }
+    .log p { margin: 0 0 4px; }
+    .row-span { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+  <h1>GenOffice Embed — Basic Demo</h1>
+  <p>Paste a JWT minted by <code>POST /api/v1/auth/jwt</code>, then click <b>Mount</b>.</p>
+
+  <div class="form">
+    <label>JWT</label>
+    <input id="jwt" type="text" placeholder="eyJ…">
+    <label>Document ID</label>
+    <input id="docId" type="text" value="doc_demo" placeholder="doc_abc123">
+    <label>App</label>
+    <select id="app">
+      <option value="docs">docs</option>
+      <option value="sheets">sheets</option>
+      <option value="slides">slides</option>
+      <option value="pdf">pdf</option>
+      <option value="markdown">markdown</option>
+      <option value="html">html</option>
+    </select>
+    <label>Theme</label>
+    <select id="theme">
+      <option value="auto">auto</option>
+      <option value="light">light</option>
+      <option value="dark">dark</option>
+    </select>
+    <label>Toolbar</label>
+    <select id="toolbar">
+      <option value="full">full</option>
+      <option value="minimal">minimal</option>
+      <option value="none">none</option>
+    </select>
+    <label></label>
+    <button id="mount">Mount editor</button>
+  </div>
+
+  <div class="frame-wrap" id="frame-wrap"></div>
+
+  <div class="log" id="log" aria-live="polite"></div>
+
+  <!-- The SDK ships as UMD; window.GenOffice is the public surface. -->
+  <script src="../../apps/sdk/dist/index.umd.js"></script>
+  <script>
+    const log = document.getElementById('log')
+    function appendLog(msg) {
+      const p = document.createElement('p')
+      p.textContent = `${new Date().toISOString().slice(11, 19)}  ${msg}`
+      log.prepend(p)
+    }
+
+    let editor = null
+    document.getElementById('mount').addEventListener('click', () => {
+      const jwt = document.getElementById('jwt').value.trim()
+      const docId = document.getElementById('docId').value.trim()
+      const app = document.getElementById('app').value
+      const theme = document.getElementById('theme').value
+      const toolbar = document.getElementById('toolbar').value
+      if (!jwt || !docId) {
+        appendLog('!! JWT and documentId are required')
+        return
+      }
+      if (editor) editor.destroy()
+      document.getElementById('frame-wrap').innerHTML = ''
+      editor = GenOffice.createEditor({
+        host: window.location.origin,
+        documentId: docId,
+        app,
+        jwt,
+        theme,
+        toolbar,
+        container: '#frame-wrap',
+        onError: (err) => appendLog(`!! error ${err.code}: ${err.message}`),
+      })
+      editor.on('ready', () => appendLog(`✓ ready (${app})`))
+      editor.on('saved', (e) => appendLog(`✓ saved v${e.version}`))
+      editor.on('dirtyChanged', (e) => appendLog(`· dirty=${e.dirty}`))
+      editor.on('error', (e) => appendLog(`!! error ${e.code}: ${e.message}`))
+      editor.on('closed', () => appendLog('· closed'))
+    })
+  </script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GenOffice Embed — No-SDK Example</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; }
+    .frame-wrap { height: 600px; border: 1px solid #ddd; }
+    iframe { width: 100%; height: 100%; border: 0; }
+    .log { font-family: ui-monospace, monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>GenOffice Embed — No SDK</h1>
+  <p>Same integration shape, hand-rolled iframe + postMessage.</p>
+
+  <div class="frame-wrap" id="frame-wrap"></div>
+  <pre class="log" id="log"></pre>
+
+  <script>
+    const log = document.getElementById('log')
+
+    // In a real app these come from your backend:
+    const jwt = new URLSearchParams(location.search).get('token') || prompt('JWT?')
+    const docId = new URLSearchParams(location.search).get('doc') || 'doc_demo'
+    const app = new URLSearchParams(location.search).get('app') || 'docs'
+
+    function appendLog(line) {
+      log.textContent += `${new Date().toISOString().slice(11, 19)}  ${line}\n`
+    }
+
+    // Build the embed URL manually (the SDK's buildEmbedUrl does this).
+    const url = new URL(`/embed/${encodeURIComponent(docId)}`, location.origin)
+    url.searchParams.set('token', jwt)
+    url.searchParams.set('app', app)
+    url.searchParams.set('theme', 'auto')
+    url.searchParams.set('lang', 'zh-CN')
+    url.searchParams.set('toolbar', 'full')
+
+    const iframe = document.createElement('iframe')
+    iframe.src = url.toString()
+    iframe.allow = 'clipboard-read; clipboard-write'
+    document.getElementById('frame-wrap').appendChild(iframe)
+
+    // Listen for events from the iframe. Validate the envelope version
+    // and origin before trusting the payload — see apps/sdk/src/envelope.ts.
+    window.addEventListener('message', (event) => {
+      if (event.source !== iframe.contentWindow) return
+      const data = event.data
+      if (!data || data.v !== '1.0') return
+      if (data.kind === 'event') {
+        const { name, payload } = data.payload || {}
+        appendLog(`event: ${name} ${JSON.stringify(payload)}`)
+      }
+    })
+
+    appendLog(`mounted iframe → ${url}`)
+  </script>
+</body>
+</html>

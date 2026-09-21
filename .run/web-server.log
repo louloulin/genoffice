@@ -1,0 +1,29 @@
+[shell] materialised 0 built-in skills (15 already on disk)
+[shell] lumos skill wrappers: 0 new, 62 cached
+
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   GenOffice Web Server v0.8.0 (Enhanced)                ║
+║                                                           ║
+    URL: http://0.0.0.0:18080
+║   📁 Mode: Standalone (No Electron)                        ║
+║                                                           ║
+║   Apps: docs, sheets, slides, pdf...
+║   📁 Static root: /Users/louloulin/appx/genoffice/apps                    ║
+║                                                           ║
+║   📊 Channels: 501                         ║
+║   🔗 Features: AI, Collab, Files, Projects, AnyDoc        ║
+║                                                           ║
+║   Endpoints:                                              ║
+║   • GET  /health              Health check                 ║
+║   • GET  /api/channels       List channels                ║
+║   • POST /api/ai/stream       Agent Loop SSE               ║
+║   • GET  /api/collab/sessions Collaboration status        ║
+║   • POST /api/ipc/:channel   IPC invoke                  ║
+║   • GET  /api/ipc/events     SSE events                  ║
+║                                                           ║
+║   Agent Core Integration:                                 ║
+║   ✅ createHttpTransport()  - HTTP Transport for AgentLoop ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+

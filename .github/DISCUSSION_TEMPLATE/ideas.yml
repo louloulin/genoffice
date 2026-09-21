@@ -1,0 +1,48 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an idea! A few things to keep in mind:
+        - Search the existing discussions first to avoid duplicates.
+        - Frame the idea as a user problem, not a solution.
+        - Be specific about the editor or surface (docs / sheets / API / SDK / …).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve?
+      placeholder: |
+        When I try to …
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Sketch of a possible solution.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What other approaches did you consider?
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Docs
+        - Sheets
+        - Slides
+        - PDF
+        - Markdown
+        - HTML
+        - SDK / Embed / REST API
+        - AI / Skills
+        - Infrastructure / build / CI
+        - Other
+    validations:
+      required: true

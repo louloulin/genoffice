@@ -1,0 +1,55 @@
+# Dependabot configuration — runs weekly.
+# Keeps npm dependencies and GitHub Actions versions up to date.
+
+version: 2
+updates:
+  # ── npm (root + every workspace) ──
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    # Group patch + minor updates so PR volume stays sane.
+    groups:
+      patch-and-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    # Skip majors for non-public packages — those need a manual review.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # ── GitHub Actions ──
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # ── Docker ──
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "docker"
+      include: "scope"

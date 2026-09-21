@@ -1,0 +1,111 @@
+name: Release
+
+# Tags trigger npm + Docker publish.
+# - v*  tags:  publish to npm + push docker images (genoffice/web-server, genoffice/shell)
+# - M0/M1/M2 tags: publish v0.1.0-beta, etc.
+#
+# Pipeline:
+#   1. build everything (build:all)
+#   2. typecheck + test gates
+#   3. tag-derived version numbers propagate into package.json via `npm version`
+#   4. publish to npm (idempotent: --access public)
+#   5. build + push docker images
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.1.0-beta)'
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write  # for npm provenance
+
+jobs:
+  publish-npm:
+    name: Publish npm packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - @genoffice/web-sdk
+          - @genoffice/ai-provider
+          - @genoffice/docx-engine
+          - @genoffice/pptx-engine
+          - @genoffice/xlsx-gateway
+          - @genoffice/file-parse
+          - @genoffice/file-management
+          - @genoffice/agent-core
+          - @genoffice/translation-core
+          - @genoffice/ipc-bridge
+          - @genoffice/i18n
+          - @genoffice/ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@1d27c9d2b801d2c8c384b2cf4e0cd6f97f25990e5 # v6.4.0
+        with:
+          node-version: 22.12
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build:all --workspaces --if-present
+
+      - name: Typecheck
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Test
+        run: npm test --workspaces --if-present -- --reporter=dot
+
+      - name: Publish
+        run: npm publish --workspace=${{ matrix.package }} --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-docker:
+    name: Publish Docker images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: publish-npm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push web-server
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/web-server
+          file: apps/web-server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            genoffice/web-server:${{ github.ref_name }}
+            genoffice/web-server:latest
+          provenance: true
+          sbom: true
