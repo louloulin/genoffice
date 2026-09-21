@@ -716,7 +716,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | `@genoffice/web-sdk` 包骨架 | ✅ | npm publish --dry-run 通过，tarball ≈ 17.2 kB |
 | Webhook 事件触发 | ✅ | 已接入 7 个 save 路径（docs / slides / markdown / html / pdf / sheets / workbook）通过 `notifyFileSaved()` |
 | 浏览器 / Node 兼容性矩阵文档 | ✅ | `docs/guide/installation.md` |
-| 双语 SDK README（zh-CN / en-US）| 🟡 | 仅 EN，需要翻译 |
+| 双语 SDK README（zh-CN / en-US）| ✅ | `apps/sdk/README.md` (EN) + `apps/sdk/README.zh-CN.md` (ZH) |
 
 ### A.2 Tier 2 — AI 生态实施状态
 
@@ -753,7 +753,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | `Dockerfile`（多阶段 Node 22，非 root，/healthcheck）| ✅ | 沙箱内 DNS 受限未跑 build；CI 会执行 |
 | `.dockerignore` | ✅ | |
 | `examples/`（5 个 example 目录）| ✅ | embed-basic / embed-react / embed-vue / custom-provider / custom-skill 都已落地 |
-| RFC 模板 + `docs/rfcs/accepted/` | ⬜ | 待补 |
+| RFC 模板 + `docs/rfcs/accepted/` | ✅ | `docs/rfcs/{README,0000-template,0001-open-plan}.md` + `accepted/0001-open-plan.md` |
 | 月度 Office Hours / Discord 服务器 | ⬜ | 计划中 |
 
 ### A.4 文档站实施状态
@@ -766,7 +766,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | API 参考 9 篇 | ✅ | rest-api / sdk-typescript / postmessage-protocol / ipc-channels / ai-skills-protocol / kb-tm-format / provider-plugins / marketplace / agent-protocol |
 | Skills 文档 3 篇 | ✅ | official / authoring / community |
 | typedoc 实际执行 | ✅ | 199 个 MD 文件本地跑通，sidebar 链接 + .gitignore + JSDoc 全部就绪 |
-| 双语（中英）全覆盖 | ⬜ | 当前 EN-only 含少量 zh inline |
+| 双语（中英）全覆盖 | 🟡 | SDK README 双语完成；`docs/zh/guide/{installation,getting-started}.md` 上线；VitePress `sidebarZH` 已配；其余 API / Skills / About 仍是 EN |
 
 ### A.5 已知未做（更新于本轮实施后）
 
@@ -800,6 +800,21 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - 修复了 `skill-text-diff` schema 缺 `properties` 字段的 TS 错误（`{ type: 'object' }` → `{ type: 'object', properties: {} }`）
    - 统一所有 skill 的 `export { pkg, skill }` 模式（避免与已有 `export function` 同名重复导出）
    - 候选（未做但可选）：`slide-deck`（整套大纲生成）/ `ocr` / `web-search`，11 standalone 已超目标
+
+#### ✅ 本轮再次新增解决（双语文档 + RFC）
+
+6. **双语文档（首批双语上线）**：
+   - `apps/sdk/README.zh-CN.md` — `@genoffice/web-sdk` 中文 README（112 行，与 EN 一一对应）
+   - `docs/zh/guide/installation.md` — 中文安装文档
+   - `docs/zh/guide/getting-started.md` — 中文快速开始
+   - VitePress `docs/.vitepress/config.ts` 新增 `sidebarZH` 把 `/zh/guide/*` 路由并入 zh-CN locale
+   - A.4 "双语全覆盖" 状态从 ⬜ 升级到 🟡（SDK + 2 篇 Guide 双语上线，剩余 EN 待翻译）
+7. **RFC 流程 + 首个 accepted RFC**：
+   - `docs/rfcs/README.md` — RFC 流程总览（状态机 / 命名 / 评审标准 / 与 issue/discussion 的边界）
+   - `docs/rfcs/0000-template.md` — RFC 模板（Summary / Motivation / Detailed Design / Drawbacks / Alternatives / Adoption / Open Questions / Test Plan / References）
+   - `docs/rfcs/0001-open-plan.md` + `docs/rfcs/accepted/0001-open-plan.md` — 首个 accepted RFC，把 `sdk1.md` 开放计划本身以 RFC 形式归档
+   - A.3 "RFC 模板 + accepted/" 状态从 ⬜ 升级到 ✅
+8. **A.1 双语 SDK README**：从 🟡 升级到 ✅，`apps/sdk/README.md` 与 `apps/sdk/README.zh-CN.md` 一一对应。
 
 #### ⬜ 仍未做（按优先级排序）
 
