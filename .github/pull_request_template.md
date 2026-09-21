@@ -1,27 +1,33 @@
-## Summary
+<!-- Thanks for taking the time to send a PR. Please fill out the
+     sections below — the more context, the faster the review. -->
 
-- What changed?
-- Why is this change needed?
+## What
 
-## Related issue
+<!-- One-paragraph description of the change. -->
 
-Closes #
+## Why
 
-## Validation
+<!-- What problem does this solve? Link any related issues. -->
 
-- [ ] `npm run format:check`
-- [ ] `npm run lint`
-- [ ] `npm run typecheck`
-- [ ] `npm test`
+## How
 
-List any checks not run and explain why:
+<!-- Implementation notes: anything reviewers should pay special
+     attention to, performance impact, edge cases, etc. -->
 
-## Screenshots or recordings
+## Testing
 
-Include before/after evidence for visible changes, or write "Not applicable."
+<!-- Which tests did you add? Which existing tests did you re-run?
+     Paste the summary line of the test run. -->
 
-## Contributor checklist
+## Risk
 
-- [ ] The change is focused and does not include unrelated reformatting or refactoring.
-- [ ] User-facing strings use the existing i18n resources.
-- [ ] File open/save changes include an appropriate round-trip or fidelity test.
+<!-- What's the blast radius if this breaks in production? How do we
+     roll back? -->
+
+## Checklist
+
+- [ ] Tests added / updated
+- [ ] `pnpm typecheck` passes
+- [ ] `pnpm test` passes
+- [ ] CHANGELOG.md updated (if user-facing)
+- [ ] Docs updated (if API / behaviour change)

@@ -41,3 +41,20 @@ export {
   type WebAiSettings,
 } from './web-transport'
 export { WebIpcClient } from './web-transport'
+
+// ── Agent Loop Protocol (sdk1.md §3.4) ──
+export {
+  AGENT_PROTOCOL_VERSION,
+  AgentProtocolError,
+  validateAgentRequest,
+} from './agent-protocol'
+export type {
+  AgentContext,
+  AgentFileRef,
+  AgentRequest,
+  AgentResult,
+  AgentRunner,
+  AgentStep,
+  AgentStopReason,
+  AgentToolName,
+} from './agent-protocol'

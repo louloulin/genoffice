@@ -1,215 +1,124 @@
 # Contributing to GenOffice
 
-Thanks for your interest in contributing. This document covers the local
-setup, the checks a change must pass, and the conventions used in this
-repository.
+Thanks for taking the time to contribute! GenOffice is an Apache-2.0
+open-source project; contributions of all sizes are welcome.
 
-## How changes land here
+## Development environment
 
-This GitHub repository is a mirror: development happens in a private tree,
-and `main` here advances through single squashed snapshot commits
-(`Sync snapshot (<date>)`). That is why every file in a sync shows the same
-last-commit message, and why nobody — maintainers included — pushes to
-`main` directly.
+- Node ≥ 22.12 (see `package.json` → `engines`)
+- pnpm ≥ 10 (recommended) or npm ≥ 10
+- macOS / Linux (Windows WSL2 also works)
 
-External pull requests are welcome and are reviewed here. Once a change is
-accepted, a maintainer imports it into the private tree with your authorship
-preserved as a `Co-authored-by:` trailer, and it ships to `main` in the next
-snapshot; your PR is then closed with a note pointing at the snapshot that
-carried it. GitHub will show the PR as "closed" rather than "merged" — the
-code and the attribution still land. Issues and feature requests are handled
-directly on this repository as usual.
+## Quick start
 
-## Repository layout
-
-- `apps/*` — the seven Electron apps (docs, sheets, slides, pdf, markdown, html, shell).
-  Each app is an npm workspace with its own `src/main` (Electron main
-  process), `src/renderer` (React UI), and `tests/`.
-- `packages/*` — pure TypeScript engine and shared packages (no Electron
-  dependency, unit-tested): docx/pptx engines, AI agent core, providers,
-  i18n, UI kit.
-- `apps/sheets/native/xlsx-engine` — Rust xlsx engine (runs as a sidecar process) for xlsx import/export.
-
-## Engine packages
-
-All pure TypeScript, no Electron dependency, unit-tested (except the UI kit):
-
-- `packages/docx-engine` — docx parsing → block tree (with `docxIndex`
-  anchors and passthrough), OOXML fragment generation, byte-level paragraph
-  patching.
-- `packages/pptx-engine` / `packages/pptx-render` — pptx model and rendering.
-- `packages/pdf2docx` — local PDF → DOCX conversion: PDFium character-level
-  extraction, pure-geometry layout analysis, rebuild through `docx-engine`;
-  the same analysis drives the PDF app's PowerPoint and Excel exports.
-- `packages/html2docx` — local HTML → DOCX conversion: the page is rendered in
-  the app's own Chromium, reduced in-browser to a document intent tree, and
-  written as native OOXML with the `docx` library; only visuals with no Word
-  counterpart are screenshotted. Drives the HTML app's Export as Word.
-- `packages/file-parse` — text extraction for AI attachments (office formats,
-  text formats).
-- `packages/agent-core` — the AI agent loop and skill composition shared by
-  every app.
-- `packages/ai-provider` — provider abstraction and streaming for the model
-  backends.
-- `packages/ai-search` — Genspark auth + web/image search tools.
-- `packages/i18n`, `packages/ui`, `packages/project-store`,
-  `packages/electron-utils` — shared i18n core, React UI kit, recent-files
-  store, and Electron main-process helpers.
-
-### Architecture notes (docx round trip)
-
-```
-open docx ─► archive original by hash (never touched)
-          ─► docx-engine parses word/document.xml top-level elements (w:p / w:tbl / …)
-          ─► Block tree, each block anchored by docxIndex + original XML slice
-          ─► Tiptap streaming editor (manual + AI editing, dirty tracking)
-save      ─► dirty blocks → OOXML fragments (referencing existing styles only)
-          ─► splice into original document.xml (untouched blocks keep original bytes)
-          ─► repack zip; all other entries copied byte-for-byte
+```sh
+git clone https://github.com/genspark-ai/genoffice.git
+cd genoffice
+pnpm install
+pnpm run predev      # build stale preloads
+pnpm run dev         # start the Electron shell + every editor dev server
 ```
 
-The same philosophy holds in sheets and slides: the original file is the
-source of truth, edits are applied as narrow patches, and everything the
-editor didn't touch survives the round trip untouched.
+The dev script runs docs / sheets / slides / pdf / markdown / html in
+parallel and wires them through the shell. Pick whichever editor you're
+working on; the rest can stay idle.
 
-## Getting started
+## Code layout
 
-Prerequisites: Node 22+, npm 10+, and a Rust toolchain (`cargo` on PATH,
-needed only for the sheets xlsx sidecar).
-
-```bash
-npm install
-npm run fixtures     # generate test .docx fixtures (one-time, and after docx-engine changes)
-npm run dev          # all editors + shell against Vite dev servers
-npm run dev:docs     # or run a single app
+```
+apps/*        # the six editors (docs, sheets, slides, pdf, markdown, html)
+              # + shell, web-server, sdk
+packages/*    # shared libraries (ai-provider, agent-core, docx-engine, …)
+docs/         # VitePress site (public documentation)
+examples/     # standalone embed / plugin examples
+tools/        # build + maintenance scripts (typedoc, ipc-doc generator, …)
 ```
 
-## Checks every change must pass
+Apps never import each other; all cross-app sharing goes through a
+package. Packages may import other packages but never apps.
 
-CI runs these on every PR; please run them locally first:
+## Commit & PR conventions
 
-```bash
-npm run format:check # Prettier check for uncommitted changed/new files
-npm run lint         # ESLint across the repo (0 errors required; warnings allowed)
-npm run typecheck    # tsc --noEmit across every workspace
-npm test             # engine + app unit tests (also runs the Rust sidecar tests)
-npm run licenses     # production dependency licenses within the permissive allowlist
+- **Conventional Commits** — `feat(sheets): …`, `fix(api): …`,
+  `docs(guide): …`, `refactor(core): …`, `test(sdk): …`.
+- Commit scope is the app or package name when obvious.
+- One PR = one change. Drive-by cleanups belong in their own PR.
+- PR title ≤ 72 chars; body uses the `.github/PULL_REQUEST_TEMPLATE.md`
+  template.
+- Rebase on `main` before requesting review.
+
+## Code style
+
+- TypeScript `strict: true` everywhere.
+- ESLint + Prettier (root config).
+- File names kebab-case; components PascalCase; functions camelCase.
+- Public API must carry JSDoc / TSDoc.
+- New public functions must come with a test (coverage target: ≥ 80%).
+
+## Tests
+
+```sh
+pnpm test                # run everything (monorepo-wide)
+pnpm test -w @genoffice/web-server   # single workspace
+pnpm --filter @genoffice/web-server typecheck
 ```
 
-Formatting is intentionally incremental: existing files are not reformatted
-unless they are part of your change. Run these exact commands before committing:
+- Each workspace has its own `vitest.config.ts`; the root harness glues
+  them.
+- For changes that touch a wire protocol (postMessage envelope, IPC
+  channel, REST route), add an end-to-end test in `tests/`.
+- Do not skip flaky tests — fix them. If you can't, file an issue and
+  link it from the test.
 
-```bash
-npm run format                              # format uncommitted changed/new files
-npm run format:check                        # verify uncommitted changed/new files
-npm run format:check -- --base origin/main  # verify committed files on your branch
-```
+## Adding a new IPC channel
 
-CI supplies the PR or push base automatically and checks only files changed from
-that base. This keeps the formatter gate useful without creating a repository-wide
-formatting diff.
+1. Find the relevant capability directory (`apps/web-server/src/<area>`).
+2. Register the handler with `registerHandle(channelName, fn)`.
+3. Add a `registerHandle(channelName, …)` line + JSDoc.
+4. Run `node tools/gen-ipc-docs.mjs` to regenerate the IPC reference.
+5. Add an integration test under `apps/web-server/tests/`.
 
-## Building installers
+## Adding a new public SDK method
 
-Run these from the repository root — they regenerate the third-party
-notices and build all seven apps before packaging:
+1. Extend the typed surface in `apps/sdk/src/types.ts`.
+2. Wire the command envelope in `apps/sdk/src/editor.ts`.
+3. Bump `apps/sdk/package.json` version (semver).
+4. Add a test in `apps/sdk/test/`.
+5. Update `apps/sdk/README.md` event / command table.
 
-```bash
-npm run dist:mac   # dmg + zip
-npm run dist:win   # nsis installer
-```
+## Adding a new provider plugin
 
-Without Apple or Windows signing credentials in the environment these produce
-unsigned artifacts: code signing and notarization are skipped with a warning
-rather than failing. That is the expected result for a contributor build.
+See `packages/ai-provider/src/provider-plugin.ts`. The minimum surface is
+`{ id, label, models, defaultModel, keyPlaceholder, chat, streamChat }`.
+A worked example lives in
+`packages/ai-provider/tests/provider-plugin.test.ts`.
 
-On macOS, packaging from a repository that lives on an exFAT/FAT32 volume (an
-external USB drive, for example) fails because the OS writes hidden `._`
-AppleDouble sidecar files next to the build output and electron-builder trips
-over them. Point the output directory at an APFS path instead of moving the
-repository:
+## Adding a new Skill
 
-```bash
-BUILD_DIR=/tmp/genoffice-release npm run dist:mac
-```
+See `packages/agent-skills/src/skill-protocol.ts`. The minimum manifest is
+`{ id, version, name, description, triggers, inputs, outputs, execute }`.
+Place the file under `packages/agent-skills/src/skills/<id>.ts` and
+register it in the registry at boot.
 
-`dist:win` additionally expects the xlsx sidecar at the MinGW cross-compilation
-path. Building on Windows leaves it under the MSVC target instead, so stage it
-first:
+## Release process
 
-```bash
-cargo build --release --target x86_64-pc-windows-gnu   # from apps/sheets/native/xlsx-engine
-```
+1. `pnpm changeset` — describe the change and pick a semver bump.
+2. PR merges into `main`.
+3. GitHub Actions runs `release.yml`:
+   - bumps versions across workspaces,
+   - publishes `@genoffice/*` packages to npm (with provenance),
+   - builds + pushes the Docker image to ghcr.io,
+   - deploys the VitePress site to Pages.
+4. A GitHub Discussion is opened in `Announcements` linking the changelog.
 
-or copy an existing `target/release/xlsx-sidecar.exe` to
-`target/x86_64-pc-windows-gnu/release/`.
+## Where to ask
 
-## Environment variables
-
-None are required — the apps run with all of these unset. They exist for
-testing and local overrides:
-
-| Variable                                                    | Effect                                                                        |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `BUILD_DIR`                                                 | Override the electron-builder output directory (default `apps/shell/release`) |
-| `GENOFFICE_USER_DATA`                                       | Override the Electron userData directory (test isolation)                     |
-| `GENOFFICE_LANG`                                            | Force the UI language instead of following the OS locale                      |
-| `GENOFFICE_FAKE_UPDATE`                                     | Exercise the updater UI without a real release feed                           |
-| `GENOFFICE_CLOUD_SLIDE`, `GENOFFICE_CLOUD_SLIDE_TIER`       | Route slide generation through the cloud endpoint                             |
-| `GSK_API_KEY`, `GSK_CLI_PATH`                               | Genspark credentials / CLI location for the built-in AI provider              |
-| `AI_SEARCH_DISABLE_GSK`, `SERPER_API_KEY`, `TAVILY_API_KEY` | Disable the gsk search backend / supply a Serper or Tavily key                |
-| `XLSX_SIDECAR_PATH`, `XLSX_OPEN_PATH`, `XLSX_DEBUG_PORT`    | Point at a locally built xlsx sidecar and its debug port                      |
-| `*_DEV_PORT`, `*_RENDERER_URL`                              | Per-app Vite dev server ports and renderer URLs (set by `npm run dev`)        |
-
-AI features degrade rather than break without credentials: requests surface an
-inline sign-in prompt, and web search falls back to a keyless backend.
-
-## Coding conventions
-
-- **English only** in code, comments, commit messages, and docs. User-facing
-  strings go through the i18n resources (`src/renderer/i18n/`, plus the inline
-  main-process dictionaries in `src/main/`), which are the only places
-  non-English text belongs (plus test fixture text).
-- TypeScript everywhere; avoid adding new `any` surfaces where a precise type
-  is cheap.
-- Tests live in `apps/*/tests` and `packages/*/tests` (vitest). New engine
-  behavior needs a unit test; renderer-only UI tweaks generally don't.
-- Playwright/Electron acceptance drivers and Office-app comparison scripts
-  (anything that drives the built app or Word/Excel/PowerPoint on your
-  machine) are local, on-demand tools: keep them out of the tree (they are
-  gitignored) and never wire them into CI.
-- Keep files from growing without bound: if you are adding a substantial new
-  concern to an already-large file, prefer a new module.
-
-## Commit and PR guidelines
-
-- Small, focused commits with imperative English subject lines
-  (e.g. `fix docx table border round-trip`, `add slides chart legend parsing`).
-- A PR should explain _why_ the change is needed, and mention which of the
-  checks above you ran.
-- File format fidelity is the core product promise: for changes touching
-  open/save paths (docx/xlsx/pptx), include a round-trip test proving
-  untouched content survives byte-for-byte.
-
-## Reporting bugs and requesting features
-
-Use the issue templates. For suspected security issues, do **not** open a
-public issue — follow [SECURITY.md](SECURITY.md).
+- **Bugs / feature requests**: GitHub Issues.
+- **Design questions**: GitHub Discussions, category *Design*.
+- **Realtime chat**: Discord (link in README).
+- **Security**: see `SECURITY.md` — please do NOT file public issues for
+  security bugs.
 
 ## Code of conduct
 
-All community spaces follow the
-[Contributor Covenant](CODE_OF_CONDUCT.md); participation implies acceptance.
-
-## License and CLA
-
-There is no CLA (contributor license agreement), and we do not plan to add
-one. By contributing, you agree that your contributions are licensed under
-the [Apache License 2.0](LICENSE) that covers this project — inbound =
-outbound, per Apache-2.0 §5. Because community contributions keep their
-Apache-2.0 terms, the open-source core cannot be retroactively relicensed.
-
-The `ee/` directory is reserved for future enterprise modules under a
-[separate license](ee/LICENSE) and does not accept external contributions —
-pull requests from outside the maintainer team must not modify files under
-`ee/` (enforced via [CODEOWNERS](.github/CODEOWNERS)).
+This project follows the Contributor Covenant. See `CODE_OF_CONDUCT.md`.

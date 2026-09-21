@@ -1,87 +1,64 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Supported versions
 
-Please report suspected vulnerabilities privately via GitHub's
-[private vulnerability reporting](https://github.com/genspark-ai/genoffice/security/advisories/new)
-on this repository. Do not open public issues for security reports. We aim to
-acknowledge reports within 72 hours.
+The following versions of GenOffice receive security updates:
 
-## Process Security Posture
+| Version | Supported |
+|---|---|
+| latest release | ✅ |
+| previous minor (≤ 6 months old) | ✅ |
+| older | ⚠️ best-effort, no SLA |
 
-All application windows run with the full Electron renderer lockdown:
+## Reporting a vulnerability
 
-- `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` for every
-  document window and tab view (docs, sheets, slides, pdf, markdown, shell, updater).
-- Renderers reach the main process only through typed, validated IPC channels
-  (payloads are schema-checked in the main process; sheets uses zod end to end).
-- Every `shell.openExternal` call goes through a single shared gate
-  (`@genoffice/electron-utils` → `safeExternalUrl`) that parses the URL and
-  enforces a protocol allowlist (http/https; pdf link annotations additionally
-  allow mailto). `file:`, `javascript:`, and custom schemes are always rejected.
-- No API keys are hardcoded. AI requests are proxied through the signed-in
-  account by default; user-supplied keys stay in the OS-level settings store.
+**Please do NOT file a public GitHub issue for security bugs.**
 
-## Threat Model: AI-Generated Layout Scripts (slides)
+Email **security@genoffice.app** with:
 
-The slides AI can adjust slide layouts by emitting a small script that is
-parsed with Acorn and evaluated by a constrained AST interpreter
-(`apps/slides/src/renderer/ai/layout-script-interpreter.ts`). The source looks
-like a small, synchronous subset of JavaScript for model compatibility, but it
-is not passed to `eval`, `Function`, a VM context, a worker, or the JavaScript
-engine as executable source.
+- A description of the vulnerability and its impact.
+- Reproduction steps (proof-of-concept preferred).
+- The affected component (`@genoffice/web-server`, `@genoffice/ai-provider`,
+  `apps/docs`, …) and version.
 
-**What the script can do by design:** read prototype-free JSON copies of
-`els`/`canvas`, perform bounded arithmetic/control flow, use explicitly
-implemented string/array/regular-expression/Math helpers, and call
-`setBox/moveBy/resizeBy/setText/setStyle/setFill/setStroke/log`. Every edit
-primitive validates its arguments (element existence, read-only flags, finite
-numbers, hex colors) and writes only into an op buffer that is applied through
-the same command pipeline as manual edits.
+You will receive an acknowledgement within 48 hours. We aim to ship a
+patch within 14 days for critical issues and 30 days for lower
+severity. Critical CVEs are coordinated with the reporter before public
+disclosure.
 
-**Interpreter boundary:**
+## Disclosure process
 
-1. Identifiers resolve only in interpreter-owned lexical scopes seeded with the
-   documented data and callables. There are no ambient globals, module loader,
-   DOM, network, IPC bridge, timers, process APIs, or dynamic code primitives.
-2. Property reads are dispatched by value type. Data objects expose own JSON
-   fields only; arrays, strings, and regexes expose a small method allowlist.
-   Host prototypes and function properties are never traversed, including
-   through computed property names.
-3. Calls accept only interpreter-created functions or explicit builtins. A host
-   function obtained through a constructor/prototype chain cannot be
-   represented.
-4. Inputs and values crossing into edit primitives are recursively copied as
-   JSON-like, prototype-free data. Errors discard all buffered operations;
-   logs are capped.
-5. Execution has statement/expression and call-depth limits to bound runaway
-   loops or recursion. Regular expressions run on an interpreter-owned matcher
-   with its own step budget (a supported subset; no native backtracking), so a
-   catastrophic pattern cannot stall the renderer past those limits.
+1. Reporter emails `security@genoffice.app`.
+2. Maintainer triages within 48 h and assigns a CVE id.
+3. Patch developed in a private fork; embargoed until release.
+4. Coordinated release: GitHub Security Advisory + npm provenance tag.
+5. Public disclosure 7 days after the patched release is available.
 
-The Electron renderer sandbox remains defense in depth, but it is not the
-layout-script security boundary. The interpreter is designed so a layout
-script cannot obtain renderer capabilities in the first place.
+## Hardening checklist for self-hosted deployments
 
-If you find a way for a layout script to reach anything beyond the injected
-primitives (network, storage, IPC channels not reachable by design, or the
-main process), that is a vulnerability — please report it.
+- **Set `GENOFFICE_JWT_SECRET`** to a 256-bit (or longer) random value.
+  Without it the v1 API answers `503 NOT_CONFIGURED` for authed routes.
+- **Run behind HTTPS.** The JWT is sent in the `Authorization: Bearer …`
+  header; a network observer can replay it for the TTL window.
+- **Set `WEB_CORS_ORIGINS`** to an explicit allowlist (comma-separated).
+  Without it the server echoes the request's `Origin`, which is fine for
+  development but unsafe on the public internet.
+- **Restrict `DATA_DIR`** to a non-shared filesystem. The file watcher
+  reads every regular file in the tree at boot.
+- **Disable skill hot-reload in production.** Keep
+  `genoffice.providers.json` and `genoffice.skills.json` outside the
+  deploy artefact so an attacker who can write to the bundle cannot
+  also register a new plugin.
 
-## Threat Model: Rendering AI-Generated HTML (slides export)
+## Known limitations
 
-The HTML-to-pptx export pipeline renders AI-generated HTML in a hidden
-`BrowserWindow`. That window is treated as hostile content: full renderer
-lockdown (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`),
-no preload script, no IPC surface — the main process drives it exclusively
-through `executeJavaScript` and destroys it under a watchdog timeout.
+- The iframe Embed endpoint does not validate the parent's origin (we
+  post `ready` to `window.parent` with targetOrigin `'*'`). Restrict
+  access via a CSP `frame-ancestors` directive on the host page.
+- The IPC bridge (`/api/ipc/:channel`) is gated by `WEB_TOKEN`. Without
+  it, anyone on the network can invoke channels. Always set
+  `WEB_TOKEN` in production.
 
-## Out of Scope
+## Past advisories
 
-- The cloud AI services this client talks to are operated separately and are
-  not part of this repository; issues with them should be reported through the
-  service provider's channels.
-- Vulnerabilities that require an already-compromised machine or a modified
-  binary. This includes the deliberate environment-variable override points
-  for local development (`GSK_CLI_PATH`, `XLSX_SIDECAR_PATH`): setting them
-  requires control of the process environment, which is equivalent to code
-  execution on the machine.
+(None yet — this is a new public release.)

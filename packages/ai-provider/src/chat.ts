@@ -5,6 +5,8 @@ import { chatOpenAiCompatible } from './protocols/openai-compatible'
 // pulls in the Node-only './codex-app-server' module in renderer bundles.
 import { chatCodexAppServer } from './codex-app-server.browser'
 import { getProviderAdapter, type ResolvedEndpoint } from './registry'
+import { getDefaultProviderRegistry } from './provider-plugin'
+
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog } from './watchdog'
 
@@ -32,6 +34,40 @@ export async function chatForProvider(
   signal?: AbortSignal,
   options?: ChatCallOptions,
 ): Promise<AiChatResponse> {
+  // Plugin-first (sdk1.md §3.1): if a third-party AiProviderPlugin is registered
+  // for this provider id, route through it instead of the legacy wire-protocol
+  // adapter. Keeps existing first-party providers on the same call surface
+  // without forcing double registration.
+  const plugin = getDefaultProviderRegistry().get(provider)
+  if (plugin) {
+    // The plugin contract receives { settings, system, user }. `settings` is
+    // a flat per-call config (apiKey/baseUrl/model) — NOT the global
+    // `AiSettings` shape from ./types which carries provider metadata.
+    const pluginSettings = {
+      apiKey: config.apiKey,
+      ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+      model: config.model,
+    }
+    const pluginConfig = {
+      apiKey: config.apiKey,
+      ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+      model: config.model,
+    }
+    try {
+      // Cast: AiChatRequest.settings is typed as AiSettings (legacy shape),
+      // but the plugin-fallback consumers pass a flat config. This is a
+      // deliberate v1.0 width — providers that need the full settings graph
+      // can opt-in via the legacy getProviderAdapter path.
+      const result = await plugin.chat(
+        { settings: pluginSettings as never, system, user },
+        pluginConfig,
+      )
+      return result
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
   // non-streaming: the server generates the full answer before the headers arrive,
   // so the connect phase gets the long budget; the body read then gets the idle budget
   const wd = createStreamWatchdog(signal, AI_CHAT_RESPONSE_TIMEOUT_MS)

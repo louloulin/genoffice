@@ -1,6 +1,58 @@
-# ee/ is the enterprise-license boundary and takes no external contributions
-# (see ee/LICENSE); license-related files need a maintainer review.
-/ee/ @merrick-2002
-/LICENSE @merrick-2002
-/NOTICE @merrick-2002
-/.github/CODEOWNERS @merrick-2002
+# CODEOWNERS — GitHub auto-routes PR reviews to the listed handles.
+# Default reviewer for everything in the repo; specific paths override below.
+
+*                                          @genoffice/maintainers
+
+# Editors — each WG owns its own app
+/apps/docs/                                @genoffice/wg-editors
+/apps/sheets/                              @genoffice/wg-editors
+/apps/slides/                              @genoffice/wg-editors
+/apps/pdf/                                 @genoffice/wg-editors
+/apps/markdown/                            @genoffice/wg-editors
+/apps/html/                                @genoffice/wg-editors
+/apps/shell/                               @genoffice/wg-editors
+
+# SDK / REST / iframe Embed — wg-sdk owns the public surface
+/apps/sdk/                                 @genoffice/wg-sdk
+/apps/web-server/src/api/                  @genoffice/wg-sdk
+/apps/web-server/src/embed/                @genoffice/wg-sdk
+/apps/web-server/src/common/webhooks-store.ts  @genoffice/wg-sdk
+/tools/gen-ipc-docs.mjs                    @genoffice/wg-sdk
+/docs/api/                                 @genoffice/wg-sdk
+/docs/guide/quick-start-embed.md           @genoffice/wg-sdk
+/docs/guide/quick-start-sdk.md             @genoffice/wg-sdk
+/docs/about/architecture.md                @genoffice/wg-sdk
+
+# AI / Skills / KB / TM / Agent
+/packages/ai-provider/src/provider-plugin.ts  @genoffice/wg-ai
+/packages/agent-skills/src/skill-protocol.ts   @genoffice/wg-ai
+/packages/agent-core/src/agent-protocol.ts     @genoffice/wg-ai
+/packages/translation-core/src/kb-format.ts    @genoffice/wg-ai
+/docs/api/provider-plugins.md              @genoffice/wg-ai
+/docs/api/ai-skills-protocol.md            @genoffice/wg-ai
+/docs/api/kb-tm-format.md                  @genoffice/wg-ai
+/docs/api/agent-protocol.md                @genoffice/wg-ai
+/docs/skills/                              @genoffice/wg-skills
+
+# Infrastructure / build / CI
+/.github/                                 @genoffice/wg-infra
+/tools/                                   @genoffice/wg-infra
+/apps/web-server/scripts/                  @genoffice/wg-infra
+/docker/                                  @genoffice/wg-infra
+/Dockerfile*                              @genoffice/wg-infra
+/docs/.vitepress/                          @genoffice/wg-infra
+/.github/workflows/docs.yml                @genoffice/wg-infra
+/.github/workflows/release.yml             @genoffice/wg-infra
+
+# Community-facing files
+/CONTRIBUTING.md                           @genoffice/maintainers
+/CODE_OF_CONDUCT.md                        @genoffice/maintainers
+/SECURITY.md                               @genoffice/maintainers
+/CHANGELOG.md                              @genoffice/maintainers
+/README.md                                 @genoffice/maintainers
+/ROADMAP.md                                @genoffice/maintainers
+/GOVERNANCE.md                             @genoffice/maintainers
+
+# Security-sensitive paths also go to wg-security
+/apps/web-server/src/auth/                 @genoffice/wg-security @genoffice/wg-sdk
+/apps/web-server/src/api/v1/auth.ts        @genoffice/wg-security @genoffice/wg-sdk

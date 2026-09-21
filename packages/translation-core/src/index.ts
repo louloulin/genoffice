@@ -183,3 +183,24 @@ export {
   type BuildDictionaryResult,
   type DictionarySegment,
 } from './dictionary'
+
+// ── KB / TM Open Format (sdk1.md §3.3) ──
+export {
+  FormatError,
+  makeKbManifest,
+  makeTmManifest,
+  readKbArchive,
+  readTmArchive,
+  validateKbManifest,
+  validateTmManifest,
+  writeKbArchive,
+  writeTmArchive,
+} from './kb-format'
+export type {
+  KbArchive,
+  KbEntry,
+  KbManifest,
+  TmArchive,
+  TmManifest,
+  TmPair,
+} from './kb-format'

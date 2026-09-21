@@ -168,3 +168,39 @@ export {
   type TranslateSkillOptions,
   type TranslateToolName,
 } from "./extensions/translate-skill";
+
+// ── Skill Protocol API (sdk1.md §3.2) ──
+export {
+  createSkillRegistry,
+  getDefaultSkillRegistry,
+  resetDefaultSkillRegistry,
+  SkillError,
+} from './skill-protocol'
+
+export type {
+  FileRef,
+  I18nString,
+  ProgressEvent,
+  ProgressPhase,
+  SkillArraySchema,
+  SkillBooleanSchema,
+  SkillContext,
+  SkillDefinition,
+  SkillEnumSchema,
+  SkillErrorCode,
+  SkillFileSchema,
+  SkillInputSlot,
+  SkillKVStore,
+  SkillLlm,
+  SkillNumberSchema,
+  SkillObjectSchema,
+  SkillOutput,
+  SkillPackage,
+  SkillRegistry,
+  SkillSchema,
+  SkillSchemaBase,
+  SkillSchemaType,
+  SkillStringSchema,
+  SkillUser,
+  SkillWorkspace,
+} from './skill-protocol'

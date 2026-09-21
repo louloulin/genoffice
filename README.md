@@ -373,6 +373,109 @@ The sheets app additionally needs a Rust toolchain for its xlsx sidecar
 automatically. See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks every
 change must pass and how pull requests land.
 
+## Open SDK & API
+
+Embed GenOffice in any web page or wire it into your backend in 5 minutes.
+
+### 1 · iframe Embed — no SDK required
+
+```html
+<iframe
+  src="https://genoffice.app/embed/doc_abc?token=eyJ…"
+  style="width:100%;height:600px;border:0"
+></iframe>
+```
+
+Mint a short-lived token with `POST /api/v1/auth/jwt`, then drop the
+URL into any `<iframe>`. See [`examples/embed-basic/`](examples/embed-basic/)
+for a working demo.
+
+### 2 · JavaScript SDK
+
+```sh
+npm install @genoffice/web-sdk
+```
+
+```ts
+import { createEditor } from '@genoffice/web-sdk'
+
+const editor = createEditor({
+  host: 'https://genoffice.app',
+  documentId: 'doc_abc',
+  app: 'docs',                 // 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html'
+  jwt: '<token>',
+  container: '#editor',
+  theme: 'auto',
+  lang: 'zh-CN',
+})
+
+editor.on('saved', ({ version }) => console.log('saved v', version))
+await editor.command('aiRewrite', { instruction: 'translate to English' })
+```
+
+Full event / command surface in [`apps/sdk/README.md`](apps/sdk/README.md).
+
+### 3 · REST API v1
+
+Stable HTTP surface (sdk1.md §2.1.A). Endpoints:
+
+- `POST /api/v1/auth/jwt` — mint a token
+- `GET  /api/v1/files` — list
+- `POST /api/v1/files` — upload (base64)
+- `POST /api/v1/files/:id/jwt` — file-scoped token
+- `POST /api/v1/files/:id/callback` — register a save webhook
+- `GET  /api/v1/ai/capabilities` — AI provider snapshot
+- `POST /api/v1/ai/chat` · `/ai/translate` · `/ai/image` · `/ai/skill/:name`
+- `GET  /api/v1/kb/search` · `/kb/entries`
+- `POST /api/v1/webhooks` — event subscriptions
+
+Auth: `Authorization: Bearer <jwt>`. Errors return `{ error: { code, message, channel? } }`.
+
+### 4 · Provider plugins & Skills
+
+Drop-in plugins for new LLM / image / search providers and AI Skills:
+
+```ts
+// packages/ai-provider/src/provider-plugin.ts
+import { createProviderRegistry } from '@genoffice/ai-provider'
+const registry = createProviderRegistry()
+registry.register({
+  id: 'my-provider',
+  label: 'My Provider',
+  models: ['m1', 'm2'],
+  defaultModel: 'm1',
+  keyPlaceholder: 'sk-…',
+  chat: async (req, { apiKey }) => ({ ok: true, content: 'hi' }),
+  streamChat: async function* () { yield { requestId: 'r', type: 'done' } },
+})
+```
+
+Skill protocol in `packages/agent-skills/src/skill-protocol.ts`.
+KB / TM open formats (`.genkb` / `.gentm`) in
+`packages/translation-core/src/kb-format.ts`.
+
+Official drop-in packages on the registry (npm tag `beta`):
+
+| Package | Purpose | Install |
+|---|---|---|
+| `@genoffice/web-sdk` | iframe / in-page editor SDK | `npm install @genoffice/web-sdk` |
+| `@genoffice/provider-anthropic` | Claude 4.x provider plugin | `npm install @genoffice/provider-anthropic` |
+| `@genoffice/provider-openai` | GPT-4o provider plugin | `npm install @genoffice/provider-openai` |
+| `@genoffice/provider-gemini` | Gemini provider plugin | `npm install @genoffice/provider-gemini` |
+| `@genoffice/provider-openai-compatible` | Provider: any OpenAI-format endpoint (Together, Fireworks, Groq, OpenRouter, DeepSeek, Kimi, GLM, Qwen, Doubao, vLLM, llama.cpp, …) | `npm install @genoffice/provider-openai-compatible` |
+| `@genoffice/provider-ollama` | Provider: local Ollama daemon | `npm install @genoffice/provider-ollama` |
+| `@genoffice/skill-markdown-format` | Skill: format Markdown text | `npm install @genoffice/skill-markdown-format` |
+| `@genoffice/skill-text-summarize` | Skill: summarise text via host LLM | `npm install @genoffice/skill-text-summarize` |
+| `@genoffice/skill-text-translate` | Skill: translate text between BCP-47 languages | `npm install @genoffice/skill-text-translate` |
+| `@genoffice/skill-text-translate-pairs` | Skill: translate TMX parallel pairs (preserves placeholders) | `npm install @genoffice/skill-text-translate-pairs` |
+| `@genoffice/skill-json-validate` | Skill: validate JSON against schema | `npm install @genoffice/skill-json-validate` |
+| `@genoffice/skill-yaml-validate` | Skill: validate YAML against schema | `npm install @genoffice/skill-yaml-validate` |
+| `@genoffice/skill-yaml-to-json` | Skill: convert YAML ↔ JSON | `npm install @genoffice/skill-yaml-to-json` |
+
+Each provider package implements `AiProviderPlugin` from
+`@genoffice/ai-provider`. Each skill package implements `SkillPackage` from
+`@genoffice/agent-skills` and can be registered with `createSkillRegistry()`.
+
 ## Community
 
 GenOffice is in active development and your feedback shapes it.

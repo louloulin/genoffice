@@ -7,6 +7,7 @@
   "description": "GenOffice docx/sheets/slides/skill extensions on top of @earendil-works/pi-coding-agent",
   "exports": {
     ".": "./src/index.ts",
+    "./skill-protocol": "./src/skill-protocol.ts",
     "./extensions/agent-team": "./src/extensions/agent-team.ts",
     "./extensions/audit-log": "./src/extensions/audit-log.ts",
     "./extensions/docs-skill": "./src/extensions/docs-skill.ts",

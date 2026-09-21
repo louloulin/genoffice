@@ -10,6 +10,7 @@ import { streamOpenAiCompatible } from './protocols/openai-compatible'
 import { streamCodexAppServer } from './codex-app-server.browser'
 import type { StreamCallbacks } from './protocols/shared'
 import { getProviderAdapter, type AiProtocol } from './registry'
+import { getDefaultProviderRegistry } from './provider-plugin'
 import type { AiProviderConfig, AiProviderId } from './types'
 
 export { streamAnthropic } from './protocols/anthropic'
@@ -28,6 +29,37 @@ export async function streamForProvider(
   maxTokens: number,
   cb: StreamCallbacks,
 ): Promise<void> {
+  const plugin = getDefaultProviderRegistry().get(provider)
+  if (plugin) {
+    const settings = {
+      apiKey: config.apiKey,
+      ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+      model: config.model,
+    }
+    const request = {
+      requestId: cb.sessionId ?? '',
+      settings: settings as never,
+      system,
+      messages,
+      ...(tools.length ? { tools } : {}),
+      maxTokens,
+    }
+    for await (const chunk of plugin.streamChat(request, settings as never)) {
+      if (chunk.type === 'delta' && chunk.text) cb.onDelta(chunk.text)
+      else if (chunk.type === 'reasoning' && chunk.text) cb.onReasoningDelta?.(chunk.text)
+      else if (chunk.type === 'tool-call' && chunk.toolCall) cb.onToolCall(chunk.toolCall)
+      else if (chunk.type === 'ping') cb.onActivity?.()
+      else if (chunk.type === 'error') {
+        cb.onActivity?.()
+        throw new Error(chunk.error ?? 'plugin stream error')
+      } else if (chunk.type === 'done') {
+        if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
+        return
+      }
+    }
+    return
+  }
+
   const endpoint = getProviderAdapter(provider).resolveEndpoint(config)
   const { baseUrl } = endpoint
   if (endpoint.protocol === 'codex-app-server') {
