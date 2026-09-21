@@ -2,7 +2,6 @@
   "name": "@genoffice/ipc-bridge",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
   "description": "HTTP+SSE bridge in front of ipcMain.handle \u2014 the same channels are served over IPC (Electron renderer) and HTTP (browser web version). '.' = main-process server (node:http), './client' = browser-safe transports.",
   "exports": {

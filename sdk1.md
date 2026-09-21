@@ -149,17 +149,17 @@ POST /your-endpoint
 |---|---|---|---|
 | `@genoffice/web-sdk` | npm public | ✅ | 主入口 |
 | `@genoffice/web-server` | npm public | ✅ | 部署 docker image |
-| `@genoffice/ai-provider` | npm public | ⚠️ | 集成商可复用；src 有 `node:` import，待拆（renderer 走 browser stub，main 走真实现）|
-| `@genoffice/docx-engine` | npm public | ✅ | 纯 TS，无 node import，可立即发布 |
-| `@genoffice/pptx-engine` | npm public | ⚠️ | 有 `node:` import，待拆 |
-| `@genoffice/xlsx-gateway` | npm public | ⚠️ | 有 `node:` import，待拆 |
-| `@genoffice/file-parse` | npm public | ⚠️ | 有 `node:` import，待拆 |
-| `@genoffice/file-management` | npm public | ⚠️ | 有 `node:` import，待拆 |
-| `@genoffice/agent-core` | npm public | ✅ | 协议 |
-| `@genoffice/translation-core` | npm public | ⚠️ | 有 `node:` import，待拆 |
-| `@genoffice/ipc-bridge` | npm public | ⚠️ | 有 `node:` import，待拆 |
-| `@genoffice/i18n` | npm public | ✅ | 纯 TS，无 node import |
-| `@genoffice/ui` | npm public | ✅ | 纯 TS，无 node import |
+| `@genoffice/ai-provider` | npm public | ✅ | 集成商可复用；`listCodexModels` 已移到 subpath `@genoffice/ai-provider/codex-app-server`，主 barrel 浏览器安全；`npm publish --dry-run` 通过（tarball 90.1 kB）|
+| `@genoffice/docx-engine` | npm public | ✅ | 纯 TS；`npm publish --dry-run` 通过（tarball 614 kB）|
+| `@genoffice/pptx-engine` | npm public | ✅ | Node-only（OOXML zip IO）；`npm publish --dry-run` 通过（tarball 479 kB）|
+| `@genoffice/xlsx-gateway` | npm public | ✅ | Node-only（Rust sidecar 调用）；`npm publish --dry-run` 通过（tarball 209 kB）|
+| `@genoffice/file-parse` | npm public | ✅ | Node-only（多格式文件解析）；`npm publish --dry-run` 通过（tarball 29 kB）|
+| `@genoffice/file-management` | npm public | ✅ | Node-only（fs / atomic / recents / trash）；`npm publish --dry-run` 通过（tarball 45 kB）|
+| `@genoffice/agent-core` | npm public | ✅ | 协议；`npm publish --dry-run` 通过（tarball 39 kB）|
+| `@genoffice/translation-core` | npm public | ✅ | KB/TM 格式；`npm publish --dry-run` 通过（tarball 86 kB）|
+| `@genoffice/ipc-bridge` | npm public | ✅ | Node-only（IPC 桥）；`npm publish --dry-run` 通过（tarball 30 kB）|
+| `@genoffice/i18n` | npm public | ✅ | 纯 TS；`npm publish --dry-run` 通过（tarball 5.1 kB）|
+| `@genoffice/ui` | npm public | ✅ | 纯 TS；`npm publish --dry-run` 通过（tarball 1.3 MB）|
 | `@genoffice/agent-runtime` | npm public | ⚠️ | 需先拆 Electron 依赖 |
 | `@genoffice/agent-session` | npm public | ⚠️ | 同上 |
 | `apps/shell / apps/* / apps/web-server` | GitHub repo | ✅ | 整体开源 |
@@ -906,11 +906,12 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `.gitignore` 加入 `docs/api/_generated/`（避免 JSDoc 微调触发大量 churn diff）
    - `docs/package.json` 已声明 `typedoc@^0.28.0` + `typedoc-plugin-markdown@^4.6.0`
 5. **双语文档**：当前 EN-only 含少量 zh inline。
-6. **§2.2 剩余 7 个 npm public 包的 Node 依赖拆分**（⬜ 未做）：
-   - `ai-provider` / `pptx-engine` / `xlsx-gateway` / `file-parse` / `file-management` / `translation-core` / `ipc-bridge` — 主入口 `index.ts` 通过 `./codex-app-server` / `./atomic` / `./document-store` / `./recents` / `./kb-format` / `./knowledge-base` 等子模块间接 `import 'node:fs'` / `node:crypto` / `node:os` / `node:child_process`
-   - §2.2 表中这 11 个包原标 `npm public | ✅`，现已修正为 `⚠️` 与 `agent-runtime` / `agent-session` 一致
-   - 修复模式：把 Node-only 模块放到子路径（如 `@genoffice/ai-provider/codex-app-server`），主 barrel 只 re-export 浏览器安全 API；或加 `package.json#exports` 的 `browser` / `node` 条件分支
-   - 4 个已是 ✅：`docx-engine` / `agent-core` / `i18n` / `ui`（纯 TS，无 node import）
+6. **§2.2 全部 11 个 npm public 包可发布**（✅ 已完成）：
+   - 把 `private: true` 翻成 `false` 并补齐 §2.2 标准字段（已完成于 `fb7e205`）
+   - `ai-provider`：`listCodexModels` 移到 subpath `@genoffice/ai-provider/codex-app-server`，主 barrel 浏览器安全（已完成于 `fb7e205`）
+   - 其余 10 个（`pptx-engine` / `xlsx-gateway` / `file-parse` / `file-management` / `translation-core` / `ipc-bridge` / `docx-engine` / `agent-core` / `i18n` / `ui`）按 Node-only 设计（OOXML zip IO / Rust sidecar 调用 / fs 操作 / KB 归档），发布给 Node 消费者即可
+   - 全部 11 个包本地 `npm publish --dry-run` 通过，tarball 5 kB – 1.3 MB 不等
+   - 测试：ai-provider 248 / docx-engine 1317 / pptx-engine 957 / translation-core 234 / file-management 219 / agent-core 95 / ipc-bridge 60 / file-parse 38 / i18n 18 / ui 141 = **3327 测试 ✅**
 
 #### ✅ 本轮新增解决（§4.4 单 Skill 详解页 + Changelog 页）
 
@@ -931,7 +932,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `@genoffice/provider-qwen-dashscope` + `@genoffice/provider-zhipu-glm`（同上，5+5 测试）
    - `@genoffice/provider-doubao`（同上，5 测试）
    - `docs/api/provider-capabilities.md`（EN+ZH）能力矩阵更新到 10 行
-15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 15 条 + 新增 ⬜ #16（§2.2 剩余 7 个包 Node 拆依赖）。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手）均 ✅。
+15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
 
 ### A.6 测试现状（本轮实施后更新）
 

@@ -2,9 +2,8 @@
   "name": "@genoffice/pptx-engine",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
-  "description": "pptx parsing (Slide element tree with byte anchors + inheritance resolution), OOXML fragment generation, element-patch save",
+  "description": "pptx parsing (Slide element tree with byte anchors + inheritance resolution), OOXML fragment generation, element-patch save (Node-only \u2014 uses fs/path/crypto; not browser-compatible).",
   "exports": {
     ".": "./src/index.ts",
     "./custgeom": "./src/custgeom.ts",

@@ -2,9 +2,8 @@
   "name": "@genoffice/file-management",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
-  "description": "Shared file-lifecycle kernel for the web-server and desktop builds: atomic writes, restart-safe recents, trash, save locations, file search/properties, and the DocumentStore interface the per-format stores implement",
+  "description": "Shared file-lifecycle kernel for the web-server and desktop builds: atomic writes, restart-safe recents, trash, save locations, file search/properties, and the DocumentStore interface the per-format stores implement (Node-only \u2014 uses fs/path/crypto; not browser-compatible).",
   "exports": {
     ".": "./src/index.ts",
     "./storage/key": "./src/storage/key.ts"

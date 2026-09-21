@@ -2,9 +2,8 @@
   "name": "@genoffice/file-parse",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
-  "description": "shared attachment parsing: PDF, Office and plain-text formats to text; images flagged for multimodal input",
+  "description": "shared attachment parsing: PDF, Office and plain-text formats to text; images flagged for multimodal input (Node-only \u2014 uses fs/path/crypto; not browser-compatible).",
   "exports": {
     ".": "./src/index.ts"
   },

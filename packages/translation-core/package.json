@@ -2,9 +2,8 @@
   "name": "@genoffice/translation-core",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
-  "description": "Shared AI translation core: language list, hardened prompts, document chunking, provider wrapper, quality checks and an in-memory translation memory. Consumed by the docs/sheets/slides main processes and the web build so the three paths stay in lock-step.",
+  "description": "Shared AI translation core: language list, hardened prompts, document chunking, provider wrapper, quality checks and an in-memory translation memory. Consumed by the docs/sheets/slides main processes and the web build so the three paths stay in lock-step (Node-only \u2014 uses fs/path/crypto; not browser-compatible).",
   "exports": {
     ".": "./src/index.ts"
   },
