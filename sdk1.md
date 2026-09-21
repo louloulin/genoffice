@@ -824,6 +824,19 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - A.3 "RFC 模板 + accepted/" 状态从 ⬜ 升级到 ✅
 8. **A.1 双语 SDK README**：从 🟡 升级到 ✅，`apps/sdk/README.md` 与 `apps/sdk/README.zh-CN.md` 一一对应。
 
+#### ✅ 本轮再次新增解决（§3.1 Provider 插件市场 + §3.2 Skill 仓库 · 分类展示）
+
+10. **Provider 能力矩阵**（§3.1 落地）：
+    - `docs/api/provider-capabilities.md` + `docs/zh/api/provider-capabilities.md`
+    - 五家首方 provider 并排对比：Anthropic / OpenAI / Gemini / OpenAI-compat / Ollama
+    - 12 维能力矩阵（chat / stream / tool use / vision / image gen / web search / 自定义 baseUrl / 自托管 …）+ 模型清单 + API key 占位符 + 场景指南
+11. **Skill 市场分类展示**（§3.2 落地）：
+    - `docs/skills/marketplace.md` + `docs/zh/skills/marketplace.md`
+    - 按计划 §3.2 的 5 类（文档 / 表格 / 演示 / 翻译 / 行业）组织 11 个 Skill
+    - 文档 7 个 / 表格 1 个 / 演示 1 个 / 翻译 2 个 / 行业 预留
+    - 附"按触发短语搜索"表 + 一键安装 + 市场引导启动
+    - VitePress sidebar 新增 4 条入口（EN + ZH，API 与 Skills 各 1）
+
 #### ✅ 本轮再次新增解决（§2.2 npm 发布策略 · 标准元数据对齐）
 
 9. **`package.json` 标准元数据（§2.2 标准字段）已对齐**：

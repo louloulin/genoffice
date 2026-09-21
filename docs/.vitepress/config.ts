@@ -72,6 +72,7 @@ export default defineConfig({
         ] },
         { text: 'Extensibility', items: [
           { text: 'Provider Plugins', link: '/api/provider-plugins' },
+          { text: 'Provider Capabilities', link: '/api/provider-capabilities' },
           { text: 'AI & Skills Protocol', link: '/api/ai-skills-protocol' },
           { text: 'Agent Protocol v1', link: '/api/agent-protocol' },
           { text: 'KB / TM Format', link: '/api/kb-tm-format' },
@@ -84,6 +85,7 @@ export default defineConfig({
 
       '/skills/': [
         { text: 'Skills', items: [
+          { text: 'Marketplace', link: '/skills/marketplace' },
           { text: 'Official Skills', link: '/skills/official' },
           { text: 'Community Skills', link: '/skills/community' },
           { text: 'Authoring Guide', link: '/skills/authoring' },
@@ -128,6 +130,7 @@ export default defineConfig({
         ] },
         { text: '扩展性', items: [
           { text: 'Provider 插件', link: '/zh/api/provider-plugins' },
+          { text: 'Provider 能力矩阵', link: '/zh/api/provider-capabilities' },
           { text: 'AI & Skills 协议', link: '/zh/api/ai-skills-protocol' },
           { text: 'Agent 协议 v1', link: '/zh/api/agent-protocol' },
           { text: 'KB / TM 格式', link: '/zh/api/kb-tm-format' },
@@ -138,6 +141,7 @@ export default defineConfig({
       ],
       '/zh/skills/': [
         { text: 'Skills', items: [
+          { text: '市场', link: '/zh/skills/marketplace' },
           { text: '官方 Skills', link: '/zh/skills/official' },
           { text: '社区 Skills', link: '/zh/skills/community' },
           { text: '编写指南', link: '/zh/skills/authoring' },
