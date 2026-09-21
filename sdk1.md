@@ -737,6 +737,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | `@genoffice/provider-kimi` | ✅ | 5 测试 · 8.4 kB tarball（Moonshot Kimi OpenAI 兼容端点 `api.moonshot.cn/v1`）|
 | `@genoffice/provider-qwen` | ✅ | 5 测试 · 8.5 kB tarball（Qwen DashScope OpenAI 兼容端点 `dashscope.aliyuncs.com/compatible-mode/v1`）|
 | `@genoffice/provider-glm` | ✅ | 5 测试 · 8.5 kB tarball（智谱 GLM 非标准端点 `open.bigmodel.cn/api/paas/v4`；`needsBaseUrl: true`）|
+| `@genoffice/provider-doubao` | ✅ | 5 测试 · 8.5 kB tarball（字节豆包 Ark 非标准端点 `ark.cn-beijing.volces.com/api/v3`；`needsBaseUrl: true`）|
 | `@genoffice/skill-markdown-format` | ✅ | 7 测试 |
 | `@genoffice/skill-yaml-validate` | ✅ | 9 测试 |
 | `@genoffice/skill-text-summarize` | ✅ | 5 测试 |
@@ -827,6 +828,16 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `docs/rfcs/0001-open-plan.md` + `docs/rfcs/accepted/0001-open-plan.md` — 首个 accepted RFC，把 `sdk1.md` 开放计划本身以 RFC 形式归档
    - A.3 "RFC 模板 + accepted/" 状态从 ⬜ 升级到 ✅
 8. **A.1 双语 SDK README**：从 🟡 升级到 ✅，`apps/sdk/README.md` 与 `apps/sdk/README.zh-CN.md` 一一对应。
+
+#### ✅ 本轮再次新增解决（§3.1 · Doubao provider + §4.4 单 Skill 详解页）
+
+14. **Doubao provider + 单 Skill 详解页（§3.1 + §4.4 落地）**：
+    - `@genoffice/provider-doubao` — `https://ark.cn-beijing.volces.com/api/v3`，模型 `doubao-pro-32k / 128k` + `doubao-lite-32k`，5 测试通过，dist 已构建。provider 总数 9 → 10（11 列出的剩 genspark / codex 是 Genspark 自家产品，暂不实装）。
+    - `docs/skills/official/{doc-format,sheet-formula,slides-outline}.md` × 2 语言 = 6 个新页（§4.4 指定的 per-skill 详解结构）
+    - 每页含触发短语 / 输入输出 schema / 安装 / 注册+调用 / 适用+不适用场景 / 延伸阅读
+    - `docs/skills/official.md`（EN + ZH）新增 "Per-skill deep dives" / "单 Skill 详解" 区段把 3 个旗舰 Skill 串起来
+    - VitePress sidebar 在 `/skills/` 与 `/zh/skills/` 各加 3 条入口
+    - 文档同步：`docs/api/provider-plugins.md`（EN+ZH）官方 provider 表新增 Doubao 行；`docs/api/provider-capabilities.md`（EN+ZH）模型清单新增 Doubao 行
 
 #### ✅ 本轮再次新增解决（§3.1 · 新增 Qwen + GLM provider）
 

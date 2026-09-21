@@ -89,6 +89,7 @@ modules under the `@genoffice/provider-*` namespace. Each implements the
 | `@genoffice/provider-kimi` | Moonshot Kimi | `moonshot-v1-8k`, `moonshot-v1-32k`, `moonshot-v1-128k` | OpenAI-compatible at `https://api.moonshot.cn/v1`; no custom baseUrl required. |
 | `@genoffice/provider-qwen` | Qwen (DashScope) | `qwen-max`, `qwen-plus`, `qwen-turbo`, `qwen-long` | OpenAI-compatible at `https://dashscope.aliyuncs.com/compatible-mode/v1`; no custom baseUrl required. |
 | `@genoffice/provider-glm` | Zhipu GLM | `glm-4-plus`, `glm-4-air`, `glm-4-flash` | Non-standard endpoint (`/api/paas/v4`); `needsBaseUrl: true` — host must configure. |
+| `@genoffice/provider-doubao` | ByteDance Doubao | `doubao-pro-32k`, `doubao-pro-128k`, `doubao-lite-32k` | Non-standard endpoint (`/api/v3`); `needsBaseUrl: true` — host must configure. |
 
 ### Example: register Together.ai + Groq via the compatible factory
 

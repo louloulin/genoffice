@@ -37,6 +37,7 @@ _DeepSeek and Kimi provide the same capabilities as OpenAI-compat (chat / stream
 | Kimi | `moonshot-v1-8k` | `moonshot-v1-8k`, `moonshot-v1-32k`, `moonshot-v1-128k` |
 | Qwen | `qwen-plus` | `qwen-max`, `qwen-plus`, `qwen-turbo`, `qwen-long` |
 | GLM | `glm-4-plus` | `glm-4-plus`, `glm-4-air`, `glm-4-flash` |
+| Doubao | `doubao-pro-32k` | `doubao-pro-32k`, `doubao-pro-128k`, `doubao-lite-32k` |
 
 ## API-key placeholders
 

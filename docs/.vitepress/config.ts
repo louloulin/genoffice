@@ -87,6 +87,9 @@ export default defineConfig({
         { text: 'Skills', items: [
           { text: 'Marketplace', link: '/skills/marketplace' },
           { text: 'Official Skills', link: '/skills/official' },
+          { text: 'doc-format', link: '/skills/official/doc-format' },
+          { text: 'sheet-formula', link: '/skills/official/sheet-formula' },
+          { text: 'slides-outline', link: '/skills/official/slides-outline' },
           { text: 'Community Skills', link: '/skills/community' },
           { text: 'Authoring Guide', link: '/skills/authoring' },
         ] },
@@ -143,6 +146,9 @@ export default defineConfig({
         { text: 'Skills', items: [
           { text: '市场', link: '/zh/skills/marketplace' },
           { text: '官方 Skills', link: '/zh/skills/official' },
+          { text: 'doc-format', link: '/zh/skills/official/doc-format' },
+          { text: 'sheet-formula', link: '/zh/skills/official/sheet-formula' },
+          { text: 'slides-outline', link: '/zh/skills/official/slides-outline' },
           { text: '社区 Skills', link: '/zh/skills/community' },
           { text: '编写指南', link: '/zh/skills/authoring' },
         ] },

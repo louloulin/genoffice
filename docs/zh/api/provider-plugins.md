@@ -80,6 +80,7 @@ GenOffice 团队以独立 npm 包形式发布下列 provider，统一在 `@genof
 | `@genoffice/provider-kimi` | Moonshot Kimi | `moonshot-v1-8k`、`moonshot-v1-32k`、`moonshot-v1-128k` | OpenAI 兼容端点 `https://api.moonshot.cn/v1`；无需自定义 baseUrl。 |
 | `@genoffice/provider-qwen` | Qwen（DashScope）| `qwen-max`、`qwen-plus`、`qwen-turbo`、`qwen-long` | OpenAI 兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`；无需自定义 baseUrl。 |
 | `@genoffice/provider-glm` | 智谱 GLM | `glm-4-plus`、`glm-4-air`、`glm-4-flash` | 非标准端点（`/api/paas/v4`）；`needsBaseUrl: true`，宿主必须配置。 |
+| `@genoffice/provider-doubao` | 字节豆包 Doubao | `doubao-pro-32k`、`doubao-pro-128k`、`doubao-lite-32k` | 非标准端点（`/api/v3`）；`needsBaseUrl: true`，宿主必须配置。 |
 
 ### 示例：通过兼容工厂注册 Together.ai + Groq
 
