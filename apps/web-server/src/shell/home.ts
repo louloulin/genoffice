@@ -21,6 +21,7 @@ async function toRecentEntry(d: {
   ext: string
   mtimeMs: number
   sizeBytes: number
+  modified: boolean
   starred: boolean
   missing?: boolean
 }> {
@@ -44,6 +45,7 @@ async function toRecentEntry(d: {
           ext,
           mtimeMs: head.modifiedAt ? Date.parse(head.modifiedAt) : Date.now(),
           sizeBytes: Number(head.size),
+          modified: d.modified ?? false,
           starred: DOCS_STARRED.has(d.path),
         }
       }
@@ -56,6 +58,7 @@ async function toRecentEntry(d: {
       ext,
       mtimeMs: d.openedAt ?? 0,
       sizeBytes: 0,
+      modified: d.modified ?? false,
       starred: DOCS_STARRED.has(d.path),
       missing: true,
     }
@@ -69,6 +72,11 @@ async function toRecentEntry(d: {
         ext,
         mtimeMs: s.mtimeMs,
         sizeBytes: s.size,
+        // The renderer draws a modified indicator next to a recently
+        // saved file. The flag comes from `recordRecentDoc({modified})`
+        // (see docs:save / markdown:save / sheets:save); absent it means
+        // the file is freshly opened but not yet edited.
+        modified: d.modified ?? false,
         starred: DOCS_STARRED.has(d.path),
       }
     }
@@ -79,6 +87,7 @@ async function toRecentEntry(d: {
     ext,
     mtimeMs: d.openedAt ?? 0,
     sizeBytes: 0,
+    modified: d.modified ?? false,
     starred: DOCS_STARRED.has(d.path),
     missing: true,
   }

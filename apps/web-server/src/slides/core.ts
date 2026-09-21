@@ -5,16 +5,43 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import { FILES_DIR, loadRecentSlides, registerHandle, requireManagedPath, saveRecentSlides, writeBlankOfficeFile } from '../common/index'
+import { DOCS_RECENT, FILES_DIR, loadRecentSlides, registerHandle, requireManagedPath, saveRecentSlides, writeBlankOfficeFile, isManagedPath } from '../common/index'
 import { recordRecentDoc } from '../common/document-stores'
-import { openPptx } from '@genoffice/pptx-engine'
+import { openPptx, savePptxToFile } from '@genoffice/pptx-engine'
+import {
+  registerSlidesSession,
+  getSlidesSession,
+  replaceSlidesSession,
+  setSlidesDirty,
+  forgetSlidesSession,
+} from './state'
+
+/** Path-keyed alias used by save-as when it migrates a session off its old
+ *  source path. Keeps the call sites readable. */
+function forgetSlidesSessionForPath(path: string): void {
+  forgetSlidesSession(path)
+}
 import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
 import { parseTheme } from '@genoffice/pptx-engine'
 import { displayMime } from '../../../slides/src/main/media-mime'
 import { neutralizeJpegOrientation } from '../../../slides/src/main/jpeg-orientation'
 import { tiffToPng } from '../../../slides/src/main/tiff-decode'
 import type { OpenedPptx, Slide } from '@genoffice/pptx-engine'
-import { CorruptError, NotFoundError } from '../ai/errors'
+import { CorruptError, InvalidArgumentError, NotFoundError } from '../ai/errors'
+import { getStorageBackend, storageKeyFromPath } from '../common/state'
+import { StorageNotFoundError } from '@genoffice/file-management'
+import { atomicWriteFile } from '../common/atomic'
+
+function bytesFrom(value: unknown): Buffer | null {
+  if (value instanceof ArrayBuffer) return Buffer.from(value)
+  if (ArrayBuffer.isView(value))
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+  return null
+}
+
+function isManagedPptxPath(filePath: string): boolean {
+  return /\.pptx$/i.test(filePath) && isManagedPath(filePath)
+}
 
 /** Mirror of the desktop `deckDefaultFont` in apps/slides/src/main/slides-main.ts:
  *  pull the deck's minor (body) Latin font from theme1.xml so the ribbon font box
@@ -132,13 +159,45 @@ export function registerSlidesCoreHandlers(): void {
   })
 
   registerHandle('slides:open-path', async (_event: unknown, filePath: unknown) => {
-    const path = requireManagedPath('slides:open-path', filePath)
-    if (!existsSync(path)) {
-      throw new NotFoundError('slides:open-path', `File not found: ${path}`)
+    // A non-string `filePath` is a renderer-side mistake (the channel
+    // contract is "string path"), not a missing resource. Throwing
+    // `InvalidArgumentError` (400) keeps the failure mode consistent with
+    // `docs:open-path` / `workbook:open-path`, which the e2e guard test
+    // exercises by sending `{ filePath: canary }` to every open-path
+    // channel and asserting each one answers 400.
+    if (typeof filePath !== 'string') {
+      throw new InvalidArgumentError('slides:open-path', 'path must be a string')
     }
-
-    const bytes = readFileSync(path)
-    const name = basename(path)
+    const key = storageKeyFromPath(filePath)
+    const canonical = key ? join(FILES_DIR, key) : null
+    let bytes: Buffer
+    if (key) {
+      // Storage-backed uploads (`storage://<backend>/<key>`) used to bounce
+      // here with a 400 because requireManagedPath only accepts filesystem
+      // paths. The home recents row carries the storage URI; without this
+      // branch clicking it surfaced "path is outside the web storage area".
+      try {
+        const u8 = await getStorageBackend().get(key)
+        bytes = Buffer.from(u8)
+      } catch (err) {
+        if (err instanceof StorageNotFoundError) {
+          throw new NotFoundError('slides:open-path', `File not found: ${filePath}`)
+        }
+        throw err
+      }
+    } else {
+      const path = requireManagedPath('slides:open-path', filePath)
+      if (!existsSync(path)) {
+        throw new NotFoundError('slides:open-path', `File not found: ${path}`)
+      }
+      bytes = readFileSync(path)
+    }
+    const path = canonical ?? filePath
+    // Prefer the display name already recorded by `web:save-file` so the
+    // slides recents entry carries the user's filename (e.g.
+    // "Quarterly.pptx") instead of the storage-hash basename. Falls back
+    // to basename(path) for legacy callers (direct FILES_DIR paths).
+    const name = DOCS_RECENT.get(filePath)?.name ?? basename(path)
     const id = `slide-${Date.now()}`
 
     // Match the desktop `slides:open-path` shape: parse the pptx via `@genoffice/pptx-engine`
@@ -166,6 +225,15 @@ export function registerSlidesCoreHandlers(): void {
     saveRecentSlides(recent)
 
     const slides = buildWebRenderSlides(opened, DEFAULT_FIT_WIDTH)
+
+    // Register the live `OpenedPptx` so `slides:save` and `slides:apply-txn`
+    // have something to mutate. Without this the save pipeline reads bytes
+    // the renderer no longer holds and every save either no-ops or answers
+    // `WEB_UNSUPPORTED`. We also keep `path` (the renderer-visible path)
+    // as the registry key, NOT `bytes`'s storage URI — a renderer that
+    // re-opens the same logical file with a different URI (e.g. after a
+    // save-as) would otherwise see a stale model.
+    registerSlidesSession(path, opened)
 
     return {
       path,
@@ -195,32 +263,113 @@ export function registerSlidesCoreHandlers(): void {
   registerHandle(
     'slides:save',
     async (_event: unknown, _id?: unknown, path?: unknown, data?: unknown) => {
-      if (typeof path === 'string' && data) {
-        // Re-create the parent before each write so an rm -rf of DATA_DIR
-        // does not ENOENT the first save. The renderer is expected to keep
-        // passing a FILES_DIR-resident path (set by slides:save-as) so the
-        // existing bytes are overwritten in place.
-        mkdirSync(dirname(path), { recursive: true })
-        writeFileSync(path, Buffer.from(data as ArrayBuffer))
-        return { ok: true, path }
+      if (typeof path !== 'string' || !path) {
+        return { ok: false, canceled: true, error: 'slides:save expects { path: string }' }
       }
-      return { ok: false, canceled: true, error: WEB_SAVE_UNSUPPORTED }
+      const key = storageKeyFromPath(path)
+      const canonical = key ? join(FILES_DIR, key) : path
+      if (!key && !isManagedPptxPath(canonical)) {
+        // The old handler wrote to ANY path the renderer named, including
+        // `/tmp/anywhere.pptx`. With `requireManagedPath` semantics the
+        // storage URI branch is the only escape hatch the recents grid needs.
+        return { ok: false, error: 'save target is outside the web storage area' }
+      }
+
+      // Two valid save flows:
+      //   1. The renderer hands over pptx bytes (`data` is an ArrayBuffer /
+      //      Uint8Array). Write them straight to disk / storage backend.
+      //      This is the path the renderer's web-bridge uses when it
+      //      already serialised locally.
+      //   2. The renderer passes no bytes. Serialise the registered
+      //      `OpenedPptx` via `@genoffice/pptx-engine`'s `savePptxToFile`
+      //      — this is the path the desktop main process has used since
+      //      the desktop-save refactor and is the only one that round-trips
+      //      a deck whose edits the renderer streamed through
+      //      `slides:apply-txn`.
+      try {
+        if (data !== undefined && data !== null) {
+          const bytes = bytesFrom(data)
+          if (!bytes || bytes.byteLength === 0) {
+            return { ok: false, error: 'save data is empty or invalid' }
+          }
+          if (key) {
+            await getStorageBackend().put(key, new Uint8Array(bytes), {
+              contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            })
+          } else {
+            mkdirSync(dirname(canonical), { recursive: true })
+            atomicWriteFile(canonical, bytes)
+          }
+          return { ok: true, path: canonical }
+        }
+
+        // No bytes: serialise the live model. The registry must have the
+        // session; otherwise the renderer never opened the deck (or the
+        // server restarted) and the save is unanswerable.
+        const session = getSlidesSession(canonical)
+        if (!session) {
+          return {
+            ok: false,
+            canceled: true,
+            error: 'slides:save: no live model for this path — re-open the deck first',
+          }
+        }
+        mkdirSync(dirname(canonical), { recursive: true })
+        await savePptxToFile(session.opened, canonical)
+        // Clear the dirty flag: the on-disk bytes now match the model.
+        setSlidesDirty(canonical, false)
+        return { ok: true, path: canonical }
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      }
     },
   )
 
   registerHandle(
     'slides:save-as',
-    async (_event: unknown, defaultName?: unknown, data?: unknown) => {
+    async (_event: unknown, defaultName?: unknown, data?: unknown, sourcePath?: unknown) => {
+      // Save-as needs a source path to find the registered session, OR
+      // explicit bytes from the renderer. A bare "save-as with neither"
+      // used to return `WEB_UNSUPPORTED`; now it answers an explicit
+      // invalid-argument so the renderer can branch correctly.
+      if (data === undefined || data === null) {
+        if (typeof sourcePath !== 'string' || !sourcePath) {
+          return {
+            ok: false,
+            canceled: true,
+            error: 'slides:save-as expects { sourcePath: string } when no bytes are supplied',
+          }
+        }
+        const sourceSession = getSlidesSession(sourcePath)
+        if (!sourceSession) {
+          return {
+            ok: false,
+            canceled: true,
+            error: 'slides:save-as: no live model for sourcePath — re-open the deck first',
+          }
+        }
+        const id = `slide-${Date.now()}`
+        const name =
+          (typeof defaultName === 'string' && defaultName) || `演示文稿.pptx`
+        const targetPath = join(FILES_DIR, `${id}.pptx`)
+        mkdirSync(FILES_DIR, { recursive: true })
+        await savePptxToFile(sourceSession.opened, targetPath)
+        // Move the registry entry to the new path so subsequent edits /
+        // saves follow the new file rather than the old one.
+        replaceSlidesSession(targetPath, sourceSession.opened)
+        setSlidesDirty(targetPath, false)
+        forgetSlidesSessionForPath(sourcePath)
+        return { id, name, ok: true, path: targetPath }
+      }
+
+      // Byte-driven save-as (renderer serialised locally). Write to a fresh
+      // managed file under FILES_DIR.
       const id = `slide-${Date.now()}`
       const name = (typeof defaultName === 'string' && defaultName) || `演示文稿.pptx`
       const path = join(FILES_DIR, `${id}.pptx`)
-
-      if (data) {
-        mkdirSync(FILES_DIR, { recursive: true })
-        writeFileSync(path, Buffer.from(data as ArrayBuffer))
-        return { id, name, ok: true, path }
-      }
-      return { id, name, ok: false, canceled: true, error: WEB_SAVE_UNSUPPORTED }
+      mkdirSync(FILES_DIR, { recursive: true })
+      writeFileSync(path, Buffer.from(data as ArrayBuffer))
+      return { id, name, ok: true, path }
     },
   )
 

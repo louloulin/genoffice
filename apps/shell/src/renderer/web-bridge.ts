@@ -41,7 +41,16 @@ import {
 } from '@genoffice/ipc-bridge/web-tabs'
 
 if (!isElectronRuntime()) {
-  const transport = createHttpIpcTransport()
+  // The server injects <meta name="genoffice-token" content="…"> on every
+  // HTML response when WEB_TOKEN is configured (apps/web-server/src/index.ts).
+  // We never see this on Electron (the IPC bridge is local), and on plain
+  // browsers the meta tag is the only way to ferry the secret across the
+  // CSP boundary — inline scripts are blocked, fetch requires auth first.
+  const meta = document.querySelector('meta[name="genoffice-token"]')
+  const token = meta?.getAttribute('content') ?? undefined
+  const transport = createHttpIpcTransport(
+    typeof token === 'string' && token.length > 0 ? { token } : {},
+  )
   const files = createWebFileBridge(transport)
   // SAFETY: lib.dom's Window declares no aiOffice / aiOfficeProject /
   // aiOfficeTabs fields. This module is the sole writer of those three keys

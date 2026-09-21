@@ -49,6 +49,45 @@ describe('auth gate', () => {
     })
   })
 
+
+    it('passes on matching auth_token cookie', () => {
+      process.env.WEB_TOKEN = 's3cret-token'
+      expect(isAuthorised(fakeRequest({ cookie: 'auth_token=s3cret-token' }))).toBe(true)
+    })
+    it('URL-decodes the cookie value before comparison', () => {
+      process.env.WEB_TOKEN = 's3cret-token'
+      // %33 decodes to '3', so the cookie 'auth_token=s%33cret-token' carries the raw token
+      // 's3cret-token' after RFC 6265 percent-decoding. The auth gate must match.
+      expect(isAuthorised(fakeRequest({ cookie: 'auth_token=s%33cret-token' }))).toBe(true)
+      // But a cookie that decodes to something different must still be rejected.
+      expect(isAuthorised(fakeRequest({ cookie: 'auth_token=s%34cret-token' }))).toBe(false)
+      // A cookie mixed in with siblings must still resolve.
+      expect(isAuthorised(fakeRequest({ cookie: 'other=foo; auth_token=s3cret-token; x=y' }))).toBe(true)
+    })
+    it('rejects mismatched cookie', () => {
+      process.env.WEB_TOKEN = 's3cret-token'
+      expect(isAuthorised(fakeRequest({ cookie: 'auth_token=wrong' }))).toBe(false)
+    })
+    it('rejects malformed cookie', () => {
+      process.env.WEB_TOKEN = 's3cret-token'
+      expect(isAuthorised(fakeRequest({ cookie: 'no_equals_sign' }))).toBe(false)
+      expect(isAuthorised(fakeRequest({ cookie: '' }))).toBe(false)
+    })
+    it('falls through to query-param token when cookie absent', () => {
+      process.env.WEB_TOKEN = 's3cret-token'
+      expect(
+        (function () {
+          const req = fakeRequest({}) as IncomingMessage & { url: { searchParams: { get: (n: string) => string | null } } }
+          req.url = { searchParams: { get: (n: string) => (n === 'token' ? 's3cret-token' : null) } }
+          return isAuthorised(req)
+        })(),
+      ).toBe(true)
+    })
+    it('cookie is checked alongside headers — header wins when both match', () => {
+      process.env.WEB_TOKEN = 's3cret-token'
+      expect(isAuthorised(fakeRequest({ authorization: 'Bearer s3cret-token', cookie: 'auth_token=other' }))).toBe(true)
+    })
+
   describe('public path allowlist', () => {
     it('always treats /health and /api/channels as public', () => {
       expect(isPublicApiPath('/health')).toBe(true)

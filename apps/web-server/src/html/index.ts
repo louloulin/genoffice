@@ -15,10 +15,13 @@ import {
   DATA_DIR,
   isManagedPath,
   PATH_OUTSIDE_STORAGE,
+  readStorageOrManagedBytes,
   registerHandle,
   requireManagedPath,
 } from '../common/index'
-import { NotFoundError } from '../ai/errors'
+import { atomicWriteFile } from '../common/atomic'
+import { recordRecentDoc } from '../common/document-stores'
+import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const HTML_DOC_DIR = join(DATA_DIR, 'html')
 const HTML_ASSET_DIR = join(DATA_DIR, 'html-assets')
@@ -113,21 +116,52 @@ export function registerHtmlHandlers(): void {
   registerHandle('html:consume-pending', () => null)
 
   registerHandle('html:read-file', async (_event: unknown, filePath: unknown) => {
-    const path = requireManagedPath('html:read-file', filePath)
-    if (!existsSync(path)) {
-      throw new NotFoundError('html:read-file', `File not found: ${path}`)
+    // HTML uploads flow through `web:save-file` and arrive here as a
+    // `storage://<backend>/<key>` URI. The legacy `requireManagedPath`
+    // branch refused those with "path is outside the web storage area";
+    // the storage-aware helper routes through the active backend so the
+    // uploaded bytes round-trip back to the renderer.
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      throw new NotFoundError('html:read-file', `File not found: ${String(filePath)}`)
     }
-    return readFileSync(path, 'utf8')
+    const bytes = await readStorageOrManagedBytes('html:read-file', filePath, '.html')
+    return bytes.toString('utf8')
   })
 
   registerHandle('html:save-file', async (_event: unknown, path: unknown, content: unknown) => {
-    // A write is destructive, so an unmanaged target is refused outright.
-    if (typeof path !== 'string' || !path || !isManagedPath(path)) {
-      return { ok: false, error: PATH_OUTSIDE_STORAGE }
+    // Containment + atomic write, mirroring the docs/markdown shape:
+    //   - `requireManagedPath` throws `InvalidArgumentError` (400) on a
+    //     non-string / empty / unmanaged target, replacing the previous
+    //     silent `{ ok: false, error }` so a stale path surfaces as a
+    //     structured IPC error.
+    //   - `atomicWriteFile` uses temp+rename (with Windows EPERM retry),
+    //     so a crash mid-write cannot leave a half-written HTML the
+    //     renderer would then reload as the live document. The previous
+    //     `writeFileSync` overwrote the file in place, which truncated to
+    //     zero bytes on a SIGKILL mid-write and bricked the open tab.
+    //   - Empty content is rejected by the shared kernel — a 0-byte HTML
+    //     is invariably a bug upstream and silently replacing a real
+    //     document with an empty one is worse than failing the call.
+    //   - Recents are recorded so the saved file lands in the home grid
+    //     immediately, matching `docs:save` / `markdown:save` behavior.
+    if (typeof path !== 'string' || !path) {
+      throw new InvalidArgumentError('html:save-file', 'path must be a non-empty string')
+    }
+    const safeTarget = requireManagedPath('html:save-file', path)
+    if (typeof content !== 'string') {
+      throw new InvalidArgumentError('html:save-file', 'content must be a string')
+    }
+    if (content.length === 0) {
+      // The shared kernel rejects a 0-byte payload, but we want the
+      // structured INVALID_ARGUMENT shape (400) instead of the catch
+      // block's swallowed { ok: false, error } — a renderer that ships
+      // an empty document needs a 4xx to branch correctly.
+      throw new InvalidArgumentError('html:save-file', 'content must not be empty')
     }
     try {
-      writeFileSync(path, typeof content === 'string' ? content : '', 'utf8')
-      return { ok: true, path }
+      atomicWriteFile(safeTarget, content)
+      await recordRecentDoc(safeTarget, { modified: true })
+      return { ok: true, path: safeTarget }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }
@@ -151,23 +185,14 @@ export function registerHtmlHandlers(): void {
     const target = resolveHtmlSaveTarget(value.path, value.suggestedName)
     if (!target) return { ok: false, error: 'html: no save target' }
     try {
-      // Same rm -rf hardening as the docs/markdown handlers: re-create the
-      // parent before each save so an out-of-band wipe of DATA_DIR does not
-      // ENOENT the first atomic write.
-      mkdirSync(dirname(target), { recursive: true })
-      const tmp = `${target}.tmp-${Date.now()}`
-      writeFileSync(tmp, value.text, 'utf8')
-      writeFileSync(target, value.text, 'utf8')
-      try {
-        readFileSync(tmp)
-      } catch {
-        /* ignore */
-      }
-      try {
-        unlinkSync(tmp)
-      } catch {
-        /* ignore */
-      }
+      // Use the shared atomic kernel (temp+rename, Windows EPERM retry,
+      // 0-byte guard) instead of the previous "write tmp, write target,
+      // unlink tmp" — that pattern overwrote `target` in place and then
+      // left the temp on disk after a crash. `atomicWriteFile` rejects
+      // empty payloads, which is the right behaviour: a renderer that
+      // emits an empty `text` field has lost its document model.
+      atomicWriteFile(target, value.text)
+      await recordRecentDoc(target, { modified: true })
       return { ok: true, path: target }
     } catch (e) {
       return { ok: false, error: (e as Error).message }

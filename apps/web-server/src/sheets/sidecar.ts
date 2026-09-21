@@ -13,6 +13,13 @@ import { fileURLToPath } from 'node:url'
 
 const PROTOCOL_VERSION = 1
 const OPEN_TIMEOUT_MS = 30_000
+/** Save commands stream whole workbooks through the sidecar and may run the
+ *  IronCalc recalc pipeline before writing bytes; an 8 MiB workbook's save
+ *  routinely takes 20+ seconds. A 5-minute cap leaves headroom for a slow
+ *  disk + a large formula graph, but still surfaces a hung sidecar as a
+ *  caller-visible error instead of a silent timeout. */
+const SAVE_TIMEOUT_MS = 300_000
+const ARCHIVE_TIMEOUT_MS = 180_000
 const MAX_STDERR_LENGTH = 8_192
 
 interface PendingRequest {
@@ -58,6 +65,65 @@ export class WebSheetsSidecar {
     readonly range: { startRow: number; endRow: number; startColumn: number; endColumn: number }
   }): Promise<unknown> {
     return this.request({ command: 'read_range', ...input })
+  }
+
+  /** Read the archive entry manifest for a workbook. The save pipeline
+   *  (`saveWorkbookViaSidecar`) needs this to plan cell edits against the
+   *  real on-disk entries before sending a `save_archive` payload. */
+  async archiveManifest(path: string): Promise<unknown> {
+    return this.request(
+      { command: 'archive_manifest', path },
+      ARCHIVE_TIMEOUT_MS,
+    )
+  }
+
+  /** Write a patched archive atomically. The payload is the in-memory
+   *  manifest of the source plus per-entry replacement/addition content
+   *  paths under the caller's work directory; the sidecar copies
+   *  untouched entries raw and validates the CRC against the manifest.
+   *  Used by `workbook:save` after `planCellEditsToXlsx` materialises
+   *  the edits into actual ZIP entries. */
+  async saveArchive(input: {
+    readonly sourcePath: string
+    readonly targetPath: string
+    readonly replacements: readonly { name: string; contentPath: string }[]
+    readonly removals: readonly string[]
+    readonly additions: readonly { name: string; contentPath: string }[]
+  }): Promise<unknown> {
+    return this.request(
+      { command: 'save_archive', ...input },
+      SAVE_TIMEOUT_MS,
+    )
+  }
+
+  /** Extract specific archive entries to a directory. Used by the save
+   *  planner's `EntrySource.readText` to materialise the OOXML parts it
+   *  needs to rewrite — shared XMLs, sheet XML, sharedStrings.xml, etc.
+   *  Untouched entries stay in the source archive and are copied raw by
+   *  `save_archive`. */
+  async readEntries(input: {
+    readonly path: string
+    readonly entries: readonly string[]
+    readonly outputDir: string
+  }): Promise<unknown> {
+    return this.request(
+      { command: 'read_entries', ...input },
+      ARCHIVE_TIMEOUT_MS,
+    )
+  }
+
+  /** Check whether a single archive entry contains a substring. The save
+   *  planner calls this before reading an entry's full text so it can
+   *  skip a several-MB part when no cell edit touches it. */
+  async scanEntries(input: {
+    readonly path: string
+    readonly entries: readonly string[]
+    readonly needle: string
+  }): Promise<unknown> {
+    return this.request(
+      { command: 'scan_entries', ...input },
+      ARCHIVE_TIMEOUT_MS,
+    )
   }
 
   stop(): void {

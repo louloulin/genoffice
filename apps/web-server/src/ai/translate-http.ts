@@ -38,6 +38,7 @@ import {
   translateBatchStream,
 } from '@genoffice/translation-core'
 
+import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from '../common/read-body'
 import {
   aiSettings as defaultSettings,
   ensureKbLoaded,
@@ -209,14 +210,11 @@ function writeSseEvent(
   }
 }
 
-async function readBody(request: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    request.on('data', (c: Buffer) => chunks.push(c))
-    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    request.on('error', reject)
-  })
-}
+/** Translate endpoints share the same body cap as IPC — the helper
+ *  is in `common/read-body` and rejects oversized requests with
+ *  PAYLOAD_TOO_LARGE (413) instead of pinning the server. */
+const readBody = (request: IncomingMessage): Promise<string> =>
+  readBodyWithCap(request, MAX_HTTP_BODY_BYTES)
 
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json' })

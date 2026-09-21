@@ -17,6 +17,7 @@ import {
 import type { FileInfo } from '../common/index'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
+import { InvalidArgumentError } from '../ai/errors'
 
 
 
@@ -99,6 +100,15 @@ export function registerFilesHandlers(): void {
     const mimeType = type || MIME_TYPES[extname(fileName)] || 'application/octet-stream'
     const bytes = new TextEncoder().encode(fileContent)
 
+    /* A no-argument or content-less call used to write a 0-byte file via
+     * `getStorageBackend().put`, which `atomicWriteFile` then rejected as
+     * a server-side fault — the e2e "unexplained 500" guard classified it
+     * as exactly that. Reject up front so the caller can tell its own
+     * malformed request from a real backend error. */
+    if (bytes.byteLength === 0) {
+      throw new InvalidArgumentError('files:create', 'content must be a non-empty string')
+    }
+
     /* Atomic write via the active backend; never call writeFileSync here —
      * a crash mid-write would leave a half-written file the renderer would
      * then try to parse as a real document. */
@@ -156,8 +166,11 @@ export function registerFilesHandlers(): void {
     if (path && isManagedPath(path) && existsSync(path)) {
       /* Path-based reads are only meaningful for the local backend — remote
        * backends have no concept of "the absolute path" the caller supplies.
-       * Fall back to the backend lookup by basename so the same call site works
-       * regardless of where the bytes live. */
+       * A previous iteration returned `null` silently for the remote case,
+       * which surfaced to the renderer as a generic "file missing" and
+       * obscured the real cause; throw a structured error so a misconfigured
+       * deployment (operator pointing `GENOFFICE_STORAGE` at minio while
+       * callers still hand us legacy filesystem paths) fails loudly. */
       if (getStorageBackend().id === 'local') {
         const { readFileSync } = require('node:fs') as typeof import('node:fs')
         const bytes = readFileSync(path)
@@ -171,6 +184,10 @@ export function registerFilesHandlers(): void {
           isBase64: true,
         }
       }
+      throw new InvalidArgumentError(
+        'files:read',
+        'path-based read requires the local storage backend; use id-based reads on remote backends',
+      )
     }
 
     return null

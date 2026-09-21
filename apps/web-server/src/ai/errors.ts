@@ -85,6 +85,10 @@ export function ipcErrorStatus(code: string | undefined): number {
       return 404
     case 'CORRUPT':
       return 422
+    case 'PAYLOAD_TOO_LARGE':
+      return 413
+    case 'CLIENT_ABORTED':
+      return 400
     default:
       return 500
   }

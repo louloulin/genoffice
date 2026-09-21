@@ -135,11 +135,16 @@ export function registerWebHandlers(): void {
     fileIndexStore.set(info)
 
     // Mirror the save into the home page recents list so the upload shows
-    // up immediately on the shell home tab. The recents key is the synthetic
-    // storage URI so a backend swap doesn't strand rows on disk that no
-    // longer resolve. `recordRecentDoc` writes both the legacy in-session
-    // mirror and the restart-safe store; awaiting it means the caller cannot
-    // observe the entry as missing.
+    // up immediately on the shell home tab. The recents key is the storage
+    // URI we return in `info.path` — that is the path the renderer holds
+    // after upload, so the `home:recents` rows and the upload response agree
+    // on the same identifier. Using a different key here (the FILES_DIR
+    // canonical path for the local backend) would force the renderer to
+    // re-translate the storage URI before it could correlate a recents row
+    // with what `web:save-file` just returned, and the lookup silently
+    // missed for every upload. `recordRecentDoc` writes both the legacy
+    // in-session mirror and the restart-safe store; awaiting it means the
+    // caller cannot observe the entry as missing.
     await recordRecentDoc(info.path, {
       id: basename(fileId, extname(fileId)),
       name: safeName,

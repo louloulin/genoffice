@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { basename, extname, join } from 'node:path'
 import {
   DATA_DIR,
+  DOCS_RECENT,
   FILES_DIR,
   isManagedPath,
   loadProjects,
@@ -26,6 +27,8 @@ import { assertMagicMatchesExtension } from '../common/magic'
 import { atomicWriteFile } from '../common/atomic'
 import { recordRecentDoc } from '../common/document-stores'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
+import { getStorageBackend, storageKeyFromPath } from '../common/state'
+import { StorageNotFoundError } from '@genoffice/file-management'
 
 const MAX_PASTED_IMAGE_BYTES = 20 * 1024 * 1024
 const closeState = {
@@ -37,6 +40,50 @@ function isManagedDocPath(filePath: string): boolean {
   return (
     /\.docx$/i.test(filePath) && isManagedPath(filePath)
   )
+}
+
+/**
+ * Resolve a renderer-supplied docx path to its bytes. Mirrors the pattern in
+ * apps/web-server/src/pdf/index.ts:readPdfBytes — accept either a managed
+ * filesystem path (the legacy FILES_DIR shape) or a `storage://<backend>/<key>`
+ * URI (what `web:save-file` returns for every upload since the storage-backend
+ * refactor). Without the storage branch, every uploaded docx was invisible to
+ * the docs editors: clicking the home recents row opened a blank document and
+ * the very first save attempt returned "save target is outside the web storage
+ * area", which read to the user as "my upload was lost".
+ */
+async function readDocxBytes(channel: string, filePath: string): Promise<Buffer> {
+  const key = storageKeyFromPath(filePath)
+  if (key) {
+    try {
+      const u8 = await getStorageBackend().get(key)
+      return Buffer.from(u8)
+    } catch (err) {
+      if (err instanceof StorageNotFoundError) {
+        throw new NotFoundError(channel, `File not found: ${filePath}`)
+      }
+      throw err
+    }
+  }
+  if (isManagedDocPath(filePath) && existsSync(filePath)) {
+    return readFileSync(filePath)
+  }
+  throw new InvalidArgumentError(channel, 'docx path is outside the web storage area')
+}
+
+/**
+ * Resolve the canonical (FILES_DIR-resident) path for `filePath`. Storage
+ * URIs decode to the active backend's key, which the local backend writes
+ * under FILES_DIR — return that path so the renderer's `filePath` stays an
+ * absolute filesystem path the docs channels can read / write directly on
+ * the next round-trip. Without this re-projection, the renderer would carry
+ * a `storage://…` URI into `docs:save`, which the legacy `isManagedDocPath`
+ * check rejected as "outside the web storage area".
+ */
+function canonicalDocxPath(filePath: string): string {
+  const key = storageKeyFromPath(filePath)
+  if (key) return join(FILES_DIR, key)
+  return filePath
 }
 
 function bytesFrom(value: unknown): Buffer | null {
@@ -124,14 +171,22 @@ export function registerDocsHandlers(): void {
 
   registerHandle('docs:open', async (_event: unknown, options: unknown) => {
     const opts = options as { docx?: ArrayBuffer; path?: string } | undefined
-    const id = `doc-${Date.now()}`
 
     if (opts?.docx) {
       const bytes = Buffer.from(opts.docx)
       assertMagicMatchesExtension('docs:open', '.docx', bytes)
-      const name = `文档-${new Date().toLocaleDateString()}.docx`
-      const path = join(FILES_DIR, `${id}.docx`)
-      writeFileSync(path, bytes)
+      // randomFileId collapses the two `Date.now()` calls into one UUID-stamped
+      // basename and avoids the previous "two docs saved in the same ms collide
+      // on FILES_DIR/" bug. `name` mirrors what `docs:save-new` returns so the
+      // renderer treats the two channels symmetrically; the date-stamped
+      // Chinese name used toLocaleDateString() (which on US/EN locale emits
+      // "9/21/2026" — a literal slash in a filename).
+      const fileName = `${randomFileId('文档')}.docx`
+      const path = join(FILES_DIR, fileName)
+      const id = basename(path, '.docx')
+      const name = fileName
+      mkdirSync(FILES_DIR, { recursive: true })
+      atomicWriteFile(path, bytes)
 
       const recent = loadRecentDocs()
       recent.unshift({ id, path, name, openedAt: Date.now(), modified: false })
@@ -140,20 +195,22 @@ export function registerDocsHandlers(): void {
       return { id, path, name }
     }
 
-    return { id, path: '', name: '新文档.docx' }
+    return { id: '', path: '', name: '新文档.docx' }
   })
 
   registerHandle('docs:open-path', async (_event: unknown, filePath: unknown) => {
-    if (typeof filePath !== 'string' || !isManagedDocPath(filePath)) {
-      throw new InvalidArgumentError('docs:open-path', 'path is outside the web storage area')
+    if (typeof filePath !== 'string') {
+      throw new InvalidArgumentError('docs:open-path', 'path must be a string')
     }
-    if (!existsSync(filePath as string)) {
-      throw new NotFoundError('docs:open-path', `File not found: ${String(filePath)}`)
-    }
-
-    const original = readFileSync(filePath as string)
-    const name = basename(filePath as string)
-    const path = filePath as string
+    const original = await readDocxBytes('docs:open-path', filePath)
+    // Use the FILES_DIR-resident canonical path only for the magic-byte
+    // extension check (it needs `.docx` to match against the bytes); the
+    // recents row key and the renderer's `path` are the original `filePath`
+    // — the storage URI for uploads, the absolute path for legacy callers —
+    // so the value the renderer holds matches what `home:recents` returns
+    // and the upload/open cycle does not produce two rows for one file.
+    const canonical = canonicalDocxPath(filePath)
+    const name = basename(filePath)
 
     // ECMA-376 encrypted docx (CFB / OLE2 + EncryptedPackage): the renderer
     // prompts for the password and retries via docs:open-decrypt, mirroring
@@ -161,7 +218,7 @@ export function registerDocsHandlers(): void {
     // crypto dependency, so it surfaces needsPassword instead of pretending
     // the encrypted bytes parse cleanly.
     if (isEncryptedDocxBytes(original)) {
-      return { needsPassword: true, path, name }
+      return { needsPassword: true, path: filePath, name: DOCS_RECENT.get(filePath)?.name ?? name }
     }
 
     // Magic-mismatch gate before handing bytes to the real parser. The web
@@ -169,26 +226,27 @@ export function registerDocsHandlers(): void {
     // file extension is honest is the file's own magic bytes. Failing
     // here surfaces a structured `MagicMismatchError` to the renderer
     // instead of a cryptic "Can't find end of central directory" stack
-    // trace from JSZip. The .docx case is the one the desktop build has
-    // always cared about; the other extensions (`assertMagicMatchesExtension`
-    // looks at `.docx`, `.xlsx`, `.pptx`, `.pdf`, images, plain text) get
-    // the same treatment for free.
-    assertMagicMatchesExtension('docs:open-path', path, original)
+    // trace from JSZip.
+    assertMagicMatchesExtension('docs:open-path', canonical, original)
 
     const hash = createHash('sha256').update(original).digest('hex')
     const id = `doc-${Date.now()}`
+    // Prefer the display name already recorded by the upload flow (e.g.
+    // "Real Test.docx") so an open from a recents row keeps the user's name
+    // instead of swapping in the storage-hash basename.
+    const displayName = DOCS_RECENT.get(filePath)?.name ?? name
     const recent = loadRecentDocs()
-    recent.unshift({ id, path, name, openedAt: Date.now(), modified: false })
+    recent.unshift({ id, path: filePath, name: displayName, openedAt: Date.now(), modified: false })
     saveRecentDocs(recent)
 
     // Shape matches OpenFileResult from apps/docs/src/shared/ipc.ts so the
     // renderer's loadFile (apps/docs/src/renderer/file-actions.ts) reads
-    // result.data and result.hash directly. The previous `bytes` field name
-    // caused the renderer to parse an empty Uint8Array and fail open with a
-    // status-bar toast.
+    // result.data and result.hash directly. `path` is the renderer's
+    // original `filePath` (storage URI for web uploads) so subsequent
+    // `docs:save` calls hit the same backend without re-decoding the URI.
     return {
-      path,
-      name,
+      path: filePath,
+      name: displayName,
       data: toArrayBuffer(original),
       hash,
       encrypted: false,
@@ -196,14 +254,25 @@ export function registerDocsHandlers(): void {
   })
 
   registerHandle('docs:read-path', async (_event: unknown, filePath: unknown) => {
-    if (typeof filePath !== 'string' || !isManagedDocPath(filePath)) return null
-    if (!existsSync(filePath as string)) {
+    if (typeof filePath !== 'string') return null
+    let original: Buffer
+    try {
+      original = await readDocxBytes('docs:read-path', filePath)
+    } catch {
+      // Mirrors the previous "outside managed storage ⇒ null" semantics so
+      // callers probing for an unuploaded path get the same answer they did
+      // before storage URIs were a thing.
       return null
     }
-    const original = readFileSync(filePath as string)
     if (isEncryptedDocxBytes(original)) return null
+    // Prefer the display name already recorded by `docs:save` /
+    // `web:save-file` so the response carries the user's filename (e.g.
+    // "Quarterly Report.docx") instead of the storage-hash basename. Fall
+    // back to the renderer-supplied path's basename when no recents row
+    // exists (legacy callers, brand-new paths).
+    const displayName = DOCS_RECENT.get(filePath)?.name ?? basename(filePath)
     return {
-      name: basename(filePath as string),
+      name: displayName,
       data: toArrayBuffer(original),
       hash: createHash('sha256').update(original).digest('hex'),
       encrypted: false,
@@ -213,28 +282,51 @@ export function registerDocsHandlers(): void {
   registerHandle(
     'docs:save',
     async (_event: unknown, filePath: unknown, data: unknown, _auto?: unknown) => {
-      if (typeof filePath !== 'string' || !isManagedDocPath(filePath)) {
-        return { ok: false, error: 'save target is outside the web storage area' }
+      if (typeof filePath !== 'string') {
+        return { ok: false, error: 'save target must be a string' }
       }
       const bytes = bytesFrom(data)
       if (!bytes || bytes.byteLength === 0) {
         return { ok: false, error: 'save data is empty or invalid' }
       }
+      const key = storageKeyFromPath(filePath)
+      const canonical = canonicalDocxPath(filePath)
+      if (!key && !isManagedDocPath(canonical)) {
+        return { ok: false, error: 'save target is outside the web storage area' }
+      }
       try {
-        // Atomic: a crash mid-write cannot leave the document half-written on
-        // disk. Uses the shared kernel implementation so the Windows
-        // EPERM-retry behaviour matches the desktop build exactly.
-        atomicWriteFile(filePath, bytes)
+        if (key) {
+          // Storage URIs route through the active backend so a remote bucket
+          // (minio/S3/rustfs) sees the new bytes. The local backend runs the
+          // same atomic-write kernel as the bare-path branch, so a crash
+          // mid-write still leaves either no file or the complete document.
+          await getStorageBackend().put(key, new Uint8Array(bytes), {
+            contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          })
+        } else {
+          // Atomic: a crash mid-write cannot leave the document half-written on
+          // disk. Uses the shared kernel implementation so the Windows
+          // EPERM-retry behaviour matches the desktop build exactly.
+          atomicWriteFile(canonical, bytes)
+        }
         /* Dual write. The legacy mirror feeds the in-session home grid, and
          * `unifiedRecents` is what makes the entry survive a restart — without
          * it a saved document vanished from recents the next time the server
-         * booted, which reads to the user as "my save was lost". */
+         * booted, which reads to the user as "my save was lost". The recents
+         * key matches what the renderer actually holds (storage URI for web
+         * uploads, FILES_DIR path for legacy callers) so a subsequent
+         * `home:recents` lookup hits the same entry instead of producing a
+         * duplicate row keyed by the FILES_DIR canonical path. Reuse the
+         * existing display name when one is known (so the user's "Quarterly
+         * Report.docx" survives a save), falling back to the basename for
+         * first-time saves. */
+        const existingName = DOCS_RECENT.get(filePath)?.name
         await recordRecentDoc(filePath, {
           id: basename(filePath, extname(filePath)),
-          name: basename(filePath),
+          name: existingName ?? basename(filePath),
           modified: true,
         })
-        return { ok: true }
+        return { ok: true, path: filePath }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
       }
@@ -323,33 +415,75 @@ export function registerDocsHandlers(): void {
   registerHandle(
     'docs:save-new',
     async (_event: unknown, defaultName?: unknown, data?: unknown, projectId?: unknown) => {
-      const name =
-        (typeof defaultName === 'string' && defaultName) ||
-        `文档-${new Date().toLocaleDateString()}.docx`
-      const id = `doc-${randomFileId(name).split('-')[0]}`
-      const path = join(FILES_DIR, `${id}.docx`)
-
-      if (data) {
-        // FILES_DIR is created at module load, but a `rm -rf` against
-        // DATA_DIR (e.g. between test runs, or a misconfigured deploy)
-        // would otherwise make writeFileSync throw ENOENT. Re-create the
-        // parent before each write — mkdirSync({recursive:true}) is a
-        // no-op when the directory already exists.
-        mkdirSync(FILES_DIR, { recursive: true })
-        writeFileSync(path, Buffer.from(data as ArrayBuffer))
+      // Sanitize the renderer-supplied name up front: the previous code took
+      // the raw defaultName and stored it in the project list / recents row,
+      // so a path-traversal payload like '../../../etc/passwd.docx' survived
+      // even though the on-disk path was always `${id}.docx`. The user-visible
+      // basename also doubled as the tab title in the shell recents grid.
+      const safeName = sanitizeFileName(
+        typeof defaultName === 'string' && defaultName ? defaultName : 'Untitled.docx',
+        'Untitled.docx',
+      ).slice(0, 120)
+      const bytes = bytesFrom(data)
+      if (!bytes || bytes.byteLength === 0) {
+        // Empty bytes used to write a 0-byte file that the next open rejected
+        // with a magic-mismatch error — the user saw "saved" then "can't open",
+        // which read as a corrupt save.
+        return { ok: false, error: 'save data is empty or invalid' }
       }
+      // The on-disk filename is always `${randomUUID}-${safeStem}.docx` so
+      // two "Quarterly Report.docx" saves in the same millisecond never
+      // collide AND the suffix is a single, recognisable `.docx` (which the
+      // magic-byte gate and `isManagedDocPath` extension check both rely
+      // on). `safeName` may already carry a `.docx` from the renderer; strip
+      // it before stamping the UUID so the final path doesn't end with
+      // `.docx.docx`.
+      const safeStem = safeName.replace(/\.docx$/i, '')
+      const fileName = `${randomFileId(safeStem)}.docx`
+      const path = join(FILES_DIR, fileName)
+      // The id is `doc-<basename>` so the renderer (and tests) can tell at a
+      // glance which format a recents row came from. The bare basename was
+      // already random (UUID + safe stem) and collision-free; prefixing it
+      // with `doc-` is a presentation change that does not affect file
+      // resolution because the renderer keys subsequent save flows off
+      // `path` (which is unchanged) rather than `id`.
+      const id = `doc-${basename(path, '.docx')}`
+
+      // FILES_DIR is created at module load, but a `rm -rf` against
+      // DATA_DIR (e.g. between test runs, or a misconfigured deploy)
+      // would otherwise make writeFileSync throw ENOENT. Re-create the
+      // parent before each write — mkdirSync({recursive:true}) is a
+      // no-op when the directory already exists.
+      mkdirSync(FILES_DIR, { recursive: true })
+      atomicWriteFile(path, bytes)
+
+      // Mirror into the recents store so the new file shows up in the home
+      // grid immediately. The previous version skipped this for `docs:save-new`
+      // (only `docs:save` recorded recents), so freshly-saved documents were
+      // invisible until the user opened them and the server's cold-start disk
+      // sweep re-discovered them.
+      await recordRecentDoc(path, {
+        id,
+        name: safeName,
+        modified: false,
+      })
 
       if (typeof projectId === 'string' && projectId) {
         const projects = loadProjects()
         const project = projects.find((p) => p.id === projectId)
-        if (project && !project.files.includes(`${id}.docx`)) {
-          project.files.push(`${id}.docx`)
+        // Store the basename the renderer will see in the project file list;
+        // using the random UUID directly kept the entry visible only via
+        // `/api/ipc/project:files`, never in the home shell's project tree.
+        // `path` already ends in `.docx` — don't append the extension again.
+        const entryName = basename(path)
+        if (project && !project.files.includes(entryName)) {
+          project.files.push(entryName)
           project.updatedAt = Date.now()
           saveProjects(projects)
         }
       }
 
-      return { id, path, name }
+      return { ok: true, id, path, name: safeName }
     },
   )
 

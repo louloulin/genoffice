@@ -1,10 +1,22 @@
 /**
  * Markdown channels — single channel for reading markdown asset files.
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { atomicWriteFile } from '../common/atomic'
 import { basename, dirname, extname, join } from 'node:path'
-import { DATA_DIR, isManagedPath, registerHandle, requireManagedPath } from '../common/index'
+import {
+  DATA_DIR,
+  DOCS_RECENT,
+  FILES_DIR,
+  isManagedPath,
+  readStorageOrManagedBytes,
+  registerHandle,
+  requireManagedPath,
+  sanitizeFileName,
+} from '../common/index'
 import { NotFoundError } from '../ai/errors'
+import { storageKeyFromPath } from '../common/state'
+import { recordRecentDoc } from '../common/document-stores'
 
 const MARKDOWN_ASSET_DIR = join(DATA_DIR, 'markdown-assets')
 const IMAGE_MIME: Record<string, string> = {
@@ -48,11 +60,17 @@ export function registerMarkdownHandlers(): void {
   })
 
   registerHandle('markdown:read-file', async (_event: unknown, filePath: unknown) => {
-    const path = requireManagedPath('markdown:read-file', filePath)
-    if (!existsSync(path)) {
-      throw new NotFoundError('markdown:read-file', `File not found: ${path}`)
+    // `requireManagedPath` only accepts filesystem paths inside DATA_DIR /
+    // WEB_TEMP_ROOT, but `web:save-file` returns a `storage://` URI for
+    // uploads. Without the storage branch a freshly-uploaded markdown file
+    // answered "path is outside the web storage area" every time the
+    // renderer tried to read it back — the recents row pointed at a URI
+    // the read channel could not resolve.
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      throw new NotFoundError('markdown:read-file', `File not found: ${String(filePath)}`)
     }
-    return readFileSync(path, 'utf8')
+    const bytes = await readStorageOrManagedBytes('markdown:read-file', filePath, '.md')
+    return bytes.toString('utf8')
   })
 
   // markdown:save mirrors the desktop `markdown-main` save channel so the
@@ -60,7 +78,7 @@ export function registerMarkdownHandlers(): void {
   // tracks the current document path (from `?open=` or the last save) and
   // passes it as `request.path`; here we either overwrite atomically or
   // allocate a new managed file under DATA_DIR.
-  registerHandle('markdown:save', (_event: unknown, request: unknown) => {
+  registerHandle('markdown:save', async (_event: unknown, request: unknown) => {
     const value = request as {
       text?: unknown
       mode?: unknown
@@ -69,22 +87,44 @@ export function registerMarkdownHandlers(): void {
     } | null
     if (!value || typeof value.text !== 'string')
       return { ok: false, error: 'markdown: bad save request' }
-    const target = resolveMarkdownTarget(value.path, value.suggestedName)
-    if (!target) return { ok: false, error: 'markdown: no save target' }
+    if (value.text.length === 0)
+      return { ok: false, error: 'markdown: refusing to save empty document' }
     try {
-      // DATA_DIR is created at module load, but a `rm -rf` between boot and
-      // first save would otherwise ENOENT on the atomic tmp write. The
-      // recursive mkdir is a no-op when the directory already exists.
-      mkdirSync(dirname(target), { recursive: true })
-      const tmp = `${target}.tmp-${Date.now()}`
-      writeFileSync(tmp, value.text, 'utf8')
-      writeFileSync(target, value.text, 'utf8')
-      try {
-        unlinkSync(tmp)
-      } catch {
-        /* tmp already gone */
-      }
-      return { ok: true, path: target }
+      const target = resolveMarkdownTarget(value.path, value.suggestedName)
+      // The previous handler treated any `*.md` path whose basename matched
+      // its last segment as "managed". That accepted /etc/passwd-shaped inputs
+      // (a path ending in `.md` outside DATA_DIR slipped through because
+      // `path.endsWith(basename(path))` is always true), so a malicious
+      // renderer could overwrite arbitrary files on the host. Route through
+      // the same requireManagedPath the docs / html / pdf handlers use; the
+      // path now MUST live inside DATA_DIR + WEB_TEMP_ROOT.
+      const safeTarget = requireManagedPath('markdown:save', target)
+      mkdirSync(dirname(safeTarget), { recursive: true })
+      atomicWriteFile(safeTarget, Buffer.from(value.text, 'utf8'))
+      // Mirror into the home recents grid so the new file shows up
+      // immediately. Key the recents row by whatever path the renderer
+      // supplied (storage URI for an upload, FILES_DIR path for an existing
+      // doc) so a subsequent upload + open + save sequence does not produce
+      // two recents rows for the same file. `safeTarget` is the FILES_DIR
+      // canonical we just wrote; we use it as the fallback when the
+      // renderer allocated a new file (no input path) so the entry still
+      // keys to a stable identifier the renderer can re-use.
+      const recentsKey =
+        typeof value.path === 'string' && value.path ? value.path : safeTarget
+      // Preserve the display name the upload already recorded. The
+      // basenamed recentsKey is a content-addressed hash; without this
+      // lookup the user's "note.md" gets clobbered to "5cc6803b...md"
+      // on the first save, which read as the home tile renaming
+      // itself after edit. Falls back to the basename when no
+      // previous entry exists (new allocation path).
+      const existingName =
+        typeof recentsKey === 'string' ? DOCS_RECENT.get(recentsKey)?.name : undefined
+      await recordRecentDoc(recentsKey, {
+        id: basename(recentsKey, '.md'),
+        name: existingName ?? basename(recentsKey),
+        modified: true,
+      })
+      return { ok: true, path: recentsKey }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }
@@ -111,14 +151,41 @@ export function registerMarkdownHandlers(): void {
 }
 
 function safeMarkdownName(name: string): string {
-  return basename(name).replace(/[^\w.\- ]+/g, '_') || `Untitled-${Date.now()}.md`
+  return sanitizeFileName(name, `Untitled-${Date.now()}.md`)
 }
 
 function resolveMarkdownTarget(path: unknown, suggested: unknown): string | null {
-  if (typeof path === 'string' && path && path.endsWith('.md')) {
-    const safe = basename(path)
-    if (path === join(DATA_DIR, safe)) return path
-    if (path.endsWith(safe)) return path
+  // Storage URI: round-trip through the backend so we can hand back the
+  // canonical FILES_DIR-resident path (the active backend writes to FILES_DIR
+  // for the local case). Storage-backed markdown uploads previously returned
+  // the storage URI unchanged and silently dropped the bytes — there was no
+  // writeFileSync call, so the user saw a save success toast against bytes
+  // that never landed.
+  if (typeof path === 'string' && path && path.startsWith('storage://')) {
+    const key = storageKeyFromPath(path)
+    if (key) return join(FILES_DIR, key)
+    return null
+  }
+  // Renderer-supplied bare path. The previous handler treated any `*.md` whose
+  // basename matched its tail as "managed" — `/tmp/genoffice-data/../etc/passwd.md`
+  // and `/etc/passwd.md` both "matched" themselves, so writeFileSync happily
+  // created arbitrary files on the host. Require the path to be inside managed
+  // storage AND have a `.md` suffix; anything else falls through to a fresh
+  // allocation, which is the right behaviour for the renderer's "no path yet"
+  // case but a deliberate refusal would surface as a 400 from requireManagedPath
+  // for a malformed renderer path.
+  if (typeof path === 'string' && path && isManagedPath(path) && path.endsWith('.md')) {
+    return path
+  }
+  // No path supplied (or the path was outside managed storage): allocate a
+  // fresh file under DATA_DIR using the suggested name. We only reach this
+  // branch when `path` is empty / null / unmanaged — the renderer's tracked
+  // `currentPath` always points at a managed file once a save has succeeded.
+  if (typeof path === 'string' && path) {
+    // Non-empty but unmanaged path: refuse explicitly so a renderer-side
+    // regression (stale `currentPath`, rogue extension) doesn't silently
+    // succeed against a brand-new file.
+    return null
   }
   const base =
     typeof suggested === 'string' && suggested.trim()

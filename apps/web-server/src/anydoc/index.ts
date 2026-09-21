@@ -18,7 +18,14 @@ import {
   extractDocxTables,
   parseFileToText,
 } from '@genoffice/file-parse'
-import { FILES_DIR, isManagedPath, registerHandle, requireManagedPath } from '../common/index'
+import {
+  DOCS_RECENT,
+  FILES_DIR,
+  isManagedPath,
+  readStorageOrManagedBytes,
+  registerHandle,
+  requireManagedPath,
+} from '../common/index'
 import { NotFoundError } from '../ai/errors'
 
 interface AnyDocConfig {
@@ -43,15 +50,64 @@ export function registerAnydocHandlers(): void {
 
   registerHandle('anydoc:recognize', async (_event: unknown, args: unknown) => {
     const { filePath } = args as { filePath: string; options?: { ocr?: boolean; language?: string } }
-    const path = requireManagedPath('anydoc:recognize', filePath)
-    if (!existsSync(path)) {
-      throw new NotFoundError('anydoc:recognize', `File not found: ${path}`)
+    // Accept either a FILES_DIR path or a `storage://` URI: uploaded files
+    // arrive here as URIs, but `requireManagedPath` only handles filesystem
+    // paths. Stage the URI's bytes into FILES_DIR/<key> so the parser can
+    // see them.
+    let parsePath: string
+    let staged: string | null = null
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      throw new NotFoundError('anydoc:recognize', `File not found: ${String(filePath)}`)
+    }
+    let displayName: string | null = null
+    if (filePath.startsWith('storage://')) {
+      const bytes = await readStorageOrManagedBytes('anydoc:recognize', filePath, '')
+      // The storage key is the path the local backend wrote; reuse it
+      // so the staged name is recognisable in `ls` for debugging.
+      const key = filePath.replace(/^storage:\/\/[^/]+\//, '')
+      // Insert the timestamp before the extension so `parseFileToText` sees
+      // the original `.md` / `.docx` / etc. instead of `.staged-<ts>`.
+      const dot = key.lastIndexOf('.')
+      const stem = dot > 0 ? key.slice(0, dot) : key
+      const ext = dot > 0 ? key.slice(dot) : ''
+      staged = join(FILES_DIR, `${basename(stem) || 'upload'}.staged-${Date.now()}${ext}`)
+      // Prefer the display name already recorded by `web:save-file` so
+      // the result carries the user's filename (e.g. "Quarterly
+      // Report.docx") instead of the storage-hash basename. Falls back
+      // to the storage key basename for paths without a recents row.
+      const recentsName = DOCS_RECENT.get(filePath)?.name
+      displayName = recentsName ?? basename(key) ?? basename(staged)
+      require('node:fs').writeFileSync(staged, bytes)
+      parsePath = staged
+    } else {
+      parsePath = requireManagedPath('anydoc:recognize', filePath)
+      if (!existsSync(parsePath)) {
+        throw new NotFoundError('anydoc:recognize', `File not found: ${parsePath}`)
+      }
     }
 
-    const ext = extname(path).toLowerCase()
-    const fileName = basename(path)
-    const parsed = await parseFileToText(path)
-    const stats = statSync(path)
+    const ext = extname(parsePath).toLowerCase()
+    // For storage URIs the user uploaded under a particular name; show
+    // that name in the response instead of the temp staging filename.
+    const fileName = displayName ?? basename(parsePath)
+    let parsed
+    let stats
+    try {
+      // Stat BEFORE unstage: statSync on the staged copy needs the file
+      // to exist on disk, and the metadata is what gets returned to the
+      // renderer as the upload's size / mtime.
+      stats = statSync(parsePath)
+      parsed = await parseFileToText(parsePath)
+    } finally {
+      if (staged) {
+        try {
+          require('node:fs').unlinkSync(staged)
+        } catch {
+          /* ignore — the staged filename carries Date.now(), so a
+           * follow-up recognise never collides with the orphan */
+        }
+      }
+    }
 
     // an image has no text layer; without an OCR engine the honest answer is
     // "recognised nothing", not fabricated transcript text

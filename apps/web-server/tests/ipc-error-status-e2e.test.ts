@@ -164,3 +164,45 @@ describe('IPC transport status mapping', () => {
     expect(body.result?.supported).toBe(false)
   })
 
+  describe('request body cap', () => {
+    // The web server used to readBody() without any upper bound, so a hostile
+    // client could pin the server by streaming an unbounded body — Node's HTTP
+    // parser kept producing 'data' events until the upstream socket closed.
+    // Counting as we go now lets us short-circuit past the cap and surface a
+    // structured 413 instead of an OOM. The web:save-file channel accepts
+    // up to MAX_UPLOAD_BYTES (100 MiB) raw, which becomes ~134 MiB base64
+    // inside the JSON envelope; MAX_HTTP_BODY_BYTES (200 MiB) leaves a
+    // comfortable headroom. We assert the cap is enforced without breaking
+    // anything smaller.
+    it('rejects a body that crosses MAX_HTTP_BODY_BYTES with PAYLOAD_TOO_LARGE (413)', async () => {
+      const big = JSON.stringify({ args: ['x'.repeat(220 * 1024 * 1024)] })
+      const res = await fetch(`${base}/api/ipc/${encodeURIComponent('app:get-theme')}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: big,
+      })
+      expect(res.status).toBe(413)
+      const body = (await res.json()) as { error?: { code?: string; message?: string } }
+      expect(body.error?.code).toBe('PAYLOAD_TOO_LARGE')
+      expect(body.error?.message).toContain('209715200')
+    }, 60_000)
+
+    it('still answers a normal request after a body-cap rejection', async () => {
+      const big = JSON.stringify({ args: ['x'.repeat(220 * 1024 * 1024)] })
+      // First: blow up the cap.
+      await fetch(`${base}/api/ipc/${encodeURIComponent('app:get-theme')}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: big,
+      })
+      // Then: same server must still be alive.
+      const res = await fetch(`${base}/api/ipc/${encodeURIComponent('app:get-theme')}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ args: [] }),
+      })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { result?: unknown }
+      expect(body.result).toBe('light')
+    }, 60_000)
+  })

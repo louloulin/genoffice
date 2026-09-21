@@ -99,6 +99,16 @@ export interface HttpIpcTransportOptions {
   baseUrl?: string
   /** Optional URL path prefix when the web server is reverse-proxied below a subpath. */
   pathPrefix?: string
+  /**
+   * Bearer token for the auth gate. When the server is started with
+   * `WEB_TOKEN=…`, every IPC call must carry the same value — the server
+   * injects it into the served HTML as `window.__genofficeAuth`, and the
+   * renderer's web-bridge reads it from there and passes it here. The
+   * transport sends it as `Authorization: Bearer …` for fetch requests and
+   * as a `?token=…` query parameter for the EventSource stream (which the
+   * browser API cannot carry custom headers on).
+   */
+  token?: string
 }
 
 export function createHttpIpcTransport(options: HttpIpcTransportOptions = {}): IpcTransport {
@@ -106,14 +116,23 @@ export function createHttpIpcTransport(options: HttpIpcTransportOptions = {}): I
   const pathPrefix = (options.pathPrefix ?? '').replace(/^\/+|\/+$/g, '')
   const apiPrefix = pathPrefix ? `/${pathPrefix}` : ''
   const session = createSessionId()
-  const pushHub = createPushHub(base, apiPrefix, session)
+  const token = options.token
+  const pushHub = createPushHub(base, apiPrefix, session, token)
 
   async function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
     let response: Response
     try {
+      const headers: Record<string, string> = {
+        'content-type': 'application/json',
+        'x-ipc-session': session,
+      }
+      // `Authorization: Bearer …` is the documented carrier. Server accepts
+      // this on /api/ipc/:channel POSTs; SSE has to fall back to ?token=
+      // because EventSource strips custom headers on cross-origin.
+      if (token) headers.authorization = `Bearer ${token}`
       response = await fetch(`${base}${apiPrefix}/api/ipc/${encodeURIComponent(channel)}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-ipc-session': session },
+        headers,
         body: JSON.stringify({ args: args.map((arg) => encodeTransportValue(arg)) }),
       })
     } catch (cause) {
@@ -157,13 +176,19 @@ function createSessionId(): string {
  * buffered server-side per session, so subscribing after an `invoke` — or a
  * stream that reconnects — still receives every frame.
  */
-function createPushHub(base: string, apiPrefix: string, session: string) {
+function createPushHub(base: string, apiPrefix: string, session: string, token?: string) {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
   let source: EventSource | null = null
 
   function ensureSource(): void {
     if (source || typeof EventSource === 'undefined') return
-    source = new EventSource(`${base}${apiPrefix}/api/ipc/events?session=${encodeURIComponent(session)}`)
+    // EventSource cannot carry custom headers — the server's auth gate
+    // accepts the same secret as `?token=` so the SSE stream survives a
+    // WEB_TOKEN-configured boot. The transport-side string is what the
+    // server injected into the served HTML; we never compare it client-side.
+    const params = new URLSearchParams({ session })
+    if (token) params.set('token', token)
+    source = new EventSource(`${base}${apiPrefix}/api/ipc/events?${params.toString()}`)
     source.onmessage = (event) => {
       let frame: { channel: string; args: unknown[] }
       try {

@@ -23,7 +23,7 @@
  * collab,enterprise,common,anydoc,web}`). See LUM-553 for the refactor plan.
  */
 import { createServer, type IncomingMessage, ServerResponse } from 'node:http'
-import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve, extname, sep } from 'node:path'
 
 import {
@@ -44,6 +44,7 @@ import {
 } from './common/index'
 import { fileIndexStore } from './common/file-index-store'
 import { flushFileManagementState } from './common/document-stores'
+import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from './common/read-body'
 import { registerAiHandlers, AI_STREAM_SESSIONS, runProviderStream } from './ai/index'
 import { classifyWebError, ipcErrorStatus, InvalidArgumentError } from './ai/errors'
 import {
@@ -67,6 +68,21 @@ import { registerEnterpriseHandlers } from './enterprise/index'
 import { registerAnydocHandlers } from './anydoc/index'
 import { registerWebHandlers } from './web/index'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
+
+function authCookieHeader(): string | null {
+  const token = process.env.WEB_TOKEN
+  if (!token) return null
+  // Token is treated as a cookie value (RFC 6265 §4.1.1): characters
+  // outside the allowed set are percent-encoded by encodeURIComponent so
+  // the browser parses the Set-Cookie header cleanly. The auth gate
+  // reverses the encoding with decodeURIComponent before comparing.
+  // Path=/ so every IPC call (mounted under /api/ipc/…) sees the cookie.
+  // Max-Age is set to one week so a long-running editor session does not
+  // suddenly lose auth; the operator can clear it via DevTools if they
+  // need to invalidate. HttpOnly keeps the cookie out of document.cookie
+  // so an XSS payload inside the editor cannot exfiltrate the secret.
+  return `auth_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`
+}
 
 // ----- global error traps (must run before any handler so unexpected
 //       failures in the pi session bridge show a stack instead of dying silently)
@@ -111,8 +127,13 @@ registerWebHandlers()
 
 // ----- HTTP helpers --------------------------------------------------------
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
-  response.writeHead(status, { 'Content-Type': 'application/json' })
-  response.end(JSON.stringify(payload))
+  try {
+    response.writeHead(status, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify(payload))
+  } catch {
+    // Socket already torn down (peer reset, payload-too-large abort).
+    // Nothing useful we can do; the caller has already logged the cause.
+  }
 }
 
 function sendSseError(
@@ -169,14 +190,10 @@ function sendIpcError(
   sendJson(response, ipcErrorStatus(errObj.code), { error: errObj })
 }
 
-async function readBody(request: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    request.on('data', (chunk: Buffer) => chunks.push(chunk))
-    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    request.on('error', reject)
-  })
-}
+/** Read the request body as a UTF-8 string, enforcing MAX_HTTP_BODY_BYTES.
+ *  See ./common/read-body for the full rationale. */
+const readBody = (request: IncomingMessage): Promise<string> =>
+  readBodyWithCap(request, MAX_HTTP_BODY_BYTES)
 
 // SSE plumbing — mirrors the legacy single-file implementation. Each
 // session keeps its own Set<ServerResponse> so renderer tabs share one
@@ -308,7 +325,14 @@ const server = createServer(async (request, response) => {
   if (
     url.pathname.startsWith('/api/') &&
     !isPublicApiPath(url.pathname) &&
-    !isAuthorised(request)
+    // Pass url so the auth gate can read `?token=` (the only token transport
+    // EventSource supports). Same-origin browser traffic that loaded the
+    // page from us ships the token this way; external API consumers still
+    // need to put it in the Authorization header. Pass `headers` explicitly
+    // because spreading IncomingMessage through {...request, …} loses
+    // properties the parser stores as non-enumerable getters, which the
+    // auth gate then sees as `undefined`.
+    !isAuthorised({ headers: request.headers, url })
   ) {
     writeUnauthorized(response, `Missing or invalid token for ${url.pathname}`)
     return
@@ -756,6 +780,27 @@ const server = createServer(async (request, response) => {
 
   if (filePath && existsSync(filePath) && statSync(filePath).isFile()) {
     const ext = extname(filePath)
+    const isHtml = ext.toLowerCase() === '.html'
+    if (isHtml && process.env.WEB_TOKEN) {
+      // Inject the WEB_TOKEN into the page so the renderer's HTTP IPC
+      // transport can send it back on every same-origin request. Without
+      // this, a WEB_TOKEN-configured server returns 401 on every IPC call
+      // because the browser-built transport has no way to learn the token.
+      // The token rides on a `<meta>` tag rather than an inline script
+      // because the SPA's CSP is `script-src 'self'` — an injected
+      // `<script>` would be silently dropped and the renderer would never
+      // see the value. The renderer reads it from
+      // `document.querySelector('meta[name="genoffice-token"]')`.
+      const html = readFileSync(filePath, 'utf-8')
+      const tag = `\n<meta name="genoffice-token" content="${process.env.WEB_TOKEN.replace(/"/g, '&quot;')}">`
+      const cookie = authCookieHeader()
+      response.writeHead(200, {
+        'Content-Type': MIME_TYPES[ext] || 'text/html; charset=utf-8',
+        ...(cookie ? { 'Set-Cookie': cookie } : {}),
+      })
+      response.end(html.replace(/<\/head>/i, (_match) => `${tag}</head>`))
+      return
+    }
     response.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' })
     createReadStream(filePath).pipe(response)
     return
@@ -778,6 +823,21 @@ const server = createServer(async (request, response) => {
 
   const indexPath = resolve(STATIC_ROOT, appName, 'out', 'renderer', 'index.html')
   if (existsSync(indexPath)) {
+    if (process.env.WEB_TOKEN) {
+      // Same-origin auth shim: see the direct-file branch above for the
+      // rationale. The meta-tag injection is CSP-safe because
+      // `script-src 'self'` would otherwise drop the value before the
+      // renderer could read it.
+      const html = readFileSync(indexPath, 'utf-8')
+      const tag = `\n<meta name="genoffice-token" content="${process.env.WEB_TOKEN.replace(/"/g, '&quot;')}">`
+      const cookie = authCookieHeader()
+      response.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        ...(cookie ? { 'Set-Cookie': cookie } : {}),
+      })
+      response.end(html.replace(/<\/head>/i, (_match) => `${tag}</head>`))
+      return
+    }
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
     createReadStream(indexPath).pipe(response)
     return

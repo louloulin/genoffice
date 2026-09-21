@@ -2,11 +2,13 @@
  * PDF channels — open-path and the parity channels from the Electron
  * main process (convert-office, password get/submit/cancel, save).
  */
-import { existsSync, readFileSync } from 'node:fs'
-import { isManagedPath, PATH_OUTSIDE_STORAGE, registerHandle } from '../common/index'
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { FILES_DIR, isManagedPath, PATH_OUTSIDE_STORAGE, registerHandle } from '../common/index'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
+import { atomicWriteFile } from '../common/atomic'
 import { savePdfToPath } from '../../../pdf/src/main/save-pdf'
 import type { SavePdfRequest, SavePdfResult } from '../../../pdf/src/shared/ipc'
 
@@ -91,28 +93,126 @@ export function registerPdfHandlers(): void {
    * path-grant map. This previously replied a bare { ok: true, saved: true }
    * without writing anything, so every annotation edit was silently discarded
    * behind a success toast.
+   *
+   * Storage URIs (`storage://<backend>/<key>`) are now accepted for both
+   * `path` and `targetPath`: the source bytes are read through the active
+   * backend, the target is staged at FILES_DIR/<key> and the edited file is
+   * written back via the same backend, keeping a remote-bucket deployment
+   * consistent with the upload path.
    * ───────────────────────────────────────────────────────────────────────── */
+  async function stagePdfForSave(channel: string, filePath: string): Promise<string> {
+    const key = storageKeyFromPath(filePath)
+    if (key) {
+      // Storage URI: rehydrate the bytes into FILES_DIR so savePdfToPath
+      // (which only knows about local files) can read them, then route the
+      // result back through the backend after the edits land.
+      try {
+        const u8 = await getStorageBackend().get(key)
+        const staged = join(FILES_DIR, `${basename(key)}.staged-${Date.now()}`)
+        mkdirSync(dirname(staged), { recursive: true })
+        atomicWriteFile(staged, Buffer.from(u8))
+        return staged
+      } catch (err) {
+        if (err instanceof StorageNotFoundError) {
+          // A storage URI the backend cannot resolve is the same
+          // "source not found" condition as a missing FILES_DIR file —
+          // surface it consistently so the e2e pdf:save guard test can
+          // assert on a single string rather than two.
+          throw new NotFoundError(channel, `source not found: ${filePath}`)
+        }
+        throw err
+      }
+    }
+    // FILES_DIR-resident path: separate "doesn't exist" from "outside
+    // managed storage" so the renderer can branch correctly. A bare
+    // `InvalidArgumentError(PATH_OUTSIDE_STORAGE)` for a missing file
+    // would mis-classify a typo'd path as a containment violation.
+    if (isManagedPdfPath(filePath)) {
+      if (!existsSync(filePath)) {
+        throw new NotFoundError(channel, `source not found: ${filePath}`)
+      }
+      return filePath
+    }
+    throw new InvalidArgumentError(channel, PATH_OUTSIDE_STORAGE)
+  }
+
+  async function publishPdfAfterSave(
+    targetOriginal: string,
+    targetStaged: string,
+  ): Promise<string> {
+    const key = storageKeyFromPath(targetOriginal)
+    if (key) {
+      // Read what savePdfToPath just produced and ship it back to the
+      // backend under the original key. savePdfToPath writes to `target`,
+      // which is the staged path; we then mirror the bytes back to storage.
+      const edited = readFileSync(targetStaged)
+      await getStorageBackend().put(key, new Uint8Array(edited), { contentType: 'application/pdf' })
+      try {
+        unlinkSync(targetStaged)
+      } catch {
+        /* best-effort cleanup */
+      }
+      return targetOriginal
+    }
+    return targetStaged
+  }
+
   registerHandle('pdf:save', async (_e: unknown, request: unknown): Promise<SavePdfResult> => {
     const value = (request || {}) as { path?: unknown; targetPath?: unknown }
     if (typeof value.path !== 'string' || value.path.length === 0) {
       return { ok: false, error: 'pdf:save expects { path: string }' }
     }
-    const source = value.path
-    const target =
-      typeof value.targetPath === 'string' && value.targetPath.length > 0
-        ? value.targetPath
-        : source
-    if (!isManagedPdfPath(source) || !isManagedPdfPath(target)) {
-      return { ok: false, error: 'pdf: path is outside the web storage area' }
-    }
-    if (!existsSync(source)) {
-      return { ok: false, error: `pdf: source not found: ${source}` }
+    let source: string
+    let target: string
+    try {
+      source = await stagePdfForSave('pdf:save', value.path)
+      const requestedTarget =
+        typeof value.targetPath === 'string' && value.targetPath.length > 0
+          ? value.targetPath
+          : value.path
+      target = await stagePdfForSave('pdf:save', requestedTarget)
+    } catch (err) {
+      if (err instanceof InvalidArgumentError) {
+        return { ok: false, error: err.message }
+      }
+      if (err instanceof NotFoundError) {
+        return { ok: false, error: err.message }
+      }
+      throw err
     }
     try {
+      // `applySaveRequest` reads `formValues`, `markups`, etc. unconditionally;
+      // the renderer is free to omit the heavy edit fields when the user is
+      // just opening / re-saving without changes, so default them to empty
+      // arrays before handing the request off. Without this, a save with just
+      // `{ path }` crashed with "Cannot read properties of undefined
+      // (reading 'length')" on the desktop-equivalent code path.
+      const safeRequest: SavePdfRequest = {
+        ...(request as SavePdfRequest),
+        formValues: (request as SavePdfRequest).formValues ?? [],
+        markups: (request as SavePdfRequest).markups ?? [],
+        rotations: (request as SavePdfRequest).rotations ?? [],
+        drawings: (request as SavePdfRequest).drawings ?? [],
+        annotDeletes: (request as SavePdfRequest).annotDeletes ?? [],
+        textEdits: (request as SavePdfRequest).textEdits ?? [],
+        textInserts: (request as SavePdfRequest).textInserts ?? [],
+        imageEdits: (request as SavePdfRequest).imageEdits ?? [],
+      }
       const { skippedTextEdits, skippedTextInserts, skippedImageEdits } = await savePdfToPath(
         source,
         target,
-        request as SavePdfRequest,
+        safeRequest,
+      )
+      // The path field is intentionally absent from SavePdfResult; the
+      // renderer uses the value it already had. publishPdfAfterSave still
+      // runs so the storage-backend write happens, but its result is
+      // discarded here — keeping the return shape backwards-compatible with
+      // the desktop contract the renderer already imports.
+      await publishPdfAfterSave(
+        typeof value.targetPath === 'string' && value.targetPath.length > 0
+          ? value.targetPath
+          : value.path,
+        target,
       )
       return {
         ok: true,

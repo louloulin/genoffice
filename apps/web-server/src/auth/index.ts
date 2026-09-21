@@ -47,7 +47,7 @@ export function isPublicApiPath(pathname: string): boolean {
   return PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix))
 }
 
-function readToken(headers: IncomingMessage['headers']): string | null {
+function readToken(headers: IncomingMessage['headers'], url?: { searchParams?: { get(name: string): string | null } }): string | null {
   const raw = process.env.WEB_TOKEN
   if (!raw || raw.length === 0) return null
   // Authorisation header — case-insensitive prefix match.
@@ -60,13 +60,33 @@ function readToken(headers: IncomingMessage['headers']): string | null {
   // Authorization on cross-origin.
   const custom = headers['x-genoffice-token']
   if (typeof custom === 'string' && custom === raw) return raw
+  // HttpOnly cookie set on the first HTML response. Browsers auto-send
+  // this on every same-origin request — including EventSource, which
+  // cannot carry custom headers — so every editor bundle (pdf/docs/
+  // sheets/slides/markdown/html) and the shell authenticate without any
+  // per-bundle plumbing. The cookie value is only accepted when it
+  // matches the env-supplied secret, so a forged cookie is just another
+  // 401. We only ever set one cookie (auth_token) and only when serving
+  // HTML to a WEB_TOKEN-configured boot (apps/web-server/src/index.ts).
+  const cookieHeader = headers.cookie
+  if (typeof cookieHeader === 'string') {
+    const match = /(?:^|;\s*)auth_token=([^;\s]+)/.exec(cookieHeader)
+    if (match && decodeURIComponent(match[1]) === raw) return raw
+  }
+  // Query parameter — kept as a fallback for non-browser clients (curl,
+  // SDK consumers, EventSource from older code paths). Same-origin page
+  // loads still prefer the cookie path.
+  if (url?.searchParams) {
+    const q = url.searchParams.get('token')
+    if (typeof q === 'string' && q === raw) return raw
+  }
   return null
 }
 
-export function isAuthorised(request: AuthorisedRequest): boolean {
+export function isAuthorised(request: AuthorisedRequest & { url?: { searchParams?: { get(name: string): string | null } } }): boolean {
   const expected = process.env.WEB_TOKEN
   if (!expected || expected.length === 0) return true
-  return readToken(request.headers) === expected
+  return readToken(request.headers, request.url) === expected
 }
 
 export function writeUnauthorized(response: ServerResponse, message: string): void {
