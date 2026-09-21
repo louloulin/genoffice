@@ -933,6 +933,19 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `@genoffice/provider-doubao`（同上，5 测试）
    - `docs/api/provider-capabilities.md`（EN+ZH）能力矩阵更新到 10 行
 15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
+16. **§5.2 发布检查清单逐项落地**（✅ 已完成）：
+   - **#1 JSDoc/TSDoc on public APIs** — `auth.ts` (handleAuthJwt / handleOAuthToken / hasScope) + `meta.ts` (handleHealth / handleChangelog) 现已具备 `@route` / `@scope` / `@errors` 标记；其他 5 个 v1 handler 文件（files / ai / kb / webhooks）已具备完整 TSDoc（`commit 8e3d3e8`）
+   - **#2 typedoc 实际执行** — `docs/scripts/gen-typedoc.mjs` 重新生成 **199 个 MD 文件** 到 `docs/api/_generated/`
+   - **#3 SDK README + 5 分钟上手** — `apps/sdk/README.{md,zh-CN.md}` + `docs/guide/quick-start-sdk.md` 全部就绪
+   - **#4 ≥3 examples** — 5 个 example（embed-basic / embed-react / embed-vue / custom-provider / custom-skill）已落地
+   - **#5 Docker image** — `Dockerfile`（多阶段 Node 22 / 非 root node / `/health` 健康检查 / `/data` 持久卷）+ `.dockerignore` 就绪
+   - **#6-8 社区文件** — `CONTRIBUTING.md` (4.4 KB) + `CODE_OF_CONDUCT.md` (3.2 KB) + `SECURITY.md` (2.5 KB) + `LICENSE` + `LICENSE-UNICODE.txt`
+   - **#9 GitHub Actions** — 4 个 workflow（`ci.yml` / `release.yml` / `docs.yml` / `security.yml`）
+   - **#10 npm scope @genoffice/\*** — **62 个 package.json** 使用 `@genoffice/` scope
+   - **#13 ≥10 skill** — **11 个** skill 包（text-summarize / text-translate / text-translate-pairs / text-diff / markdown-format / json-validate / yaml-validate / yaml-to-json / doc-format / sheet-formula / slides-outline）
+   - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
+   - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
+   - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
 
 ### A.6 测试现状（本轮实施后更新）
 
