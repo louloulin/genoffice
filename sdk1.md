@@ -907,6 +907,27 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `docs/package.json` 已声明 `typedoc@^0.28.0` + `typedoc-plugin-markdown@^4.6.0`
 5. **双语文档**：当前 EN-only 含少量 zh inline。
 
+#### ✅ 本轮新增解决（§4.4 单 Skill 详解页 + Changelog 页）
+
+12. **8 个剩余官方 Skill 详解页**（`commit 6f6e20`）：把 §4.4 提到的"per-skill deep-dive"从 3 个旗舰（`doc-format` / `sheet-formula` / `slides-outline`）扩到全部 **11 个**，EN + ZH 共 22 页：
+   - `docs/skills/official/{text-summarize, text-translate, text-translate-pairs, text-diff, markdown-format, json-validate, yaml-validate, yaml-to-json}.md` × 2 语言 = 16 个新页
+   - 统一模板：触发短语表（EN + ZH）/ 输入 / 输出 schema / npm 安装 / 注册 + 调用示例 / 适用场景 / 不适用场景 / 延伸阅读
+   - `/skills/official` 与 `/zh/skills/official` 索引页改为链接全部 11 个 Skill
+   - VitePress sidebar `/skills/` + `/zh/skills/` 全部 11 个 Skill 入口
+   - 复用 `/tmp/create_skill_pages.py` 模板（修复 Python 3.9 f-string 嵌套引号 bug）
+13. **Changelog 文档站页**（`commit e29b062`，§4.4 交付）：
+   - `docs/changelog/index.md`（EN，与根目录 `CHANGELOG.md` 同步）
+   - `docs/zh/changelog/index.md`（ZH，手工维护，便于受众语感）
+   - `tools/sync-changelog.mjs` 把根 CHANGELOG.md 镜像到 docs/changelog/（如 zh 已存在则跳过）
+   - `package.json` 新增脚本：`docs:gen`（IPC + changelog 一起生成）/ `docs:gen:ipc` / `docs:sync-changelog`
+   - VitePress sidebar 新增 `/changelog/` + `/zh/changelog/` 区块
+14. **3 个 Provider（Qwen / GLM / Doubao）落地**（`commits 06f4145 / 5ff2bc8 / 547b70c`）：provider 总数 5 → **10**：
+   - `@genoffice/provider-deepseek` + `@genoffice/provider-moonshot-kimi`（基于 `openai-compatible` 工厂，5+5 测试）
+   - `@genoffice/provider-qwen-dashscope` + `@genoffice/provider-zhipu-glm`（同上，5+5 测试）
+   - `@genoffice/provider-doubao`（同上，5 测试）
+   - `docs/api/provider-capabilities.md`（EN+ZH）能力矩阵更新到 10 行
+15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 15 条。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手）均 ✅。
+
 ### A.6 测试现状（本轮实施后更新）
 
 | 套件 | 文件 | 用例 | 状态 |
@@ -916,10 +937,10 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
-| 5 个 provider 包合计 | 5 | 32 | ✅ |
+| 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
 | web-sdk（含 handshake / origin allowlist）| 3 | 20 | ✅ |
-| **总计** | **125** | **1345** | ✅ |
+| **总计** | **130** | **1360** | ✅ |
 
 web-server bundle 28.2 MB / `health` 200 / 546 IPC channels / marketplace boot 日志 OK。
 新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）。
