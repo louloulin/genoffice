@@ -78,6 +78,8 @@ GenOffice 团队以独立 npm 包形式发布下列 provider，统一在 `@genof
 | `@genoffice/provider-ollama` | 本地 Ollama 守护进程 | 由宿主提供 | 默认 `llama3.2`；通过 `/v1/models` 自动探测已安装模型。 |
 | `@genoffice/provider-deepseek` | DeepSeek | `deepseek-chat`、`deepseek-reasoner` | OpenAI 兼容端点 `https://api.deepseek.com/v1`；无需自定义 baseUrl。 |
 | `@genoffice/provider-kimi` | Moonshot Kimi | `moonshot-v1-8k`、`moonshot-v1-32k`、`moonshot-v1-128k` | OpenAI 兼容端点 `https://api.moonshot.cn/v1`；无需自定义 baseUrl。 |
+| `@genoffice/provider-qwen` | Qwen（DashScope）| `qwen-max`、`qwen-plus`、`qwen-turbo`、`qwen-long` | OpenAI 兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`；无需自定义 baseUrl。 |
+| `@genoffice/provider-glm` | 智谱 GLM | `glm-4-plus`、`glm-4-air`、`glm-4-flash` | 非标准端点（`/api/paas/v4`）；`needsBaseUrl: true`，宿主必须配置。 |
 
 ### 示例：通过兼容工厂注册 Together.ai + Groq
 

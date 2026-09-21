@@ -35,6 +35,8 @@ _DeepSeek and Kimi provide the same capabilities as OpenAI-compat (chat / stream
 | Ollama | `llama3.2` | host-supplied (auto-detected from `/v1/models`) |
 | DeepSeek | `deepseek-chat` | `deepseek-chat`, `deepseek-reasoner` |
 | Kimi | `moonshot-v1-8k` | `moonshot-v1-8k`, `moonshot-v1-32k`, `moonshot-v1-128k` |
+| Qwen | `qwen-plus` | `qwen-max`, `qwen-plus`, `qwen-turbo`, `qwen-long` |
+| GLM | `glm-4-plus` | `glm-4-plus`, `glm-4-air`, `glm-4-flash` |
 
 ## API-key placeholders
 

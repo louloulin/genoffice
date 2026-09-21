@@ -34,6 +34,8 @@ _DeepSeek 与 Kimi 提供的能力与 OpenAI-compat 一致（chat / stream / too
 | Ollama | `llama3.2` | 由宿主提供（通过 `/v1/models` 自动探测） |
 | DeepSeek | `deepseek-chat` | `deepseek-chat`、`deepseek-reasoner` |
 | Kimi | `moonshot-v1-8k` | `moonshot-v1-8k`、`moonshot-v1-32k`、`moonshot-v1-128k` |
+| Qwen | `qwen-plus` | `qwen-max`、`qwen-plus`、`qwen-turbo`、`qwen-long` |
+| GLM | `glm-4-plus` | `glm-4-plus`、`glm-4-air`、`glm-4-flash` |
 
 ## API key 占位符
 

@@ -1,0 +1,44 @@
+{
+  "name": "@genoffice/provider-glm",
+  "version": "0.1.0",
+  "description": "Zhipu GLM (https://open.bigmodel.cn/api/paas/v4) LLM provider plugin for GenOffice — implements AiProviderPlugin via the openai-compatible factory.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "keywords": ["ai", "chatglm", "embed", "genoffice", "glm", "iframe", "llm", "office", "provider", "sdk", "zhipu"],
+  "engines": { "node": ">=22.12" },
+  "scripts": {
+    "build": "tsc && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@genoffice/ai-provider": "*",
+    "@genoffice/provider-openai-compatible": "*"
+  },
+  "peerDependenciesMeta": {
+    "@genoffice/provider-openai-compatible": { "optional": true }
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/provider-glm"
+  },
+  "bugs": { "url": "https://github.com/genspark-ai/genoffice/issues" },
+  "homepage": "https://genoffice.app/docs/api"
+}
