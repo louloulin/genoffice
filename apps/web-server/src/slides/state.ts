@@ -12,7 +12,8 @@
  * open tabs would otherwise hold every `OpenedPptx` resident forever; the
  * registry caps at 32 sessions and evicts the oldest.
  */
-import { registerHandle } from '../common/index'
+import { join } from 'node:path'
+import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
 import { openPptx, savePptx, type OpenedPptx } from '@genoffice/pptx-engine'
 
 const MAX_SLIDES_SESSIONS = 32
@@ -128,6 +129,10 @@ export function registerSlidesStateHandlers(): void {
   // on the per-session `dirty` flag; the web build keeps it on the registry.
   registerHandle('slides:is-dirty', (_event: unknown, path: unknown) => {
     if (typeof path !== 'string') return false
-    return getSlidesDirty(path)
+    // Resolve storage:// URIs the same way slides:open-path does so the
+    // dirty bit lines up with the canonical key the registry stores.
+    const key = storageKeyFromPath(path)
+    const canonical = key ? join(FILES_DIR, key) : path
+    return getSlidesDirty(canonical)
   })
 }

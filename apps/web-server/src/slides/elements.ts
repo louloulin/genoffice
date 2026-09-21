@@ -11,7 +11,8 @@
  * silently-accepted `{ ok: true }`, so a missing handler never no-ops a
  * renderer-side edit.
  */
-import { registerHandle } from '../common/index'
+import { join } from 'node:path'
+import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
 import { getSlidesSession, setSlidesDirty } from './state'
 import {
   insertBlankSlide,
@@ -82,13 +83,20 @@ export function registerSlidesElementHandlers(): void {
       path?: string
       ops?: Array<Record<string, unknown>>
     }
-    const path = typeof req.path === 'string' ? req.path : null
-    if (!path) {
+    const rawPath = typeof req.path === 'string' ? req.path : null
+    if (!rawPath) {
       return {
         applied: false,
         failures: [{ index: 0, error: 'slides:apply-txn requires { path }' }],
       }
     }
+    // Resolve storage://<backend>/<key> to the FILES_DIR canonical path
+    // so the registry lookup matches what slides:open-path used to
+    // register the session. Without this, a renderer that opens an
+    // upload (storage URI) and then sends apply-txn ops gets a
+    // "no live model" failure even though the open succeeded.
+    const key = storageKeyFromPath(rawPath)
+    const path = key ? join(FILES_DIR, key) : rawPath
     const session = getSlidesSession(path)
     if (!session) {
       return {

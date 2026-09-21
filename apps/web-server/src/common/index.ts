@@ -94,3 +94,4 @@ export {
 export { fileIndexStore, FILES_INDEX_FILE } from './file-index-store'
 export { recordRecentDoc } from './document-stores'
 export { readStorageOrManagedBytes } from './storage-read'
+export { storageKeyFromPath, isRemoteStorage } from './state'
