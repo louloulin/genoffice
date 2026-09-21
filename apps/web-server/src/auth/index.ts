@@ -36,6 +36,8 @@ export interface AuthorisedRequest {
 const PUBLIC_API_PATHS = new Set<string>([
   '/health',
   '/api/channels',
+  '/api/v1/health',
+  '/api/v1/changelog',
 ])
 
 const PUBLIC_API_PREFIXES = [
