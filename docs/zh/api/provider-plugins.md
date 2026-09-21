@@ -76,6 +76,8 @@ GenOffice 团队以独立 npm 包形式发布下列 provider，统一在 `@genof
 | `@genoffice/provider-gemini` | Google Gemini | `gemini-2.5-pro`、`gemini-2.0-flash`、`gemini-1.5-pro`、`gemini-1.5-flash` | 原生 Gemini `generateContent` API。 |
 | `@genoffice/provider-openai-compatible` | 任意 OpenAI 兼容端点 | 由宿主提供 | spread + override 工厂，覆盖 Together.ai、Fireworks、OpenRouter、Groq、DeepSeek、Kimi、GLM、Qwen、Doubao、vLLM、llama.cpp、LM Studio、Ollama（OpenAI 模式）等。 |
 | `@genoffice/provider-ollama` | 本地 Ollama 守护进程 | 由宿主提供 | 默认 `llama3.2`；通过 `/v1/models` 自动探测已安装模型。 |
+| `@genoffice/provider-deepseek` | DeepSeek | `deepseek-chat`、`deepseek-reasoner` | OpenAI 兼容端点 `https://api.deepseek.com/v1`；无需自定义 baseUrl。 |
+| `@genoffice/provider-kimi` | Moonshot Kimi | `moonshot-v1-8k`、`moonshot-v1-32k`、`moonshot-v1-128k` | OpenAI 兼容端点 `https://api.moonshot.cn/v1`；无需自定义 baseUrl。 |
 
 ### 示例：通过兼容工厂注册 Together.ai + Groq
 

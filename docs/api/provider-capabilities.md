@@ -22,6 +22,8 @@ as standalone npm packages under `@genoffice/provider-*`.
 | Self-hostable | ❌ | ❌ | ❌ | ⚠️ depends on host | ✅ (localhost) |
 | API key required | ✅ | ✅ | ✅ | ✅ | ❌ (no key) |
 
+_DeepSeek and Kimi provide the same capabilities as OpenAI-compat (chat / stream / tool use / system prompt / multi-turn); their defaults match the OpenAI-compat column above. DeepSeek's `deepseek-reasoner` exposes reasoning content in addition to standard chat._
+
 ## Models
 
 | Provider | Default model | Full model list |
@@ -31,6 +33,8 @@ as standalone npm packages under `@genoffice/provider-*`.
 | Gemini | `gemini-2.0-flash` | `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash` |
 | OpenAI-compat | _empty (callers must set)_ | host-supplied (set via `pluginOverrides.models`) |
 | Ollama | `llama3.2` | host-supplied (auto-detected from `/v1/models`) |
+| DeepSeek | `deepseek-chat` | `deepseek-chat`, `deepseek-reasoner` |
+| Kimi | `moonshot-v1-8k` | `moonshot-v1-8k`, `moonshot-v1-32k`, `moonshot-v1-128k` |
 
 ## API-key placeholders
 

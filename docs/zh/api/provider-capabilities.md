@@ -21,6 +21,8 @@
 | 可自部署 | ❌ | ❌ | ❌ | ⚠️ 取决于宿主 | ✅（本机） |
 | 需要 API key | ✅ | ✅ | ✅ | ✅ | ❌（无需 key） |
 
+_DeepSeek 与 Kimi 提供的能力与 OpenAI-compat 一致（chat / stream / tool use / 系统提示 / 多轮对话）；默认值与 OpenAI-compat 列相同。DeepSeek 的 `deepseek-reasoner` 还会暴露 reasoning content。_
+
 ## 模型清单
 
 | Provider | 默认模型 | 全部模型 |
@@ -30,6 +32,8 @@
 | Gemini | `gemini-2.0-flash` | `gemini-2.5-pro`、`gemini-2.0-flash`、`gemini-1.5-pro`、`gemini-1.5-flash` |
 | OpenAI-compat | _空（调用方必填）_ | 由宿主提供（通过 `pluginOverrides.models` 设置） |
 | Ollama | `llama3.2` | 由宿主提供（通过 `/v1/models` 自动探测） |
+| DeepSeek | `deepseek-chat` | `deepseek-chat`、`deepseek-reasoner` |
+| Kimi | `moonshot-v1-8k` | `moonshot-v1-8k`、`moonshot-v1-32k`、`moonshot-v1-128k` |
 
 ## API key 占位符
 

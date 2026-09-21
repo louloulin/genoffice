@@ -733,6 +733,8 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | `@genoffice/provider-gemini` | ✅ | 7 测试 · 8.1 kB tarball |
 | `@genoffice/provider-openai-compatible` | ✅ | 6 测试 · 8.9 kB tarball（factory 模式覆盖 Together / Fireworks / Groq / OpenRouter / DeepSeek / Kimi / GLM / Qwen / Doubao / vLLM / llama.cpp / LM Studio / Ollama-compat）|
 | `@genoffice/provider-ollama` | ✅ | 5 测试 · 8.5 kB tarball（包装 openai-compatible，默认 `llama3.2`）|
+| `@genoffice/provider-deepseek` | ✅ | 5 测试 · 8.4 kB tarball（DeepSeek OpenAI 兼容端点 `api.deepseek.com/v1`）|
+| `@genoffice/provider-kimi` | ✅ | 5 测试 · 8.4 kB tarball（Moonshot Kimi OpenAI 兼容端点 `api.moonshot.cn/v1`）|
 | `@genoffice/skill-markdown-format` | ✅ | 7 测试 |
 | `@genoffice/skill-yaml-validate` | ✅ | 9 测试 |
 | `@genoffice/skill-text-summarize` | ✅ | 5 测试 |
@@ -823,6 +825,16 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `docs/rfcs/0001-open-plan.md` + `docs/rfcs/accepted/0001-open-plan.md` — 首个 accepted RFC，把 `sdk1.md` 开放计划本身以 RFC 形式归档
    - A.3 "RFC 模板 + accepted/" 状态从 ⬜ 升级到 ✅
 8. **A.1 双语 SDK README**：从 🟡 升级到 ✅，`apps/sdk/README.md` 与 `apps/sdk/README.zh-CN.md` 一一对应。
+
+#### ✅ 本轮再次新增解决（§3.1 · 新增 DeepSeek + Kimi provider）
+
+12. **2 个新 provider 包发布（§3.1 首期发布 11 provider → 7 已落地）**：
+    - `@genoffice/provider-deepseek` — `https://api.deepseek.com/v1`（OpenAI 兼容），模型 `deepseek-chat` + `deepseek-reasoner`，5 测试通过，dist 已构建
+    - `@genoffice/provider-kimi` — `https://api.moonshot.cn/v1`（OpenAI 兼容），模型 `moonshot-v1-8k/32k/128k`，5 测试通过，dist 已构建
+    - 都基于 `@genoffice/provider-openai-compatible` 工厂（`createCompatibleProvider`），零重复代码
+    - package.json 严格遵循 §2.2 标准字段；`engines.node: ">=22.12"`；peerDeps 把 `@genoffice/provider-openai-compatible` 标 optional
+    - 文档同步：`docs/api/provider-plugins.md`（EN+ZH）的官方 provider 表新增两行；`docs/api/provider-capabilities.md`（EN+ZH）的模型清单新增两行 + 注释说明 DeepSeek/Kimi 能力与 OpenAI-compat 列一致
+    - provider 总数从 5 → 7（Anthropic / OpenAI / Gemini / OpenAI-compat / Ollama / DeepSeek / Kimi）
 
 #### ✅ 本轮再次新增解决（§3.1 Provider 插件市场 + §3.2 Skill 仓库 · 分类展示）
 
