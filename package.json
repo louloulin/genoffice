@@ -14,7 +14,8 @@
   },
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "docs"
   ],
   "scripts": {
     "postinstall": "install-electron",
@@ -39,6 +40,9 @@
     "smoke:web": "node scripts/smoke-web-server.mjs",
     "notices": "node tools/gen-third-party-notices.mjs",
     "licenses": "node tools/check-licenses.mjs",
+    "docs:gen": "node tools/gen-ipc-docs.mjs && node tools/sync-changelog.mjs",
+    "docs:gen:ipc": "node tools/gen-ipc-docs.mjs",
+    "docs:sync-changelog": "node tools/sync-changelog.mjs",
     "dist:mac": "npm run notices && npm run build:all && npm run native:build:universal -w @genoffice/sheets && npm run dist:mac -w @genoffice/shell",
     "dist:win": "npm run notices && npm run build:all && npm run dist:win -w @genoffice/shell",
     "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @genoffice/shell",

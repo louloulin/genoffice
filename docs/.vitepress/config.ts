@@ -112,6 +112,12 @@ export default defineConfig({
           { text: 'FAQ', link: '/about/faq' },
         ] },
       ],
+
+      '/changelog/': [
+        { text: 'Changelog', items: [
+          { text: 'Releases', link: '/changelog/' },
+        ] },
+      ],
     },
 
     // zh-CN localized sidebar — maps to /zh/* VitePress locale routes.
@@ -175,6 +181,12 @@ export default defineConfig({
           { text: '路线图', link: '/zh/about/roadmap' },
           { text: '治理', link: '/zh/about/governance' },
           { text: '常见问题', link: '/zh/about/faq' },
+        ] },
+      ],
+
+      '/zh/changelog/': [
+        { text: '更新日志', items: [
+          { text: '版本历史', link: '/zh/changelog/' },
         ] },
       ],
     },
