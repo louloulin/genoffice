@@ -1,3 +1,5 @@
+export type { AgentMessage, AgentToolCall, AgentToolDef, AgentToolResult, AgentImage } from './agent-protocol'
+
 export type {
   AiChatRequest,
   AiChatResponse,
@@ -90,6 +92,26 @@ export {
 } from './watchdog'
 export type { StreamWatchdog } from './watchdog'
 
-// Codex CLI bridge — exposed so the web build's `ai:codex-models` IPC can
-// hit the same codex-app-server client the Electron main process uses.
-export { listCodexModels } from './codex-app-server'
+// Codex CLI bridge — Node-only, import via subpath to keep the browser-safe
+// main entry small: `@genoffice/ai-provider/codex-app-server`.
+//
+// Web consumers should use `chatCodexAppServer` / `streamCodexAppServer`
+// from the browser stub (auto-selected by `./chat` / `./stream`).
+
+// ── Provider Plugin API (sdk1.md §3.1) ──
+export {
+  createProviderRegistry,
+  createMediaRegistry,
+  createSearchRegistry,
+  getDefaultProviderRegistry,
+  resetDefaultProviderRegistry,
+} from './provider-plugin'
+export type {
+  AiProviderPlugin,
+  AiMediaPlugin,
+  AiSearchPlugin,
+  ProviderMeta,
+  ProviderRegistry,
+  MediaRegistry,
+  SearchRegistry,
+} from './provider-plugin'

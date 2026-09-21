@@ -27,5 +27,24 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
-  }
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/docx-engine"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api",
+  "keywords": [
+    "ai",
+    "docx engine",
+    "genoffice",
+    "office",
+    "sdk"
+  ]
 }

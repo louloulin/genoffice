@@ -28,12 +28,12 @@ import {
   chatForProvider,
   defaultAiSettings,
   isAiNetworkError,
-  listCodexModels,
   isAiOverloadedError,
   isAiQuotaExhaustedError,
   maxOutputTokensOf,
   streamForProvider,
 } from '@genoffice/ai-provider'
+import { listCodexModels } from '@genoffice/ai-provider/codex-app-server'
 import { InvalidArgumentError } from './errors'
 import { fetchRemoteImage } from '@genoffice/electron-utils/remote-image'
 import { gskApiKey, hasGskAuth, gskLoginInfo } from '@genoffice/ai-search'

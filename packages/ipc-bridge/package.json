@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "description": "HTTP+SSE bridge in front of ipcMain.handle — the same channels are served over IPC (Electron renderer) and HTTP (browser web version). '.' = main-process server (node:http), './client' = browser-safe transports.",
+  "description": "HTTP+SSE bridge in front of ipcMain.handle \u2014 the same channels are served over IPC (Electron renderer) and HTTP (browser web version). '.' = main-process server (node:http), './client' = browser-safe transports.",
   "exports": {
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
@@ -19,5 +19,24 @@
   "devDependencies": {
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
-  }
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/ipc-bridge"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api",
+  "keywords": [
+    "ai",
+    "genoffice",
+    "ipc bridge",
+    "office",
+    "sdk"
+  ]
 }

@@ -22,5 +22,24 @@
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
-  }
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/file-management"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api",
+  "keywords": [
+    "ai",
+    "file management",
+    "genoffice",
+    "office",
+    "sdk"
+  ]
 }

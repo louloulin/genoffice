@@ -149,17 +149,17 @@ POST /your-endpoint
 |---|---|---|---|
 | `@genoffice/web-sdk` | npm public | ✅ | 主入口 |
 | `@genoffice/web-server` | npm public | ✅ | 部署 docker image |
-| `@genoffice/ai-provider` | npm public | ✅ | 集成商可复用 |
-| `@genoffice/docx-engine` | npm public | ✅ | |
-| `@genoffice/pptx-engine` | npm public | ✅ | |
-| `@genoffice/xlsx-gateway` | npm public | ✅ | |
-| `@genoffice/file-parse` | npm public | ✅ | |
-| `@genoffice/file-management` | npm public | ✅ | |
+| `@genoffice/ai-provider` | npm public | ⚠️ | 集成商可复用；src 有 `node:` import，待拆（renderer 走 browser stub，main 走真实现）|
+| `@genoffice/docx-engine` | npm public | ✅ | 纯 TS，无 node import，可立即发布 |
+| `@genoffice/pptx-engine` | npm public | ⚠️ | 有 `node:` import，待拆 |
+| `@genoffice/xlsx-gateway` | npm public | ⚠️ | 有 `node:` import，待拆 |
+| `@genoffice/file-parse` | npm public | ⚠️ | 有 `node:` import，待拆 |
+| `@genoffice/file-management` | npm public | ⚠️ | 有 `node:` import，待拆 |
 | `@genoffice/agent-core` | npm public | ✅ | 协议 |
-| `@genoffice/translation-core` | npm public | ✅ | |
-| `@genoffice/ipc-bridge` | npm public | ✅ | |
-| `@genoffice/i18n` | npm public | ✅ | |
-| `@genoffice/ui` | npm public | ✅ | |
+| `@genoffice/translation-core` | npm public | ⚠️ | 有 `node:` import，待拆 |
+| `@genoffice/ipc-bridge` | npm public | ⚠️ | 有 `node:` import，待拆 |
+| `@genoffice/i18n` | npm public | ✅ | 纯 TS，无 node import |
+| `@genoffice/ui` | npm public | ✅ | 纯 TS，无 node import |
 | `@genoffice/agent-runtime` | npm public | ⚠️ | 需先拆 Electron 依赖 |
 | `@genoffice/agent-session` | npm public | ⚠️ | 同上 |
 | `apps/shell / apps/* / apps/web-server` | GitHub repo | ✅ | 整体开源 |
@@ -768,7 +768,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | VitePress 骨架 + typedoc 自动生成脚本 | ✅ | `docs/.vitepress/config.ts` + `docs/scripts/gen-typedoc.mjs` |
 | zh-CN locale | ✅ | nav + sidebar 已配 |
 | Guide 目录 8 篇 | ✅ | getting-started / installation / quick-start-{web,embed,sdk} / deployment-{docker,kubernetes} / security-best-practices |
-| API 参考 9 篇 | ✅ | rest-api / sdk-typescript / postmessage-protocol / ipc-channels / ai-skills-protocol / kb-tm-format / provider-plugins / marketplace / agent-protocol |
+| API 参考 11 篇 | ✅ | rest-api / sdk-typescript / postmessage-protocol / ipc-channels / ipc-channels-auto / ai-skills-protocol / kb-tm-format / provider-plugins / marketplace / agent-protocol / provider-capabilities |
 | Skills 文档 14 篇 | ✅ | official / marketplace / authoring / community + 11 个 per-skill 详解页（EN + ZH）|
 | typedoc 实际执行 | ✅ | 199 个 MD 文件本地跑通，sidebar 链接 + .gitignore + JSDoc 全部就绪 |
 | 双语（中英）全覆盖 | ✅ | SDK README + 18 篇 Guide/API/Skills/About 全部双语；VitePress `sidebarZH` 已覆盖 Guide / API / Skills / About 四大分区 |
@@ -906,6 +906,11 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `.gitignore` 加入 `docs/api/_generated/`（避免 JSDoc 微调触发大量 churn diff）
    - `docs/package.json` 已声明 `typedoc@^0.28.0` + `typedoc-plugin-markdown@^4.6.0`
 5. **双语文档**：当前 EN-only 含少量 zh inline。
+6. **§2.2 剩余 7 个 npm public 包的 Node 依赖拆分**（⬜ 未做）：
+   - `ai-provider` / `pptx-engine` / `xlsx-gateway` / `file-parse` / `file-management` / `translation-core` / `ipc-bridge` — 主入口 `index.ts` 通过 `./codex-app-server` / `./atomic` / `./document-store` / `./recents` / `./kb-format` / `./knowledge-base` 等子模块间接 `import 'node:fs'` / `node:crypto` / `node:os` / `node:child_process`
+   - §2.2 表中这 11 个包原标 `npm public | ✅`，现已修正为 `⚠️` 与 `agent-runtime` / `agent-session` 一致
+   - 修复模式：把 Node-only 模块放到子路径（如 `@genoffice/ai-provider/codex-app-server`），主 barrel 只 re-export 浏览器安全 API；或加 `package.json#exports` 的 `browser` / `node` 条件分支
+   - 4 个已是 ✅：`docx-engine` / `agent-core` / `i18n` / `ui`（纯 TS，无 node import）
 
 #### ✅ 本轮新增解决（§4.4 单 Skill 详解页 + Changelog 页）
 
@@ -926,7 +931,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
    - `@genoffice/provider-qwen-dashscope` + `@genoffice/provider-zhipu-glm`（同上，5+5 测试）
    - `@genoffice/provider-doubao`（同上，5 测试）
    - `docs/api/provider-capabilities.md`（EN+ZH）能力矩阵更新到 10 行
-15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 15 条。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手）均 ✅。
+15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 15 条 + 新增 ⬜ #16（§2.2 剩余 7 个包 Node 拆依赖）。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手）均 ✅。
 
 ### A.6 测试现状（本轮实施后更新）
 

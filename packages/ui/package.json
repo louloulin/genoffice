@@ -40,5 +40,24 @@
     "@genoffice/i18n": "*",
     "@genoffice/pptx-render": "*",
     "@genoffice/chat-runtime": "*"
-  }
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/genspark-ai/genoffice.git",
+    "directory": "packages/ui"
+  },
+  "bugs": {
+    "url": "https://github.com/genspark-ai/genoffice/issues"
+  },
+  "homepage": "https://genoffice.app/docs/api",
+  "keywords": [
+    "ai",
+    "genoffice",
+    "office",
+    "sdk",
+    "ui"
+  ]
 }
