@@ -4961,6 +4961,57 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
   update + JWT rotation 五族全部闭合；剩余敏感 surface
   （如 `collab:*` 协作模式、`recents:*` admin delete 等）留 M5+
 
+### 11.80 · SDK multi-instance isolation tests + 双 iframe demo（§B.5.6 #2）
+
+> 续 §B.5.1 #1（multi-instance registry）+ §B.5.6 #2（e2e demo）。
+> 本批把 §B.5.6 #2 从 backlog 移到闭合：补 isolation 测试 +
+> 真实可跑的多 iframe demo。
+
+#### ✅ 落点
+
+1. **`apps/sdk/test/multi-instance-isolation.test.ts`**（新文件，237 行，
+   9 个 e2e 用例）— 补强 kestrel-multi-instance.test.ts 的 registry
+   合约覆盖，专注**双实例并发隔离**：
+
+   - **listener 拓扑**：每个 `createEditor()` 装 2 listener（message +
+     beforeunload with `{ once: true }`）；3 editor → 6 listener；destroy 1
+     → 5（只 -1 message；beforeunload 由 tab close 自动 remove）
+   - **destroy 隔离**：destroy A 后 getEditor(A)=undefined；B 的 2 个
+     listener 仍在；B 的 handle 仍可查
+   - **postMessage 路由**：postMessage 指向 A 的 iframe.name (`genoffice-A`)，
+     既不触发 A 的 onSaved 也不触发 B 的（SDK 通过 iframe.contentWindow
+     匹配 `event.source`，skipIframe 下没有 contentWindow 所以都不触发）
+   - **iframe name 唯一性**：每个 editor 实例分配独立
+     `genoffice-{instanceId}` iframe name
+   - **idempotent destroy**：同一 handle destroy 多次安全
+   - **listEditors 返回新数组**：mutating 返回值不影响后续调用
+   - **registry reset**：`_resetEditorRegistryForTests` 清 handles 但
+     listeners linger（beforeunload 由 tab close 移除）
+
+2. **`examples/sdk-multi-instance/`**（新目录）— 真实可在浏览器跑的
+   multi-instance demo：
+   - `index.html`：左右两个 iframe，每个挂一个独立 GenOffice 编辑器；
+     含 4 个状态按钮（save / isDirty / destroy per editor）+ log panel
+     演示 on('saved') 事件**不会跨实例触发**
+   - `README.md`：使用说明（web-server 启动 + 2 个 JWT mint + 浏览器打开）
+
+#### 🧪 验证
+
+- `apps/sdk/test/`：**221 / 221 通过**（212 baseline + 9 新 isolation；
+  18 文件 / 0 flake）
+- `apps/sdk/test/multi-instance-isolation.test.ts` 自身：**9 / 9 通过**
+- `apps/sdk` typecheck：clean（沿用现有严格 tsc）
+- demo 文件可读 + 与现有 `embed-basic` example 结构对齐
+
+#### 📊 进度
+
+- §B.5.6 #2 closure（multi-instance e2e demo）from backlog → closed
+- SDK 测试 212 → **221**（+9 isolation tests）
+- §A.5 backlog 闭合数保持 **72**（§11.80 不属于 §A.5 backlog 类别；
+  属于 §B.5 / §B.5.6）
+- 后续 multi-instance 风险已钉死：registry 行为 + listener 拓扑 +
+  destroy 隔离 + iframe name 唯一性 + postMessage 路由 + 幂等 destroy
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -4996,10 +5047,10 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. SDK Multi-instance renderer demo 扩展（commit `01be1396` 已落地类型 + 11 测试；e2e demo 是 §B.5.6 #2）：1 天
-2. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
-3. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
-4. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
+1. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
+2. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
+3. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
+4. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

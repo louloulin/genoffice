@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GenOffice SDK — Multi-instance Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; max-width: 1280px; }
+    h1 { margin: 0 0 16px; }
+    h2 { margin: 24px 0 8px; font-size: 16px; }
+    .form { display: grid; grid-template-columns: 100px 1fr; gap: 8px; margin-bottom: 12px; align-items: center; }
+    input, select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; }
+    button { padding: 8px 16px; border: 0; border-radius: 6px; background: #2d6cdf; color: #fff; cursor: pointer; }
+    button.secondary { background: #555; }
+    button.danger { background: #c0392b; }
+    button:disabled { background: #999; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .frame-wrap { height: 320px; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+    iframe { width: 100%; height: 100%; border: 0; }
+    .log { margin-top: 16px; padding: 12px; background: #f5f5f5; border-radius: 6px; font-family: ui-monospace, monospace; font-size: 12px; max-height: 240px; overflow: auto; }
+    .log p { margin: 0 0 4px; }
+    .status { font-family: ui-monospace, monospace; font-size: 12px; padding: 4px 8px; background: #eef; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>GenOffice SDK — Multi-instance Demo</h1>
+  <p>This page mounts <b>two</b> SDK editors side-by-side, demonstrating
+     the <code>editorRegistry</code> + per-instance iframe <code>name</code>
+     dispatch guarantees.</p>
+
+  <div class="form">
+    <label>JWT (A)</label>
+    <input id="jwt-a" type="text" placeholder="eyJ…">
+    <label>JWT (B)</label>
+    <input id="jwt-b" type="text" placeholder="eyJ…">
+    <label>Doc (A)</label>
+    <input id="doc-a" type="text" value="doc_alpha">
+    <label>Doc (B)</label>
+    <input id="doc-b" type="text" value="doc_beta">
+    <label></label>
+    <button id="mount">Mount both editors</button>
+  </div>
+
+  <div id="status" class="status">No editors mounted yet.</div>
+
+  <div class="grid">
+    <div>
+      <h2>Editor A</h2>
+      <div class="frame-wrap" id="wrap-a"></div>
+      <div style="margin-top: 8px;">
+        <button class="secondary" id="save-a" disabled>Save A</button>
+        <button class="secondary" id="dirty-a" disabled>isDirty A</button>
+        <button class="danger" id="destroy-a" disabled>Destroy A</button>
+      </div>
+    </div>
+    <div>
+      <h2>Editor B</h2>
+      <div class="frame-wrap" id="wrap-b"></div>
+      <div style="margin-top: 8px;">
+        <button class="secondary" id="save-b" disabled>Save B</button>
+        <button class="secondary" id="dirty-b" disabled>isDirty B</button>
+        <button class="danger" id="destroy-b" disabled>Destroy B</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="log" id="log" aria-live="polite"></div>
+
+  <script src="../../apps/sdk/dist/index.umd.js"></script>
+  <script>
+    // GenOffice global from the UMD bundle.
+    const { createEditor, getEditor, listEditors } = window.GenOffice
+
+    const log = (msg) => {
+      const el = document.getElementById('log')
+      const p = document.createElement('p')
+      p.textContent = `[${new Date().toISOString().slice(11, 19)}] ${msg}`
+      el.appendChild(p)
+      el.scrollTop = el.scrollHeight
+    }
+
+    const updateStatus = () => {
+      const handles = listEditors()
+      const status = handles.length === 0
+        ? 'No editors mounted yet.'
+        : `Live editors: ${handles.length} → ${handles.map(h => h.instanceId).join(', ')}`
+      document.getElementById('status').textContent = status
+    }
+
+    const handleA = { ref: null }
+    const handleB = { ref: null }
+
+    document.getElementById('mount').addEventListener('click', async () => {
+      const jwtA = document.getElementById('jwt-a').value.trim()
+      const jwtB = document.getElementById('jwt-b').value.trim()
+      const docA = document.getElementById('doc-a').value.trim()
+      const docB = document.getElementById('doc-b').value.trim()
+      if (!jwtA || !jwtB) { log('need both JWTs'); return }
+
+      handleA.ref = await createEditor({
+        documentId: docA, app: 'docs', jwt: jwtA,
+        host: window.location.origin.includes('localhost') ? 'http://localhost:18082' : window.location.origin,
+        container: document.getElementById('wrap-a'),
+      })
+      log(`A mounted: instanceId=${handleA.ref.instanceId}`)
+
+      handleB.ref = await createEditor({
+        documentId: docB, app: 'docs', jwt: jwtB,
+        host: window.location.origin.includes('localhost') ? 'http://localhost:18082' : window.location.origin,
+        container: document.getElementById('wrap-b'),
+      })
+      log(`B mounted: instanceId=${handleB.ref.instanceId}`)
+
+      handleA.ref.on('saved', (e) => log(`A saved: ${JSON.stringify(e)}`))
+      handleB.ref.on('saved', (e) => log(`B saved: ${JSON.stringify(e)}`))
+      handleA.ref.on('dirtyChanged', (e) => log(`A dirty=${e.dirty}`))
+      handleB.ref.on('dirtyChanged', (e) => log(`B dirty=${e.dirty}`))
+
+      // Round-trip check: getEditor / listEditors
+      log(`getEditor(A.instanceId) === handleA.ref: ${getEditor(handleA.ref.instanceId) === handleA.ref}`)
+      log(`getEditor(B.instanceId) === handleB.ref: ${getEditor(handleB.ref.instanceId) === handleB.ref}`)
+      log(`listEditors().length: ${listEditors().length}`)
+
+      for (const id of ['save-a', 'dirty-a', 'destroy-a', 'save-b', 'dirty-b', 'destroy-b']) {
+        document.getElementById(id).disabled = false
+      }
+      document.getElementById('mount').disabled = true
+      updateStatus()
+    })
+
+    const wireButton = (id, target) => {
+      document.getElementById(id).addEventListener('click', async () => {
+        const h = target === 'A' ? handleA.ref : handleB.ref
+        if (!h) return
+        try {
+          if (id.startsWith('save-')) {
+            const r = await h.command('save')
+            log(`${target} save → ${JSON.stringify(r)}`)
+          } else if (id.startsWith('dirty-')) {
+            const r = await h.command('isDirty')
+            log(`${target} isDirty → ${JSON.stringify(r)}`)
+          } else if (id.startsWith('destroy-')) {
+            const id = h.instanceId
+            h.destroy()
+            log(`${target} destroyed; getEditor('${id}') = ${getEditor(id)}`)
+            document.getElementById(id).disabled = true
+            updateStatus()
+          }
+        } catch (e) {
+          log(`${target} ${id} error: ${e.message}`)
+        }
+      })
+    }
+    wireButton('save-a', 'A')
+    wireButton('dirty-a', 'A')
+    wireButton('destroy-a', 'A')
+    wireButton('save-b', 'B')
+    wireButton('dirty-b', 'B')
+    wireButton('destroy-b', 'B')
+  </script>
+</body>
+</html>
