@@ -157,7 +157,7 @@ export function registerDocsHandlers(): void {
     fontFamily: 'sans-serif',
   }))
 
-  registerHandle('docs:save-settings', () => ({ ok: true }))
+  registerHandle('docs:save-settings', () => ({ ok: true }), { scope: 'admin' })
 
   registerHandle('docs:close-check-result', (_event: unknown, state: unknown) => {
     const value = state as { dirty?: unknown; autoSave?: unknown; filePath?: unknown } | null

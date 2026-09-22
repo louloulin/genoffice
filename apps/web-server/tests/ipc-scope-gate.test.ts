@@ -369,3 +369,249 @@ describe('IPC dispatcher scope gate — enterprise permissions (sdk1 §11.74 ext
     expect(registry.getHandlerEntry(channels[1])?.scope).toBe('permissions:write')
   })
 })
+
+describe('IPC dispatcher scope gate — workflow (sdk1 §11.77)', () => {
+  it('workflow:create rejects a no-scope token', async () => {
+    const r = await callIpc('workflow:create', noScopeToken, [
+      { name: 'no-perm', steps: [] },
+    ])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('workflow:list accepts a workflow:* wildcard', async () => {
+    const wildcard = await mint('wf-wild', ['workflow:*'])
+    const r = await callIpc('workflow:list', wildcard, [{}])
+    expect(r.status).toBe(200)
+    expect(Array.isArray(r.body.result)).toBe(true)
+  })
+
+  it('workflow:list rejects a write-only token (no read)', async () => {
+    const writeOnly = await mint('wf-write', ['workflow:write'])
+    const r = await callIpc('workflow:list', writeOnly, [{}])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('workflow:create + workflow:get round-trip on a workflow:write + workflow:read token pair', async () => {
+    const writer = await mint('wf-writer', ['workflow:write'])
+    const createRes = await callIpc('workflow:create', writer, [
+      { name: 'roundtrip', steps: [{ id: 's1', type: 'approval', config: {} }] },
+    ])
+    expect(createRes.status).toBe(200)
+    const created = createRes.body.result as { ok: boolean; id: string }
+    expect(created.ok).toBe(true)
+    expect(typeof created.id).toBe('string')
+
+    // Read with a separate read-only token
+    const reader = await mint('wf-reader', ['workflow:read'])
+    const getRes = await callIpc('workflow:get', reader, [{ id: created.id }])
+    expect(getRes.status).toBe(200)
+    const fetched = getRes.body.result as { id: string; name: string; status: string }
+    expect(fetched.id).toBe(created.id)
+    expect(fetched.name).toBe('roundtrip')
+  })
+
+  it('workflow:update + workflow:delete require workflow:write', async () => {
+    const writer = await mint('wf-writer-2', ['workflow:write'])
+    const reader = await mint('wf-reader-2', ['workflow:read'])
+    const c = await callIpc('workflow:create', writer, [
+      { name: 'upd-del', steps: [] },
+    ])
+    const created = c.body.result as { id: string }
+    // update should fail with reader
+    const u = await callIpc('workflow:update', reader, [{ id: created.id, status: 'paused' }])
+    expect(u.status).toBe(403)
+    // delete should fail with reader
+    const d = await callIpc('workflow:delete', reader, [{ id: created.id }])
+    expect(d.status).toBe(403)
+    // but succeed with writer
+    const u2 = await callIpc('workflow:update', writer, [{ id: created.id, status: 'paused' }])
+    expect(u2.status).toBe(200)
+    const d2 = await callIpc('workflow:delete', writer, [{ id: created.id }])
+    expect(d2.status).toBe(200)
+  })
+
+  it('workflow:run requires workflow:run scope (write is not enough)', async () => {
+    const writer = await mint('wf-runner-write', ['workflow:write'])
+    const createRes = await callIpc('workflow:create', writer, [
+      { name: 'run-test', steps: [] },
+    ])
+    const created = createRes.body.result as { id: string }
+    // writer without workflow:run scope must be denied
+    const denied = await callIpc('workflow:run', writer, [{ id: created.id }])
+    expect(denied.status).toBe(403)
+    // wildcard with workflow:run accepted
+    const runner = await mint('wf-runner', ['workflow:run', 'workflow:read'])
+    const ok = await callIpc('workflow:run', runner, [{ id: created.id }])
+    expect(ok.status).toBe(200)
+    const result = ok.body.result as { ok: boolean; executionId: string; status: string }
+    expect(result.ok).toBe(true)
+    expect(result.executionId).toMatch(/^exec-/)
+  })
+
+  it('handler registry round-trips workflow scopes via getHandlerEntry', async () => {
+    const registry = await import('../src/common/registry')
+    const channels = [
+      'test:wf-read-' + Math.random().toString(36).slice(2),
+      'test:wf-write-' + Math.random().toString(36).slice(2),
+      'test:wf-run-' + Math.random().toString(36).slice(2),
+    ]
+    registry.registerHandle(channels[0], () => ({ ok: true }), { scope: 'workflow:read' })
+    registry.registerHandle(channels[1], () => ({ ok: true }), { scope: 'workflow:write' })
+    registry.registerHandle(channels[2], () => ({ ok: true }), { scope: 'workflow:run' })
+    expect(registry.getHandlerEntry(channels[0])?.scope).toBe('workflow:read')
+    expect(registry.getHandlerEntry(channels[1])?.scope).toBe('workflow:write')
+    expect(registry.getHandlerEntry(channels[2])?.scope).toBe('workflow:run')
+  })
+})
+
+describe('IPC dispatcher scope gate — communications (sdk1 §11.77)', () => {
+  it('mail:list rejects a token without mail:read', async () => {
+    const noScope = await mint('mail-none', [])
+    const r = await callIpc('mail:list', noScope, [{ folder: 'inbox' }])
+    expect(r.status).toBe(403)
+  })
+
+  it('mail:send requires mail:send scope (mail:read is not enough)', async () => {
+    const reader = await mint('mail-r', ['mail:read'])
+    const r = await callIpc('mail:send', reader, [
+      { to: 'a@b.c', subject: 'x', body: 'y' },
+    ])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('mail:send + mail:list round-trip via mail:* wildcard', async () => {
+    const wildcard = await mint('mail-wild', ['mail:*'])
+    const sendRes = await callIpc('mail:send', wildcard, [
+      {
+        to: [{ name: 'Round', email: 'round@trip.test' }],
+        subject: 'rt',
+        body: 'hi',
+      },
+    ])
+    expect(sendRes.status).toBe(200)
+    const sent = sendRes.body.result as { ok: boolean; id: string }
+    expect(sent.ok).toBe(true)
+
+    // No folder filter — new mail is 'pending' for 1s, then 'sent'.
+    const listRes = await callIpc('mail:list', wildcard, [{ limit: 100, offset: 0 }])
+    expect(listRes.status).toBe(200)
+    const list = listRes.body.result as Array<{ id: string; subject: string; to: Array<{ email: string }> }>
+    const found = list.find(m => m.id === sent.id)
+    expect(found).toBeDefined()
+    expect(found?.subject).toBe('rt')
+    expect(found?.to[0]?.email).toBe('round@trip.test')
+  })
+
+  it('mail:get requires mail:read', async () => {
+    const sender = await mint('mail-sender', ['mail:send'])
+    const wildcard = await mint('mail-wild-2', ['mail:*'])
+    const sendRes = await callIpc('mail:send', wildcard, [
+      { to: [{ name: 'Get', email: 'get@test' }], subject: 'g', body: '' },
+    ])
+    const sent = sendRes.body.result as { id: string }
+    // sender (mail:send but no mail:read) cannot fetch
+    const denied = await callIpc('mail:get', sender, [{ id: sent.id }])
+    expect(denied.status).toBe(403)
+    // wildcard accepted
+    const ok = await callIpc('mail:get', wildcard, [{ id: sent.id }])
+    expect(ok.status).toBe(200)
+  })
+
+  it('calendar:list-events rejects a token without calendar:read', async () => {
+    const r = await callIpc('calendar:list-events', noScopeToken, [{ startDate: 0, endDate: 1 }])
+    expect(r.status).toBe(403)
+  })
+
+  it('calendar:create + calendar:update + calendar:delete require calendar:write', async () => {
+    const writer = await mint('cal-w', ['calendar:write'])
+    const reader = await mint('cal-r', ['calendar:read'])
+    const createRes = await callIpc('calendar:create-event', writer, [
+      { title: 'meet', startTime: 1000, endTime: 2000 },
+    ])
+    expect(createRes.status).toBe(200)
+    const ev = createRes.body.result as { ok: boolean; id: string }
+    expect(ev.ok).toBe(true)
+
+    // reader cannot update / delete
+    const updDenied = await callIpc('calendar:update-event', reader, [{ id: ev.id, title: 'no' }])
+    expect(updDenied.status).toBe(403)
+    const delDenied = await callIpc('calendar:delete-event', reader, [{ id: ev.id }])
+    expect(delDenied.status).toBe(403)
+
+    // writer can update + delete
+    const upd = await callIpc('calendar:update-event', writer, [{ id: ev.id, title: 'ok' }])
+    expect(upd.status).toBe(200)
+    const del = await callIpc('calendar:delete-event', writer, [{ id: ev.id }])
+    expect(del.status).toBe(200)
+  })
+
+  it('handler registry round-trips communications scopes via getHandlerEntry', async () => {
+    const registry = await import('../src/common/registry')
+    const channels = [
+      'test:mail-read-' + Math.random().toString(36).slice(2),
+      'test:mail-send-' + Math.random().toString(36).slice(2),
+      'test:cal-read-' + Math.random().toString(36).slice(2),
+      'test:cal-write-' + Math.random().toString(36).slice(2),
+    ]
+    registry.registerHandle(channels[0], () => ({ ok: true }), { scope: 'mail:read' })
+    registry.registerHandle(channels[1], () => ({ ok: true }), { scope: 'mail:send' })
+    registry.registerHandle(channels[2], () => ({ ok: true }), { scope: 'calendar:read' })
+    registry.registerHandle(channels[3], () => ({ ok: true }), { scope: 'calendar:write' })
+    expect(registry.getHandlerEntry(channels[0])?.scope).toBe('mail:read')
+    expect(registry.getHandlerEntry(channels[1])?.scope).toBe('mail:send')
+    expect(registry.getHandlerEntry(channels[2])?.scope).toBe('calendar:read')
+    expect(registry.getHandlerEntry(channels[3])?.scope).toBe('calendar:write')
+  })
+})
+
+describe('IPC dispatcher scope gate — admin (sdk1 §11.77)', () => {
+  it('docs:save-settings rejects a regular scope token', async () => {
+    // writeToken (audit:write) lacks admin scope
+    const r = await callIpc('docs:save-settings', writeToken, [])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('ai:set-settings rejects a non-admin token', async () => {
+    const r = await callIpc('ai:set-settings', writeToken, [{ provider: 'openai' }])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('admin sub bypasses docs:save-settings and ai:set-settings', async () => {
+    // adminToken's sub is 'admin' — bypasses via hasScope wildcard
+    const docs = await callIpc('docs:save-settings', adminToken, [])
+    expect(docs.status).toBe(200)
+    expect(docs.body.ok).toBe(true)
+
+    // ai:set-settings handler validates arg shape; pass a valid AiSettings-like object
+    const ai = await callIpc('ai:set-settings', adminToken, [{
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-5',
+      temperature: 0.7,
+    }])
+    expect(ai.status).toBe(200)
+  })
+
+  it('admin scope wildcard * on JWT mints admin-bypass equivalent', async () => {
+    const explicitAdmin = await mint('admin-via-scope', ['*'])
+    const r = await callIpc('docs:save-settings', explicitAdmin, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('handler registry round-trips admin scopes via getHandlerEntry', async () => {
+    const registry = await import('../src/common/registry')
+    const channels = [
+      'test:admin1-' + Math.random().toString(36).slice(2),
+      'test:admin2-' + Math.random().toString(36).slice(2),
+    ]
+    registry.registerHandle(channels[0], () => ({ ok: true }), { scope: 'admin' })
+    registry.registerHandle(channels[1], () => ({ ok: true }), { scope: 'admin' })
+    expect(registry.getHandlerEntry(channels[0])?.scope).toBe('admin')
+    expect(registry.getHandlerEntry(channels[1])?.scope).toBe('admin')
+  })
+})

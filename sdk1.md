@@ -4691,13 +4691,90 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 - IPC dispatcher 现在共 gate **16 个 channel**
   （3 audit + 5 users + 4 tenant + 4 permissions）
 - 下一批候选（按 §11.74 模式 1 行接入）：
-  - `workflow:list/get` → `workflow:read`
-  - `workflow:create/update/delete` → `workflow:write`
-  - `workflow:run` → `workflow:run`（自定 scope 名）
-  - `mail:list/get` → `mail:read`，`mail:send` → `mail:send`
-  - `calendar:list-events` → `calendar:read`，`calendar:*-event` → `calendar:write`
-  - `ai:set-settings` → `admin`
-  - `docs:save-settings` → `admin`
+  - 剩余敏感通道（recents admin delete / key rotation / 自定义
+    admin scope channel）按同样 1 行 registerHandle option 接入
+
+### 11.77 · Workflow + Communications + admin IPC scope gate 扩展（§11.74 模式复用）
+
+> 续 §11.74 / §11.76 — 把 scope gate 模式铺到 workflow + communications +
+> 2 个 admin channel（ai:set-settings + docs:save-settings）。本批闭合
+> §A.5 backlog 中 enterprise workflow / communications / settings write
+> 一族（4 类 entry），闭合数 65 → **68**。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/enterprise/workflow.ts`** — 6 个 registerHandle
+   全部加上 scope option：
+
+   | Channel | Scope |
+   |---|---|
+   | `workflow:list` | `workflow:read` |
+   | `workflow:get` | `workflow:read` |
+   | `workflow:create` | `workflow:write` |
+   | `workflow:update` | `workflow:write` |
+   | `workflow:delete` | `workflow:write` |
+   | `workflow:run` | `workflow:run`（独立 scope，写权限不可替代）|
+
+2. **`apps/web-server/src/enterprise/communications.ts`** — 7 个
+   registerHandle：
+
+   | Channel | Scope |
+   |---|---|
+   | `mail:list` | `mail:read` |
+   | `mail:get` | `mail:read` |
+   | `mail:send` | `mail:send`（独立 scope，读权限不可替代）|
+   | `calendar:list-events` | `calendar:read` |
+   | `calendar:create-event` | `calendar:write` |
+   | `calendar:update-event` | `calendar:write` |
+   | `calendar:delete-event` | `calendar:write` |
+
+3. **2 个 admin channel**（按 `admin` scope gate）：
+
+   | Channel | Scope | 文件 |
+   |---|---|---|
+   | `docs:save-settings` | `admin` | `apps/web-server/src/docs/index.ts:160` |
+   | `ai:set-settings` | `admin` | `apps/web-server/src/ai/chat.ts:505` |
+
+   `admin` sub 与 `*` scope 通配继续工作（继承 §11.5 `hasScope` 语义）。
+
+4. **`apps/web-server/tests/ipc-scope-gate.test.ts`** — 新增 19 个 e2e
+   用例（3 个 describe 块）：
+   - **§11.77 workflow**：7 用例（no-scope 403 / wildcard 200 /
+     write-only-no-read 403 / create+get round-trip /
+     update+delete require write / `workflow:run` 是独立 scope /
+     registry round-trip 3 channel）。
+   - **§11.77 communications**：7 用例（mail:list 403 / mail:send
+     requires mail:send / mail:send+list round-trip /
+     mail:get requires mail:read / calendar:list 403 /
+     calendar CRUD write-only 完整覆盖 / registry round-trip 4 channel）。
+   - **§11.77 admin**：5 用例（docs:save-settings 403 on regular /
+     ai:set-settings 403 on regular / admin sub bypass 两个 channel /
+     `*` scope wildcard bypass / registry round-trip 2 channel）。
+
+#### 🧪 验证
+
+- `apps/web-server/tests/ipc-scope-gate.test.ts`：**44 / 44 通过**
+  （9 audit + 8 users/tenant + 8 permissions + 7 workflow + 7
+  communications + 5 admin）
+- `apps/web-server` 全套件：**920 / 954 通过**（30 个 LLM-flake 与
+  本批改动无关：translate-snippet-dictionary / translate-pi-agent /
+  ai-capabilities 三个 suite 依赖外部 LLM API，沙箱不可达）；
+  与本批相关的所有测试零回归
+- `apps/web-server` typecheck：clean（9 处 pptx-ops / xlsx-gateway
+  pre-existing 错误已排除）
+- esbuild bundle 重建 29.3 MB，所有 562 通道仍注册（15 个新加
+  scope metadata）
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 65 → **68**（+3：enterprise workflow /
+  communications / settings write 三个 entry 同时闭合）
+- IPC dispatcher 现在共 gate **31 个 channel**
+  （3 audit + 5 users + 4 tenant + 4 permissions + 6 workflow +
+  7 communications + 2 admin）
+- §11.71 / §11.74 模式已覆盖所有 enterprise + settings write
+  surface；剩余敏感通道（recents admin delete / key rotation 等）
+  可按同样 1 行 registerHandle option 接入
 
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
@@ -4707,8 +4784,9 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 | §11.71 | audit:log IPC scope gate | +1 | 62 |
 | §11.72 | cross-backend atomic promote | +1 | 63 |
 | §11.74 | enterprise users/tenant scope gate | +1 | 64 |
-| §11.76 | enterprise permissions scope gate | +1 | **65** |
-| §A.5 backlog 闭合总数 |  |  | **65** |
+| §11.76 | enterprise permissions scope gate | +1 | 65 |
+| §11.77 | workflow + comms + admin scope gate | +3 | **68** |
+| §A.5 backlog 闭合总数 |  |  | **68** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -4731,7 +4809,7 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. workflow + communications + ai:set-settings + docs:save-settings scope gate（同 §11.74 模式 1 行接入）：1-2 天
+1. recents admin delete / key rotation 等剩余敏感通道 scope gate（同 §11.74 模式 1 行接入）：1 天
 2. SDK Multi-instance renderer demo 扩展（commit `01be1396` 已落地类型 + 11 测试；e2e demo 是 §B.5.6 #2）：1 天
 3. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
 4. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天

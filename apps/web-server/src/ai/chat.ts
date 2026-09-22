@@ -516,7 +516,7 @@ export function registerAiCoreHandlers(): void {
     }
     saveSettings(aiSettings)
     return { ok: true }
-  })
+  }, { scope: 'admin' })
 
   // Genspark sign-in is the shared gsk login, so report the real state rather
   // than a canned "signed in": a stub here made the UI claim the account was

@@ -33,7 +33,7 @@ export function registerWorkflowHandlers(): void {
       createdAt: Date.now(),
     })
     return { ok: true, id }
-  })
+  }, { scope: 'workflow:write' })
 
   registerHandle('workflow:list', (_event: unknown, args: unknown) => {
     const { status, limit, offset } = (args || {}) as {
@@ -56,12 +56,12 @@ export function registerWorkflowHandlers(): void {
         status: w.status,
         createdAt: w.createdAt,
       }))
-  })
+  }, { scope: 'workflow:read' })
 
   registerHandle('workflow:get', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     return WORKFLOWS.get(id) || null
-  })
+  }, { scope: 'workflow:read' })
 
   registerHandle('workflow:update', (_event: unknown, args: unknown) => {
     const { id, name, description, steps, status } = (args || {}) as {
@@ -86,14 +86,14 @@ export function registerWorkflowHandlers(): void {
     }))
     if (status) workflow.status = status
     return { ok: true }
-  })
+  }, { scope: 'workflow:write' })
 
   registerHandle('workflow:delete', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     if (!WORKFLOWS.has(id)) return { ok: false, error: 'Workflow not found' }
     WORKFLOWS.delete(id)
     return { ok: true }
-  })
+  }, { scope: 'workflow:write' })
 
   registerHandle('workflow:run', async (_event: unknown, args: unknown) => {
     const { id } = (args || {}) as { id: string; data?: Record<string, unknown> }
@@ -108,5 +108,5 @@ export function registerWorkflowHandlers(): void {
       status: 'running',
       startedAt: Date.now(),
     }
-  })
+  }, { scope: 'workflow:run' })
 }

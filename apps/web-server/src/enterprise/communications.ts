@@ -36,7 +36,7 @@ export function registerMailHandlers(): void {
       if (mail) mail.status = 'sent'
     }, 1000)
     return { ok: true, id }
-  })
+  }, { scope: 'mail:send' })
 
   registerHandle('mail:list', (_event: unknown, args: unknown) => {
     const { folder, limit, offset } = (args || {}) as {
@@ -57,12 +57,12 @@ export function registerMailHandlers(): void {
         sentAt: m.sentAt,
         status: m.status,
       }))
-  })
+  }, { scope: 'mail:read' })
 
   registerHandle('mail:get', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     return MAILS.get(id) || null
-  })
+  }, { scope: 'mail:read' })
 }
 
 export function registerCalendarHandlers(): void {
@@ -92,7 +92,7 @@ export function registerCalendarHandlers(): void {
       status: 'confirmed',
     })
     return { ok: true, id }
-  })
+  }, { scope: 'calendar:write' })
 
   registerHandle('calendar:list-events', (_event: unknown, args: unknown) => {
     const { startDate, endDate, limit, offset } = (args || {}) as {
@@ -109,7 +109,7 @@ export function registerCalendarHandlers(): void {
     return events
       .sort((a, b) => a.startTime - b.startTime)
       .slice(startOffset, startOffset + maxResults)
-  })
+  }, { scope: 'calendar:read' })
 
   registerHandle('calendar:update-event', (_event: unknown, args: unknown) => {
     const { id, title, description, startTime, endTime, attendees, location } = (args || {}) as {
@@ -130,12 +130,12 @@ export function registerCalendarHandlers(): void {
     if (attendees) event.attendees = attendees as typeof event.attendees
     if (location !== undefined) event.location = location
     return { ok: true }
-  })
+  }, { scope: 'calendar:write' })
 
   registerHandle('calendar:delete-event', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     if (!CALENDARS.has(id)) return { ok: false, error: 'Event not found' }
     CALENDARS.delete(id)
     return { ok: true }
-  })
+  }, { scope: 'calendar:write' })
 }
