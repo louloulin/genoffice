@@ -343,19 +343,43 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       // provides a response handler.
     }
   }
+  /** Snapshot the counters in the wire shape both the local `usage`
+   *  event and the server `reportUsage` command consume. */
+  function usageSample(): {
+    instanceId: string
+    docBytesWritten: number
+    aiCalls: number
+    aiTokensIn: number
+    aiTokensOut: number
+    sessionDurationMs: number
+  } {
+    return {
+      instanceId,
+      docBytesWritten: telemetry.docBytesWritten,
+      aiCalls: telemetry.aiCalls,
+      aiTokensIn: telemetry.aiTokensIn,
+      aiTokensOut: telemetry.aiTokensOut,
+      sessionDurationMs: Date.now() - telemetry.sessionStartedAt,
+    }
+  }
+
+  /** Fire-and-forget server report (sdk1.md §11.36). A missing renderer
+   *  handler, an offline server, or a destroyed iframe must never break
+   *  the editor, so rejections are swallowed here. Hosts that want a
+   *  loud failure call `reportUsage` themselves. */
+  function reportUsageToServer(): void {
+    void command('reportUsage', usageSample()).catch(() => {
+      /* best-effort: the local `usage` event is the source of truth */
+    })
+  }
+
   if (telemetryEnabled) {
     telemetry.interval = setInterval(() => {
       if (destroyed) return
-      const event: UsageEvent = {
-        type: 'usage',
-        instanceId,
-        docBytesWritten: telemetry.docBytesWritten,
-        aiCalls: telemetry.aiCalls,
-        aiTokensIn: telemetry.aiTokensIn,
-        aiTokensOut: telemetry.aiTokensOut,
-        sessionDurationMs: Date.now() - telemetry.sessionStartedAt,
-      }
+      const sample = usageSample()
+      const event: UsageEvent = { type: 'usage', ...sample }
       dispatch('usage', event)
+      reportUsageToServer()
     }, 30_000)
   }
   if (handshakeEnabled && expectedNonce) {
@@ -487,6 +511,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     // inside an event handler sees the post-destroy state correctly.
     editorRegistry.delete(instanceId)
     if (destroyed) return
+    // Flush the final usage sample BEFORE flipping `destroyed`, because
+    // command() rejects once `destroyed` is set and the iframe is still
+    // mounted here (it gets removed below). A host that tears the editor
+    // down between two 30 s ticks still reports its last window.
+    if (telemetryEnabled && telemetry.interval && iframe && iframe.contentWindow) {
+      reportUsageToServer()
+    }
     destroyed = true
     if (handshakeTimer) {
       clearTimeout(handshakeTimer)

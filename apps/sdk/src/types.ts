@@ -499,6 +499,33 @@ export interface EditorCommands {
   getUndoStack: { args?: Record<string, never>; result: { length: number; current: number } }
 
   /**
+   * Report an aggregated usage sample so the web-server can expose it
+   * alongside its own metrics (`GET /api/v1/metrics`, sdk1.md §11.36).
+   *
+   * The SDK calls this automatically on the same 30 s ticker that
+   * emits the local `usage` event when the host opted in via
+   * `createEditor({ telemetry: true })`, plus once more during
+   * `destroy()` to flush the final sample. Hosts can also call it
+   * directly when they want to report their own counters (e.g. LLM
+   * token spend measured on their side).
+   *
+   * Fire-and-forget from the SDK's perspective: a server that can't
+   * be reached must never break the editor, so the automatic path
+   * swallows rejections. An explicit host call still rejects loudly.
+   */
+  reportUsage: {
+    args: {
+      instanceId?: string
+      docBytesWritten?: number
+      aiCalls?: number
+      aiTokensIn?: number
+      aiTokensOut?: number
+      sessionDurationMs?: number
+    }
+    result: void
+  }
+
+  /**
    * Add a comment / annotation. Resolves with the assigned `id`. The
    * editor forwards the anchor through its native selection model.
    *

@@ -73,22 +73,54 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
       }, '*');
     } catch (e) { /* parent gone, swallow */ }
   }
-  // Inbound envelope command → IPC POST. SDK editor.command(name, args)
-  // sends {kind:'command', correlationId, payload:{name, args}}. We POST
-  // /api/ipc/<name> with {args:[args]} + x-ipc-session header so the
-  // web-server IPC dispatcher can route the same handler the renderer
-  // process uses. Reply is the IPC envelope {ok, result} or {error}
-  // mirrored back as a command-result envelope so the SDK's pending
-  // promise resolves/rejects. SDK error codes from the IPC side are
-  // preserved so hosts see a stable error shape regardless of who
-  // rejected the command.
+  // Inbound envelope command dispatch. SDK editor.command(name, args)
+  // sends {kind:'command', correlationId, payload:{name, args}}.
+  //
+  // Dispatch order (exactly ONE reply per command, never two):
+  //   1. Renderer sink — if the editor bundle has registered
+  //      window.__GENOFFICE_COMMAND_SINK__ = function(name, args), the
+  //      bridge calls it and mirrors its resolved value / rejection.
+  //      This is how renderer-owned commands (setContent, insertText,
+  //      undo, mountSidebar, openFileDialog, …) get serviced once the
+  //      renderer team wires them up.
+  //   2. Server IPC — otherwise POST /api/ipc/sdk:command with
+  //      {args:[{name, args, docId}]} + x-ipc-session. The web-server
+  //      dispatcher services the server-backed subset (comments /
+  //      versions / telemetry) and replies UNSUPPORTED for the rest, so
+  //      the host sees a loud structured failure instead of a hang.
+  //
+  // Error codes from either side are preserved verbatim so hosts see a
+  // stable shape regardless of who rejected the command.
+  var SDK_COMMAND_CHANNEL = 'sdk:command';
   function dispatchCommand(env) {
     var name = env && env.payload && env.payload.name;
     var args = env && env.payload && env.payload.args;
     var correlationId = env && env.correlationId;
     if (typeof name !== 'string' || !name || !correlationId) return;
+
+    var sink = window.__GENOFFICE_COMMAND_SINK__;
+    if (typeof sink === 'function') {
+      try {
+        Promise.resolve(sink(name, args)).then(function (result) {
+          replyCommand(correlationId, true, result);
+        }, function (e) {
+          replyCommand(correlationId, false, undefined, {
+            code: (e && e.code) || 'RENDERER_ERROR',
+            message: (e && e.message) || 'renderer rejected command'
+          });
+        });
+      } catch (e) {
+        replyCommand(correlationId, false, undefined, {
+          code: (e && e.code) || 'RENDERER_ERROR',
+          message: (e && e.message) || 'renderer threw synchronously'
+        });
+      }
+      return;
+    }
+
     var cfg = window.__GENOFFICE_EMBED__;
     var sessionId = cfg && cfg.sessionId;
+    var docId = cfg && cfg.docId;
     var fetchFn = (typeof fetch !== 'undefined') ? fetch : null;
     if (!fetchFn) {
       replyCommand(correlationId, false, undefined, {
@@ -97,13 +129,14 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
       });
       return;
     }
-    var body = JSON.stringify({ args: args === undefined ? [] : [args] });
+    var envelope = { name: name, args: args === undefined ? {} : args };
+    if (docId) envelope.docId = docId;
     var headers = { 'content-type': 'application/json' };
     if (sessionId) headers['x-ipc-session'] = sessionId;
-    fetchFn('/api/ipc/' + encodeURIComponent(name), {
+    fetchFn('/api/ipc/' + encodeURIComponent(SDK_COMMAND_CHANNEL), {
       method: 'POST',
       headers: headers,
-      body: body
+      body: JSON.stringify({ args: [envelope] })
     }).then(function (res) {
       return res.text().then(function (text) {
         var parsed;

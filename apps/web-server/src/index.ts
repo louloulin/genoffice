@@ -75,6 +75,7 @@ import { registerVersionHistoryHandlers } from './common/version-history'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 import { handleApiV1 } from './api/v1/index'
 import { handleEmbed } from './embed/index'
+import { registerSdkCommandHandlers } from './embed/sdk-commands'
 
 function authCookieHeader(): string | null {
   const token = process.env.WEB_TOKEN
@@ -155,6 +156,7 @@ registerEnterpriseHandlers()
 registerAnydocHandlers()
 registerWebHandlers()
 registerVersionHistoryHandlers()
+registerSdkCommandHandlers()
 
 // ----- HTTP helpers --------------------------------------------------------
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {

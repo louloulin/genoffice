@@ -69,7 +69,9 @@ interface BridgeHarness {
   /** The fake meta tag for `<meta name="genoffice-nonce">`. */
   nonce: string | null
   /** The fake __GENOFFICE_EMBED__ config. */
-  embedConfig: { app: string; sessionId?: string } | null
+  embedConfig: { app: string; sessionId?: string; docId?: string } | null
+  /** Test-supplied renderer command sink (window.__GENOFFICE_COMMAND_SINK__). */
+  commandSink: ((name: string, args: unknown) => unknown) | null
   /** document.readyState stub. */
   readyState: 'loading' | 'interactive' | 'complete'
 }
@@ -88,6 +90,7 @@ function evalBridgeWith(opts: { nonce: string | null; embedConfig: BridgeHarness
     eventSources: [],
     fetchCalls: [],
     fetchMock: null,
+    commandSink: null,
     nonce: opts.nonce,
     embedConfig: opts.embedConfig,
     readyState: opts.readyState ?? 'complete',
@@ -96,6 +99,12 @@ function evalBridgeWith(opts: { nonce: string | null; embedConfig: BridgeHarness
   // Build a fake `window` object
   const fakeWindow = {
     __GENOFFICE_EMBED__: opts.embedConfig,
+    // The sink is read lazily inside dispatchCommand (window.__GENOFFICE_
+    // COMMAND_SINK__), so a getter keeps the harness value live for tests
+    // that install a sink AFTER eval.
+    get __GENOFFICE_COMMAND_SINK__() {
+      return harness.commandSink ?? undefined
+    },
     parent: {
       postMessage(data: unknown, targetOrigin: string) {
         harness.parentPosts.push({ data, targetOrigin })
@@ -447,7 +456,7 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     try { fn() } finally { h.fetchMock = null }
   }
 
-  it('dispatches inbound command envelope as POST /api/ipc/<channel>', async () => {
+  it('dispatches inbound command envelope as POST /api/ipc/sdk:command', async () => {
     const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
     let captured: { url: string; init: RequestInit } | null = null
     h.fetchMock = async (url: string, init: RequestInit) => {
@@ -460,19 +469,105 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
         dir: 'host→editor',
         kind: 'command',
         correlationId: 'cmd-1',
-        payload: { name: 'docs:save', args: { path: '/x.docx' } },
+        payload: { name: 'addComment', args: { text: 'hi', anchor: { cell: 'A1' } } },
       },
     })
-    // Drain microtasks so the .then() in dispatchCommand fires.
-    await Promise.resolve(); await Promise.resolve()
+    await flushMicrotasks()
     expect(captured).not.toBeNull()
-    expect(captured!.url).toBe('/api/ipc/docs%3Asave')
+    expect(captured!.url).toBe('/api/ipc/sdk%3Acommand')
     const init = captured!.init as RequestInit
     expect(init.method).toBe('POST')
     const headers = init.headers as Record<string, string>
     expect(headers['content-type']).toBe('application/json')
     expect(headers['x-ipc-session']).toBe('embed-xyz')
-    expect(JSON.parse(init.body as string)).toEqual({ args: [{ path: '/x.docx' }] })
+    expect(JSON.parse(init.body as string)).toEqual({
+      args: [{ name: 'addComment', args: { text: 'hi', anchor: { cell: 'A1' } } }],
+    })
+  })
+
+  it('includes embedConfig.docId in the IPC envelope', async () => {
+    const h = evalBridgeWith({
+      nonce: 'n',
+      embedConfig: { app: 'docs', sessionId: 'embed-xyz', docId: 'projects/q3.docx' },
+    })
+    let captured: { url: string; init: RequestInit } | null = null
+    h.fetchMock = async (url: string, init: RequestInit) => {
+      captured = { url, init }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: {} }) }
+    }
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-docid',
+        payload: { name: 'listVersions', args: {} },
+      },
+    })
+    await flushMicrotasks()
+    const body = JSON.parse((captured!.init as RequestInit).body as string) as {
+      args: Array<{ name: string; docId?: string }>
+    }
+    expect(body.args[0]!.docId).toBe('projects/q3.docx')
+  })
+
+  it('prefers window.__GENOFFICE_COMMAND_SINK__ over the IPC POST when installed', async () => {
+    // Renderer-owned commands (setContent / mountSidebar / …) are serviced
+    // by the renderer bundle via a sink function. When the sink is present
+    // the bridge MUST NOT also POST to the server (double-reply would race).
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
+    const calls: Array<{ name: string; args: unknown }> = []
+    h.commandSink = async (name: string, args: unknown) => {
+      calls.push({ name, args })
+      return { applied: true }
+    }
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-sink',
+        payload: { name: 'setContent', args: { content: '<p>hi</p>' } },
+      },
+    })
+    await flushMicrotasks()
+    expect(calls).toEqual([{ name: 'setContent', args: { content: '<p>hi</p>' } }])
+    expect(h.fetchCalls).toHaveLength(0)
+    const reply = h.parentPosts.find((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-sink'
+    })
+    const data = reply!.data as { payload: { ok: boolean; result: { applied: boolean } } }
+    expect(data.payload.ok).toBe(true)
+    expect(data.payload.result).toEqual({ applied: true })
+  })
+
+  it('rejects with RENDERER_ERROR when the sink throws', async () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
+    h.commandSink = async () => {
+      const err = new Error('renderer says no') as Error & { code?: string }
+      err.code = 'UNSUPPORTED'
+      throw err
+    }
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-sink-fail',
+        payload: { name: 'openFileDialog', args: {} },
+      },
+    })
+    await flushMicrotasks()
+    const reply = h.parentPosts.find((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-sink-fail'
+    })
+    const data = reply!.data as { payload: { ok: boolean; error: { code: string; message: string } } }
+    expect(data.payload.ok).toBe(false)
+    expect(data.payload.error.code).toBe('UNSUPPORTED')
+    expect(data.payload.error.message).toBe('renderer says no')
+    expect(h.fetchCalls).toHaveLength(0)
   })
 
   it('replies command-result with ok:true when IPC returns ok envelope', async () => {

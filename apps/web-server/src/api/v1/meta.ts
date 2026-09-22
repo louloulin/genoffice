@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { sendJson, sendError } from './http-utils'
 import { handlerCount, listChannels } from '../../common/index'
 import { getDeadLetterMetrics } from '../../common/webhooks-dlq'
+import { getUsageTotals } from '../../embed/sdk-commands'
 
 // ESM builds don't expose __dirname; derive it from import.meta.url. The
 // fallback handles the CommonJS case (when bundled by esbuild as a single
@@ -103,6 +104,8 @@ export function handleHealth(ctx: { request: IncomingMessage; response: ServerRe
  *   - `genoffice_dlq_newest_dropped_at_ms` epoch ms of newest (or NaN)
  *   - `genoffice_ipc_channels_implemented` total registered handlers
  *   - `genoffice_uptime_seconds`           seconds since process start
+ *   - `genoffice_sdk_usage_samples_total`  SDK `reportUsage` samples received
+ *   - `genoffice_sdk_*`                    aggregated SDK usage counters
  *
  * Hosts that prefer JSON can still hit `GET /api/v1/webhooks/dlq`
  * which includes a structured `metrics` field.
@@ -116,6 +119,7 @@ export function handleHealth(ctx: { request: IncomingMessage; response: ServerRe
 const PROCESS_START_MS = Date.now()
 export function handleMetrics(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
   const m = getDeadLetterMetrics()
+  const usage = getUsageTotals()
   const uptimeSec = (Date.now() - PROCESS_START_MS) / 1000
   const lines: string[] = [
     '# HELP genoffice_dlq_size Current webhook dead-letter queue size',
@@ -143,6 +147,27 @@ export function handleMetrics(ctx: { request: IncomingMessage; response: ServerR
     '# HELP genoffice_uptime_seconds Seconds since the web-server process started',
     '# TYPE genoffice_uptime_seconds gauge',
     `genoffice_uptime_seconds ${uptimeSec.toFixed(3)}`,
+    '# HELP genoffice_sdk_usage_samples_total SDK reportUsage samples received since process start',
+    '# TYPE genoffice_sdk_usage_samples_total counter',
+    `genoffice_sdk_usage_samples_total ${usage.samples}`,
+    '# HELP genoffice_sdk_usage_instances Distinct SDK instanceIds seen since process start',
+    '# TYPE genoffice_sdk_usage_instances gauge',
+    `genoffice_sdk_usage_instances ${usage.instances}`,
+    '# HELP genoffice_sdk_doc_bytes_written_total Bytes the host pushed into editors (setContent / insertText / insertImage)',
+    '# TYPE genoffice_sdk_doc_bytes_written_total counter',
+    `genoffice_sdk_doc_bytes_written_total ${usage.docBytesWritten}`,
+    '# HELP genoffice_sdk_ai_calls_total Host-triggered AI calls (aiRewrite / aiTranslate / aiSummarize)',
+    '# TYPE genoffice_sdk_ai_calls_total counter',
+    `genoffice_sdk_ai_calls_total ${usage.aiCalls}`,
+    '# HELP genoffice_sdk_ai_prompt_chars_total Host-side prompt character estimate (in)',
+    '# TYPE genoffice_sdk_ai_prompt_chars_total counter',
+    `genoffice_sdk_ai_prompt_chars_total ${usage.aiTokensIn}`,
+    '# HELP genoffice_sdk_ai_response_chars_total Host-side response character estimate (out)',
+    '# TYPE genoffice_sdk_ai_response_chars_total counter',
+    `genoffice_sdk_ai_response_chars_total ${usage.aiTokensOut}`,
+    '# HELP genoffice_sdk_session_ms_total Summed editor session durations in ms',
+    '# TYPE genoffice_sdk_session_ms_total counter',
+    `genoffice_sdk_session_ms_total ${usage.sessionDurationMs}`,
   ]
   const body = lines.join('\n') + '\n'
   ctx.response.writeHead(200, {

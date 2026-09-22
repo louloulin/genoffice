@@ -73,7 +73,7 @@ describe('GET /api/v1/metrics (sdk1.md §11.35)', () => {
     expect(r.headers['content-type']).toBe('text/plain; version=0.0.4; charset=utf-8')
   })
 
-  it('exposes all 8 documented metric lines (HELP + TYPE + sample)', () => {
+  it('exposes all DLQ + SDK metric lines (HELP + TYPE + sample)', () => {
     const { res, read } = mockRes()
     handleMetrics({ req: mockReq() as never, response: res as never })
     const body = read().body
@@ -86,6 +86,13 @@ describe('GET /api/v1/metrics (sdk1.md §11.35)', () => {
       'genoffice_dlq_newest_dropped_at_ms',
       'genoffice_ipc_channels_implemented',
       'genoffice_uptime_seconds',
+      'genoffice_sdk_usage_samples_total',
+      'genoffice_sdk_usage_instances',
+      'genoffice_sdk_doc_bytes_written_total',
+      'genoffice_sdk_ai_calls_total',
+      'genoffice_sdk_ai_prompt_chars_total',
+      'genoffice_sdk_ai_response_chars_total',
+      'genoffice_sdk_session_ms_total',
     ]
     for (const name of expectedNames) {
       expect(body, `missing HELP for ${name}`).toContain(`# HELP ${name}`)
@@ -159,6 +166,43 @@ describe('GET /api/v1/metrics (sdk1.md §11.35)', () => {
     const { res, read } = mockRes()
     handleMetrics({ req: mockReq() as never, response: res as never })
     expect(read().body.endsWith('\n')).toBe(true)
+  })
+})
+
+describe('SDK usage metrics (sdk1.md §11.36)', () => {
+  it('starts at zero and moves after reportUsage commands', async () => {
+    const { _resetUsageForTests, dispatchSdkCommand } = await import('../src/embed/sdk-commands')
+    _resetUsageForTests()
+    const { res: res1, read: read1 } = mockRes()
+    handleMetrics({ req: mockReq() as never, response: res1 as never })
+    const before = read1().body
+    expect(before).toMatch(/^genoffice_sdk_usage_samples_total 0$/m)
+    expect(before).toMatch(/^genoffice_sdk_doc_bytes_written_total 0$/m)
+
+    dispatchSdkCommand({
+      name: 'reportUsage',
+      docId: 'metrics.docx',
+      args: {
+        instanceId: 'inst-metrics',
+        docBytesWritten: 256,
+        aiCalls: 3,
+        aiTokensIn: 40,
+        aiTokensOut: 80,
+        sessionDurationMs: 1234,
+      },
+    })
+
+    const { res: res2, read: read2 } = mockRes()
+    handleMetrics({ req: mockReq() as never, response: res2 as never })
+    const after = read2().body
+    expect(after).toMatch(/^genoffice_sdk_usage_samples_total 1$/m)
+    expect(after).toMatch(/^genoffice_sdk_usage_instances 1$/m)
+    expect(after).toMatch(/^genoffice_sdk_doc_bytes_written_total 256$/m)
+    expect(after).toMatch(/^genoffice_sdk_ai_calls_total 3$/m)
+    expect(after).toMatch(/^genoffice_sdk_ai_prompt_chars_total 40$/m)
+    expect(after).toMatch(/^genoffice_sdk_ai_response_chars_total 80$/m)
+    expect(after).toMatch(/^genoffice_sdk_session_ms_total 1234$/m)
+    _resetUsageForTests()
   })
 })
 
