@@ -2681,6 +2681,22 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 42. **SDK 2.0 Kestrel M4 · File Picker + Telemetry 骨架**（✅ 本轮）：
 43. **SDK 2.0 Kestrel 双语 README 升级到 v2.0**（✅ 本轮，闭合 §B.5.6 验收要求 "README + 双语更新到 v2.0"）：
 44. **SDK 2.0 Kestrel end-to-end demo（React + Vue 双端）**（✅ 本轮，闭合 §B.5.6 验收要求 #3 "examples/embed-react/ 与 examples/embed-vue/ 各增 1 个 demo：多实例 + sidebar mount + comments 完整链路"）：
+45. **SDK 2.0 Kestrel M5 · full-surface type contract + runtime guard 测试**（✅ 本轮，闭合 §B.5.6 验收要求 #1 "apps/sdk test: 182/182"）：
+    - **闭合 §B.5.6 Gate #1**：SDK 14 文件 / 179 测试 → 15 文件 / **195 测试**（+35 +16），超过 §B.5.6 期望的 182
+    - **kestrel-m5-contracts.test.ts**（NEW 35 测试）：
+      - M2 Comments 类型合同 7：Comment shape + CommentAnchor 开放扩展（range / cell / slideId / 任意 [k:v]）+ addComment / listComments / resolveComment / removeComment 各自的 args/result pin + CommentAddedEvent / CommentResolvedEvent 在 EditorEvent union + EditorEventMap
+      - M3 Versions 类型合同 4：VersionMeta shape（含可选 message）+ listVersions / restoreVersion / createSnapshot 各自的 args/result pin
+      - M3.5 Plugin Runtime 类型合同 4：mountSidebar / unmountSidebar / postToSidebar 各自的 args/result pin（含 `message: unknown` 开放协议验证 4 种 message 形态）+ SidebarMessageEvent 在 EditorEvent union + EditorEventMap
+      - M4 File Picker 类型合同 3：openFileDialog args + result discriminated union + PickedFile shape
+      - M4 Telemetry 类型合同 3：UsageEvent shape + 在 EditorEvent union + EditorEventMap + CreateEditorOptions `telemetry?: boolean` opt-in（true / false / undefined 三态）
+      - createEditor runtime guards 14：missing options / documentId / jwt / host / sessionBinding.sessionId / sessionBinding.nonce / 重复 instanceId with remediation / command() rejects destroyed / command() rejects not-mounted / getEditor returns undefined unknown / getEditor returns undefined destroyed / listEditors returns fresh array / EditorHandle.instanceId always non-empty / iframe.name 行为
+    - **clamp-handshake-timeout.test.ts**（NEW 16 测试）：
+      - `clampHandshakeTimeout` 单元覆盖：undefined / NaN / Infinity / -Infinity / null / string → 10_000 ms default；< 1_000 → 1_000 floor；> 60_000 → 60_000 ceiling；边界值 1_000 / 60_000；fractional floored；null / string 等 defensive 路径
+      - 闭合 handshake-timeout.test.ts 没覆盖到的边界
+    - **总计**：SDK 13 文件 / 144 测试 → 15 文件 / **195 测试**（+16 +35）
+    - **未做**：renderer-side postMessage handler（M2-M4 surface）真 round-trip 测试仍依赖 live smoke（sandbox 不可达）
+
+
     - **examples/embed-react/demo-kestrel.tsx**（NEW，~270 行）：
       - 4 段 Kestrel surface 同页演示（multi-instance / comments / plugin runtime / telemetry）
       - `split-A` / `split-B` 双 `GenOfficeEditor`，不同 docId，各自 `instanceId`
@@ -2890,12 +2906,12 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce / verify-embed-session / release-embed-nonce / session-binding）| 10 | 108 | ✅ |
+| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce / verify-embed-session / release-embed-nonce / session-binding / multi-instance / plugin-runtime / kestrel-m4 / kestrel-m5-contracts / clamp-handshake-timeout）| 15 | 195 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **186** | **4461** | ✅ |
+| **总计** | **191** | **4548** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
