@@ -168,6 +168,14 @@ function uid(prefix: string): string {
 }
 
 export function parseSlide(input: SlideParseInput): Slide {
+  // sdk1 §A.5 #7 — reset the module-level id counter at each parseSlide entry.
+  // A previous design let the counter grow across every parse in the process
+  // lifetime, so opening the same deck twice produced different ids
+  // (e.g. sp_0/sp_2/sp_4 vs sp_6/sp_8/sp_a) and the renderer's stale
+  // selections lost everything on reopen. Resetting here means a fresh
+  // parse always starts at sp_0; the counter increments monotonically
+  // within one parse, matching what tests and existing callers expect.
+  uidCounter = 0
   const { slideXml, path, layoutPath, masterPath, ctx } = input
   const scan = scanSlide(slideXml)
 

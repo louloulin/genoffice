@@ -1050,3 +1050,42 @@ describe('master txStyles paragraph spacing inheritance (real template fixture)'
     expect(byPh('ctrTitle')?.spaceBeforePct).toBe(0)
   })
 })
+
+describe('stable element ids across re-opens (sdk1 §A.5 #7)', () => {
+  // Regression: the slides engine used a module-level monotonic counter
+  // that grew across every parse in the process lifetime. Opening the
+  // same deck twice produced different ids (sp_0 → sp_6, sp_2 → sp_8,
+  // …) and the renderer's stale selections lost everything on reopen.
+  // The fix resets the counter at parseSlide entry so a fresh parse
+  // always starts at sp_0; this test pins the contract that two
+  // back-to-back opens land on the same ids for every element.
+  for (const name of FIXTURES) {
+    it(`re-opens ${name} with identical element ids`, async () => {
+      const bytes = fx(name)
+      const a = await openPptx(bytes)
+      const b = await openPptx(bytes)
+      expect(b.deck.slides.length).toBe(a.deck.slides.length)
+      for (let i = 0; i < a.deck.slides.length; i++) {
+        const aIds = a.deck.slides[i].elements.map((e: any) => e.id)
+        const bIds = b.deck.slides[i].elements.map((e: any) => e.id)
+        expect(bIds).toEqual(aIds)
+      }
+    })
+  }
+
+  // Stress: simulate the bug's exact scenario — open twice within the
+  // same process and assert no id grows past the first-open baseline.
+  // Pre-fix this would fail with bIds starting at sp_6 / sp_8 / sp_a
+  // instead of sp_0 / sp_2 / sp_4.
+  it('does not leak the counter across separate openPptx calls', async () => {
+    const bytes = fx('01_standard_business.pptx')
+    const first = await openPptx(bytes)
+    const firstIds = first.deck.slides[0].elements.map((e: any) => e.id)
+    const second = await openPptx(bytes)
+    const secondIds = second.deck.slides[0].elements.map((e: any) => e.id)
+    // The bug: counter continues from where first left off, so
+    // secondIds[0] starts at sp_<firstIds.length> rather than sp_0.
+    expect(secondIds[0]).toBe(firstIds[0])
+    expect(secondIds).toEqual(firstIds)
+  })
+})

@@ -274,7 +274,7 @@ Features: AI, Collab, Files, Projects, AnyDoc
 | Slides `apply-txn` 70+ element-level ops 真做 | ✅（63 ops via runTxn · `apps/web-server/tests/slides-apply-txn-ops-e2e.test.ts`）| — |
 | Slides 68 个 legacy element 通道返错形状的 `{ok:true}` | ✅（§11.42：全部按契约作答，零字面桩）| — |
 | Slides undo/redo / 元素剪贴板 / AI 快照 | ✅（§11.42：state.ts 快照栈 + batch + 应用级剪贴板）| — |
-| **解析期 element id 不稳定**（`sp_0` / `sp_2` / `sp_4`）| ⚠️ 引擎层约束：同一字节两次 parse 得不同 id，任何 reparse 都会打断 renderer 持有的 id。现以"保活内存模型 + save 不 reparse"绕开；根治需引擎侧发稳定 id（`e_<guid8>` 形式已稳定）| P1（引擎） |
+| **解析期 element id 不稳定**（`sp_0` / `sp_2` / `sp_4`）| ✅ §A.5 #7 已根治：`packages/pptx-engine/src/parse.ts` 入口 `uidCounter = 0`，3 回归测试 | — |
 | Slides 只读 `slides:get-*` 通道（首批 15 个真值化：tier-0 §11.45 三件 + tier-1 §11.46 五件 + tier-2 §11.47 四件 + tier-3 §11.48 三件 + 1 文档化）| 🟡→✅ 15/25 已实装（§11.45–§11.48）；余 ~10 仍 M4 backlog | P2（M4）|
 | html: Word 导出（`html2docx`）真实实现 | 需无头浏览器；当前诚实拒绝 | P2（M4+） |
 | docx → pdf 转换（`anydoc:convert`） | 需 LibreOffice / print-to-PDF 服务 | P2（M4+） |
@@ -4582,14 +4582,23 @@ bundle）下 `__dirname` 不存在，任何调用都会 `ReferenceError`。改�
 声明的形状作答，失败返 `null`（不返 `{ok:false}`——同样是真值、同样会污染），并
 打 stderr 日志。字面桩归零。
 
-**56. 解析期 element id 不稳定（引擎级约束，⚠️ 已知未根治）**：实测同一份 pptx
+**56. 解析期 element id 不稳定（✅ §A.5 #7 闭合）**：实测同一份 pptx
 字节连续 `openPptx` 两次，元素 id 依次为 `sp_0` / `sp_2` / `sp_4` —— **每次 parse
 都会变**。这意味着任何"保存时重新 parse 再写回"或"socket 重连后重新加载"的实现
 都会让 renderer 手里持有的 id 全部失配（选中态丢失、后续 mutation 打到不存在的
 元素）。本轮据此做了两个决定：①`slides:open-path` 对同一路径**复用已存在的 live
 session**，不再重建；②`slides:save` **刻意不 reparse**（`core.ts` 有注释说明）。
-根治需要引擎侧为元素发稳定 id（持久化的 `e_<guid8>` 形式已经是稳定的，但 parse
-时新分配的那些不是）。列入 P1 引擎工作。
+
+**根治**（✅ 本轮提交）：`packages/pptx-engine/src/parse.ts` 在 `parseSlide`
+入口处 `uidCounter = 0`，把模块级单调计数器限定在单次 parse 生命周期内 —— 同一
+字节第二次 parse 从 `sp_0` 起算，与第一次完全一致。3 个回归测试在
+`packages/pptx-engine/tests/parse.test.ts` 末尾新增 describe
+`stable element ids across re-opens (sdk1 §A.5 #7)`：
+- `re-opens 01_standard_business.pptx with identical element ids`
+- `re-opens 05_unicode_cjk_emoji.pptx with identical element ids`
+- `does not leak the counter across separate openPptx calls`
+
+pptx-engine 套件 **960 / 960 通过**（91 文件 + 1 skipped，与既有节奏一致）。
 
 **57. Slides undo/redo + 元素剪贴板 + AI 快照真实化**（✅ §11.42）：
 `slides:undo` / `slides:redo` 此前返 `{ok:true}`；新增 `state.ts` 的
@@ -5658,7 +5667,7 @@ save handler
 
 | 类别 | 问题 | 严重度 | 缓解 |
 |---|---|---|---|
-| **引擎层** | Slides 解析期 element id 不稳定（`sp_0` / `sp_2`）| P1 | 保活内存模型 + save 不 reparse；根治需引擎发稳定 id（M4+）|
+| **引擎层** | Slides 解析期 element id 不稳定（`sp_0` / `sp_2`）| ✅ | §A.5 #7 已根治（`packages/pptx-engine/src/parse.ts:parseSlide` 入口 `uidCounter = 0` + 3 回归测试）|
 | **引擎层** | `workbook:read-range` 返空 cells（Rust sidecar inlineStr / sharedString 解析问题）| P1 | 沙箱不可 rebuild Rust，留 M4+ 路线图 |
 | **协作** | CRDT/OT 多人合并未实装 | P1 | M4（Week 16） |
 | **移动端** | H5 编辑器未实装 | P1 | M4（Week 16） |
