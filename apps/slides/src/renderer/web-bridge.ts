@@ -19,6 +19,7 @@ import {
   webPrint,
 } from '@genoffice/ipc-bridge/web-native'
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
+import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
 import {
   createSlidesApi,
   createSlidesFilesApi,
@@ -34,6 +35,14 @@ if (!isElectronRuntime()) {
    * row in its TabBar still has a window behind it, and a wrong guess is what
    * made clicking a recent file do nothing (or open a duplicate). */
   installTabGuest()
+  /* SDK 2.0 Kestrel command sink (sdk1.md §11.36). The embed bridge
+   * dispatches host `editor.command(name, args)` envelopes to this sink
+   * when it exists (falling back to the server-backed `sdk:command` IPC
+   * channel otherwise). `defaultSdkCommandHandlers()` covers the two
+   * commands that are pure browser operations — `openFileDialog` (file
+   * input → base64 PickedFile[]) and `print`. App-specific commands that
+   * need the live editor model are added here as the renderer wires them. */
+  installSdkCommandSink({ handlers: defaultSdkCommandHandlers() })
   const transport = createHttpIpcTransport()
   const files = createWebFileBridge(transport)
   // SAFETY: lib.dom's `window` has no `slidesApi` / `slidesFilesApi` /

@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
     "./web-native": "./src/web-native.ts",
-    "./web-tabs": "./src/web-tabs.ts"
+    "./web-tabs": "./src/web-tabs.ts",
+    "./sdk-command-sink": "./src/sdk-command-sink.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
