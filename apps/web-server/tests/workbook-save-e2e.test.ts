@@ -387,3 +387,132 @@ describe.skipIf(skip)('workbook format routing (csv / xls)', () => {
     expect(r.body?.result?.csvPath).toBeUndefined()
   })
 })
+
+/* ── workbook:export-csv (CSV save round-trip on web) ─────────────────────
+ * Mirrors `apps/sheets/src/main/sheets-main.ts` `IPC_CHANNELS.exportCsv`.
+ * The renderer reaches this through `csv-export.ts`'s `desktopApi.exportCsv`
+ * call, which the web-bridge now forwards as `workbook:export-csv`.
+ *
+ * Until this handler existed, the File menu's "Export as CSV" silently
+ * answered UNSUPPORTED on web — closing the round-trip that the
+ * `csvToXlsxBuffer` open path opened in §11.44.
+ */
+describe.skipIf(skip)('workbook:export-csv (CSV save on web)', () => {
+  let server: ChildProcess | undefined
+  let base: string
+  let dataDir: string
+  let filesDir: string
+
+  beforeAll(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'genoffice-csvexp-e2e-'))
+    filesDir = join(dataDir, 'files')
+    require('node:fs').mkdirSync(filesDir, { recursive: true })
+    const port = 31500 + Math.floor(Math.random() * 8000)
+    base = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [bundle], {
+      cwd: pkgRoot,
+      env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await pollHealth(base, 15_000)
+  }, 30_000)
+
+  afterAll(async () => {
+    if (server) await stopServer(server)
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  const invokeLocal = async (channel: string, args: unknown[]) => {
+    const r = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ args: args.map((a) => encodeTransportValue(a)) }),
+    })
+    const text = await r.text()
+    return { status: r.status, body: text ? JSON.parse(text) : null }
+  }
+
+  it('writes UTF-8 BOM + content atomically to a managed path', async () => {
+    const target = join(filesDir, 'out.csv')
+    const r = await invokeLocal('workbook:export-csv', [{
+      fileName: 'out.csv',
+      content: 'name,qty\nbolt,12\n',
+      hasFormulas: false,
+      targetPath: target,
+    }])
+    expect(r.status).toBe(200)
+    expect(r.body?.result?.canceled).toBe(false)
+    expect(r.body?.result?.path).toBe(target)
+
+    // The file exists, is exactly the bytes we asked for, and starts with
+    // the UTF-8 BOM Excel expects on Windows (BOM is what makes the
+    // round-tripped file display correctly when re-opened).
+    const bytes = require('node:fs').readFileSync(target)
+    expect(bytes[0]).toBe(0xef)
+    expect(bytes[1]).toBe(0xbb)
+    expect(bytes[2]).toBe(0xbf)
+    expect(bytes.subarray(3).toString('utf8')).toBe('name,qty\nbolt,12\n')
+  })
+
+  it('appends .csv when the target path has no extension', async () => {
+    const target = join(filesDir, 'noext')
+    const r = await invokeLocal('workbook:export-csv', [{
+      fileName: 'noext',
+      content: 'a,b\n1,2\n',
+      hasFormulas: false,
+      targetPath: target,
+    }])
+    expect(r.body?.result?.path).toBe(target + '.csv')
+    expect(require('node:fs').existsSync(target + '.csv')).toBe(true)
+  })
+
+  it('returns { canceled: true } when targetPath is missing (no native save dialog on web)', async () => {
+    const r = await invokeLocal('workbook:export-csv', [{
+      fileName: 'x.csv',
+      content: 'a,b\n',
+      hasFormulas: false,
+    }])
+    expect(r.body?.result?.canceled).toBe(true)
+  })
+
+  it('refuses a path outside the storage area', async () => {
+    const r = await invokeLocal('workbook:export-csv', [{
+      fileName: 'evil.csv',
+      content: 'x\n',
+      hasFormulas: false,
+      targetPath: '/etc/passwd.csv',
+    }])
+    expect(r.status).toBe(400)
+    // requireManagedPath throws InvalidArgumentError (code INVALID_ARGUMENT),
+    // not a custom PATH_OUTSIDE_STORAGE code — the handler keeps the same
+    // envelope every other IPC channel uses for client errors.
+    expect(r.body?.error?.code).toBe('INVALID_ARGUMENT')
+  })
+
+  it('rejects empty content (0 bytes does not represent CSV)', async () => {
+    // The renderer's csv-export.ts serializes the active sheet first; an
+    // empty string at the server boundary is almost always a renderer
+    // bug, so refuse with the same INVALID_ARGUMENT shape as the rest of
+    // the IPC error envelope.
+    const r = await invokeLocal('workbook:export-csv', [{
+      fileName: 'x.csv',
+      content: '',
+      hasFormulas: false,
+      targetPath: join(filesDir, 'empty.csv'),
+    }])
+    expect(r.status).toBe(400)
+    expect(r.body?.error?.code).toBe('INVALID_ARGUMENT')
+  })
+
+  it('leaves no .tmp-* files in the storage area', async () => {
+    const target = join(filesDir, 'atomic.csv')
+    await invokeLocal('workbook:export-csv', [{
+      fileName: 'atomic.csv',
+      content: 'x,y\n1,2\n',
+      hasFormulas: false,
+      targetPath: target,
+    }])
+    const leftovers = require('node:fs').readdirSync(filesDir).filter((n: string) => /\.tmp-/.test(n))
+    expect(leftovers).toEqual([])
+  })
+})

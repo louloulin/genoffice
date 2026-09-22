@@ -103,6 +103,22 @@ if (!isElectronRuntime()) {
       return await transport.invoke('workbook:open-for-merge', paths)
     },
     confirmCsvSave: async () => 'csv',
+    /* Forwards the desktop exportCsv contract to the web-server handler.
+     * The renderer keeps the desktop-shaped `WorkbookExportCsvResult`
+     * (canceled / canceled+saveAsXlsxInstead / canceled+path) verbatim;
+     * only the actual save dialog is the host's responsibility, since the
+     * web build has no native dialog (this method requires `targetPath`
+     * to be set — a missing targetPath surfaces as `{ canceled: true }`,
+     * which the renderer falls back to its own UX for). */
+    exportCsv: async (request: {
+      fileName: string
+      content: string
+      hasFormulas: boolean
+      activeSheetName?: string
+      targetPath?: string
+    }) => {
+      return await transport.invoke('workbook:export-csv', request)
+    },
     pickAttachments: async () => {
       const picked = await pickFileBytes(undefined, true)
       if (!picked) return null

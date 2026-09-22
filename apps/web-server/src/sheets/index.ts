@@ -633,6 +633,79 @@ export function registerSheetsHandlers(): void {
     }
   })
 
+  /* ── CSV export ─────────────────────────────────────────────────────────
+   * The desktop CSV export (`sheets-main.ts` `IPC_CHANNELS.exportCsv`) is
+   * reachable from `csv-export.ts` in the renderer (File menu > Export as
+   * CSV). The web build needs the channel too, otherwise the menu item
+   * console-errors `UNSUPPORTED` and silently does nothing.
+   *
+   * Two things the desktop does that the web build cannot:
+   *  - The native "formulas will be lost" warning dialog (Electron
+   *    `dialog.showMessageBox`). The web build skips it — the renderer is
+   *    responsible for any UX prompt and the contract's `hasFormulas`
+   *    field still flows through so the host SDK can display its own
+   *    warning in its iframe.
+   *  - The native save-file dialog when the caller omits `targetPath`.
+   *    The web build has no native dialog, so omitting `targetPath` is
+   *    a structured `{canceled: true}` — the renderer then routes into
+   *    `downloadAs` (which writes via the in-browser download path) or
+   *    shows a save-as dialog of its own.
+   */
+  registerHandle('workbook:export-csv', async (_event: unknown, request: unknown) => {
+    if (typeof request !== 'object' || request === null) {
+      throw new InvalidArgumentError('workbook:export-csv', 'request must be an object')
+    }
+    const req = request as {
+      fileName?: unknown
+      content?: unknown
+      hasFormulas?: unknown
+      activeSheetName?: unknown
+      targetPath?: unknown
+    }
+    if (typeof req.fileName !== 'string' || req.fileName.length === 0 || req.fileName.length > 255) {
+      throw new InvalidArgumentError('workbook:export-csv', 'fileName must be a 1-255 character string')
+    }
+    if (typeof req.content !== 'string') {
+      throw new InvalidArgumentError('workbook:export-csv', 'content must be a string')
+    }
+    // Cap content at 64 MB worth of text — the same ceiling the desktop
+    // uses (`MAX_CSV_EXPORT_CHARS`). A larger export is a client-side bug,
+    // not a host we can sanely accept without bumping the bundle's
+    // transitive caps.
+    if (req.content.length > 64_000_000) {
+      throw new InvalidArgumentError('workbook:export-csv', 'content exceeds 64 MB ceiling')
+    }
+    if (req.content.length === 0) {
+      // The renderer's csv-export.ts serializes the active sheet before
+      // reaching this channel; an empty string at the IPC boundary is
+      // almost always a renderer bug, and a 3-byte BOM-only file would
+      // confuse Excel and downstream tooling. Refuse with the standard
+      // INVALID_ARGUMENT envelope rather than writing a meaningless file.
+      throw new InvalidArgumentError('workbook:export-csv', 'content must not be empty')
+    }
+    if (req.targetPath !== undefined && typeof req.targetPath !== 'string') {
+      throw new InvalidArgumentError('workbook:export-csv', 'targetPath must be a string when provided')
+    }
+    if (req.targetPath === undefined) {
+      // See the comment above — the web build has no native save dialog.
+      return { canceled: true as const }
+    }
+    const safeTarget = requireManagedPath('workbook:export-csv', req.targetPath)
+    const targetPath = safeTarget.toLowerCase().endsWith('.csv') ? safeTarget : `${safeTarget}.csv`
+    // UTF-8 BOM so Excel decodes the reopened file correctly — the same
+    // magic bytes the desktop exportCsv uses, and the same as the
+    // workbook:create-document handler in this file. The BOM is three
+    // bytes, so the file size matches `content.length + 3`.
+    const csvBytes = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from(req.content, 'utf8'),
+    ])
+    atomicWriteFile(targetPath, csvBytes)
+    notifyFileSaved(targetPath, { format: 'csv', size: csvBytes.byteLength })
+    recordRecentDoc(targetPath, { modified: true })
+    return { canceled: false as const, path: targetPath }
+  })
+
   // auto-rename: the desktop main process watches edits and suggests a
   // fresh filename. The web build doesn't have enough signal to invent a
   // meaningful rename, so we return null (the renderer falls back to its
