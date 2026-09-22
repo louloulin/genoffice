@@ -255,6 +255,13 @@ export function auditMetrics(): {
   persistedBytes: number | null
   totalRecorded: number
   totalDropped: number
+  /** Per-tenant record count in the current in-memory ring. Useful for
+   *  spotting which tenant is dominating audit volume on multi-tenant
+   *  deployments; capped by the ring, so this is a "current snapshot"
+   *  not a lifetime counter. The 'default' bucket is the implicit tenant
+   *  for callers that didn't supply one (the historical single-tenant
+   *  shape pre-§11.56). */
+  byTenant: Record<string, number>
 } {
   load()
   let persistedBytes: number | null = null
@@ -268,11 +275,18 @@ export function auditMetrics(): {
       persistedBytes = null
     }
   }
+  // Per-tenant count is O(n) over the in-memory ring (≤ 10 000) so
+  // cheap enough for a per-scrape Prometheus call.
+  const byTenant: Record<string, number> = {}
+  for (const r of records) {
+    byTenant[r.tenantId] = (byTenant[r.tenantId] ?? 0) + 1
+  }
   return {
     records: records.length,
     persistedBytes,
     totalRecorded,
     totalDropped,
+    byTenant,
   }
 }
 

@@ -169,4 +169,35 @@ describe('audit log export tenant filter (sdk1 §11.56)', () => {
   })
 })
 
+
+describe('audit log metrics byTenant (sdk1 §11.57)', () => {
+  it('auditMetrics().byTenant reflects the in-memory ring composition', async () => {
+    const { recordAudit, auditMetrics } = await loadModule()
+    recordAudit({ action: 'a', resource: '1', tenantId: 'acme' })
+    recordAudit({ action: 'a', resource: '2', tenantId: 'acme' })
+    recordAudit({ action: 'a', resource: '3', tenantId: 'globex' })
+    recordAudit({ action: 'a', resource: '4' }) // default tenant
+    const m = auditMetrics()
+    expect(m.byTenant).toEqual({ acme: 2, globex: 1, default: 1 })
+    expect(m.records).toBe(4)
+  })
+
+  it('auditMetrics().byTenant is empty {} when no records exist', async () => {
+    const { auditMetrics } = await loadModule()
+    const m = auditMetrics()
+    expect(m.byTenant).toEqual({})
+    expect(m.records).toBe(0)
+  })
+
+  it('auditMetrics().byTenant reflects disk round-trip after restart', async () => {
+    const { recordAudit } = await loadModule()
+    recordAudit({ action: 'a', resource: '1', tenantId: 'acme' })
+    recordAudit({ action: 'a', resource: '2', tenantId: 'globex' })
+    // Force module re-load to hydrate from disk
+    vi.resetModules()
+    const { auditMetrics } = await loadModule()
+    expect(auditMetrics().byTenant).toEqual({ acme: 1, globex: 1 })
+  })
+})
+
 })

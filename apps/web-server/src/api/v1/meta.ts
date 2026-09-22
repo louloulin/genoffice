@@ -157,6 +157,14 @@ export function handleMetrics(ctx: { request: IncomingMessage; response: ServerR
     '# HELP genoffice_audit_log_dropped_total Cumulative audit records evicted because the in-memory ring overflowed the 10000 cap',
     '# TYPE genoffice_audit_log_dropped_total counter',
     `genoffice_audit_log_dropped_total ${audit.totalDropped}`,
+    '# HELP genoffice_audit_log_records_by_tenant Audit-log records currently in memory, labelled by tenant id',
+    '# TYPE genoffice_audit_log_records_by_tenant gauge',
+    // Emit one sample per tenant seen in the current ring; empty ring = no
+    // samples. Tenant ids are validated as strings at recordAudit(), so
+    // escaping is for the {label="..."} form only (quotes + backslash).
+    ...Object.entries(audit.byTenant).map(
+      ([t, n]) => `genoffice_audit_log_records_by_tenant{tenant="${t.replace(/["\\]/g, '_')}"}${ ' ' }${n}`,
+    ),
     '# HELP genoffice_uptime_seconds Seconds since the web-server process started',
     '# TYPE genoffice_uptime_seconds gauge',
     `genoffice_uptime_seconds ${uptimeSec.toFixed(3)}`,
