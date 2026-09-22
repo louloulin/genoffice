@@ -70,6 +70,22 @@ export interface DeadLetterStore {
 const MAX_ENTRIES = 1024
 const RANDOM_BYTE_LEN = 8
 
+/**
+ * Process-local counters surfaced through `getDeadLetterMetrics()`. We
+ * track totals across the whole lifetime so /metrics has monotonic
+ * values for Prometheus to rate() against; size is exposed separately
+ * because it can drop (eviction / manual delete) without the totals
+ * changing.
+ *
+ * Restart clears both — same durability model as the DLQ itself.
+ */
+const totals = {
+  dropped: 0,
+  replayed: 0,
+  /** Counts broken down by the reason field recorded at push time. */
+  byReason: { max_attempts: 0, non_retryable_4xx: 0 } as Record<'max_attempts' | 'non_retryable_4xx', number>,
+}
+
 function makeId(): string {
   // URL-safe base64 of 8 random bytes → 11 chars. crypto.getRandomValues is
   // available in both Node 22 and modern browsers.
@@ -133,7 +149,15 @@ const store: DeadLetterStore = (() => {
 
 /** Internal — only `webhooks-store.fireCallback()` should call this. */
 export function pushDeadLetter(entry: Omit<DeadLetterEntry, 'id' | 'droppedAt'>): string {
-  return store.add(entry)
+  const id = store.add(entry)
+  // Bump lifetime counters here (not inside store.add) so external
+  // callers that bypass the wrapper — currently none, but the store
+  // interface is part of the module's contract — never silently
+  // drift out of metrics parity. evictions drop `size` but NOT
+  // `totalDropped`; the counter is monotonic for Prometheus rate().
+  totals.dropped += 1
+  totals.byReason[entry.reason] += 1
+  return id
 }
 
 /** Public read API for v1 endpoint. */
@@ -149,6 +173,57 @@ export function getDeadLetter(id: string): DeadLetterEntry | null {
 /** Public mutation API for v1 endpoint (acknowledge / drop). */
 export function deleteDeadLetter(id: string): boolean {
   return store.remove(id)
+}
+
+/**
+ * Snapshot of DLQ counters + per-reason breakdown. Returned shape is
+ * stable so v1 /metrics can serialize to JSON or Prometheus text.
+ *
+ * `oldestDroppedAt` / `newestDroppedAt` are epoch ms; either may be
+ * `null` when the queue is empty (which a Prometheus exporter can
+ * translate into NaN / omitted sample).
+ */
+export interface DeadLetterMetrics {
+  /** Current number of entries held in the ring buffer. */
+  size: number
+  /** Cumulative entries pushed since process start. Monotonic. */
+  totalDropped: number
+  /** Cumulative successful replays since process start. Monotonic. */
+  totalReplayed: number
+  /** Drop counts broken down by reason field. */
+  byReason: { max_attempts: number; non_retryable_4xx: number }
+  /** Epoch ms of the oldest entry still in the buffer (null when empty). */
+  oldestDroppedAt: number | null
+  /** Epoch ms of the newest entry still in the buffer (null when empty). */
+  newestDroppedAt: number | null
+}
+
+export function getDeadLetterMetrics(): DeadLetterMetrics {
+  let oldest: number | null = null
+  let newest: number | null = null
+  for (const e of store.list({ limit: MAX_ENTRIES })) {
+    if (oldest === null || e.droppedAt < oldest) oldest = e.droppedAt
+    if (newest === null || e.droppedAt > newest) newest = e.droppedAt
+  }
+  return {
+    size: store.size(),
+    totalDropped: totals.dropped,
+    totalReplayed: totals.replayed,
+    byReason: {
+      max_attempts: totals.byReason.max_attempts,
+      non_retryable_4xx: totals.byReason.non_retryable_4xx,
+    },
+    oldestDroppedAt: oldest,
+    newestDroppedAt: newest,
+  }
+}
+
+/** Test-only accessor so vitest can reset totals between cases. */
+export function _resetDeadLetterMetricsForTests(): void {
+  totals.dropped = 0
+  totals.replayed = 0
+  totals.byReason.max_attempts = 0
+  totals.byReason.non_retryable_4xx = 0
 }
 
 /**
@@ -179,6 +254,9 @@ export async function replayDeadLetter(
   const result = await postOnce(entry.url, entry.body, opts)
   if (result.delivered) {
     store.remove(id)
+    // Count only successful replays — failed replays stay in the
+    // DLQ with updated lastError and the counter doesn't move.
+    totals.replayed += 1
     return {
       ok: true,
       removed: true,
@@ -254,4 +332,5 @@ async function postOnce(
 /** Test-only accessor so vitest can reset the DLQ between cases. */
 export function _resetDeadLetterForTests(): void {
   store.clear()
+  _resetDeadLetterMetricsForTests()
 }

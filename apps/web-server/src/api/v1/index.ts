@@ -22,7 +22,7 @@ import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiImage, h
 import { handleKbSearch, handleKbEntries } from './kb'
 import { handleWebhooksUpsert, handleWebhooksDelete, handleCallbacksFire } from './webhooks'
 import { handleWebhooksDlq, handleWebhooksDlqEntry } from './webhooks-dlq'
-import { handleHealth, handleChangelog } from './meta'
+import { handleHealth, handleChangelog, handleMetrics } from './meta'
 import { handleEmbedNonce, handleEmbedVerifyNonce, handleEmbedReleaseNonce } from './embed-nonce'
 
 export interface ApiV1Context {
@@ -46,6 +46,7 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
 
   // meta
   if (pathname === '/api/v1/health' && method === 'GET') return handleHealth(ctx)
+  if (pathname === '/api/v1/metrics' && method === 'GET') return handleMetrics(ctx)
   if (pathname === '/api/v1/changelog' && method === 'GET') return handleChangelog(ctx)
 
   // auth

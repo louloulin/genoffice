@@ -17,6 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   deleteDeadLetter,
   getDeadLetter,
+  getDeadLetterMetrics,
   listDeadLetters,
   replayDeadLetter,
 } from '../../common/webhooks-dlq'
@@ -57,6 +58,12 @@ function handleDlqList(ctx: { request: IncomingMessage; response: ServerResponse
     entries,
     count: entries.length,
     limit,
+    // Process-lifetime metrics for monitoring/alerting (sdk1.md §11.35).
+    // Hosts that want just the count can parse `metrics.size`; scrape
+    // tooling that prefers Prometheus text uses `GET /api/v1/metrics`
+    // instead. Including metrics in the list response means hosts
+    // monitoring the DLQ only need one fetch.
+    metrics: getDeadLetterMetrics(),
     /** Note: `total` is intentionally omitted — the store is a ring buffer,
      * so we can't cheaply report "how many total entries exist beyond the
      * returned slice". Hosts that need pagination should use cursor-based

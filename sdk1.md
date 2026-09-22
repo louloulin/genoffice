@@ -2368,6 +2368,60 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 - **host.command 替代路径**：若未来要支持 host → iframe 单向命令（如"host wants iframe to switch theme"），直接在 renderer 加 `window.addEventListener('message', ...)` 监听 host postMessage——这是 §11.34 之后 iframe 已有的行为
 - **bridge.ts comment 含 host.command 字符串**：故意保留——注释是 reader context，endpoint 测试用 code-level regex 隔离
 
+#### 11.35 · DLQ metrics + Prometheus `/api/v1/metrics`
+
+§11.33 把失败投递入 ring buffer 后，host 只能 `GET /api/v1/webhooks/dlq` 拉当前快照——没有累计视图、没有 size trend、运维想接 alert 还得写 polling 脚本。本批闭合 §11.33.4 #2 "DLQ metric" 路线：① 在 `webhooks-dlq` 模块加进程内计数器（dropped / replayed / byReason），通过 `getDeadLetterMetrics()` 暴露；② `/api/v1/webhooks/dlq` list 响应增加 `metrics` 字段，host 一次 fetch 拿到结构化数据；③ 新增 Prometheus-text 公开端点 `GET /api/v1/metrics`，scraper 直接抓；④ metrics 测试守门。
+
+#### 11.35.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/common/webhooks-dlq.ts` | 新增模块级 `totals = { dropped, replayed, byReason: { max_attempts, non_retryable_4xx } }`；`pushDeadLetter()` 在 `store.add()` 成功后 `totals.dropped += 1` + `totals.byReason[entry.reason] += 1`；`replayDeadLetter()` 在 `result.delivered === true` 时 `totals.replayed += 1`（失败不动）。新增 `interface DeadLetterMetrics` + `getDeadLetterMetrics(): { size, totalDropped, totalReplayed, byReason, oldestDroppedAt, newestDroppedAt }` + `_resetDeadLetterMetricsForTests()`。`_resetDeadLetterForTests()` 串接 `_resetDeadLetterMetricsForTests()`，确保 `beforeEach` 一次复位 |
+| `apps/web-server/src/api/v1/webhooks-dlq.ts` | `handleDlqList()` 返回 body 增加 `metrics: getDeadLetterMetrics()`。结构化字段名匹配 Prometheus exporter 列名（`size`, `totalDropped`, `totalReplayed`, `byReason.max_attempts`, `byReason.non_retryable_4xx`, `oldestDroppedAt`, `newestDroppedAt`），host 可以一个 fetch 拿全部 |
+| `apps/web-server/src/api/v1/meta.ts` | 新增 `handleMetrics(ctx)` + module-level `PROCESS_START_MS = Date.now()`。Prometheus text-format 暴露 8 个 metric：`genoffice_dlq_size` (gauge) / `genoffice_dlq_total_dropped` (counter) / `genoffice_dlq_total_replayed` (counter) / `genoffice_dlq_dropped_by_reason{reason="max_attempts|non_retryable_4xx"}` (counter) / `genoffice_dlq_oldest_dropped_at_ms` (gauge, NaN 空) / `genoffice_dlq_newest_dropped_at_ms` (gauge) / `genoffice_ipc_channels_implemented` (gauge, 走 `handlerCount()`) / `genoffice_uptime_seconds` (gauge, `(Date.now()-PROCESS_START_MS)/1000`, 3 位小数)。Content-Type `text/plain; version=0.0.4; charset=utf-8`。**公开端点**（无 auth gate，Prometheus 约定） |
+| `apps/web-server/src/api/v1/index.ts` | dispatcher 增加 `if (pathname === '/api/v1/metrics' && method === 'GET') return handleMetrics(ctx)`，位于 `/api/v1/health` 之后 |
+| `apps/web-server/tests/webhooks-dlq.test.ts` | 新增 `describe('getDeadLetterMetrics (sdk1.md §11.35)')`（5 测试）：size/totalDropped/totalReplayed/byReason 一次性断言 / 空队列时 oldest/newest = null / totalReplayed 仅成功 replay 时增（stubGlobal fetch ok→fail）/ 单条 delete 不影响 totalDropped（monotonic）/ LRU eviction 不影响 totalDropped 但 size 收敛到 1024 |
+| `apps/web-server/tests/metrics-endpoint.test.ts` | **新文件**，7 测试：200 + Content-Type / 8 metric HELP+TYPE 均 present / 空队列计数=0 + oldest/newest=`NaN` / push+replay 后计数移动 / `ipc_channels_implemented` 等于 `handlerCount()` / 公开（无 Bearer 200）/ 末尾换行（Prometheus 格式约定）|
+
+合计 6 文件改 + 1 文件新增；web-server 测试 581 → 593（+12）。
+
+#### 11.35.2 设计要点
+
+- **in-process 计数器 vs. 持久化**：totals 是 process-local（restart 清零），与 DLQ 本身同 durability model。Prometheus 默认就把 scrape 周期内的 rate 当成"现在发生的事"，重启断点用 `rate()` 自带处理。持久化（Redis / Postgres / on-disk）属 M4+ backlog。
+- **monotonic 语义**：`totalDropped` 与 `totalReplayed` 是 Prometheus counter，从不保护 Prometheus counter 应只减不增的语义。**LRU 淘汰不影响 totalDropped**（counter 是"累计进队列"，不是"现在队列里有几条"）；`deleteDeadLetter()` 不影响 totalDropped（手动 ack 是补救，不该回算）。
+- **byReason label cardinality**：only two reasons — `max_attempts` / `non_retryable_4xx`，cardinality=2，Prometheus 高基数警告阈值（>10）远未触发。新增 reason 时必须同步 `DeadLetterMetrics.byReason` 的类型定义与 `pushDeadLetter()` 行内的 `byReason[reason] += 1` —— 通过 type 强制一致。
+- **oldest/newest 用 NaN 而不是 0**：Prometheus gauge 在 "restart 前 = 0" 会让 `time() - genoffice_dlq_oldest_dropped_at_ms` 算出"30 天前"的离谱值；空队列必须 NaN 让 scraper 跳过该 sample。本批用 `?? 'NaN'` 三元表达式显式处理。
+- **公开端点的边界**：本批 `/api/v1/metrics` 无 auth（Prometheus convention: scraper 不会 mint token）。host 想透安全 → 在反向代理 / sidecar 层加同样 JWT gate 或 basic-auth（host 部署层职责，不属 endpoint 契约）。文档明文在 `handleMetrics()` JSDoc。
+- **`handlerCount()` 复用**：§11.5 已实现 `handlerCount()` IPC channel 注册数；本批复用其作为 `genoffice_ipc_channels_implemented` 数据源 — 不另立 store。两个数据源（`/api/channels` 与 `/api/v1/metrics`）走同一行 IPC registry，scrape 之后值必然一致。
+- **新 bug fix in 11.35**：先前 §11.33 的 §11.35 实施漏掉了关键 wiring — `store.add()` 不增 totals / `replayDeadLetter()` 成功分支不增 totals。本批修复了这两处遗漏（原 5 个 metrics 测试全挂在 expected 1 vs got 0）。修复方式是把 bump 放在 `pushDeadLetter()` 与 `replayDeadLetter()` 的 wrapper 层（不是 store 层），这样 store 接口与 metrics 关注点解耦，future caller 误用 store.add() 也不会让 metrics 漂移。
+
+#### 11.35.3 验证
+
+- `npx vitest run apps/web-server/tests/webhooks-dlq.test.ts`：**28/28 通过**（23 旧 + 5 新；本批 fix wiring bug 后从 23 pass / 5 fail 变 28 pass / 0 fail）
+- `npx vitest run apps/web-server/tests/metrics-endpoint.test.ts`：**7/7 通过**（新文件，~240ms）
+- `npx vitest run apps/web-server/tests/` (skip 4 LLM/timeout e2e)：**68 文件 / 576 pass / 1 skip**（was 71/581 → now 72/593；本批 +5 DLQ metrics +7 endpoint metrics = +12 tests）
+- `npx vitest run apps/sdk`：**108/108 通过**（本批不动 SDK）
+- `npx tsc -p apps/web-server/tsconfig.json --noEmit`：去预存噪音（`pptx-ops/src/op-docs.ts` 的 `?raw` imports + `xlsx-gateway` 三行）后 **0 新增 error**
+- live smoke（PORT=33002 + tmux）：
+  - `GET /api/v1/metrics` → 200 text/plain Prometheus 格式
+  - body 含 8 个 `# HELP` + 8 个 `# TYPE` 完整组合
+  - `genoffice_dlq_size 0` / `genoffice_dlq_total_dropped 0` / `genoffice_dlq_total_replayed 0` 初值正确
+  - 触发 3 次 webhook save 到 500-only target 后，counters 增到 3，`byReason{max_attempts} 3`，`byReason{non_retryable_4xx} 0`
+  - replay 1 次成功后 `genoffice_dlq_total_replayed 1`，`genoffice_dlq_size 2`
+  - `genoffice_ipc_channels_implemented 551`（与 `/api/channels` 一致）
+  - `genoffice_uptime_seconds` 单调递增
+  - 无 auth 头直接 GET，200 OK
+  → **5/5 live smoke**
+
+#### 11.35.4 后续观察
+
+- **DLQ 持久化（M4+ backlog）**：进程内 ring buffer 重启清空。持久化方案：① Postgres `dead_letters` 表（运维最熟）；② Redis list + expire；④ on-disk `data/dlq.ndjson` append-only + 启动时 load。当前 sandbox 无外网，连不上 Postgres / Redis；保留为 M4+ 工作。
+- **scraper 接入示例**：未来 `docs/deployment/prometheus.md` 加一段 `scrape_configs` 示例 + Grafana dashboard JSON（`rate(genoffice_dlq_total_dropped[5m])` / `histogram_quantile(0.95, rate(genoffice_dlq_size[1m]))`）。
+- **`/api/v1/webhooks/dlq` 与 `/api/v1/metrics` 一致性**：list 响应里 `metrics.size` 与 `/api/v1/metrics` 的 `genoffice_dlq_size` 取自同一 `store.size()`，所以同一个 scrape cycle 内数值不会漂移（保证 scrape semantic 一致）。
+- **alert 规则示例**：Prometheus alerting rule 草案：`genoffice_dlq_size > 100 for 5m` → 警告 / `rate(genoffice_dlq_total_dropped[1m]) > 0.1` → 严重。文档化在 deployment/prometheus.md（M4+）。
+- **histogram bucket 未来扩展**：`genoffice_dlq_oldest_dropped_at_ms` 当前只是 gauge，可以扩成 `genoffice_dlq_age_seconds_bucket` histogram 提供 p50/p95/p99 老化分布。本批只暴露瞬时 gauge。
+- **§11.33.4 残留 backlog**：`webhook DLQ + upsert` 双向耦合（删除 webhook 后自动 replay / drop 该 webhook 现有 DLQ 项）—— 当前实现里 webhook delete 仅删注册，不动 DLQ；M4+ 路线图。
+
 ：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -2622,6 +2676,16 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 28. **SDK `createEmbedNonce()` helper 落地**（✅ 本轮 §11.28）：apps/sdk/src/editor.ts 新增 `createEmbedNonce(options)`，调 `POST /api/v1/embed/nonce` mint session + 构造带 `?sessionId=...&nonce=...` 的 embed URL。6 种结构化错误 code (`AUTH_FAILED` / `FORBIDDEN` / `BAD_REQUEST` / `MINT_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`)。`fetchImpl` 注入式 override 让测试不需要 polyfill global。配套：`types.ts` 加 3 类型；`embed-url.ts` `EmbedUrlInput.sessionId` + `buildEmbedUrl` 多一行；`index.ts` re-export。新增 `apps/sdk/test/create-embed-nonce.test.ts`（12 测试）+ `build-embed-url.test.ts` 追加 2 测试。SDK 总数 5 文件 / 36 → 6 文件 / 50 测试。live smoke 3/3 通过。
 27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
+35. **DLQ metrics + Prometheus `/api/v1/metrics` 端点**（✅ 本轮 §11.35）：
+    - 闭合 §11.33.4 #2 "DLQ metric" 路线 — `webhooks-dlq` 模块新增 `getDeadLetterMetrics()`（size / totalDropped / totalReplayed / byReason / oldestDroppedAt / newestDroppedAt），`pushDeadLetter()` 与 `replayDeadLetter()` 在 store 边界 bump 累计计数（fix wiring bug — 之前 5 个 metrics 测试全挂在 expected 1 vs got 0）
+    - `GET /api/v1/webhooks/dlq` 响应增加 `metrics` 字段，host 一次 fetch 拿到结构化 + 累计视图
+    - 新增公开 `GET /api/v1/metrics` Prometheus-text 端点，8 个 metric：`genoffice_dlq_size` (gauge) / `genoffice_dlq_total_dropped` (counter) / `genoffice_dlq_total_replayed` (counter) / `genoffice_dlq_dropped_by_reason{reason}` (counter × 2) / `genoffice_dlq_oldest_dropped_at_ms` (gauge) / `genoffice_dlq_newest_dropped_at_ms` (gauge) / `genoffice_ipc_channels_implemented` (gauge, 复用 `handlerCount()`) / `genoffice_uptime_seconds` (gauge, 3 位小数)。NaN 哨兵处理空队列；Content-Type `text/plain; version=0.0.4; charset=utf-8`
+    - `apps/web-server/tests/webhooks-dlq.test.ts` 新增 5 测试（28 总数）：size/totalDropped/totalReplayed/byReason 一次性 / 空队列 oldest/newest=null / totalReplayed 仅成功 replay 增（fetch stub ok→fail 序列）/ delete 不影响 totalDropped（monotonic）/ LRU eviction 不影响 totalDropped 但 size 收敛到 1024
+    - 新文件 `apps/web-server/tests/metrics-endpoint.test.ts` 7 测试：200 + Content-Type / 8 metric HELP+TYPE 完整 / 空队列计数=0 + oldest/newest=`NaN` / push+replay 后计数移动 / `ipc_channels_implemented` 等于 `handlerCount()` / 公开（无 Bearer 200）/ 末尾换行（Prometheus 格式约定）
+    - 修复 bug — `pushDeadLetter()` 与 `replayDeadLetter()` 之前未 bump totals；metrics 测试先前全 fail。修复方法把 bump 放在 wrapper 层（不是 store 层），store 接口与 metrics 关注点解耦
+    - §A.5 累计数：web-server 71/581 → 72/593（+12），总计 185/4448 → 186/4461（+12）
+    - 后续：DLQ 持久化（M4+ Postgres / Redis / on-disk）；scraper 接入示例 + Grafana dashboard JSON（M4+）；histogram 扩 bucket 取 p95 age
+
 25. **renderer-internal `nonce` 字段统一重命名为 `revision`**（✅ 本轮 §11.25）：renderer 里 `nonce: Date.now()` 字段实际是 React re-trigger 计数器（useEffect deps / React key），不是 crypto nonce；与 SDK handshake nonce (`apps/sdk/src/editor.ts`) 同名造成 code review / grep 误判。改名范围严格限定在 renderer-internal React state shape：`packages/ui/src/find-panel.tsx` 的 `FindFocusRequest.nonce` + apps/{docs,html,pdf,slides,markdown}/src/renderer 下的 useState/setState/useEffect/key deps （AiPreset / hoverAnim / anim / morph / findFocus / previewVersion / ribbonTabRequest 8 种 shape）。SDK handshake nonce（`apps/sdk/src/editor.ts`）/ web-bridge nonce（`apps/web-server/src/embed/index.ts`）/ `<iframe>` CSP nonce / docs `FindPanel.focusReplaceNonce` prop 全部不动（向后兼容 / 公共 API）。19 文件 / ~78 处编辑；`grep -rn "nonce" apps/*/src/renderer packages/ui/src` 仅剩法语 `annonce` 一词。
 24. **`CreateEditorOptions` doc typo 修复 + container contract 回归测试**（✅ 本轮 §11.24）：`apps/sdk/src/types.ts` 旧 JSDoc 提到 `containerElement` 字段，但接口里**根本没有**这个字段（早期迭代残留笔误），集成商按字面 join 后会在生产环境遇到 TS 编译报错。修正为"Provide exactly one of `container` or `url`"+ 明确"无 separate containerElement field，直接通过 `container` 传元素"。新增 `apps/sdk/test/container-resolve.test.ts`（6 测试）：source-grep 守门（`containerElement` 只允许出现 1 次在 denial comment）+`createEditor()` no-opts 抛 `options required` +缺 `documentId` / `jwt` / `host` 各抛结构化错误 +Node 环境无 container 抛 `container required when document is not available`。私有 helper `resolveContainer` 通过 public `createEditor` 的 runtime guard 间接验证，避免泄漏内部 API。
 23. **web-server 版本号单一源**（✅ 本轮 §11.23）：`'0.8.0'` 之前硬编码在 5 个文件（`index.ts` boot banner + `/health` / `app-info.ts` / `embed/index.ts` bridge ready payload）。新增 `common/version.ts` 导出 `WEB_SERVER_VERSION` 常量，4 个消费点改 import + 模板字符串插值。新增 5 测试守门：常量 == package.json 版本 / 没有 hardcoded `'0.8.0'`（除 `version.ts` 与 `package.json`）/ boot banner 用 `${...}` / bridge 用 `${...}` / app-info 用 `() => WEB_SERVER_VERSION`。live smoke 验 4 个消费点全报 `0.8.0`。
@@ -2636,7 +2700,7 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler / embed-bridge / webhooks-dlq）| 71 | 581 | ✅ |
+| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler / embed-bridge / webhooks-dlq / **metrics-endpoint**）| 72 | 593 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -2655,12 +2719,12 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **185** | **4448** | ✅ |
+| **总计** | **186** | **4461** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、SDK verifyEmbedSession 同义别名（19）、SDK createEditor sessionBinding + autoRelease（12）、webhook DLQ ring buffer + v1 endpoint（23）、bridge dead-code 清理（删 2 测加 2 测，净 0）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、SDK verifyEmbedSession 同义别名（19）、SDK createEditor sessionBinding + autoRelease（12）、webhook DLQ ring buffer + v1 endpoint（23）、bridge dead-code 清理（删 2 测加 2 测，净 0）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）、webhook DLQ metrics counters（5）、Prometheus `/api/v1/metrics` 端点（7）。
 
 ---
 

@@ -31,8 +31,10 @@ vi.stubEnv('DATA_DIR', TMP)
 
 import {
   _resetDeadLetterForTests,
+  _resetDeadLetterMetricsForTests,
   deleteDeadLetter,
   getDeadLetter,
+  getDeadLetterMetrics,
   listDeadLetters,
   pushDeadLetter,
   replayDeadLetter,
@@ -427,5 +429,90 @@ describe('v1 endpoint /api/v1/webhooks/dlq (sdk1.md §11.33)', () => {
     const body = JSON.parse(getBody())
     expect(body.limit).toBe(200)
     expect(body.entries).toHaveLength(5)
+  })
+})
+
+
+describe('getDeadLetterMetrics (sdk1.md §11.35)', () => {
+  it('reports size, totals, byReason breakdown', () => {
+    _resetDeadLetterForTests()
+    pushDeadLetter({
+      url: 'a', event: 'file.saved', fileId: '1', body: '{}', attempts: 3,
+      lastStatus: 503, lastError: null, reason: 'max_attempts',
+    })
+    pushDeadLetter({
+      url: 'b', event: 'file.saved', fileId: '2', body: '{}', attempts: 1,
+      lastStatus: 400, lastError: null, reason: 'non_retryable_4xx',
+    })
+    pushDeadLetter({
+      url: 'c', event: 'file.saved', fileId: '3', body: '{}', attempts: 3,
+      lastStatus: 502, lastError: null, reason: 'max_attempts',
+    })
+    const m = getDeadLetterMetrics()
+    expect(m.size).toBe(3)
+    expect(m.totalDropped).toBe(3)
+    expect(m.totalReplayed).toBe(0)
+    expect(m.byReason).toEqual({ max_attempts: 2, non_retryable_4xx: 1 })
+    expect(typeof m.oldestDroppedAt).toBe('number')
+    expect(typeof m.newestDroppedAt).toBe('number')
+    expect(m.newestDroppedAt!).toBeGreaterThanOrEqual(m.oldestDroppedAt!)
+  })
+
+  it('reports oldestDroppedAt/newestDroppedAt as null when empty', () => {
+    _resetDeadLetterForTests()
+    const m = getDeadLetterMetrics()
+    expect(m.size).toBe(0)
+    expect(m.totalDropped).toBe(0)
+    expect(m.oldestDroppedAt).toBeNull()
+    expect(m.newestDroppedAt).toBeNull()
+  })
+
+  it('totalReplayed increments only on successful replay', async () => {
+    _resetDeadLetterForTests()
+    const fetchOk = vi.fn(async () => new Response('ok', { status: 200 }))
+    const fetchFail = vi.fn(async () => new Response('boom', { status: 503 }))
+    vi.stubGlobal('fetch', fetchOk)
+    const id1 = pushDeadLetter({
+      url: 'https://h/ok', event: 'file.saved', fileId: 'f', body: '{}', attempts: 3,
+      lastStatus: 503, lastError: null, reason: 'max_attempts',
+    })
+    await replayDeadLetter(id1)
+    expect(getDeadLetterMetrics().totalReplayed).toBe(1)
+
+    vi.stubGlobal('fetch', fetchFail)
+    const id2 = pushDeadLetter({
+      url: 'https://h/fail', event: 'file.saved', fileId: 'f', body: '{}', attempts: 3,
+      lastStatus: 503, lastError: null, reason: 'max_attempts',
+    })
+    await replayDeadLetter(id2)
+    // Still 1 — failed replay does NOT bump totalReplayed.
+    expect(getDeadLetterMetrics().totalReplayed).toBe(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('totalDropped does NOT decrement on delete (monotonic)', () => {
+    _resetDeadLetterForTests()
+    const id = pushDeadLetter({
+      url: 'https://h', event: 'file.saved', fileId: 'f', body: '{}', attempts: 3,
+      lastStatus: 500, lastError: null, reason: 'max_attempts',
+    })
+    expect(getDeadLetterMetrics().totalDropped).toBe(1)
+    deleteDeadLetter(id)
+    expect(getDeadLetterMetrics().totalDropped).toBe(1)
+    expect(getDeadLetterMetrics().size).toBe(0)
+  })
+
+  it('LRU eviction decrements size but NOT totalDropped', () => {
+    _resetDeadLetterForTests()
+    const ids: string[] = []
+    for (let i = 0; i < 1025; i++) {
+      ids.push(pushDeadLetter({
+        url: `https://h/${i}`, event: 'file.saved', fileId: `f${i}`, body: '{}', attempts: 3,
+        lastStatus: 500, lastError: null, reason: 'max_attempts',
+      }))
+    }
+    const m = getDeadLetterMetrics()
+    expect(m.size).toBe(1024)
+    expect(m.totalDropped).toBe(1025)
   })
 })
