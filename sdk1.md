@@ -1768,6 +1768,29 @@ SDK (host page)                 bash
 - typecheck：clean
 
 #### 11.21.5 后续观察
+### 11.22 本轮续作（v2 第 17 轮 commit，2026-09-22）
+
+两件小整合：(a) 把 §11.20 引入的 `buildEmbedUrl({nonce})` 字段测试合并到 `build-embed-url.test.ts`（canonical 位置），删除独立的 `embed-url-nonce.test.ts`（4 测试已迁移，避免重复）；(b) 把 §11.21 的 `handshakeTimeoutMs` + `clampHandshakeTimeout` 实际签名行为按上轮 §11.20 留下的"测试应覆盖 SDK 公开契约"的精神补强。
+
+#### 11.22.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/sdk/test/build-embed-url.test.ts` | 新增 `describe('buildEmbedUrl handshake nonce')` 4 测试：未提供时 omit / 提供时 emit / ordering 在 token 之后 mode 之前 / URL-encoding 特殊字符（space / = / & / % 等）| +50 |
+| `apps/sdk/test/embed-url-nonce.test.ts` | **删除**（4 测试已迁移；保留单一 canonical 测试位置便于维护）| -81 |
+
+#### 11.22.2 设计要点
+
+- **consolidate > duplicate**：维护成本 & reviewer 心智负担。`build-embed-url.test.ts` 是 buildEmbedUrl 的"主合约测试"，nonce 是该合约的一部分
+- **保留语义独立性**：每条 describe 块仍自带 setup/cleanup，无相互依赖
+- **URL encoding 测试用 `expect(url).not.toContain(...)`**：直接断言"原始特殊字符绝不出现在 URL 中"，避免引入具体编码规则的硬值（URLSearchParams 的具体编码格式未来可能变）
+
+#### 11.22.3 验证
+
+- `npx vitest run --config vitest.config.ts test/`：**4 文件 / 30 测试**全绿（was 5/30，删除 1 文件，迁移 4 测试）
+- typecheck：clean
+
+
 
 - SDK bundle 当前 build 脚本（`scripts/build.mjs`）在沙箱内报 `MODULE_NOT_FOUND`（pre-existing，与本 PR 无关）— 验证由 vitest 直接 import src 覆盖
 - 真正想做 e2e：需要 jsdom 或 happy-dom 模拟 iframe.contentWindow + document.querySelector，测试 setTimeout 真的在配置时间内 fire。这留给 backlog，本轮只验 unit-level contract
@@ -2036,6 +2059,7 @@ SDK (host page)                 bash
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+22. **buildEmbedUrl nonce 测试整合**（✅ 本轮 §11.22）：把 §11.20 引入的 4 个 nonce 测试从独立的 `embed-url-nonce.test.ts` 合并到 `build-embed-url.test.ts`（canonical 位置），删除独立文件。维护更清晰。SDK 文件 5→4（文件数-1），测试数 30（净无 0 测试）。
 21. **SDK handshake timeout 可配置**（✅ 本轮 §11.21）：原本 SDK iframe handshake 的 10 s timeout 在 createEditor 闭包内硬编码，慢网络 host 没有逃生口。新增 `CreateEditorOptions.handshakeTimeoutMs` + module-level exported `clampHandshakeTimeout(ms)`（范围 1 s – 60 s，floor 整数，默认 10 s）。新增 6 测试覆盖 undefined / NaN / Infinity / 范围内 / 上下限 clamp / 分数 / 负数 → 下限（不取 abs）。
 20. **iframe handshake nonce 静默丢包修复**（✅ 本轮 §11.20）：发现 `apps/sdk/src/embed-url.ts` 的 `buildEmbedUrl` **完全没有把 `nonce` 写到 query param**，导致 §B.2 #1 那段 SDK handshake nonce 安全保证**从未生效**——每个 SDK 启动的 embed iframe 都会在 10s 后 `HANDSHAKE_FAILED`。新增 `EmbedUrlInput.nonce` + `params.set('nonce', …)`；embed handler 端把 `?nonce=` 写到 `<meta name="genoffice-nonce">`，bridge `sendReady()` 读 meta 把 nonce 放进 ready postMessage payload。新增 4 + 6 测试覆盖；side-effect 修了 embed-jwt-validation 的 env mutation 问题。
 19. **typedoc 输出文件数漂移守门**（✅ 本轮 §11.19）：原 §A.5 / §11.6 / §11.12 一致称 `199 个 MD 文件`，实测已 221（typedoc 把 §11.16 / §11.17 / §11.18 几轮新增的 public helper 都收进来了）。新增 `apps/web-server/tests/typedoc-count.test.ts`（3 测试）：跑 `node docs/scripts/gen-typedoc.mjs` → 读 `docs/api/_generated/*.md` → assert 200-400 + 打印当前值到 CI 日志。sdk1.md 三处 `199` → `221`。
@@ -2060,12 +2084,12 @@ SDK (host page)                 bash
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist / embed-url-nonce / handshake-timeout）| 5 | 30 | ✅ |
+| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout）| 4 | 30 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **176** | **4314** | ✅ |
+| **总计** | **175** | **4314** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 

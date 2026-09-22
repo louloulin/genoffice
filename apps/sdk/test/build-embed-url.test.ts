@@ -89,3 +89,59 @@ describe('buildEmbedUrl', () => {
     expect(url.startsWith('https://genoffice.app/embed/')).toBe(true)
   })
 })
+
+describe('buildEmbedUrl handshake nonce (sdk1.md §11.20)', () => {
+  it('omits ?nonce when not provided', () => {
+    const url = buildEmbedUrl({
+      host: 'https://genoffice.app',
+      documentId: 'd',
+      app: 'docs',
+      token: 't',
+    })
+    expect(url).not.toContain('nonce=')
+  })
+
+  it('emits ?nonce=<value> when supplied', () => {
+    const url = buildEmbedUrl({
+      host: 'https://genoffice.app',
+      documentId: 'd',
+      app: 'docs',
+      token: 't',
+      nonce: 'abc123-random-22-chars',
+    })
+    expect(url).toContain('nonce=abc123-random-22-chars')
+  })
+
+  it('places nonce immediately after token (sandwiched before mode/theme/lang/toolbar)', () => {
+    const url = buildEmbedUrl({
+      host: 'https://genoffice.app',
+      documentId: 'd',
+      app: 'docs',
+      token: 't',
+      nonce: 'n-once',
+      theme: 'dark',
+      lang: 'zh-CN',
+    })
+    const tokenIdx = url.indexOf('token=')
+    const nonceIdx = url.indexOf('nonce=')
+    const themeIdx = url.indexOf('theme=')
+    expect(tokenIdx).toBeGreaterThan(-1)
+    expect(nonceIdx).toBeGreaterThan(tokenIdx)
+    expect(themeIdx).toBeGreaterThan(nonceIdx)
+  })
+
+  it('URL-encodes special characters in the nonce value', () => {
+    // makeNonce() returns URL-safe base64 (no padding, +/-= → -_), so this
+    // is defense-in-depth: a nonce value that happens to contain spaces
+    // or HTML-significant chars must be encoded for transport.
+    const url = buildEmbedUrl({
+      host: 'https://genoffice.app',
+      documentId: 'd',
+      app: 'docs',
+      token: 't',
+      nonce: 'a b&c=d',
+    })
+    expect(url).toContain('nonce=a+b%26c%3Dd')
+    expect(url).not.toContain('nonce=a b&c=d')
+  })
+})
