@@ -3074,7 +3074,17 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 60. **`sdk-command-text-buffer-roundtrip-e2e.test.ts` 5/5 修复 · 真端到端证明 §11.36.5 round-trip**（✅）：上一会话留下的 e2e 5/5 失败，三处 bug 同时踩坑——① `evalBridgeWithSink(opts?: {...})` 声明 optional 但 body 调 `opts.bufferText` 直接解引用，两个不传 opts 的 case (`setLang with no adapter` + `envelope version mismatch is dropped`) 在 bridge 跑前就 throw `Cannot read properties of undefined`；② `installTextBufferSink` 走 `Promise.resolve(sink(name, args)).then(replyCommand)`，bridge 的 `parent.postMessage` 是 microtask 不是同步的，断言 `lastReply` 立刻在 `deliver` 后必拿 null；③ SDK `insertText` 语义是"在当前 cursor 插入"，fresh buffer `cursor:0` + `insertAt(0, 'bar')` 在 `text:'foo'` 上得 `'barfoo'`，测试期望的 `'foobar'` 与 SDK 契约不符。修：① `o = opts ?? {}` + `o.cursor` 透传；② `await flush()`（10 个 `Promise.resolve()` tick）在每个 `deliver` 之后；③ `cursor: 'foo'.length` 让 `insertAt` 落到末尾。**Bridge ↔ renderer text-buffer 路径从此端到端有真凭据**（之前仅有 embed-bridge-renderer-sink-e2e.test.ts 的 `setTheme` 单点 + 此处的 source-only evidence）。
 
-61. **`SdkLiveModelAdapter.mountSidebar / postToSidebar` · §11.36.5 第二批补全**（✅）：§11.36.5 列了 7 个需 live editor 模型的命令，前一轮（#58）接通 5 个：`setContent` / `getContent` / `insertText` / `setTheme` / `setLang`。本轮把剩下的 2 个——`mountSidebar({panel, html?|url?})` + `postToSidebar({panel, message})`——也加进 adapter：`SdkLiveModelAdapter` 加两个 optional 方法 + 新 `SidebarPanelNotMountedError` (code `SIDEBAR_PANEL_NOT_MOUNTED`) 给 postToSidebar 在 panel 未挂载时抛（保持现有 `err.code` 在 wire 上 verbatim 的契约）。`mountSidebar` 校验 `html`/`url` 二选一（两者都给或都不给都 throw）。每个 app 仍只需在 `installLiveModelSink({adapter: {...}})` 一次性声明——apps/docs|sheets|slides|pdf|markdown|html/src/renderer/web-bridge.ts 当前用 `installTextBufferSink()`，文本命令面有 setContent|getContent|insertText，sidebar 命令面默认返 `UNSUPPORTED`，等 app 自带 sidebar 壳（`SidebarTaskPane）`上线时即可 `installLiveModelSink({adapter: {mountSidebar, postToSidebar, ...}})` 一行接入。**§11.36.5 的"命令面偏窄"项收口**——SDK 2.0 Kestrel iframe 表面从 5 命令扩到 7 命令，与 host SDK 的 7 个 `EditorCommands` adapter-bound 子集对齐。5 个新测试覆盖：html + url 各一种 ok / html+url 都缺 or 都给 or panel 缺 都 throw / postToSidebar 返回 `{panel, delivered:true}` 且 forward message / `SidebarPanelNotMountedError.code === 'SIDEBAR_PANEL_NOT_MOUNTED'` / adapter 不挂 sidebar 方法时 command 落到 `UnsupportedCommandError`。
+61. **`SdkLiveModelAdapter.mountSidebar / unmountSidebar / postToSidebar` · §11.36.5 第二批补全**（✅）：§11.36.5 列了 7 个需 live editor 模型的命令，前一轮（#58）接通 5 个：`setContent` / `getContent` / `insertText` / `setTheme` / `setLang`。本轮把剩下的 3 个——同时修正上一轮的 wire payload 错误——`mountSidebar({panelUrl, width?, title?}) → {panelId}` / `unmountSidebar({panelId}) → void` / `postToSidebar({panelId, message}) → void`。SDK 的 `EditorCommands.mountSidebar.args = {panelUrl, width?, title?}` 在 editor.ts:496 原样贯通到 wire，上一轮写的 `{panel, html?|url?}` 从未命中。现在接叧完全对齐 SDK：调用者必须返回 `{panelId:string}` (不能是 void / 空串)，否则桥抛结构化错误而不是 30s timeout。`SidebarPanelNotMountedError` (code `SIDEBAR_PANEL_NOT_MOUNTED`) 在 postToSidebar 面向未挂载 panelId 时抛。**§11.36.5 的"命令面偏窄"项收口**——iframe 表面从 5 命令扩到 7 命令，与 host SDK `EditorCommands` 7 个 adapter-bound 子集对齐。测试覆盖：mountSidebar 转发 `{panelUrl,width?,title?}` 且要求 adapter 返回 `{panelId}` / unmountSidebar 转发 `{panelId}` / postToSidebar 转发 `{panelId, message}` 且不包装结果 (`Promise<void>`) / `SidebarPanelNotMountedError.code === 'SIDEBAR_PANEL_NOT_MOUNTED'` / adapter 不挂 sidebar 方法时三个 command 都走到 `UnsupportedCommandError`。
+
+62. **`createSidebarRuntime` · renderer 北 start-to-finish M3.5 接入**（✅）：上一步仅接通了 SDK 与 renderer 之间的语义层面，但 renderer 端仍不知道怎么把 `panelUrl` 实例化为一个 iframe、怎么跟挂载的 panel iframe 互发 postMessage。新增 `@genoffice/ipc-bridge/sidebar-runtime` 提供 `createSidebarRuntime({host, createIframe?, postOrigin?, inboundOrigin?, bindWindow?, onInboundMessage?})` · DOM-agnostic （接受 `SidebarHostLike` 接口 + 可选的 `createIframe` 工厂以避免 jsdom 依赖）：
+- `mount({panelUrl, width?, title?}) → SidebarPanelMeta`（自动生成 `sidebar-{epoch}-{seq}` panelId）并 appendChild iframe 到 host
+- `unmount(panelId) → boolean`（idempotent）
+- `post(panelId, message) → void` 写 `{v:'sidebar.v1', panelId, message}` envelope 到 `iframe.contentWindow`；未知 panelId 抛 `SidebarPanelNotMountedError`
+- `list() / has(panelId) / onMessage(handler) / dispose()` + `handleInboundMessage(event)` 以供外部 window 监听器转发
+- 新 `SidebarIframeUnavailableError` (code `SIDEBAR_IFRAME_UNAVAILABLE`) 在 mount-time 检出——以避免 SSR / bare Node 环境下构造 runtime 时报错，只在真正 mount 时才报错。
+- 单测 15 cases：mount appends iframe / unique panelIds / unmount idempotent / post envelope shape / 未知 panelId → SIDEBAR_PANEL_NOT_MOUNTED / handleInboundMessage envelope 过滤 / inboundOrigin filter / handler 异常不破坏 fan-out / bindWindow wires windowLike / SIDEBAR_IFRAME_UNAVAILABLE / dispose idempotent；+ 4 集成测试证明 `installLiveModelSink + createSidebarRuntime` 三命令 round-trip 且 `SIDEBAR_PANEL_NOT_MOUNTED` 从 sink 透传。
+
+63. **`installTextBufferSink({sidebar})` · docs renderer 接入 + body-attached host**（✅）：apps/docs/src/renderer/web-bridge.ts 从 `installTextBufferSink()` 改为 `installTextBufferSink({sidebar: createSidebarRuntime({host: lazyBodyAside})})`，一行接入全 M3.5 表面（3 text + 3 sidebar + 2 default）。host 昨 lazy `≡ #genoffice-sidebar` （不存在时创建 `<aside style="display:none">` 附到 body，位于右侧、宽 320px、边框隐藏），首次 `mountSidebar` 之前什么都不动（零 DOM 成本）。`@genoffice/ipc-bridge/text-buffer-adapter` 加 `sidebar` 选项 + `SidebarRuntimeLike` 结构型（不 import sidebar-runtime 避免循环），6 命令同一个 `installLiveModelSink` 调用。测试：+1 text-buffer-adapter case 证明 \`{sidebar: fake}\` 后 \`handle.supported\` 包含三个 sidebar 命令且 dispatch 走到注入的 fake；三大 sidebar * 5 原命令面 cases 在 sidebar-runtime.test.ts。· 后续工作（未做）：sheets/slides/pdf/markdown/html 他们的 web-bridge.ts 仍用 \`installTextBufferSink()\` 无 sidebar，他们需要本地决定是否提供一个 sidebar DOM 容器后才能走同一行。 = text-buffer-adapter.test.ts 多 5 个测试（85 → 90 总计）。
 
 #### ⚠️ 仍未做 / 已知缺陷
 
@@ -3092,7 +3102,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
-| ipc-bridge | 5 | 97 | ✅ |
+| ipc-bridge | 5 | 115 | ✅ |
 | file-parse | 1 | 38 | ✅ |
 | file-management | 1 | 219 | ✅ |
 | pptx-engine | 1 | 957 | ✅ |
@@ -3106,7 +3116,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **194** | **4607** | ✅ |
+| **总计** | **194** | **4625** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
