@@ -22,13 +22,14 @@
  * into the served HTML, then the browser executes it inside the
  * iframe.
  *
- * Note (sdk1.md §11.34): an earlier iteration of this bridge also
- * relayed inbound postMessage commands from the host onto `window` as
- * `host.command` CustomEvents, intended for a renderer-side command
- * listener. That listener was never implemented in the renderer and
- * no shipped code consumes `host.command`, so the relay has been
- * removed. The bridge still *receives* inbound postMessages for
- * envelope-version validation, but it no longer re-dispatches them.
+ * Inbound command dispatch (sdk1.md §11.36 follow-up to §11.34):
+ * the bridge now actively dispatches inbound envelope commands from
+ * the host page to the web-server IPC dispatcher via
+ * `POST /api/ipc/<channel>`, then mirrors the IPC envelope back as a
+ * `command-result` envelope so SDK's `editor.command()` round-trip
+ * works in the iframe without renderer-side changes. This replaces
+ * the §11.34 `host.command` CustomEvent dead path with a real IPC
+ * round-trip; the SDK does not need to know the bridge exists.
  *
  * Bridge protocol version (informational, NOT part of the SDK contract):
  *   - EMBED_BRIDGE_VERSION = '1.0' — bumped if we add / remove fields
@@ -57,6 +58,83 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
         payload: { name: name, payload: payload }
       }, '*');
     } catch (e) { /* parent gone, swallow */ }
+  }
+  function replyCommand(correlationId, ok, result, error) {
+    try {
+      var p = { ok: ok };
+      if (result !== undefined) p.result = result;
+      if (error) p.error = error;
+      window.parent.postMessage({
+        v: ENVELOPE_VERSION,
+        dir: 'editor→host',
+        kind: 'command-result',
+        correlationId: correlationId,
+        payload: p
+      }, '*');
+    } catch (e) { /* parent gone, swallow */ }
+  }
+  // Inbound envelope command → IPC POST. SDK editor.command(name, args)
+  // sends {kind:'command', correlationId, payload:{name, args}}. We POST
+  // /api/ipc/<name> with {args:[args]} + x-ipc-session header so the
+  // web-server IPC dispatcher can route the same handler the renderer
+  // process uses. Reply is the IPC envelope {ok, result} or {error}
+  // mirrored back as a command-result envelope so the SDK's pending
+  // promise resolves/rejects. SDK error codes from the IPC side are
+  // preserved so hosts see a stable error shape regardless of who
+  // rejected the command.
+  function dispatchCommand(env) {
+    var name = env && env.payload && env.payload.name;
+    var args = env && env.payload && env.payload.args;
+    var correlationId = env && env.correlationId;
+    if (typeof name !== 'string' || !name || !correlationId) return;
+    var cfg = window.__GENOFFICE_EMBED__;
+    var sessionId = cfg && cfg.sessionId;
+    var fetchFn = (typeof fetch !== 'undefined') ? fetch : null;
+    if (!fetchFn) {
+      replyCommand(correlationId, false, undefined, {
+        code: 'IPC_DISPATCH_UNAVAILABLE',
+        message: 'fetch is unavailable in this iframe'
+      });
+      return;
+    }
+    var body = JSON.stringify({ args: args === undefined ? [] : [args] });
+    var headers = { 'content-type': 'application/json' };
+    if (sessionId) headers['x-ipc-session'] = sessionId;
+    fetchFn('/api/ipc/' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: headers,
+      body: body
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var parsed;
+        try { parsed = text ? JSON.parse(text) : null; } catch (e) { parsed = null; }
+        if (res.ok && parsed && parsed.ok === true) {
+          replyCommand(correlationId, true, parsed.result);
+        } else {
+          var err = (parsed && parsed.error) || { message: 'IPC ' + res.status, code: 'IPC_ERROR' };
+          replyCommand(correlationId, false, undefined, {
+            code: err.code || 'IPC_ERROR',
+            message: err.message || ('IPC ' + res.status)
+          });
+        }
+      });
+    }).catch(function (e) {
+      replyCommand(correlationId, false, undefined, {
+        code: 'IPC_FETCH_FAILED',
+        message: (e && e.message) || 'IPC fetch failed'
+      });
+    });
+  }
+  function onHostMessage(event) {
+    var data = event.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.v !== ENVELOPE_VERSION) return;
+    if (data.dir !== 'host→editor') return;
+    if (data.kind === 'command') {
+      try { dispatchCommand(data); } catch (e) {
+        /* dispatch failures are best-effort; do not throw */
+      }
+    }
   }
   function sendReady() {
     var nonceMeta = document.querySelector('meta[name="genoffice-nonce"]');
@@ -94,6 +172,14 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
   // registered after bridge boot — no relay is needed here. See the
   // top-of-file note (sdk1.md §11.34) for why the previous
   // host.command CustomEvent relay was removed.
+  // Inbound postMessages from the host are accepted on the envelope
+  // version. Bridge-installed listener dispatches 'command' envelopes
+  // to /api/ipc/<channel> via fetch (round-trip mirrors a renderer
+  // IPC call). 'event' envelopes from the host are intentionally
+  // ignored at the bridge level — the editor (loaded into the same
+  // iframe after bridge boot) installs its own postMessage listener
+  // (apps/sdk/src/editor.ts) and reacts to host events directly.
+  window.addEventListener('message', onHostMessage);
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(sendReady, 0);
     setTimeout(subscribePush, 0);

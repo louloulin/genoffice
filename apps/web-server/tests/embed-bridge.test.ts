@@ -26,6 +26,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EMBED_BRIDGE_SOURCE, EMBED_BRIDGE_VERSION } from '../src/embed/bridge'
 import { WEB_SERVER_VERSION } from '../src/common/version'
 
+/**
+ * Drain queued microtasks so a fetch → .then(text) → .then(reply)
+ * chain under fake timers completes before the next assertion. Real
+ * timers would let the runtime schedule these naturally; under
+ * vi.useFakeTimers() we have to drain manually. 10 cycles is enough
+ * for any nested promise chain the bridge produces.
+ */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
 })
@@ -49,6 +60,12 @@ interface BridgeHarness {
     onerror: () => void
     closed: boolean
   }>
+  /** Capture fetch(url, init) calls when fetchMock is null. */
+  fetchCalls: Array<{ url: string; init: RequestInit }>
+  /** Test-supplied fetch implementation (replaces real fetch in bridge scope). */
+  fetchMock:
+    | ((url: string, init: RequestInit) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>)
+    | null
   /** The fake meta tag for `<meta name="genoffice-nonce">`. */
   nonce: string | null
   /** The fake __GENOFFICE_EMBED__ config. */
@@ -69,6 +86,8 @@ function evalBridgeWith(opts: { nonce: string | null; embedConfig: BridgeHarness
     domLoadedHandlers: [],
     dispatchedEvents: [],
     eventSources: [],
+    fetchCalls: [],
+    fetchMock: null,
     nonce: opts.nonce,
     embedConfig: opts.embedConfig,
     readyState: opts.readyState ?? 'complete',
@@ -120,18 +139,36 @@ function evalBridgeWith(opts: { nonce: string | null; embedConfig: BridgeHarness
     }
   }
 
+  // Fake fetch — when fetchMock is set, delegate; otherwise capture and
+  // return a synthetic 200/ok envelope so the bridge's .then() chain
+  // resolves without hanging the test (tests that need precise control
+  // set fetchMock before triggering the message handler).
+  const fakeFetch = async (url: string, init: RequestInit) => {
+    harness.fetchCalls.push({ url, init })
+    if (harness.fetchMock) return harness.fetchMock(url, init)
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: null }) }
+  }
+
   // The bridge source is wrapped in `(function(){...})();` — IIFE.
   // We need to expose `window`, `document`, `EventSource`, `setTimeout`,
-  // `CustomEvent` to its scope. Use `new Function(...)` for a clean eval.
-  const fn = new Function('window', 'document', 'EventSource', 'setTimeout', 'CustomEvent', EMBED_BRIDGE_SOURCE)
-  fn(fakeWindow, fakeDocument, FakeEventSource, setTimeout, class FakeCustomEvent {
-    type: string
-    detail: unknown
-    constructor(type: string, init: { detail?: unknown } = {}) {
-      this.type = type
-      this.detail = init.detail
-    }
-  })
+  // `CustomEvent`, `fetch` to its scope. Use `new Function(...)` for a
+  // clean eval.
+  const fn = new Function('window', 'document', 'EventSource', 'setTimeout', 'CustomEvent', 'fetch', EMBED_BRIDGE_SOURCE)
+  fn(
+    fakeWindow,
+    fakeDocument,
+    FakeEventSource,
+    setTimeout,
+    class FakeCustomEvent {
+      type: string
+      detail: unknown
+      constructor(type: string, init: { detail?: unknown } = {}) {
+        this.type = type
+        this.detail = init.detail
+      }
+    },
+    fakeFetch,
+  )
 
   // Bridge schedules sendReady + subscribePush via setTimeout(_, 0).
   // Flush them synchronously so tests can assert side effects immediately.
@@ -288,34 +325,67 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     expect(h.parentPosts.length).toBe(initialPosts)
   })
 
-  it('does NOT dispatch host.command CustomEvent for inbound commands (sdk1.md §11.34)', () => {
-    // Prior to §11.34 the bridge relayed inbound host commands onto
-    // `window` as `host.command` CustomEvents for a renderer-side
-    // listener. No shipped code consumed that path, so the relay was
-    // removed. This test pins the negative contract: an inbound
-    // command postMessage MUST NOT produce a host.command CustomEvent
-    // regardless of whether the bridge still installs a postMessage
-    // listener (it currently does not — we check both shapes).
+  it('does NOT dispatch host.command CustomEvent for inbound commands (sdk1.md §11.34 invariant)', () => {
+    // The §11.34 cleanup removed the host.command CustomEvent relay
+    // (no renderer-side consumer ever shipped). The §11.36 inbound
+    // dispatch re-installs a postMessage listener but ONLY to convert
+    // envelope 'command' messages into IPC POSTs — it MUST NOT re-add
+    // the CustomEvent path. Pin the invariant across both eras.
     const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
-    // If a listener is registered, invoke it; if not, the assertion
-    // below still holds (no host.command was ever dispatched).
     if (h.messageHandlers.length > 0) {
-      const initialEvents = h.dispatchedEvents.length
-      h.messageHandlers[0]!({ data: { v: '1.0', kind: 'command', payload: { name: 'setTheme', args: { theme: 'dark' } } } })
-      expect(h.dispatchedEvents.length).toBe(initialEvents)
+      h.messageHandlers[0]!({
+        data: {
+          v: '1.0',
+          dir: 'host→editor',
+          kind: 'command',
+          correlationId: 'cmd-test',
+          payload: { name: 'setTheme', args: { theme: 'dark' } },
+        },
+      })
     }
     expect(h.dispatchedEvents.filter((e) => e.type === 'host.command')).toHaveLength(0)
   })
 
-  it('does NOT install a postMessage listener after §11.34', () => {
-    // The bridge prior to §11.34 listened for inbound postMessages to
-    // either validate envelope version or re-dispatch `host.command`
-    // CustomEvents. Both uses are gone: the editor registers its own
-    // postMessage listener post-bridge, and no consumer of the relay
-    // ever shipped. Pin the absence so a future refactor can't
-    // accidentally re-introduce the listener.
+  it('installs a postMessage listener for inbound command dispatch (sdk1.md §11.36)', () => {
+    // The bridge now actively dispatches inbound envelope commands to
+    // /api/ipc/<channel> via fetch. Confirm a postMessage listener is
+    // installed so SDK editor.command() round-trips work in the
+    // iframe without renderer-side changes.
     const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
-    expect(h.messageHandlers).toHaveLength(0)
+    expect(h.messageHandlers.length).toBe(1)
+  })
+
+  it('ignores inbound events (kind === event) at the bridge level', () => {
+    // Inbound events from the host are handled by the editor's own
+    // postMessage listener (apps/sdk/src/editor.ts) loaded into the
+    // same iframe post-bridge. The bridge MUST NOT reply to events,
+    // only commands. Pin: a simulated inbound 'event' envelope should
+    // produce zero outbound postMessages.
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
+    const before = h.parentPosts.length
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'event',
+        payload: { name: 'hostEvent', payload: { foo: 1 } },
+      },
+    })
+    expect(h.parentPosts.length).toBe(before)
+  })
+
+  it('ignores malformed envelopes (wrong version / wrong dir / wrong shape)', () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
+    const before = h.parentPosts.length
+    const malformed = [
+      { data: null },
+      { data: { v: '2.0', dir: 'host→editor', kind: 'command', correlationId: 'c', payload: { name: 'x' } } },
+      { data: { v: '1.0', dir: 'editor→host', kind: 'command', correlationId: 'c', payload: { name: 'x' } } },
+      { data: { v: '1.0', dir: 'host→editor', kind: 'command' /* missing payload */ } },
+      { data: { v: '1.0', dir: 'host→editor', kind: 'command', correlationId: '', payload: { name: 'x' } } },
+    ]
+    for (const m of malformed) h.messageHandlers[0]!(m)
+    expect(h.parentPosts.length).toBe(before)
   })
 
   it('waits for DOMContentLoaded when document.readyState is loading', () => {
@@ -359,5 +429,172 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
       const d = post.data as { dir?: string }
       expect(d.dir).toBe('editor→host')
     }
+  })
+
+  // ---------------------------------------------------------------
+  // sdk1.md §11.36: bridge inbound command dispatch via fetch IPC.
+  // The fake harness exposes fetch via h.fetchCalls; we register a
+  // mock before invoking the message handler so dispatchCommand's
+  // Promise chain resolves synchronously under vi.useFakeTimers().
+  // ---------------------------------------------------------------
+  function withFetchMock<T>(h: ReturnType<typeof evalBridgeWith>, body: T | { error: object }, status = 200, fn: () => void): void {
+    const payload = typeof body === 'object' && body !== null && 'error' in body ? body : { ok: true, result: body }
+    h.fetchMock = async () => ({
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => JSON.stringify(payload),
+    })
+    try { fn() } finally { h.fetchMock = null }
+  }
+
+  it('dispatches inbound command envelope as POST /api/ipc/<channel>', async () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
+    let captured: { url: string; init: RequestInit } | null = null
+    h.fetchMock = async (url: string, init: RequestInit) => {
+      captured = { url, init }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: { echoed: true } }) }
+    }
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-1',
+        payload: { name: 'docs:save', args: { path: '/x.docx' } },
+      },
+    })
+    // Drain microtasks so the .then() in dispatchCommand fires.
+    await Promise.resolve(); await Promise.resolve()
+    expect(captured).not.toBeNull()
+    expect(captured!.url).toBe('/api/ipc/docs%3Asave')
+    const init = captured!.init as RequestInit
+    expect(init.method).toBe('POST')
+    const headers = init.headers as Record<string, string>
+    expect(headers['content-type']).toBe('application/json')
+    expect(headers['x-ipc-session']).toBe('embed-xyz')
+    expect(JSON.parse(init.body as string)).toEqual({ args: [{ path: '/x.docx' }] })
+  })
+
+  it('replies command-result with ok:true when IPC returns ok envelope', async () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
+    h.fetchMock = async () => ({
+      ok: true, status: 200,
+      text: async () => JSON.stringify({ ok: true, result: { value: 42 } }),
+    })
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-2',
+        payload: { name: 'docs:read', args: { path: '/x.docx' } },
+      },
+    })
+    await flushMicrotasks()
+    const reply = h.parentPosts.find((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-2'
+    })
+    expect(reply).toBeDefined()
+    const data = reply!.data as { kind: string; correlationId: string; payload: { ok: boolean; result: { value: number } } }
+    expect(data.kind).toBe('command-result')
+    expect(data.correlationId).toBe('cmd-2')
+    expect(data.payload.ok).toBe(true)
+    expect(data.payload.result).toEqual({ value: 42 })
+  })
+
+  it('replies command-result with ok:false when IPC returns error envelope', async () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
+    h.fetchMock = async () => ({
+      ok: false, status: 400,
+      text: async () => JSON.stringify({
+        error: { message: 'path outside storage', code: 'PATH_OUTSIDE_STORAGE' },
+      }),
+    })
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-3',
+        payload: { name: 'docs:save', args: { path: '/etc/passwd' } },
+      },
+    })
+    await flushMicrotasks()
+    const reply = h.parentPosts.find((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-3'
+    })
+    expect(reply).toBeDefined()
+    const data = reply!.data as { payload: { ok: boolean; error: { code: string; message: string } } }
+    expect(data.payload.ok).toBe(false)
+    expect(data.payload.error.code).toBe('PATH_OUTSIDE_STORAGE')
+    expect(data.payload.error.message).toBe('path outside storage')
+  })
+
+  it('replies command-result with IPC_ERROR when IPC returns non-JSON', async () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
+    h.fetchMock = async () => ({ ok: false, status: 500, text: async () => 'Internal Server Error' })
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-4',
+        payload: { name: 'docs:save', args: {} },
+      },
+    })
+    await flushMicrotasks()
+    const reply = h.parentPosts.find((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-4'
+    })
+    const data = reply!.data as { payload: { ok: boolean; error: { code: string } } }
+    expect(data.payload.ok).toBe(false)
+    expect(data.payload.error.code).toBe('IPC_ERROR')
+  })
+
+  it('replies command-result with IPC_FETCH_FAILED when fetch itself rejects', async () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
+    h.fetchMock = async () => { throw new Error('network down') }
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-5',
+        payload: { name: 'docs:save', args: {} },
+      },
+    })
+    await flushMicrotasks()
+    const reply = h.parentPosts.find((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-5'
+    })
+    const data = reply!.data as { payload: { ok: boolean; error: { code: string; message: string } } }
+    expect(data.payload.ok).toBe(false)
+    expect(data.payload.error.code).toBe('IPC_FETCH_FAILED')
+    expect(data.payload.error.message).toBe('network down')
+  })
+
+  it('omits x-ipc-session header when embedConfig.sessionId is missing', async () => {
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
+    let captured: { url: string; init: RequestInit } | null = null
+    h.fetchMock = async (url: string, init: RequestInit) => {
+      captured = { url, init }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: {} }) }
+    }
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-6',
+        payload: { name: 'docs:read', args: {} },
+      },
+    })
+    await Promise.resolve(); await Promise.resolve()
+    const headers = captured!.init.headers as Record<string, string>
+    expect(headers['x-ipc-session']).toBeUndefined()
   })
 })
