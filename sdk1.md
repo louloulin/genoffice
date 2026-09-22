@@ -21,7 +21,7 @@
              │ postMessage / IPC（v1 envelope, nonce handshake, origin allowlist）
              ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│  apps/web-server  (Node 22 单进程, 546 channels, 22 routes)             │
+│  apps/web-server  (Node 22 单进程, 551 channels, 22 routes)             │
 │  ├─ /api/ipc/:channel     主 IPC dispatch（IPC handler registry）       │
 │  ├─ /api/v1/*             对外稳定 REST API（auth/files/ai/kb/webhooks）│
 │  ├─ /api/ai/stream        Agent Loop SSE（兼容桌面）                    │
@@ -180,7 +180,7 @@ apps/web-server/tests/  →  60 文件 / 478 测试 全部通过  (~28s wall)
 
 | 端点 | HTTP | 字节 | 备注 |
 |---|---|---|---|
-| `GET /api/v1/health` | 200 | 11 997 | 546 channels，公开 |
+| `GET /api/v1/health` | 200 | 11 997 | 551 channels，公开 |
 | `GET /api/v1/changelog` | 200 | 5 573 | 公开（按 §2.1.A） |
 | `GET /api/v1/files` | 401 | — | OAuth envelope，无 token 返标准 401 |
 | `GET /api/v1/ai/capabilities` | 401 | — | 同上 |
@@ -716,7 +716,7 @@ docs/
 │   ├── rest-api.md                   # 自动生成 from typedoc
 │   ├── sdk-typescript.md
 │   ├── postmessage-protocol.md
-│   ├── ipc-channels.md               # 546 channel 索引
+│   ├── ipc-channels.md               # 551 channel 索引
 │   └── ai-skills-protocol.md
 ├── skills/
 │   ├── official/
@@ -934,7 +934,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 
 ## 十一、最佳开放路径（v2 · 综合 §零 验证）
 
-> 本节是综合 §零 实地核查（22 167 行 web-server 源码 / 546 channels / 431 测试 / 8 端点 live 验证）后重写的开放路径，与 §十 形成"原则 + 战术"互补。
+> 本节是综合 §零 实地核查（22 167 行 web-server 源码 / 551 channels / 482 测试 / 8 端点 live 验证）后重写的开放路径，与 §十 形成"原则 + 战术"互补。
 
 ### 11.1 三层模型 ↔ 实装率（2026-09-22）
 
@@ -1063,7 +1063,7 @@ M6 (2027-Q4):       公开 marketplace + 开发者认证
 
 **测试增量**：52 文件 / 431 测试 → 55 文件 / 445 测试（+3 文件，+14 测试）。所有 5 个相关测试组（workbook-save / slides-save / html-save-atomic / new-blank-fallback / webhook-fires-on-save）继续 100% 绿。
 
-**Live webserver 复测**（`apps/web-server` bundle 在 PORT=18109）：5/5 端点正确状态码（health 200 / changelog 200 / embed 200 / channels 200 / files 401 gated），546 channels 不变。
+**Live webserver 复测**（`apps/web-server` bundle 在 PORT=18109）：5/5 端点正确状态码（health 200 / changelog 200 / embed 200 / channels 200 / files 401 gated），551 channels 不变。
 
 
 ### 11.8 本轮续作（v2 第 2 轮 commit，2026-09-22）
@@ -1802,7 +1802,7 @@ Test Files  1 passed (1)
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
-web-server bundle 28.5 MB / `health` 200 / 552 IPC channels / marketplace boot 日志 OK。
+web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
 新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
