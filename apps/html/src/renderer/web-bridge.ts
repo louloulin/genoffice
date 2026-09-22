@@ -18,6 +18,7 @@ import {
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
 import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
+import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
 import { createHtmlApi, createHtmlProjectApi } from '../shared/html-api-factory'
 import type { ExportDocxRequest, ExportPdfRequest, ExportHtmlRequest } from '../shared/ipc'
 
@@ -62,7 +63,33 @@ if (!isElectronRuntime()) {
    * commands that are pure browser operations — `openFileDialog` (file
    * input → base64 PickedFile[]) and `print`. App-specific commands that
    * need the live editor model are added here as the renderer wires them. */
-  installTextBufferSink()
+  installTextBufferSink({
+    sidebar: createSidebarRuntime({
+      // Lazy body-aside host: zero DOM cost until mountSidebar runs.
+      // Each app owns its sidebar chrome via app-specific CSS in
+      // apps/{app}/src/renderer/styles.css. The runtime also sets
+      // data-* attributes on the inner iframe for app-side hooks.
+      get host() {
+        let el = document.getElementById('genoffice-sidebar')
+        if (!el) {
+          el = document.createElement('aside')
+          el.id = 'genoffice-sidebar'
+          el.setAttribute('aria-label', 'GenOffice plugin panels')
+          el.style.position = 'fixed'
+          el.style.top = '0'
+          el.style.right = '0'
+          el.style.bottom = '0'
+          el.style.width = '320px'
+          el.style.background = 'var(--bg, #fff)'
+          el.style.borderLeft = '1px solid var(--border, #e0e0e0)'
+          el.style.zIndex = '1000'
+          el.style.display = 'none'
+          document.body.appendChild(el)
+        }
+        return el as unknown as Parameters<typeof createSidebarRuntime>[0]['host']
+      },
+    }),
+  })
   const transport = createHttpIpcTransport()
   // SAFETY: `window` has no `htmlApi` / `htmlFilesApi` / `htmlProjectApi`
   // in lib.dom. The bridge assigns those keys below and reads them back
