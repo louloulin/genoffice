@@ -205,3 +205,58 @@ export function handleChangelog(ctx: { request: IncomingMessage; response: Serve
   sendError(ctx.response, 404, 'changelog not found', 'NOT_FOUND', 'meta:changelog')
   return true
 }
+
+
+/**
+ * Public metadata endpoint — surfaces the implementation + protocol
+ * fingerprint so an integrator can probe a server before picking an
+ * SDK version to bundle. Public (no auth). Faster than /api/v1/health
+ * for clients that already know the API is reachable and only want the
+ * version + capability matrix.
+ *
+ * The body is intentionally small (no channel list — that lives at
+ * /api/v1/health). Used by the SDK smoke script to skip a stale-cache
+ * check before instantiating `createEditor()`.
+ *
+ * @route GET /api/v1/meta
+ * @summary Server metadata
+ * @scope —
+ * @errors —
+ * @public
+ */
+export function handleMeta(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
+  const usage = getUsageTotals()
+  const uptimeSec = (Date.now() - PROCESS_START_MS) / 1000
+  sendJson(ctx.response, 200, {
+    apiVersion: 'v1',
+    serverVersion: '0.8.0',
+    protocolVersion: 1,
+    minClientVersion: 1,
+    sdkVersion: '0.9.0-beta.1',
+    capabilities: [
+      'docs',
+      'sheets',
+      'slides',
+      'pdf',
+      'markdown',
+      'html',
+    ],
+    integrations: {
+      ai: true,
+      collab: true,
+      webhooks: true,
+      embed: true,
+      marketplace: true,
+    },
+    storage: {
+      backend: process.env.GENOFFICE_STORAGE ?? 'local',
+    },
+    sdk: {
+      usageSamples: usage.samples,
+      instances: usage.instances,
+      uptimeSeconds: Number(uptimeSec.toFixed(3)),
+    },
+    timestamp: new Date().toISOString(),
+  })
+  return true
+}

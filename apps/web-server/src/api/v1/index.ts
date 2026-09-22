@@ -36,7 +36,7 @@ import {
   handleFilesVersionsDelete,
 } from './versions'
 import { handleWebhooksDlq, handleWebhooksDlqEntry } from './webhooks-dlq'
-import { handleHealth, handleChangelog, handleMetrics } from './meta'
+import { handleHealth, handleChangelog, handleMetrics, handleMeta } from './meta'
 import { handleEmbedNonce, handleEmbedVerifyNonce, handleEmbedReleaseNonce } from './embed-nonce'
 
 export interface ApiV1Context {
@@ -62,6 +62,7 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
   if (pathname === '/api/v1/health' && method === 'GET') return handleHealth(ctx)
   if (pathname === '/api/v1/metrics' && method === 'GET') return handleMetrics(ctx)
   if (pathname === '/api/v1/changelog' && method === 'GET') return handleChangelog(ctx)
+  if (pathname === '/api/v1/meta' && method === 'GET') return handleMeta(ctx)
 
   // auth
   if (pathname === '/api/v1/auth/jwt' && method === 'POST') return handleAuthJwt(ctx)
