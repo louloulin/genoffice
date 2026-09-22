@@ -15,11 +15,15 @@
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
 import {
+  getSlideHidden,
+  getSlideNotes,
+  notesPathForSlide,
   openPptx,
   savePptx,
   type ElementClipboardItem,
   type OpenedPptx,
   type Slide,
+  type SlideDeck,
 } from '@genoffice/pptx-engine'
 
 const MAX_SLIDES_SESSIONS = 32
@@ -327,19 +331,120 @@ export function replaceSlidesSession(path: string, opened: OpenedPptx): void {
 /** Re-export so `slides:save` can serialise without re-importing. */
 export { openPptx, savePptx }
 
+/**
+ * Resolve the live read-model behind a get-* channel.
+ *
+ * Every read-only `slides:get-*` channel needs the same three things:
+ *  (a) the SSE session id (so we can find the path),
+ *  (b) the `SlidesSessionInfo` registered for that path,
+ *  (c) the live `OpenedPptx` (apply-txn mutates it in-place, so the
+ *      read model has to come from `session.opened.deck` rather than
+ *      a fresh `openPptx` — see sdk1 §11.42.3 about engine-side id
+ *      instability).
+ *
+ * Returns `null` for unknown paths so a renderer that hasn't called
+ * `slides:open-path` yet (or whose SSE session was evicted) gets the
+ * legacy fallback shape (empty array / default slide size / empty
+ * string) instead of a crash.
+ */
+function resolveSlidesReadModel(event: unknown): {
+  session: SlidesSessionInfo
+  opened: OpenedPptx
+  deck: SlideDeck
+} | null {
+  const sessionId = (event as { sessionId?: string } | null)?.sessionId
+  const path = getCurrentSlidesPath(sessionId)
+  if (!path) return null
+  const session = getSlidesSession(path)
+  if (!session?.opened) return null
+  return { session, opened: session.opened, deck: session.opened.deck }
+}
+
+/** EMU per CSS pixel at 96 DPI; pptx-engine stores dimensions in EMU. */
+const EMU_PER_PX = 9525
+
+/**
+ * Project a slide down to the small shape the renderer needs for the
+ * slide-strip / thumbnails. PowerPoint carries no canonical id we can
+ * trust across re-parse (see sdk1 §11.42.3), so we use the array
+ * index. `hidden` is included so the strip can grey out hidden slides
+ * (matches the desktop `getRenderSlides` projection in
+ * `apps/slides/src/main/slides-main.ts`).
+ */
+function projectRenderSlide(slide: Slide, archive: OpenedPptx['archive'], index: number): {
+  index: number
+  hidden: boolean
+  hasNotes: boolean
+  name: string
+} {
+  // Slide's authoritative `name` is `p:cSld@name` in the slide XML; the
+  // engine keeps that prefix in `slide.bodyPrefix`. We regex-extract
+  // rather than adding a getter so the projection stays allocation-free
+  // for the slide-strip render. Falls back to "Slide N" when the deck
+  // has no per-slide name (the common case).
+  const nameMatch = /<p:cSld[^>]*\bname="([^"]*)"/.exec(slide.bodyPrefix)
+  const name = nameMatch?.[1] || `Slide ${index + 1}`
+  return {
+    index,
+    hidden: getSlideHidden(slide),
+    hasNotes: notesPathForSlide(archive, slide.path) != null,
+    name,
+  }
+}
+
 export function registerSlidesStateHandlers(): void {
-  registerHandle('slides:get-render-slides', () => [])
+  // Real render-slides: project each slide to the small shape the
+  // renderer's slide-strip / thumbnails need. Returns [] when no
+  // session is bound (legacy fallback) so the strip stays empty rather
+  // than throwing. The projection uses the live deck, so a slide
+  // toggled hidden via setSlideHidden shows up here as hidden=true on
+  // the next call.
+  registerHandle('slides:get-render-slides', (event: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return []
+    return rm.deck.slides.map((s, i) => projectRenderSlide(s, rm.opened.archive, i))
+  })
   registerHandle('slides:get-animations', () => [])
   registerHandle('slides:get-chart-data', () => ({}))
   registerHandle('slides:get-comments', () => [])
   registerHandle('slides:get-header-footer', () => ({ enabled: false }))
   registerHandle('slides:get-layouts', () => [])
   registerHandle('slides:get-link', () => null)
-  registerHandle('slides:get-notes', () => '')
+  // Real notes: read the live notesSlide archive part (apply-txn with
+  // setSlideNotes mutates the same archive, so this picks up live edits
+  // without re-parsing). For an unknown SSE session or out-of-range
+  // slideIndex, return '' — same shape the renderer already tolerates.
+  registerHandle('slides:get-notes', (event: unknown, slideIndex: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return ''
+    if (typeof slideIndex !== 'number' || slideIndex < 0) return ''
+    const slide = rm.deck.slides[slideIndex]
+    if (!slide) return ''
+    try {
+      return getSlideNotes(rm.opened.archive, slide.path)
+    } catch {
+      // Malformed notesSlide XML (some authoring tools produce partial
+      // notes) — fail soft so a single bad slide doesn't break the
+      // entire notes pane.
+      return ''
+    }
+  })
   registerHandle('slides:get-sections', () => [])
   registerHandle('slides:get-shape-keys', () => [])
   registerHandle('slides:get-slide-links', () => [])
-  registerHandle('slides:get-slide-size', () => ({ width: 960, height: 540 }))
+  // Real slide-size: project the deck's EMU dimensions onto CSS pixels at
+  // 96 DPI (9525 EMU per px). The previous hardcoded 960x540 was wrong for
+  // any 4:3 / a4 / custom-size deck; the renderer's canvas would render
+  // at the wrong aspect ratio until it parsed the deck itself.
+  // For unknown paths (renderer hasn't called open-path yet, or the SSE
+  // session was evicted) keep returning the 16:9 fallback so the canvas
+  // paints *something* instead of 0x0.
+  registerHandle('slides:get-slide-size', (event: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return { width: 960, height: 540 }
+    const { cx, cy } = rm.deck.size
+    return { width: Math.round(cx / EMU_PER_PX), height: Math.round(cy / EMU_PER_PX) }
+  })
   registerHandle('slides:get-run-links', () => [])
   registerHandle('slides:has-slide-clipboard', () => false)
   registerHandle('slides:font-catalog', () => [])
