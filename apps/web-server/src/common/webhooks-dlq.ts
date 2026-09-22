@@ -19,12 +19,24 @@
  *     stays with `lastError` updated)
  *   - `drop one entry`    →  DELETE /api/v1/webhooks/dlq/:id
  *
- * The DLQ is process-local: a server restart clears it. This is the same
- * durability model as the in-memory nonce store (§11.26) and the version
- * history (`common/version-history.ts`); persistent DLQ would need a
- * durable store (Redis / Postgres) and is out of scope for this batch.
+ * Durability (sdk1.md §11.33.4 / §11.35.4 backlog, closed): the DLQ is
+ * now disk-backed. Every mutation (add / update / remove / clear) writes
+ * the queue atomically to `DATA_DIR/webhooks-dlq.json`; the file is
+ * loaded at module init so a server restart preserves dropped
+ * deliveries. This is the same storage model as `webhooks.json`
+ * (`common/webhooks-store.ts`) and `version-history.ts` — a single JSON
+ * document under `DATA_DIR`, no external dependency (Redis / Postgres
+ * would be overkill for a queue capped at 1024 entries).
+ *
+ * Set `GENOFFICE_DLQ_PERSIST=0` to disable persistence (used by tests
+ * that don't want disk writes to escape their TMP DATA_DIR; the load
+ * path is skipped too so a stale file can't leak in).
  */
 
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { atomicWriteJson } from './atomic'
+import { DATA_DIR } from './state'
 import { fireCallback, type WebhookDeliveryOptions } from './webhooks-store'
 
 export interface DeadLetterEntry {
@@ -103,8 +115,63 @@ function makeId(): string {
   return Buffer.from(bin, 'binary').toString('base64url')
 }
 
+const DLQ_FILE = join(DATA_DIR, 'webhooks-dlq.json')
+
+/** Persistence is on by default; tests can opt out via GENOFFICE_DLQ_PERSIST=0. */
+function persistenceEnabled(): boolean {
+  return process.env.GENOFFICE_DLQ_PERSIST !== '0'
+}
+
+/** Shape written to disk. Bump `version` if the schema ever changes. */
+interface DlqFileShape {
+  version: 1
+  entries: DeadLetterEntry[]
+}
+
+function readFromDisk(): DeadLetterEntry[] {
+  if (!persistenceEnabled()) return []
+  try {
+    if (!existsSync(DLQ_FILE)) return []
+    const parsed = JSON.parse(readFileSync(DLQ_FILE, 'utf8')) as DlqFileShape
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) return []
+    // Defensive filter: a hand-edited or partially-written file must not
+    // inject malformed entries that later crash the DLQ consumers.
+    return parsed.entries.filter(
+      (e): e is DeadLetterEntry =>
+        !!e &&
+        typeof e.id === 'string' &&
+        typeof e.url === 'string' &&
+        typeof e.event === 'string' &&
+        typeof e.body === 'string' &&
+        typeof e.droppedAt === 'number' &&
+        (e.reason === 'max_attempts' || e.reason === 'non_retryable_4xx'),
+    )
+  } catch {
+    // A corrupt file should not brick the server — log + start empty. The
+    // previous file (if any) stays on disk for manual recovery.
+    return []
+  }
+}
+
+function writeToDisk(entries: Map<string, DeadLetterEntry>): void {
+  if (!persistenceEnabled()) return
+  try {
+    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true })
+    const doc: DlqFileShape = { version: 1, entries: Array.from(entries.values()) }
+    atomicWriteJson(DLQ_FILE, doc)
+  } catch {
+    // Persistence is best-effort — a disk-full condition must not break the
+    // save pipeline that pushes to the DLQ. The in-memory copy stays
+    // authoritative for the running process; the next successful write
+    // brings the file back in sync.
+  }
+}
+
 const store: DeadLetterStore = (() => {
   const entries = new Map<string, DeadLetterEntry>()
+  // Hydrate from disk at module init. Insertion order matches the file's
+  // array order, so `list()` (reverse insertion) keeps newest-first.
+  for (const e of readFromDisk()) entries.set(e.id, e)
   return {
     size: () => entries.size,
     add(entry) {
@@ -120,6 +187,7 @@ const store: DeadLetterStore = (() => {
         if (oldest === undefined) break
         entries.delete(oldest)
       }
+      writeToDisk(entries)
       return id
     },
     get: (id) => entries.get(id) ?? null,
@@ -140,10 +208,18 @@ const store: DeadLetterStore = (() => {
       const existing = entries.get(id)
       if (!existing) return false
       entries.set(id, { ...existing, ...patch, id, droppedAt: existing.droppedAt })
+      writeToDisk(entries)
       return true
     },
-    remove: (id) => entries.delete(id),
-    clear: () => entries.clear(),
+    remove(id) {
+      const removed = entries.delete(id)
+      if (removed) writeToDisk(entries)
+      return removed
+    },
+    clear() {
+      entries.clear()
+      writeToDisk(entries)
+    },
   }
 })()
 
