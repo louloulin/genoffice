@@ -147,6 +147,23 @@ function warnOpFailed(channel: string, reason: string): void {
   process.stderr.write(`[slides] ${channel}: ${reason} (answering null)\n`)
 }
 
+/**
+ * Argument validation failed.
+ *
+ * Answers `null`, like every other failure in this file: the shapes these
+ * channels declare have no error variant, and `{ok:false}` is TRUTHY — the
+ * renderer would hand it to `applySlide` as if it were a page, which is the
+ * exact bug this module exists to remove. `null` makes the renderer's `if (r)`
+ * guard a no-op, so a malformed call leaves the document alone.
+ *
+ * Logged so a caller bug is still findable server-side, where a bare `null`
+ * would look identical to a legitimate no-op.
+ */
+function badArgs(message: string): null {
+  process.stderr.write(`[slides] ${message} (answering null)\n`)
+  return null
+}
+
 /** The re-rendered page after a successful `commit`, or null. */
 function commitSlide(
   event: unknown,
@@ -258,7 +275,7 @@ const EMU_PER_PT = 12700
 function applyLegacyMutation(
   event: unknown,
   op: Op,
-): { slides: unknown[]; index: number } | { ok: false; error: string } | null {
+): { slides: unknown[]; index: number } | null {
   const session = legacySession(event)
   if (!session) return null
   pushSlidesHistory(session)
@@ -266,7 +283,7 @@ function applyLegacyMutation(
   if (!r.applied) {
     session.undoStack.pop()
     const first = r.failures?.[0]
-    return { ok: false, error: first?.error ?? `${op.op}: op failed` }
+    return badArgs(`${op.op}: ${first?.error ?? 'op failed'}`)
   }
   setSlidesDirty(session.path, true)
   const slides = buildWebRenderSlides(session.opened, session.fitWidthPx)
@@ -353,14 +370,14 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:add-blank-slide', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { sourceIndex?: number; fitWidthPx?: number }
     if (typeof o.sourceIndex !== 'number') {
-      return { ok: false, error: 'slides:add-blank-slide requires { sourceIndex }' }
+      return badArgs('slides:add-blank-slide requires { sourceIndex }')
     }
     return applyLegacyMutation(event, { op: 'addBlankSlide', target: { slide: o.sourceIndex } })
   })
   registerHandle('slides:add-slide', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { sourceIndex?: number; clearText?: boolean }
     if (typeof o.sourceIndex !== 'number') {
-      return { ok: false, error: 'slides:add-slide requires { sourceIndex }' }
+      return badArgs('slides:add-slide requires { sourceIndex }')
     }
     return applyLegacyMutation(event, {
       op: 'duplicateSlide',
@@ -371,7 +388,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:add-slide-with-layout', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { sourceIndex?: number; layoutPath?: string }
     if (typeof o.sourceIndex !== 'number') {
-      return { ok: false, error: 'slides:add-slide-with-layout requires { sourceIndex }' }
+      return badArgs('slides:add-slide-with-layout requires { sourceIndex }')
     }
     // A layout-less request is the same operation as a blank slide; the op is
     // named for the insert point, so slide it in after the current one.
@@ -386,7 +403,7 @@ export function registerSlidesElementHandlers(): void {
   })
   registerHandle('slides:delete-slide', (event: unknown, slideIndex: unknown) => {
     if (typeof slideIndex !== 'number') {
-      return { ok: false, error: 'slides:delete-slide requires a slide index' }
+      return badArgs('slides:delete-slide requires a slide index')
     }
     // The renderer replaces its whole list with the response, and refuses to
     // delete the last slide (`else if (ctx.slides.length <= 1)`), so a
@@ -396,7 +413,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:move-slide', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { fromIndex?: number; toIndex?: number }
     if (typeof o.fromIndex !== 'number' || typeof o.toIndex !== 'number') {
-      return { ok: false, error: 'slides:move-slide requires { fromIndex, toIndex }' }
+      return badArgs('slides:move-slide requires { fromIndex, toIndex }')
     }
     return applyLegacyMutation(event, {
       op: 'moveSlide',
@@ -412,7 +429,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:add-element', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown>
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-element requires { slideIndex, ... }' }
+      return badArgs('slides:add-element requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -459,7 +476,7 @@ export function registerSlidesElementHandlers(): void {
       hPx?: number
     }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-table requires { slideIndex, ... }' }
+      return badArgs('slides:add-table requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -493,7 +510,7 @@ export function registerSlidesElementHandlers(): void {
       hPx?: number
     }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-chart requires { slideIndex, ... }' }
+      return badArgs('slides:add-chart requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -530,7 +547,7 @@ export function registerSlidesElementHandlers(): void {
       hPx?: number
     }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-smartart requires { slideIndex, ... }' }
+      return badArgs('slides:add-smartart requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -564,7 +581,7 @@ export function registerSlidesElementHandlers(): void {
       hPx?: number
     }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-image-bytes requires { slideIndex, ... }' }
+      return badArgs('slides:add-image-bytes requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -593,7 +610,7 @@ export function registerSlidesElementHandlers(): void {
       fitWidthPx?: number
     }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-media-bytes requires { slideIndex, ... }' }
+      return badArgs('slides:add-media-bytes requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -626,7 +643,7 @@ export function registerSlidesElementHandlers(): void {
       hPx?: number
     }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-ink requires { slideIndex, ... }' }
+      return badArgs('slides:add-ink requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -660,7 +677,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:add-text', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-text requires { slideIndex, ... }' }
+      return badArgs('slides:add-text requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -692,7 +709,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-text', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; paragraphs?: unknown; groupId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-text requires { slideIndex, sourceId, paragraphs }' }
+      return badArgs('slides:edit-text requires { slideIndex, sourceId, paragraphs }')
     }
     return commitSlide(
       event,
@@ -709,7 +726,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-fill', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; fill?: unknown; groupId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-fill requires { slideIndex, sourceId, fill }' }
+      return badArgs('slides:edit-fill requires { slideIndex, sourceId, fill }')
     }
     return commitSlide(
       event,
@@ -731,7 +748,7 @@ export function registerSlidesElementHandlers(): void {
       groupId?: string
     }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-stroke requires { slideIndex, sourceId, stroke }' }
+      return badArgs('slides:edit-stroke requires { slideIndex, sourceId, stroke }')
     }
     return commitSlide(
       event,
@@ -753,7 +770,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-background', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; fitWidthPx?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:edit-background requires { slideIndex, ... }' }
+      return badArgs('slides:edit-background requires { slideIndex, ... }')
     }
     return commitAllSlides(
       event,
@@ -763,7 +780,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-chart', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-chart requires { slideIndex, sourceId, ... }' }
+      return badArgs('slides:edit-chart requires { slideIndex, sourceId, ... }')
     }
     return commitCreated(
       event,
@@ -779,7 +796,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-connector-endpoints', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-connector-endpoints requires { slideIndex, sourceId, ... }' }
+      return badArgs('slides:edit-connector-endpoints requires { slideIndex, sourceId, ... }')
     }
     return commitSlide(
       event,
@@ -801,7 +818,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-image-fill', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; targets?: unknown }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:edit-image-fill requires { slideIndex, targets }' }
+      return badArgs('slides:edit-image-fill requires { slideIndex, targets }')
     }
     return commitSlide(
       event,
@@ -813,7 +830,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-picture-opacity', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-picture-opacity requires { slideIndex, sourceId, opacity }' }
+      return badArgs('slides:edit-picture-opacity requires { slideIndex, sourceId, opacity }')
     }
     return commitSlide(
       event,
@@ -829,7 +846,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-picture-src-rect', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-picture-src-rect requires { slideIndex, sourceId, srcRect }' }
+      return badArgs('slides:edit-picture-src-rect requires { slideIndex, sourceId, srcRect }')
     }
     return commitSlide(
       event,
@@ -856,7 +873,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-table-cell', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-table-cell requires { slideIndex, sourceId, row, col }' }
+      return badArgs('slides:edit-table-cell requires { slideIndex, sourceId, row, col }')
     }
     return commitSlide(
       event,
@@ -872,7 +889,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-table-style', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-table-style requires { slideIndex, sourceId, ... }' }
+      return badArgs('slides:edit-table-style requires { slideIndex, sourceId, ... }')
     }
     return commitCreated(
       event,
@@ -888,7 +905,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:edit-transform', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-transform requires { slideIndex, sourceId, ... }' }
+      return badArgs('slides:edit-transform requires { slideIndex, sourceId, ... }')
     }
     return commitSlide(
       event,
@@ -920,7 +937,7 @@ export function registerSlidesElementHandlers(): void {
       items?: Array<{ sourceId: string; xPx: number; yPx: number; wPx: number; hPx: number; rotationDeg: number }>
     }
     if (typeof o.slideIndex !== 'number' || !Array.isArray(o.items)) {
-      return { ok: false, error: 'slides:batch-edit-transform requires { slideIndex, items }' }
+      return badArgs('slides:batch-edit-transform requires { slideIndex, items }')
     }
     // One atomic transaction for the whole selection: align/distribute is one
     // undo step, and the executor's plan step reproduces the legacy
@@ -949,7 +966,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:delete-element', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:delete-element requires { slideIndex, sourceId }' }
+      return badArgs('slides:delete-element requires { slideIndex, sourceId }')
     }
     return commitSlide(
       event,
@@ -970,7 +987,7 @@ export function registerSlidesElementHandlers(): void {
       fitWidthPx?: number
     }
     if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
-      return { ok: false, error: 'slides:duplicate-elements requires { slideIndex, sourceIds }' }
+      return badArgs('slides:duplicate-elements requires { slideIndex, sourceIds }')
     }
     return commitPasted(
       event,
@@ -998,7 +1015,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:flip-elements', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceIds?: string[] }
     if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
-      return { ok: false, error: 'slides:flip-elements requires { slideIndex, sourceIds, axis }' }
+      return badArgs('slides:flip-elements requires { slideIndex, sourceIds, axis }')
     }
     return commitSlide(
       event,
@@ -1016,7 +1033,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:reorder-element', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:reorder-element requires { slideIndex, sourceId, dir }' }
+      return badArgs('slides:reorder-element requires { slideIndex, sourceId, dir }')
     }
     return commitSlide(
       event,
@@ -1032,7 +1049,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:insert-image', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; fitWidthPx?: number; ext?: string }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:insert-image requires { slideIndex, ... }' }
+      return badArgs('slides:insert-image requires { slideIndex, ... }')
     }
     return commitCreated(
       event,
@@ -1058,7 +1075,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-element-font', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceIds?: string[] }
     if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
-      return { ok: false, error: 'slides:set-element-font requires { slideIndex, sourceIds, ... }' }
+      return badArgs('slides:set-element-font requires { slideIndex, sourceIds, ... }')
     }
     // One op per element, `per_op` isolation: an image in the selection has no
     // text and is skipped, while the text elements still change (the desktop
@@ -1090,7 +1107,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-element-paragraph-format', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceIds?: string[] }
     if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
-      return { ok: false, error: 'slides:set-element-paragraph-format requires { slideIndex, sourceIds, ... }' }
+      return badArgs('slides:set-element-paragraph-format requires { slideIndex, sourceIds, ... }')
     }
     return commitSlide(
       event,
@@ -1109,7 +1126,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-table-cell-anchor', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:set-table-cell-anchor requires { slideIndex, sourceId, row, col }' }
+      return badArgs('slides:set-table-cell-anchor requires { slideIndex, sourceId, row, col }')
     }
     return commitSlide(
       event,
@@ -1125,7 +1142,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-table-col-width', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:set-table-col-width requires { slideIndex, sourceId, col, wPx }' }
+      return badArgs('slides:set-table-col-width requires { slideIndex, sourceId, col, wPx }')
     }
     return commitSlide(
       event,
@@ -1145,7 +1162,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-table-row-height', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:set-table-row-height requires { slideIndex, sourceId, row, hPx }' }
+      return badArgs('slides:set-table-row-height requires { slideIndex, sourceId, row, hPx }')
     }
     return commitSlide(
       event,
@@ -1165,7 +1182,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:table-merge', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:table-merge requires { slideIndex, sourceId, kind, row, col }' }
+      return badArgs('slides:table-merge requires { slideIndex, sourceId, kind, row, col }')
     }
     return commitCreated(
       event,
@@ -1181,7 +1198,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:replace-picture-bytes', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:replace-picture-bytes requires { slideIndex, sourceId, base64, ext }' }
+      return badArgs('slides:replace-picture-bytes requires { slideIndex, sourceId, base64, ext }')
     }
     return commitSlide(
       event,
@@ -1197,7 +1214,9 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:apply-edit-script', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { ops?: unknown[] }
     if (!Array.isArray(o.ops) || o.ops.length === 0) {
-      return { ok: false, error: 'slides:apply-edit-script requires a non-empty { ops } array' }
+      // This channel is the one exception: it declares `{ error: string }`, so
+    // a structured failure is in-contract (the skill consumer reads `.error`).
+    return { error: 'slides:apply-edit-script requires a non-empty { ops } array' }
     }
     const r = commit(
       event,
@@ -1253,7 +1272,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-advance-times', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { times?: Array<{ slideIndex: number; ms: number | null }> }
     if (!Array.isArray(o.times)) {
-      return { ok: false, error: 'slides:set-advance-times requires { times }' }
+      return badArgs('slides:set-advance-times requires { times }')
     }
     return commitBool(
       event,
@@ -1269,7 +1288,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-animations', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:set-animations requires { slideIndex, items }' }
+      return badArgs('slides:set-animations requires { slideIndex, items }')
     }
     return commitBool(
       event,
@@ -1285,7 +1304,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-hidden', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:set-hidden requires { slideIndex, hidden }' }
+      return badArgs('slides:set-hidden requires { slideIndex, hidden }')
     }
     return commitSlide(
       event,
@@ -1302,7 +1321,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-link', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:set-link requires { slideIndex, sourceId, target }' }
+      return badArgs('slides:set-link requires { slideIndex, sourceId, target }')
     }
     return commitSlide(
       event,
@@ -1319,7 +1338,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-notes', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:set-notes requires { slideIndex, text }' }
+      return badArgs('slides:set-notes requires { slideIndex, text }')
     }
     return commitBool(
       event,
@@ -1335,7 +1354,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-slide-layout', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:set-slide-layout requires { slideIndex }' }
+      return badArgs('slides:set-slide-layout requires { slideIndex }')
     }
     return commitSlide(
       event,
@@ -1352,7 +1371,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-slide-size', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { cx?: number; cy?: number }
     if (typeof o.cx !== 'number' || typeof o.cy !== 'number') {
-      return { ok: false, error: 'slides:set-slide-size requires { cx, cy }' }
+      return badArgs('slides:set-slide-size requires { cx, cy }')
     }
     return commitAllSlides(
       event,
@@ -1362,7 +1381,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:set-transition', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:set-transition requires { slideIndex, kind }' }
+      return badArgs('slides:set-transition requires { slideIndex, kind }')
     }
     return commitBool(
       event,
@@ -1405,7 +1424,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:paste-elements', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; dxPx?: number; dyPx?: number; fitWidthPx?: number }
     if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:paste-elements requires { slideIndex }' }
+      return badArgs('slides:paste-elements requires { slideIndex }')
     }
     return commitPasted(event, 'slides:paste-elements', o.slideIndex, (session) => {
       const items = getSlidesElementClipboard()
@@ -1417,7 +1436,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:group-elements', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceIds?: string[] }
     if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
-      return { ok: false, error: 'slides:group-elements requires { slideIndex, sourceIds }' }
+      return badArgs('slides:group-elements requires { slideIndex, sourceIds }')
     }
     const session = legacySession(event)
     if (!session) {
@@ -1444,7 +1463,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:ungroup-element', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:ungroup-element requires { slideIndex, sourceId }' }
+      return badArgs('slides:ungroup-element requires { slideIndex, sourceId }')
     }
     return commitSlide(
       event,
@@ -1512,7 +1531,7 @@ export function registerSlidesElementHandlers(): void {
    * resolvers; the response is always the full section list. */
   registerHandle('slides:set-sections', (event: unknown, sections: unknown) => {
     if (!Array.isArray(sections)) {
-      return { ok: false, error: 'slides:set-sections requires an array' }
+      return badArgs('slides:set-sections requires an array')
     }
     const r = commit(
       event,
@@ -1575,7 +1594,7 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:add-comment', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; text?: string; author?: string }
     if (typeof o.slideIndex !== 'number' || typeof o.text !== 'string') {
-      return { ok: false, error: 'slides:add-comment requires { slideIndex, text }' }
+      return badArgs('slides:add-comment requires { slideIndex, text }')
     }
     const r = commit(
       event,
@@ -1599,7 +1618,7 @@ export function registerSlidesElementHandlers(): void {
       typeof o.authorId !== 'number' ||
       typeof o.idx !== 'number'
     ) {
-      return { ok: false, error: 'slides:delete-comment requires { slideIndex, authorId, idx }' }
+      return badArgs('slides:delete-comment requires { slideIndex, authorId, idx }')
     }
     const r = commit(
       event,

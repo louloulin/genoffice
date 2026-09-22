@@ -493,4 +493,68 @@ describe.skipIf(skip)('slides legacy lifecycle channels really mutate the deck',
     ])
     expect(source).toContain('acknowledgedOnly: true')
   })
+
+  /* ── the truthy-failure trap ─────────────────────────────────────────────
+   * This is the bug class the whole file exists for, so it gets its own
+   * source-level guard. The renderer does
+   *
+   *     .then((r) => r && applySlide(current, r))
+   *
+   * for the `RenderSlide | null` channels, and truthiness checks for the
+   * `boolean` / `number` ones. `{ok:false}` is TRUTHY, so returning it as a
+   * *failure* is indistinguishable from success: the renderer replaces the
+   * page with an object that has no `nodes`, or reports "notes saved" for a
+   * write that never happened. That is precisely what `{ok:true}` did before.
+   *
+   * Every failure in `elements.ts` must therefore be `null` (or, for the one
+   * channel that declares it, `{error}`). A future contributor adding
+   * `{ok:false}` for an arg-validation branch would silently reintroduce the
+   * original bug, so the source scan is the enforcement, not the convention.
+   */
+  it('no element channel answers a truthy {ok:false} failure', async () => {
+    const fs = await import('node:fs')
+    const source = fs.readFileSync(join(pkgRoot, 'src', 'slides', 'elements.ts'), 'utf8')
+    // `apply-edit-script` is the sole exception: its contract declares
+    // `{ slide } | { error: string } | null`, and the AI skill consumer reads
+    // `.error` (see slides-skill.ts). Any other `error:` object would be a
+    // shape the renderer cannot branch on.
+    // Strip comments first: the file documents this very trap in prose
+    // ("`{ok:false}` is TRUTHY…"), and matching that prose would make the
+    // guard fail on its own explanation.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n')
+    const offenders = [...code.matchAll(/\{\s*ok:\s*false/g)].map((m) => m[0])
+    expect(offenders).toEqual([])
+    expect(source).toContain("return { error: 'slides:apply-edit-script")
+  })
+
+  it('every element-channel failure path logs, so a null is never silent', async () => {
+    // `null` is the right answer for the renderer, but a bare `null` on the
+    // server is indistinguishable from a legitimate no-op. Every failure
+    // helper must write to stderr.
+    const fs = await import('node:fs')
+    const source = fs.readFileSync(join(pkgRoot, 'src', 'slides', 'elements.ts'), 'utf8')
+    for (const helper of ['warnNoSession', 'warnOpFailed', 'badArgs']) {
+      expect(source).toContain(`function ${helper}(`)
+      expect(source).toContain('process.stderr.write')
+    }
+    // The arg-validation helper must actually be the one that returns null.
+    expect(source).toMatch(/function badArgs\([^)]*\):\s*null/)
+  })
+
+  it('a malformed call leaves the deck untouched instead of corrupting the page', async () => {
+    // End-to-end proof of the guard above: send an element channel the args it
+    // rejects, and confirm the answer is `null` — not a truthy object the
+    // renderer would feed to `applySlide`.
+    deck = await freshDeck('bad-args')
+    const r = await invoke('slides:delete-element', [{ slideIndex: 0 }])
+    expect(r.status).toBe(200)
+    expect(unwrap(r.body)).toBeNull()
+
+    const bad = await invoke('slides:set-notes', [{ slideIndex: 0 }])
+    expect(unwrap(bad.body)).toBe(false)
+  })
 })
