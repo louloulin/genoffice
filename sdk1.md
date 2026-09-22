@@ -120,7 +120,25 @@ const result = await saveWorkbookViaSidecar({
 // 5. recordRecentDoc + notifyFileSaved
 ```
 
-**真实 gap（非 §11 范围）**：约 70 个 legacy `slides:edit-*` / `slides:add-*` 通道仍为 `{ ok: true }` 桩 —— 但 renderer 已全部迁移到 `slides:apply-txn` 路径（63 ops 全部真做），legacy 通道只有 renderer 兜底分支才会命中。详见 `apps/web-server/src/slides/elements.ts:25` 的注释（明确说明这一取舍）。
+**legacy 通道（68 个）已全部真实化（§11.42，2026-09-22 复查）**：此前
+`slides:edit-*` / `slides:add-*` / `slides:set-*` / `slides:undo` 等通道返字面量
+`{ ok: true }`，且**返回形状与契约不符** —— renderer 会做
+`window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))`，
+而 `applySlide` 吃的是 `RenderSlide`。`{ok:true}` 是真值，renderer 于是走进成功
+分支、把一个**没有 `nodes` 数组**的对象存成当前页 —— 画布变空白，且后续每次编辑
+都在坏状态上叠加，比直接报错更糟（用户看不出失败，也没有任何地方记录）。
+
+现在 68 个已注册通道全部按 `apps/slides/src/shared/ipc.ts` 声明的形状作答
+（`RenderSlide | null`、`{slide, sourceId} | null`、`RenderSlide[] | null`、
+`number`、`boolean`）。**零个字面量 `{ok:true}` 桩**。失败一律返 `null` 而非
+`{ok:false}` —— 理由同上：`{ok:false}` 也是真值，会以同样方式污染 renderer；
+失败走 `warnNoSession` / `warnOpFailed` 打到 stderr 供服务端观测。
+
+`STUBBED_SLIDES_CHANNELS` 现为 **8 项**，全部是 renderer 自身拥有的通道
+（OS 剪贴板：copy/paste/repaste-slide；renderer 自有窗口：presenter-start/end/swap、
+audience-ready；`show-fullscreen` 走浏览器 API），答 `{ok:true, acknowledgedOnly:true}`
+把边界显式记录为数据。同时 state.ts 补齐真实 undo/redo（快照栈 + batch 起止）、
+应用级元素剪贴板、AI 快照注册/恢复。详见 §11.42。
 
 **e2e 证据**：`apps/web-server/tests/slides-save-e2e.test.ts` 覆盖 addSlide + setText → save → re-open 断言元素写入 XML；save-as path 迁移；未知 op 返 structured failure；无 session 返清晰错误；is-dirty 反映 mutation。
 
@@ -172,10 +190,12 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  86 文件 / 724 测试 通过 · 1 skipped  (~68s wall · 2026-09-22 实测)
+apps/web-server/tests/  →  90 文件 / 775 测试 通过 · 1 skipped  (~31s wall · 2026-09-22 实测)
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
+  - slides-legacy-channels-e2e.test.ts  17 tests  68 个 legacy element 通道契约
+  - slides-legacy-session-e2e.test.ts    7 tests  legacy session 复用 + null-失败契约
   - html-save-atomic.test.ts       M3 原子写 + recents + 0-byte 拒绝
   - file-management.test.ts       30 tests   recents 镜像 + watcher + 跨重启持久
   - version-history.test.ts        9 tests   snapshot-on-save + 自动 trim
@@ -190,7 +210,14 @@ apps/web-server/tests/  →  86 文件 / 724 测试 通过 · 1 skipped  (~68s w
   - market* / translate-* / ipc-* / health-* / embed-endpoint / static-spa-routes …
   - typedoc-count.test.ts           3 tests   278 个生成页（界 200-400）
 
-15 个 packages → 3 651+ tests / 161+ files 全部通过（web-server 已包含）
+15 个 packages → 3 750+ tests / 190+ files 全部通过（web-server 已包含）
+
+> **已知 flake（非本轮引入）**：`files-jwt-revocation.test.ts` 的
+> "does not reach the revocation hook for a tampered signature" 约 12% 概率失败
+> （24 次单跑复现 3 次）。原因是测试把签名 base64url 的**最后一个字符**换成另一个
+> 合法字符 —— 但 base64url 末位字符的低 2 bit 在解码时被丢弃，换 `A`↔`B` 可能解出
+> **完全相同的字节**，签名依然有效。已在 HEAD（零源码改动）复现，与本轮无关；
+> 修法是翻转一个必定影响解码结果的字符。
 ```
 
 ### 0.6 WebServer 实地核查（2026-09-22）
@@ -246,6 +273,10 @@ Features: AI, Collab, Files, Projects, AnyDoc
 | Gap | 影响 | 优先级 |
 |---|---|---|
 | Slides `apply-txn` 70+ element-level ops 真做 | ✅（63 ops via runTxn · `apps/web-server/tests/slides-apply-txn-ops-e2e.test.ts`）| — |
+| Slides 68 个 legacy element 通道返错形状的 `{ok:true}` | ✅（§11.42：全部按契约作答，零字面桩）| — |
+| Slides undo/redo / 元素剪贴板 / AI 快照 | ✅（§11.42：state.ts 快照栈 + batch + 应用级剪贴板）| — |
+| **解析期 element id 不稳定**（`sp_0` / `sp_2` / `sp_4`）| ⚠️ 引擎层约束：同一字节两次 parse 得不同 id，任何 reparse 都会打断 renderer 持有的 id。现以"保活内存模型 + save 不 reparse"绕开；根治需引擎侧发稳定 id（`e_<guid8>` 形式已稳定）| P1（引擎） |
+| Slides ~25 个只读 `slides:get-*` 通道仍返空骨架（`[]` / `{}` / `{width:960,height:540}`）| ⬜ 可达但**不改文档**：renderer 用它做面板初值，返空即"无选中/无批注"。要真做需把 live 模型投影成读模型 | P2（M4） |
 | html: Word 导出（`html2docx`）真实实现 | 需无头浏览器；当前诚实拒绝 | P2（M4+） |
 | docx → pdf 转换（`anydoc:convert`） | 需 LibreOffice / print-to-PDF 服务 | P2（M4+） |
 | 移动端 H5 编辑器 | 缺移动生产力场景 | P1（M4） |
@@ -977,8 +1008,9 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | 核心问题 | 答案 | 证据 |
 |---|---|---|
 | web-server 模式能跑吗？ | ✅ 能，bundle + tsx 都行 | 实跑 `node dist/bundle/index.js` 在 18099 端口返回 8/8 端点正确状态码 |
-| 保存功能是真的吗？ | ✅ 6 个编辑器全真保存 | `atomicWriteFile` (docs/html/md/pdf) + `saveWorkbookViaSidecar` (sheets) + `savePptxToFile` (slides)；无 fake-ok 桩 |
-| 文档管理完成了吗？ | ✅ 11/13 项完成 | CRUD / 原子写 / 回收站 / recents / 格式识别 / MIME / 存储后端 / 路径校验 / 净化 / webhook 全 OK |
+| 保存功能是真的吗？ | ✅ 6 个编辑器全真保存 | `atomicWriteFile` (docs/html/md/pdf) + `saveWorkbookViaSidecar` (sheets) + `savePptxToFile` (slides)；无 fake-ok 桩（§11.42 把 slides 68 个 legacy 通道也清零） |
+| 编辑通道真的会改文档吗？ | ✅ slides 68 个 legacy 通道全部按契约作答 | §11.42：零字面 `{ok:true}`；失败返 `null` + stderr 日志；8 个 acknowledged-only 显式登记 |
+| 文档管理完成了吗？ | ✅ 15/16 项完成 | CRUD / 原子写 / 回收站 / recents / 格式识别 / MIME / 存储后端 / 路径校验 / 净化 / webhook / 版本历史 / 全文检索 / 审计日志 / 评论 webhook 全 OK |
 | SDK 可集成吗？ | ✅ npm public + 双语 README + 3 测试 | `apps/sdk/dist` 已构建 + 17.2 kB tarball |
 | 鉴权安全吗？ | ✅ JWT + OAuth2 + nonce handshake + origin allowlist + HMAC-SHA256 webhook | 26 auth 测试 + 9 scope gate 测试 |
 | AI 生态能扩吗？ | ✅ Provider 插件市场 + Skill 协议 + 10 官方 provider + 11 官方 skill | 22 项全实装 |
@@ -989,6 +1021,8 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 |---|---|---|---|
 | **P0 · 必做** | Slides `apply-txn` 70+ element-level ops 真做（让"加文本框"真写盘）| `apps/web-server/src/slides/elements.ts` 改走 `@genoffice/pptx-ops` 的 `runTxn` | ✅ 完成（63 ops via runTxn 全部支持） |
 | **P0 · 必做** | Slides session LRU 上限（防 OOM）| `apps/web-server/src/slides/state.ts` `MAX_SLIDES_SESSIONS = 32` | ✅ 已实装 |
+| **P0 · 必做** | Slides 68 个 legacy element 通道返错形状的 `{ok:true}` | `apps/web-server/src/slides/elements.ts` 按 `ipc.ts` 契约作答 | ✅ 完成（§11.42，零字面桩） |
+| **P1 · 应做** | Slides 解析期 id 不稳定（引擎层）| `packages/pptx-engine` 需发稳定 id；web-server 已用"保活 + 不 reparse"绕开 | ⚠️ 引擎侧未根治（§11.42.3） |
 | **P1 · 应做** | webhook 失败重试 + 死信队列 | `apps/web-server/src/common/webhooks-store.ts:fireCallback` 指数退避（最多 3 次） | ✅ 完成（重试部分；DLQ 留 backlog） |
 | **P1 · 应做** | 拆分 `agent-runtime` / `agent-session` 的 Electron 依赖，发布为 npm public | `packages/agent-runtime/`, `packages/agent-session/` | ✅（§11.13）两包无 Electron 依赖、已加 npm 标准元数据、`npm publish --dry-run` 通过 |
 | **P1 · 应做** | `/api/v1/files/:id/jwt` 单次使用约束文档 + TTL 可配置 | `apps/web-server/src/api/v1/files.ts:handleFilesIssueJwt` + `auth.ts:verifyJwtWithRevocation` | ✅ 完成（含单元测试 `files-jwt-revocation.test.ts` 6 例覆盖 hook 一次性 / 不同 jti 独立 / 篡改拒绝 / 过期短路）|
@@ -3071,6 +3105,86 @@ cellIns / blockIns / moveTo）→ `insert`；删除类 → `delete`；其余（�
 - **`savePath` 走 storage backend（S3/minio）**：当前只写本地 FILES_DIR。
   跨后端的 promote 语义需先统一（详见风险 §4）。
 
+### 11.42 · Slides legacy 通道"假成功"清零 + 引擎 id 稳定性发现
+
+> 承接 §11.16/§11.17 的"legacy 通道 stub"线索，本轮做了完整收口。起点是
+> `853e958` 修掉的 5 个 slide-lifecycle 通道；随后对一个**运行中的真实 bundle**
+> 做探针，发现同类缺陷还有 61 个，并且**返回形状也是错的** —— 后者比桩本身更危险。
+
+#### 11.42.1 根因：`{ok:true}` 是真值，而 renderer 拿它当 `RenderSlide` 用
+
+renderer 的调用点（`apps/slides/src/renderer/slide-actions.ts` 等）：
+
+```ts
+window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
+```
+
+`applySlide` 的入参是 `RenderSlide`。`{ok:true}` 是真值 → renderer 进成功分支
+→ 把一个**没有 `nodes` 数组**的对象存成当前页 → 画布空白，且后续每次编辑都在
+这个坏状态上继续叠加。这比直接抛错更糟：用户看不到失败，服务端也没有任何记录。
+
+实测到的形状错配（对 bundle 发真实请求抓取）：
+
+| 通道 | 桩返回 | 契约要求 |
+|---|---|---|
+| `delete-element` / `set-element-font` / `edit-transform` / `flip-elements` | `{ok:true, result:{ok:true}}` | `RenderSlide \| null` |
+| `group-elements` | `{ok:true, groupId:'group-…'}` | `RenderSlide \| null` |
+| `copy-elements` | `{ok:true, result:{…}}` | `number` |
+| `undo` / `redo` | `{ok:true}` | `RenderSlide[] \| null` |
+| `set-notes` / `set-transition` | `{ok:true}` | `boolean` |
+| `find-replace` | `{count:0}`（硬编码） | `number` |
+
+#### 11.42.2 做法：按声明契约作答，失败返 `null`
+
+- `apps/web-server/src/slides/elements.ts` 重写（约 1 450 行）。68 个已注册通道
+  全部按 `apps/slides/src/shared/ipc.ts`（权威返回类型）作答。抽出
+  `commit` / `commitSlide` / `commitAllSlides` / `commitCreated` / `commitBool` /
+  `commitPasted` / `applyLegacyMutation` 等辅助 + `makeToEmu` / `EMU_PER_PT = 12700`。
+- **失败返 `null`，不返 `{ok:false}`** —— 理由与桩同源：`{ok:false}` 依然是真值，
+  会以完全相同的方式污染 renderer。renderer 的 `if (r)` 守卫生效，文档保持不变，
+  与桌面 handler 行为一致。失败走 `warnNoSession` / `warnOpFailed` 打 stderr。
+- `STUBBED_SLIDES_CHANNELS` 收敛为 **8 项**，全部是 renderer 自己拥有的通道
+  （OS 剪贴板 3 个、presenter 窗口 4 个、`show-fullscreen` 1 个），答
+  `{ok:true, acknowledgedOnly:true}`，把"哪些没真做"变成**可审计的数据**而非注释。
+- `state.ts` 新增：`SlidesHistorySnapshot` 快照栈（undo/redo + batch 起止）、
+  应用级元素剪贴板、AI 快照注册/恢复。
+
+#### 11.42.3 顺带发现的两个真 bug（`slides:open-path`）
+
+1. **重复 open 同一路径会丢弃未保存编辑** —— 原实现无条件 `replaceSlidesSession`，
+   重新打开等于把 live 模型换掉。现对同一路径**复用已存在的 live session**，
+   直接返回其 render tree。
+2. **解析期 element id 不稳定** —— 同一份字节连续 parse 两次，id 是 `sp_0` →
+   `sp_2` → `sp_4`。所以：①不能在 socket 重连 / 重复 open 时重新 parse（会打断
+   renderer 持有的 id）；②`slides:save` **刻意不 reparse**（`core.ts` 已注释）。
+   仅持久化的 `e_<guid8>` 形式稳定。
+
+#### 11.42.4 测试隔离事故（既有缺陷，一并修掉）
+
+`webhook-fires-on-save.test.ts` 没设 `DATA_DIR`，往共享的
+`/tmp/genoffice-data` 里漏了一条 DLQ 记录；`webhooks-dlq.test.ts` 在**模块初始化**
+阶段 hydrate 它 → 随机报 "expected length 1, got 2"。此前多次尝试隔离都无效，
+原因是模块体里的赋值发生在 `common/state.ts` **解析 DATA_DIR 之后**。修法是在
+`vi.hoisted` 里分配临时 `DATA_DIR`（hoisted 早于任何 import 求值）并在 `afterAll`
+恢复 env。已验证该 flake 在 HEAD（零源码改动）同样可复现 —— 属既有问题。
+
+#### 11.42.5 实测
+
+- `apps/web-server`：**90 文件 / 775 通过 / 1 skipped**（exit 0）。
+- 相关套件：`slides-legacy-channels-e2e` 17/17 ·
+  `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
+  `slides-apply-txn-ops-e2e` 4/4。
+- typecheck：9 个错误，**全部既有**（已用 stash 与 HEAD 逐条比对确认）——
+  `packages/pptx-ops` 的 `?raw` import ×6、`packages/xlsx-gateway` 的 `never` ×3。
+
+#### 11.42.6 本轮不做（明确范围）
+
+- **~25 个只读 `slides:get-*` 通道**（`slides:get-comments` / `get-selection` /
+  `get-slide-size` 等）仍返空骨架。它们**可达但不改文档**（renderer 用它做面板
+  初值，返空 = "无选中 / 无批注"），要真做需把 live 模型投影成读模型。列入 M4。
+- **引擎侧稳定 id**：解析期 id 不稳定的根治在 pptx-engine，不在 web-server。
+- **CRDT / OT 协作、移动端 H5**：M4 路线图不变。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -3171,6 +3285,35 @@ HTML 源码写进 `.docx`，Word 打不开而 UI 报成功。真实实现需要�
 bundle）下 `__dirname` 不存在，任何调用都会 `ReferenceError`。改用
 `import.meta.url` + 多候选路径。同时修正 wasm 位置认知：包导出映射是
 `./pdfium.wasm` → `./dist/pdfium.wasm`，文件不在包根。
+
+**55. Slides 68 个 legacy element 通道返错形状的 `{ok:true}`**（✅ §11.42）：
+`slides:delete-element` / `set-element-font` / `edit-transform` / `flip-elements` /
+`group-elements` / `copy-elements` / `undo` / `redo` / `find-replace` / `set-notes` /
+`set-transition` 等通道此前返字面量 `{ok:true}`，而 renderer 拿它当 `RenderSlide`
+用 —— `{ok:true}` 是真值，于是"成功"分支把一个没有 `nodes` 的对象的存成当前页，
+画布变空白并在后续编辑中持续污染。实测确认的形状错配：`copy-elements` 契约要
+`number`、`set-notes` / `set-transition` 要 `boolean`、`undo` / `redo` 要
+`RenderSlide[]`、`find-replace` 硬编码 `{count:0}`。现全部按 `apps/slides/src/shared/ipc.ts`
+声明的形状作答，失败返 `null`（不返 `{ok:false}`——同样是真值、同样会污染），并
+打 stderr 日志。字面桩归零。
+
+**56. 解析期 element id 不稳定（引擎级约束，⚠️ 已知未根治）**：实测同一份 pptx
+字节连续 `openPptx` 两次，元素 id 依次为 `sp_0` / `sp_2` / `sp_4` —— **每次 parse
+都会变**。这意味着任何"保存时重新 parse 再写回"或"socket 重连后重新加载"的实现
+都会让 renderer 手里持有的 id 全部失配（选中态丢失、后续 mutation 打到不存在的
+元素）。本轮据此做了两个决定：①`slides:open-path` 对同一路径**复用已存在的 live
+session**，不再重建；②`slides:save` **刻意不 reparse**（`core.ts` 有注释说明）。
+根治需要引擎侧为元素发稳定 id（持久化的 `e_<guid8>` 形式已经是稳定的，但 parse
+时新分配的那些不是）。列入 P1 引擎工作。
+
+**57. Slides undo/redo + 元素剪贴板 + AI 快照真实化**（✅ §11.42）：
+`slides:undo` / `slides:redo` 此前返 `{ok:true}`；新增 `state.ts` 的
+`SlidesHistorySnapshot` 快照栈（`takeSlidesSnapshot` / `pushSlidesHistory` /
+`undoSlidesHistory` / `redoSlidesHistory` / `beginSlidesHistoryBatch` /
+`endSlidesHistoryBatch`）+ 应用级元素剪贴板
+（`setSlidesElementClipboard` / `getSlidesElementClipboard`）+ AI 快照
+（`registerSlidesAiSnapshot` / `restoreSlidesAiSnapshot` / `settleStaleHistoryBatch`）。
+`copy-elements` / `paste-elements` / `group-elements` 等于是有真实数据可依。
 
 #### ✅ 本轮已解决（3 项）
 
@@ -3748,7 +3891,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../webhooks-dlq / metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / **anydoc-convert** / **anydoc-convert-handler**）| 89 | 759 | ✅ |
+| web-server（含 .../webhooks-dlq / metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e**）| 90 | 776 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
