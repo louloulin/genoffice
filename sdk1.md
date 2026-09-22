@@ -2493,14 +2493,24 @@ response_chars / session_ms），让运维能把 host 用量与 DLQ 计数器一
 | 门 | 结果 |
 |---|---|
 | `apps/sdk` 测试 | 15 文件 / 195 → **16 文件 / 201**（Gate #1 目标 182，已超） |
-| web-server 测试 | 71 文件 / 618 → **72 文件 / 656 + 1 skip**（Gate #2 目标 629，已超） |
+| web-server 测试 | 71 文件 / 618 → **73 文件 / 664 + 1 skip**（Gate #2 目标 629，已超） |
 | `embed-bridge.test.ts` | 17 → 30（+2 dir 守门，+11 inbound dispatch/sink） |
 | `sdk-command-dispatch.test.ts` | **NEW 24**（docId 解析 3 / comments 5 / versions 5 / telemetry 2 / unsupported+malformed 4 / 形状不变量 1 / 注册 1 / surface 1 / 通道名 1 / INTERNAL 1） |
+| `sdk-command-e2e.test.ts` | **NEW 8**：启动真实 bundle server + 隔离 DATA_DIR，走真 HTTP —— 唯一能证明整条链（`POST /api/ipc/sdk:command` → dispatcher → registry → dispatch → durable store → wire envelope → 重查证持久化）的套件 |
 | `report-usage.test.ts` | **NEW 6**（类型成员 / 显式调用 envelope / ticker 样本含 instanceId / telemetry 关时不上报 / destroy flush / fire-and-forget 韧性） |
 | `metrics-endpoint.test.ts` | 补 SDK usage 序列覆盖 + 1 条专用测试 |
 | typecheck | 双端 clean（pptx-ops / xlsx-gateway 的 9 行 pre-existing 未触碰） |
 | SDK bundle | UMD 26.3 kB（Gate #5 预算 30–50 kB 内） |
-| commit | `04eaf6e`（dir 修复）/ `7c7f878`（inbound dispatch）/ `25519f0`（服务端承载 + telemetry） |
+| commit | `04eaf6e`（dir 修复）/ `7c7f878`（inbound dispatch）/ `25519f0`（服务端承载 + telemetry）/ `d009fef`（sdk1.md）/ `d0fc7d9`（e2e + 错误契约对齐 IPC taxonomy） |
+
+**错误契约修正**（`d0fc7d9`）：共享 IPC dispatcher 已经把 handler 返回值包成
+`{ok:true, result}`、把抛出的错误序列化成 `{error:{code, channel, reason}}`；
+`sdk-commands.ts` 初版又自己包了一层，导致成功时 wire 上出现
+`{ok:true, result:{ok:true, result:…}}` 双重嵌套、失败时 body 无法归类。修正为
+**handler 返回裸结果 + 抛 typed error**（`InvalidArgumentError` /
+`NotFoundError` / `WebUnsupportedError`），由共享分类器统一产出 wire shape
+（与其它 500+ 通道一致）。未知 / renderer 专属命令现在抛
+`WebUnsupportedError` → HTTP 501 `WEB_UNSUPPORTED`。
 
 #### 11.36.5 后续观察
 
