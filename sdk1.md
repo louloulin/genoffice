@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  90 文件 / 812 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
+apps/web-server/tests/  →  90 文件 / 822 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -275,7 +275,7 @@ Features: AI, Collab, Files, Projects, AnyDoc
 | Slides 68 个 legacy element 通道返错形状的 `{ok:true}` | ✅（§11.42：全部按契约作答，零字面桩）| — |
 | Slides undo/redo / 元素剪贴板 / AI 快照 | ✅（§11.42：state.ts 快照栈 + batch + 应用级剪贴板）| — |
 | **解析期 element id 不稳定**（`sp_0` / `sp_2` / `sp_4`）| ⚠️ 引擎层约束：同一字节两次 parse 得不同 id，任何 reparse 都会打断 renderer 持有的 id。现以"保活内存模型 + save 不 reparse"绕开；根治需引擎侧发稳定 id（`e_<guid8>` 形式已稳定）| P1（引擎） |
-| Slides 只读 `slides:get-*` 通道（首批 8 个真值化：`get-slide-size` / `get-notes` / `get-render-slides` / `get-slide-links` / `get-run-links` / `get-link` / `get-animations` / `get-header-footer`）| 🟡→✅ 8/25 已实装（§11.45 + §11.46）；余 ~17 仍 M4 backlog | P2（M4）|
+| Slides 只读 `slides:get-*` 通道（首批 12 个真值化：tier-0 §11.45 三件 + tier-1 §11.46 五件 + tier-2 §11.47 四件）| 🟡→✅ 12/25 已实装（§11.45–§11.47）；余 ~13 仍 M4 backlog | P2（M4）|
 | html: Word 导出（`html2docx`）真实实现 | 需无头浏览器；当前诚实拒绝 | P2（M4+） |
 | docx → pdf 转换（`anydoc:convert`） | 需 LibreOffice / print-to-PDF 服务 | P2（M4+） |
 | 移动端 H5 编辑器 | 缺移动生产力场景 | P1（M4） |
@@ -3169,7 +3169,7 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**90 文件 / 812 通过 / 1 skipped / 0 失败**（exit 0）——
+- `apps/web-server`：**90 文件 / 822 通过 / 1 skipped / 0 失败**（exit 0）——
   本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
@@ -3230,13 +3230,13 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
 失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
 
-**结果**：`apps/web-server` **90 文件 / 812 通过 / 1 skipped / 0 失败** —— 本分支
+**结果**：`apps/web-server` **90 文件 / 822 通过 / 1 skipped / 0 失败** —— 本分支
 首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
 
-- **~25 个只读 `slides:get-*` 通道**（✅ `b0e60d9` + `1759c2b` 闭合前 8 个，余 ~17 个仍 M4 backlog）：`slides:get-comments` / `get-selection` /
-  `slides:get-slide-size` / `get-notes` / `get-render-slides`（§11.45）+ tier-1（§11.46：get-slide-links / get-run-links / get-link / get-animations / get-header-footer，共 8 个）已实装。余 ~17 个仍返空骨架，**可达但不改文档**（renderer 用它做面板
+- **~25 个只读 `slides:get-*` 通道**（✅ `b0e60d9` + `1759c2b` + `486f749` 闭合前 12 个，余 ~13 个仍 M4 backlog）：`slides:get-comments` / `get-selection` /
+  `slides:get-slide-size` / `get-notes` / `get-render-slides`（§11.45）+ tier-1（§11.46：get-slide-links / get-run-links / get-link / get-animations / get-header-footer）+ tier-2（§11.47：get-comments / get-chart-data / get-sections / get-layouts，共 12 个）已实装。余 ~13 个仍返空骨架，**可达但不改文档**（renderer 用它做面板
   初值，返空 = "无选中 / 无批注"），要真做需把 live 模型投影成读模型。列入 M4。
 - **引擎侧稳定 id**：解析期 id 不稳定的根治在 pptx-engine，不在 web-server。
 - **CRDT / OT 协作、移动端 H5**：M4 路线图不变。
@@ -3662,6 +3662,105 @@ projection；tier 3（sections / layouts）需新增 metadata projection。
 
 §A.5 "只读 `slides:get-*` 通道" 现标注 ✅ `b0e60d9` + `1759c2b`（共 8 个），
 余 ~17 个仍 M4 backlog。
+
+
+### 11.47 · Slides 只读 `slides:get-*` 通道 tier 2 批次（4 个真值化 · §11.45 模板接力）
+
+> 承接 §11.46 的 tier-1 接力，本轮把 4 个"引擎已就绪 + contract 已对齐"
+> 的通道全部接入 live 模型：`get-comments` / `get-chart-data` /
+> `get-sections` / `get-layouts`。剩 ~13 个通道中 `get-shape-keys` 因引擎
+> 缺 morph-key 模型仍 `[]`（已加文档化说明）；其余 12 个通道是字体 / 媒体
+> / 剪贴板 / 表格 / 选区等 infrastructure 类（与读模型不同分类），不在本批。`486f749`。
+
+#### 11.47.1 之前的样子
+
+| 通道 | 之前 | 错误面 |
+|---|---|---|
+| `slides:get-comments` | `[]` | 批注面板永远空 |
+| `slides:get-chart-data` | `{}` | 图表数据对话框无法回显当前数据 |
+| `slides:get-sections` | `[]` | sections 列表永远空（即使 deck 里有 p14:sectionLst）|
+| `slides:get-layouts` | `[]` | 新建幻灯片面板的 layouts 下拉永远是空的 |
+| `slides:get-shape-keys` | `[]` | morph 配对键永远空（**引擎无 morph 模型，仍 stub**）|
+
+#### 11.47.2 引擎侧真实来源（4 个 + 1 个 documented）
+
+| 通道 | 引擎函数 | 来源文件 |
+|---|---|---|
+| `get-comments` | `getSlideComments(archive, slidePath)` | `packages/pptx-engine/src/comments.ts:96`（commentSlide 单独 part）|
+| `get-chart-data` | `getChartElementData(slide, sourceId)` | `packages/pptx-engine/src/index.ts:2854`（chart element 模型）|
+| `get-sections` | `getSections(opened)` | `packages/pptx-engine/src/sections.ts:83`（presentation.xml's `p14:sectionLst`）|
+| `get-layouts` | `listSlideLayouts(archive)` | `packages/pptx-engine/src/layout.ts:103`（ppt/slideLayouts/slideLayoutN.xml）|
+| `get-shape-keys` | （无）| 引擎无 morph-key 模型；待 `getMorphKeys` 入引擎后用同一模板 |
+
+#### 11.47.3 4 个 handler 改写
+
+| 通道 | 新实现 |
+|---|---|
+| `slides:get-comments(slideIndex)` | `getSlideComments(rm.opened.archive, slide.path)`；try/catch 兜底畸形 XML |
+| `slides:get-chart-data(slideIndex, sourceId)` | `getChartElementData(slide, sourceId)` 直接返 engine 形状（kind/title/categories/series/seriesColors/pointColors）|
+| `slides:get-sections()` | `getSections(rm.opened)` 返 `SectionInfo[]`（id/name/slideIndices）verbatim |
+| `slides:get-layouts()` | `listSlideLayouts(rm.opened.archive)` 包成 `{ layouts: SlideLayoutInfo[] }` |
+
+未知 session / 越界 slideIndex / 非 string sourceId：各自返原 spec 的
+空形状（`[]` / `null` / `{ layouts: [] }`），向后兼容。
+
+#### 11.47.4 模板一致性
+
+每个新 handler 都用 `resolveSlidesReadModel(event)`（§11.45 共享 helper）→
+5 行内完成。field-rename projector（§11.46）只在 hyperlink 通道需要，
+本批 4 个 channel 的 contract 形状与 engine 完全对齐，无需 projector。
+
+#### 11.47.5 测试（`apps/web-server/tests/slides-read-model-e2e.test.ts` 新增 describe）
+
+10 个 e2e case：
+
+- **冷启动 fallback（4）**：每个通道在无 SSE session 调 `open-path` 之前
+  各自返 `[]` / `null` / `{ layouts: [] }`。
+- **post-open-path on blank.pptx（5）**：bundled blank.pptx 没有
+  commentsSlide / 图表元素 / sectionLst → `get-comments` / `get-sections`
+  返 `[]`；`get-chart-data` 对未知 sourceId / 越界 slideIndex 返 `null`。
+- **`get-layouts` 真实投影（1）**：bundled blank.pptx 只有 slideMaster
+  没有 slideLayout（layouts 通过 master 继承），
+  `listSlideLayouts` 过滤 `ppt/slideLayouts/slideLayoutN.xml` 路径所以
+  返回 `{ layouts: [] }` —— 这是 fixture 的真实状态，不是 bug。
+- **`get-shape-keys` 文档化 stub（1）**：确认仍 `[]`，证明 §11.42.6
+  M4 backlog 的 morph-key 工作还没落地。
+
+#### 11.47.6 验证
+
+```
+cd apps/web-server
+./node_modules/.bin/vitest run --config ./vitest.config.ts tests/slides-read-model-e2e.test.ts
+# 31/31 passed（9 §11.45 + 12 §11.46 + 10 §11.47）
+
+./node_modules/.bin/vitest run --config ./vitest.config.ts
+# 822 passed | 1 skipped | 0 failures（91 文件；基线 812 → 822 +10）
+
+../../node_modules/.bin/tsc --noEmit
+# 无新增错误（同 9 个 pre-existing 在 packages/{pptx-ops,xlsx-gateway}）
+```
+
+#### 11.47.7 不在本轮范围内（剩 ~13 个，仍 M4 backlog）
+
+按 §11.46.7 分类，本轮完成全部"读模型"型通道。剩 ~13 个属于
+infrastructure 类（与 live deck 模型不同），按类型分：
+  - `slides:font-catalog` / `slides:font-missing` — 字体 enumeration
+  - `slides:chart-color-schemes` — chart palette metadata
+  - `slides:media-data` / `slides:native-clipboard` — clipboard
+  - `slides:private-font-data` / `slides:private-font-faces` — 私有字体
+  - `slides:table-structure` — table layout metadata
+  - `slides:clipboard-external` / `slides:clipboard-probe` — 系统剪贴板
+  - `slides:has-slide-clipboard` — element clipboard 状态
+  - `slides:cloud-gen-status` — 云端生成状态（占位）
+
+这些不在 "live deck → read-model" 范畴，需要单独的 projection helpers，
+留 M4 backlog。
+
+#### 11.47.8 收口结果
+
+§A.5 "只读 `slides:get-*` 通道" 现标注 ✅ `b0e60d9` + `1759c2b` + `486f749`
+（共 12 个），余 ~13 个仍 M4 backlog；infrastructure 类（~13 个）留 M4
+单独 track。
 
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
@@ -4375,7 +4474,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e**）| 91 | 812 | ✅ |
+| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e**）| 91 | 822 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
