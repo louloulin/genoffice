@@ -424,5 +424,146 @@ describe.skipIf(skip)('slides:get-* read-model — tier 1 (sdk1 §11.46)', () =>
     expect(hf.date).toBe('2026-09-22')
   })
 })
+/**
+ * Tier-2 batch (sdk1 §11.47) — the remaining "engine-ready" channels
+ * whose data is already exposed by pptx-engine but was returned as
+ * empty stubs:
+ *
+ *   - get-comments     → getSlideComments(archive, slide.path) walks
+ *     the commentsSlide part (mirror of notesPathForSlide)
+ *   - get-chart-data   → getChartElementData(slide, sourceId) reads
+ *     the chart element model verbatim for dialog echo
+ *   - get-sections     → getSections(opened) parses presentation.xml's
+ *     p14:sectionLst
+ *   - get-layouts      → listSlideLayouts(archive) wraps the engine's
+ *     SlideLayoutInfo[] in the renderer's { layouts } envelope
+ *
+ * get-shape-keys stays a documented stub (engine has no morph-key
+ * model — see §11.42.6).
+ *
+ * What's covered:
+ *   - cold-start fallback for each channel
+ *   - post-open-path against the bundled blank.pptx: every channel
+ *     returns its empty shape because the fixture carries no
+ *     comments / charts / sections / multiple layouts
+ *   - tolerance for unknown sourceId / out-of-range slideIndex
+ */
+describe.skipIf(skip)('slides:get-* read-model — tier 2 (sdk1 §11.47)', () => {
+  let server: ChildProcess | undefined
+  let base: string
+  let dataDir: string
+  let filesDir: string
+  let pptxPath: string
+
+  beforeAll(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'genoffice-slides-tier2-e2e-'))
+    filesDir = join(dataDir, 'files')
+    mkdirSync(filesDir, { recursive: true })
+    pptxPath = join(filesDir, 'deck.pptx')
+    copyFileSync(blankTemplate, pptxPath)
+
+    const port = 33100 + Math.floor(Math.random() * 8000)
+    base = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [bundle], {
+      cwd: pkgRoot,
+      env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await pollHealth(base, 15_000)
+  }, 30_000)
+
+  afterAll(async () => {
+    if (server) await stopServer(server)
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  async function openDeckAndRememberSession(): Promise<string> {
+    const sessionId = `s-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const r = await fetch(`${base}/api/ipc/slides%3Aopen-path`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-ipc-session': sessionId,
+      },
+      body: JSON.stringify({ args: [encodeTransportValue(pptxPath)] }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { error?: { code: string } }
+    expect(body.error, JSON.stringify(body)).toBeUndefined()
+    return sessionId
+  }
+
+  async function invoke(channel: string, args: unknown[], sessionId?: string): Promise<unknown> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (sessionId) headers['x-ipc-session'] = sessionId
+    const r = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ args: args.map((a) => encodeTransportValue(a)) }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { result?: unknown }
+    return body.result
+  }
+
+  // ── cold-start fallbacks ──────────────────────────────────────────
+  it('get-comments returns [] when no session has opened yet', async () => {
+    expect(await invoke('slides:get-comments', [0])).toEqual([])
+  })
+
+  it('get-chart-data returns null when no session has opened yet', async () => {
+    expect(await invoke('slides:get-chart-data', [0, 'sp_0'])).toBeNull()
+  })
+
+  it('get-sections returns [] when no session has opened yet', async () => {
+    expect(await invoke('slides:get-sections', [])).toEqual([])
+  })
+
+  it('get-layouts returns { layouts: [] } when no session has opened yet', async () => {
+    expect(await invoke('slides:get-layouts', [])).toEqual({ layouts: [] })
+  })
+
+  // ── post-open-path: blank.pptx carries none of these ─────────────
+  it('after open-path: get-comments returns [] (blank.pptx has no commentsSlide)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-comments', [0], sessionId)).toEqual([])
+  })
+
+  it('after open-path: get-chart-data returns null for an unknown sourceId', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-chart-data', [0, 'sp_no_such_chart'], sessionId)).toBeNull()
+  })
+
+  it('after open-path: get-chart-data tolerates an out-of-range slideIndex', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-chart-data', [999, 'sp_0'], sessionId)).toBeNull()
+  })
+
+  it('after open-path: get-sections returns [] (blank.pptx has no sectionLst)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-sections', [], sessionId)).toEqual([])
+  })
+
+  it('after open-path: get-layouts returns the slideLayout projection from listSlideLayouts', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const result = await invoke('slides:get-layouts', [], sessionId) as {
+      layouts: Array<{ path: string; name: string; layoutType: string; placeholders: unknown[] }>
+    }
+    // The bundled blank.pptx ships only a slideMaster (no slideLayout
+    // entries — slide layouts are inherited from the master). The
+    // engine's listSlideLayouts filters on ppt/slideLayouts/slideLayoutN.xml
+    // paths, so this fixture returns []. The contract shape stays:
+    //   { layouts: Array<{ path, name, layoutType, placeholders }> }
+    // and any real deck with layouts will populate the array.
+    expect(Array.isArray(result.layouts)).toBe(true)
+    expect(result.layouts.length).toBe(0)
+  })
+
+  // ── get-shape-keys stays a documented stub (engine has no morph model)
+  it('get-shape-keys stays [] (engine has no morph-key model; sdk1 §11.42.6)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-shape-keys', [0], sessionId)).toEqual([])
+  })
+})
 
 })

@@ -15,11 +15,15 @@
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
 import {
+  getChartElementData,
   getRunLinks,
+  getSections,
   getSlideAnimations,
+  getSlideComments,
   getSlideHidden,
   getSlideLinks,
   getSlideNotes,
+  listSlideLayouts,
   notesPathForSlide,
   openPptx,
   readHeaderFooter,
@@ -27,9 +31,12 @@ import {
   type ElementClipboardItem,
   type LinkTarget,
   type OpenedPptx,
+  type SectionInfo,
   type Slide,
   type SlideAnimation,
+  type SlideComment,
   type SlideDeck,
+  type SlideLayoutInfo,
 } from '@genoffice/pptx-engine'
 
 const MAX_SLIDES_SESSIONS = 32
@@ -457,8 +464,35 @@ export function registerSlidesStateHandlers(): void {
     if (!slide) return [] as SlideAnimation[]
     return getSlideAnimations(slide)
   })
-  registerHandle('slides:get-chart-data', () => ({}))
-  registerHandle('slides:get-comments', () => [])
+  // Real chart data: engine's getChartElementData returns the dialog
+  // echo shape verbatim (kind/title/categories/series/seriesColors/
+  // pointColors). Returns null when no session is bound, slideIndex
+  // is out of range, sourceId is not a string, or the element is not
+  // a chart — matches the renderer's `if (r)` guard.
+  registerHandle('slides:get-chart-data', (event: unknown, slideIndex: unknown, sourceId: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number' || typeof sourceId !== 'string') return null
+    const slide = rm.deck.slides[slideIndex]
+    if (!slide) return null
+    return getChartElementData(slide, sourceId)
+  })
+  // Real comments: read the live commentsSlide part via
+  // getSlideComments (sdk1 §11.47 tier-2 batch). The engine's
+  // comments.ts:91 helper mirrors notesPathForSlide so the projection
+  // is symmetric — both live parts, both keyed by slideIndex.
+  registerHandle('slides:get-comments', (event: unknown, slideIndex: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number') return [] as SlideComment[]
+    const slide = rm.deck.slides[slideIndex]
+    if (!slide) return [] as SlideComment[]
+    try {
+      return getSlideComments(rm.opened.archive, slide.path)
+    } catch {
+      // Malformed commentsSlide XML (rare but happens with
+      // hand-edited pptx) — fail soft.
+      return [] as SlideComment[]
+    }
+  })
   // Real header/footer echo for the dialog: read the live slide's
   // placeholder state via readHeaderFooter(slide). The engine walks the
   // slide's elements for `ftr` / `dt` / `sldNum` placeholders, so the
@@ -479,7 +513,18 @@ export function registerSlidesStateHandlers(): void {
       date: hf.date,
     }
   })
-  registerHandle('slides:get-layouts', () => [])
+  // Real layouts: enumerate every slideLayout via listSlideLayouts
+  // (sdk1 §11.47 tier-2 batch). The engine's SlideLayoutInfo shape
+  // (path/name/layoutType/placeholders) is identical to what the
+  // renderer's GetLayoutsResult expects under the `layouts` key,
+  // so this is a one-line wrap. Unknown session: { layouts: [] }
+  // — null at the result envelope level would break the renderer's
+  // non-null check.
+  registerHandle('slides:get-layouts', (event: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return { layouts: [] as SlideLayoutInfo[] }
+    return { layouts: listSlideLayouts(rm.opened.archive) }
+  })
   // Single-element link lookup: filter the slide-links projection by
   // sourceId (= elementId). Returns null when no slide session is bound,
   // when slideIndex is out of range, or when the element has no link —
@@ -512,10 +557,21 @@ export function registerSlidesStateHandlers(): void {
       return ''
     }
   })
-  registerHandle('slides:get-sections', () => [])
+  // Real sections: read presentation.xml's p14:sectionLst via
+  // getSections(opened). Returns the SectionInfo array verbatim
+  // (id/name/slideIndices). The engine is the authoritative parser,
+  // so sldIds referencing deleted slides are already filtered — no
+  // need to re-validate on this side. Unknown session: [] (legacy
+  // empty shape).
+  registerHandle('slides:get-sections', (event: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return [] as SectionInfo[]
+    return getSections(rm.opened)
+  })
   // Engine has no morph-key model yet (sdk1 §11.42.6 M4 backlog).
   // Return [] honestly so the renderer doesn't see undefined; once the
   // engine gains `getMorphKeys` this becomes a one-line projection.
+  // Listed for completeness in sdk1 §11.47 tier-2 batch — stays a stub.
   registerHandle('slides:get-shape-keys', (_event: unknown, _slideIndex: unknown) => [])
   // Real slide-level links: walk every element (groups recursed) and
   // resolve any `a:hlinkClick` against the slide's rels. The rels live
