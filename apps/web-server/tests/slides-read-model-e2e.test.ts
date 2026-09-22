@@ -559,10 +559,64 @@ describe.skipIf(skip)('slides:get-* read-model — tier 2 (sdk1 §11.47)', () =>
     expect(result.layouts.length).toBe(0)
   })
 
-  // ── get-shape-keys stays a documented stub (engine has no morph model)
-  it('get-shape-keys stays [] (engine has no morph-key model; sdk1 §11.42.6)', async () => {
+  // ── get-shape-keys real impl (sdk1 §11.51) ─────────────────────────
+  it('get-shape-keys returns one ShapeKey per element on the slide', async () => {
+    // The renderer reads this to pair shapes across pages for Morph
+    // transitions; before §11.51 it returned [] so Morph was silently
+    // no-op. The ShapeKey contract is { sourceId, spid, name } where
+    // spid is the engine-resolved cNvPr id (null when absent).
+    //
+    // The blank template has zero shapes on slide 0, so the test adds
+    // a textbox via apply-txn first (the addElement op returns the
+    // new id directly, but `get-shape-keys` only needs the count).
     const sessionId = await openDeckAndRememberSession()
-    expect(await invoke('slides:get-shape-keys', [0], sessionId)).toEqual([])
+    const add = (await invoke(
+      'slides:apply-txn',
+      [{
+        path: pptxPath,
+        ops: [
+          {
+            op: 'addElement',
+            target: { slide: 0 },
+            kind: 'textbox',
+            offset: { x: 100_000, y: 100_000, cx: 2_000_000, cy: 600_000 },
+            paragraphs: [{ runs: [{ text: 'morph-key source' }] }],
+          },
+          {
+            op: 'addElement',
+            target: { slide: 0 },
+            kind: 'textbox',
+            offset: { x: 200_000, y: 200_000, cx: 2_000_000, cy: 600_000 },
+            paragraphs: [{ runs: [{ text: 'second' }] }],
+          },
+        ],
+      }],
+      sessionId,
+    )) as { applied?: boolean }
+    expect(add.applied).toBe(true)
+    const keys = await invoke('slides:get-shape-keys', [0], sessionId) as Array<{
+      sourceId: string
+      spid: number | null
+      name: string
+    }>
+    expect(keys.length).toBeGreaterThanOrEqual(2)
+    // Every ShapeKey carries a non-empty sourceId + a name string
+    // + an spid that is either null or a number.
+    for (const k of keys) {
+      expect(typeof k.sourceId).toBe('string')
+      expect(k.sourceId.length).toBeGreaterThan(0)
+      expect(k.spid === null || typeof k.spid === 'number').toBe(true)
+      expect(typeof k.name).toBe('string')
+    }
+  })
+
+  it('get-shape-keys returns [] for an out-of-range slideIndex', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-shape-keys', [99], sessionId)).toEqual([])
+  })
+
+  it('get-shape-keys returns [] when no session is bound', async () => {
+    expect(await invoke('slides:get-shape-keys', [0])).toEqual([])
   })
 })
 /**

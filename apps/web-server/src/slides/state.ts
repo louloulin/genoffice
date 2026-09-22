@@ -15,6 +15,7 @@
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
 import {
+  elementSpid,
   getChartElementData,
   getRunLinks,
   getSections,
@@ -613,8 +614,23 @@ export function registerSlidesStateHandlers(): void {
   // Engine has no morph-key model yet (sdk1 §11.42.6 M4 backlog).
   // Return [] honestly so the renderer doesn't see undefined; once the
   // engine gains `getMorphKeys` this becomes a one-line projection.
-  // Listed for completeness in sdk1 §11.47 tier-2 batch — stays a stub.
-  registerHandle('slides:get-shape-keys', (_event: unknown, _slideIndex: unknown) => [])
+  // Real get-shape-keys (sdk1 §11.51): port of the desktop handler
+  // at apps/slides/src/main/slides-main.ts:3828. Used by the Morph
+  // transition feature in AudienceView / SlideShowView to match
+  // shapes across slides before / after — cNvPr id (`spid`) and
+  // `name` are stable across reparses; `el.id` (= sourceId) is not.
+  // The stub used to return [] which made Morph silently no-op.
+  registerHandle('slides:get-shape-keys', (event: unknown, slideIndex: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number') return []
+    const slide = rm.opened.deck.slides[slideIndex]
+    if (!slide) return []
+    return slide.elements.map((el) => ({
+      sourceId: el.id,
+      spid: elementSpid(el),
+      name: el.name ?? '',
+    }))
+  })
   // Real slide-level links: walk every element (groups recursed) and
   // resolve any `a:hlinkClick` against the slide's rels. The rels live
   // in the live archive, so a hyperlink added via setElementHyperlink
