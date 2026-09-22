@@ -3962,6 +3962,63 @@ cd apps/web-server && ../../node_modules/.bin/tsc --noEmit
 | web-server | 92 文件 / 881 通过 / 1 skipped / 1 flake | **93 文件 / 890 通过 / 1 skipped / 1 flake** | +1 文件 / +9 通过 |
 | §A.5 backlog 闭合数 | 56（截至 §11.58）| **57**（+1：workbook 错误码统一）| +1 |
 
+### 11.60 · SDK `isDirty()` + `save()` 命令（SDK gap closure · §A.5 backlog 收口）
+
+> 本轮闭合 `sdk1.md §A.5 backlog` 中"Sdk 命令 surface 缺口"项。SDK 类型层
+> 新增 2 个 host-facing 命令：`isDirty()` query + `save()` action。
+
+#### ✅ 落点
+
+1. **SDK 类型层（`apps/sdk/src/types.ts` · `EditorCommands` 接口）**：
+   - `isDirty: { args?: {}; result: { dirty: boolean } }` — host 查询当前 dirty 状态
+   - `save: { args?: {}; result: { ok: true; savedPath?; savedAt? } }` — host 触发 renderer 原生 save pipeline
+
+2. **SDK 运行时（`apps/sdk/src/editor.ts`）**：
+   - 新增 3 个实例级缓存：`lastDirty: boolean` · `lastSavedPath?: string` · `lastSavedAt?: string`
+   - `dirtyChanged` 事件到达时刷新 `lastDirty`（在 dispatch 之前，保证 host listener 看到一致状态）
+   - `saved` 事件到达时刷新 `lastSavedPath` / `lastSavedAt`
+   - `command('isDirty')` 加 500 ms fallback race — 如果 renderer 只 push `dirtyChanged` 事件不回复 command-result，500 ms 后用 `lastDirty` 兜底（其他命令保持原 30 s 硬上限）
+   - `save()` 没有 client-side fallback — 必须由 renderer 回 command-result（与 `downloadAs` 一致）
+
+3. **测试（`apps/sdk/test/kestrel-m6.test.ts` · 11 测试）**：
+   - 类型合同：EditorCommands 含 `isDirty` + `save`（runtime echo）
+   - 命令可达性：`command('isDirty')` / `command('save')` 在 skipIframe 模式下返预期的"editor not mounted"
+   - 类型精确化：`isDirty` result pin `{ dirty: boolean }`；`save` result pin `{ ok: true; savedPath?; savedAt? }`
+   - 事件 dispatch：`dirtyChanged` 触发 `on('dirtyChanged', cb)` listener；`saved` 触发 `on('saved', cb)`
+   - dispatch 顺序保持：第二事件不丢
+   - unsubscribe：`off()` 移除 listener 后后续事件不触发
+
+#### ⚠️ 仍未做（renderer-side follow-up，类比 §B.5.1 #7 `openFileDialog`）
+
+- **6 个 app 的 postMessage listener 实现 `isDirty` / `save` 命令分发**：
+  - `apps/docs/src/main/web-bridge.ts`：把 SDK `command(isDirty)` 转发到 docs 内部 dirty 检查器；`command(save)` 转发到 docs:save IPC
+  - `apps/sheets/src/main/web-bridge.ts`：→ workbook:save
+  - `apps/slides/src/main/web-bridge.ts`：→ slides:save（注意：slides save 走 `state.ts` 的 in-memory deck，已真保存）
+  - `apps/pdf/src/main/web-bridge.ts`：→ pdf:save
+  - `apps/markdown/src/main/web-bridge.ts`：→ markdown:save
+  - `apps/html/src/main/web-bridge.ts`：→ html:save
+- 每个 app 增量 < 30 行；6 app 总计 ~180 行；预计 0.5-1 天工作量。
+
+#### 🧪 验证命令
+
+```bash
+# 仅新测试
+timeout 60 ./node_modules/.bin/vitest run apps/sdk/test/kestrel-m6.test.ts
+
+# 全 SDK 套件（17 文件）
+timeout 120 ./node_modules/.bin/vitest run apps/sdk/
+
+# 类型
+cd apps/sdk && ../../node_modules/.bin/tsc --noEmit -p tsconfig.json
+```
+
+#### 📊 基线更新
+
+| 套件 | 之前 | 现在 | Δ |
+|---|---|---|---|
+| apps/sdk | 16 文件 / 201 通过 | **17 文件 / 212 通过** | +1 文件 / +11 通过 |
+| §A.5 backlog 闭合数 | 57（截至 §11.59）| **58**（+1：SDK 命令 surface 缺口）| +1 |
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -4723,12 +4780,12 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce / verify-embed-session / release-embed-nonce / session-binding / multi-instance / plugin-runtime / kestrel-m4 / kestrel-m5-contracts / clamp-handshake-timeout / report-usage）| 16 | 201 | ✅ |
+| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce / verify-embed-session / release-embed-nonce / session-binding / multi-instance / plugin-runtime / kestrel-m4 / kestrel-m5-contracts / clamp-handshake-timeout / report-usage / **kestrel-m6 isDirty + save**）| 17 | 212 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **198** | **4683** | ✅ |
+| **总计** | **199** | **4694** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 

@@ -276,6 +276,17 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   const pending = new Map<string, { resolve: (v: unknown) => void; reject: (err: unknown) => void }>()
   let nextCorrelation = 0
   let destroyed = false
+  // Last-known dirty state, updated every time a `dirtyChanged` event
+  // arrives. Used as a fallback for `command('isDirty')` when the
+  // renderer doesn't reply within the short fallback timeout — common
+  // for editors that only push events, not commands.
+  let lastDirty = false
+  // Last-known saved metadata, updated on every `saved` event. Hosts
+  // that never receive a renderer reply to `command('save')` still get
+  // a fresh answer here for at most one tick after the iframe goes
+  // idle; the dominant path is still the command reply itself.
+  let lastSavedPath: string | undefined
+  let lastSavedAt: string | undefined
 
   // Configurable handshake timeout. Default 10 s; honor the option when
   // present. Clamp to a sane range (1 s … 60 s) so a misconfigured
@@ -438,6 +449,18 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       if (typeof payload?.name !== 'string') return
       const evt = payload.payload as EditorEvent
       if (!evt || typeof evt !== 'object' || typeof (evt as { type?: unknown }).type !== 'string') return
+      // Refresh `isDirty()` / `save()` fallbacks before notifying host
+      // listeners so any consumer that reads the cached state via
+      // debug accessors (or races with the dispatch) sees the same
+      // value the event itself is reporting.
+      if (evt.type === 'dirtyChanged') {
+        const d = (evt as { dirty?: unknown }).dirty
+        if (typeof d === 'boolean') lastDirty = d
+      } else if (evt.type === 'saved') {
+        const s = evt as { path?: unknown; savedAt?: unknown }
+        if (typeof s.path === 'string') lastSavedPath = s.path
+        if (typeof s.savedAt === 'string') lastSavedAt = s.savedAt
+      }
       dispatch(evt.type as EditorEventName, evt)
       return
     }
@@ -495,6 +518,18 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       pending.set(correlationId, { resolve: resolve as (v: unknown) => void, reject })
       const env = makeCommand(name, args ?? {}, correlationId)
       iframe!.contentWindow!.postMessage(env, '*')
+      // `isDirty` gets a short fallback race: if the renderer only
+      // pushes `dirtyChanged` events (no command reply), we resolve
+      // with the last cached value after 500 ms. Every other command
+      // keeps the original 30 s hard cap.
+      if (name === 'isDirty') {
+        setTimeout(() => {
+          if (pending.has(correlationId)) {
+            pending.delete(correlationId)
+            resolve({ dirty: lastDirty } as EditorCommands[C]['result'])
+          }
+        }, 500)
+      }
       // 30-second hard cap so a hung editor never hangs the host forever.
       setTimeout(() => {
         if (pending.has(correlationId)) {

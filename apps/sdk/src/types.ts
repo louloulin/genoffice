@@ -478,6 +478,43 @@ export interface EditorCommands {
   aiSummarize: { args: AiSummarizeArgs; result: { text: string } }
 
   /**
+   * Query the editor's current dirty state. Resolves with the same
+   * `dirty` boolean the most recent `dirtyChanged` event reported.
+   *
+   * The renderer is expected to handle this command directly (e.g. by
+   * reading its internal `isDirty` flag and replying immediately). The
+   * SDK additionally remembers the last `dirtyChanged` event value, so
+   * renderers that only push events (not commands) still get a sensible
+   * answer via the SDK's fallback path.
+   *
+   * Useful for hosts that want to gate UI ("Save?" prompt) without
+   * having to track every `dirtyChanged` event themselves.
+   *
+   * (sdk1.md §11.60, SDK 2.0 Kestrel M6)
+   */
+  isDirty: { args?: Record<string, never>; result: { dirty: boolean } }
+  /**
+   * Trigger the editor's native save pipeline. The renderer's save
+   * flow runs end-to-end (debounce + atomic write + webhook + recents
+   * update) and the command resolves with the saved file's metadata.
+   *
+   * Resolves with `{ ok: true, savedPath?, savedAt }` on success, where
+   * `savedPath` is the absolute managed-storage path and `savedAt` is
+   * an ISO-8601 timestamp. Editors that haven't changed since the last
+   * save still resolve ok (no-op save is legal, matching `workbook:save`
+   * which accepts an empty edits array).
+   *
+   * Editors that don't implement save (e.g. PDF read-only viewer)
+   * reject with `code: 'UNSUPPORTED'`.
+   *
+   * (sdk1.md §11.60, SDK 2.0 Kestrel M6)
+   */
+  save: {
+    args?: Record<string, never>
+    result: { ok: true; savedPath?: string; savedAt?: string }
+  }
+
+  /**
    * Undo the last edit. Resolves once the editor has rolled the buffer
    * back one step (the next `dirtyChanged` event reports `dirty: false`
    * if the buffer was clean before the undo).
