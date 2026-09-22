@@ -5012,6 +5012,62 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 - 后续 multi-instance 风险已钉死：registry 行为 + listener 拓扑 +
   destroy 隔离 + iframe name 唯一性 + postMessage 路由 + 幂等 destroy
 
+### 11.81 · Recents-watcher e2e 覆盖 + promoteAcrossBackend 现状审视（§11.78 P1 续）
+
+> 续 §11.78 P1 第 3 项 — "recents-watcher 走 `promoteAcrossBackend` 对称化"。
+> 实地审视后发现实际对称化已完成（local → fs.watch、remote → polling
+> `backend.list()`）；本批聚焦**测试覆盖缺口**与**对称性验证**，
+> 不强行接入 caller（破坏现有约束）。
+
+#### ✅ 落点
+
+1. **`apps/web-server/tests/recents-watcher.test.ts`**（新文件，277 行，
+   13 个 e2e 用例，3 个 describe 块）：
+   - **Local backend (6 用例)**：
+     - seed pass 不 emit additions（防 boot 重命名）
+     - 新 .pdf 文件触发 `add` + `onAdded` callback
+     - 文件删除触发 `remove` + `onRemoved` callback
+     - dot entries (.trash/) skip
+     - non-watched extension skip（.docx/.xlsx 等）
+     - 重复 `setup` idempotent（2 次 setup 只 emit 1 次 add）
+   - **Remote backend (4 用例)**：
+     - polling `backend.list()` + 新 key → add `storage://<backend>/<key>`
+     - 消失的 key → remove
+     - dot-prefixed top-level segments skip
+     - `backend.list()` 抛错容忍（下次 tick 重试）
+   - **Setup strategy selection (3 用例)**：
+     - local backend 选 fs.watch
+     - remote backend 选 polling
+     - `stop()` clears both branches + 允许 re-setup
+
+2. **`promoteAcrossBackend` caller 审视 — 不强行接入**：
+   - 现有所有 save 路径（`docs:save` / `markdown:save` / `html:save` /
+     `pdf:save` / `slides:save` / `sheets:save` / `web:write-file-bytes` /
+     `web:save-file`）都用 `requireManagedPath` 强制 target 位于
+     `FILES_DIR` 之内，**永远不会**写 storage:// URI
+   - `web:save-file` 已经直接调 `getStorageBackend().put(fileId, ...)`
+     （backend-native 写入），不需要 promote helper
+   - `promote-across-backend.test.ts` 已经 8 个 e2e 覆盖 helper 自身
+     行为（storage URI / FILES_DIR path / non-managed local / contentType
+     passthrough / staging 文件保留），与 caller 接入无关
+   - 结论：helper 现状 = 公开 API + 测试 + 文档齐备；将来真有需要
+     "FILES_DIR staging → storage:// URI"的场景时 caller 直接 import
+     即可，无需本批破坏现有约束
+
+#### 🧪 验证
+
+- `apps/web-server/tests/recents-watcher.test.ts`：**13 / 13 通过**
+- `apps/web-server/tests/promote-across-backend.test.ts`（已存）：**8 / 8 通过**
+- `apps/web-server` typecheck：clean（9 处 pptx-ops / xlsx-gateway
+  pre-existing 错误已排除）
+
+#### 📊 进度
+
+- §11.78 P1 第 3 项：从 backlog → closed（测试覆盖已就位）
+- recents-watcher 两个分支（local fs.watch + remote polling）都有
+  完整 e2e 守护；未来 regression 会被立即抓到
+- `promoteAcrossBackend` 公开 API 状态稳定，无 caller 强制耦合
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -5047,10 +5103,10 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
-2. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
-3. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
-4. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
+1. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
+2. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
+3. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
+4. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面）：3-5 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
