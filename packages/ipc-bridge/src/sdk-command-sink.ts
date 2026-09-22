@@ -252,6 +252,12 @@ export function guessMimeType(name: string): string {
  *   • insertText(text)    → append to cursor / end of doc (insertText)
  *   • setTheme(theme)     → push the host's theme into the app's UI (setTheme)
  *   • setLang(lang)       → push the host's language into the app's i18n (setLang)
+ *   • mountSidebar({panel, html?, url?}) → mount a named taskpane panel
+ *     into the app sidebar (HTML string OR url to iframe); returns
+ *     `{panel}` once mounted so the host can later postToSidebar.
+ *   • postToSidebar({panel, message}) → post a JSON message to an
+ *     already-mounted sidebar panel; the panel's `onMessage` callback
+ *     fires. Returns `{panel, delivered:true}` on success.
  *
  * Apps that don't need one of these (e.g. a read-only preview) can omit
  * the corresponding method — the matching command then answers
@@ -265,6 +271,33 @@ export interface SdkLiveModelAdapter {
   insertText?: (text: string) => void
   setTheme?: (theme: unknown) => void
   setLang?: (lang: string) => void
+  /**
+   * Mount a named sidebar / taskpane panel. Exactly one of `html` /
+   * `url` must be supplied — `html` is inlined into the panel DOM;
+   * `url` is rendered inside a sub-iframe (use for cross-origin plugin
+   * payloads that need a separate origin).
+   */
+  mountSidebar?: (input: { panel: string; html?: string; url?: string }) => void
+  /**
+   * Post a JSON message to an already-mounted panel. The panel's
+   * `onMessage` handler fires; if the panel isn't mounted the adapter
+   * MUST throw `SidebarPanelNotMountedError` so the host sees a loud
+   * structured error instead of a silent drop.
+   */
+  postToSidebar?: (input: { panel: string; message: unknown }) => void
+}
+
+/**
+ * Error thrown by an adapter's `postToSidebar` when the named panel
+ * has not been mounted yet. Carries `code` so the bridge forwards it
+ * verbatim onto the command-result.
+ */
+export class SidebarPanelNotMountedError extends Error {
+  readonly code = 'SIDEBAR_PANEL_NOT_MOUNTED' as const
+  constructor(panel: string) {
+    super(`sidebar panel "${panel}" has not been mounted yet; mountSidebar must run first`)
+    this.name = 'SidebarPanelNotMountedError'
+  }
 }
 
 /**
@@ -317,6 +350,31 @@ export function makeLiveModelHandlers(
       const a = (args ?? {}) as { lang?: unknown }
       if (typeof a.lang !== 'string') throw new Error('setLang: args.lang is required')
       adapter.setLang!(a.lang)
+    }
+  }
+  if (adapter.mountSidebar) {
+    handlers.mountSidebar = (args: unknown) => {
+      const a = (args ?? {}) as { panel?: unknown; html?: unknown; url?: unknown }
+      if (typeof a.panel !== 'string' || !a.panel) {
+        throw new Error('mountSidebar: args.panel is required')
+      }
+      const html = typeof a.html === 'string' ? a.html : undefined
+      const url = typeof a.url === 'string' ? a.url : undefined
+      if ((html === undefined) === (url === undefined)) {
+        throw new Error('mountSidebar: exactly one of args.html or args.url is required')
+      }
+      adapter.mountSidebar!({ panel: a.panel, html, url })
+      return { panel: a.panel }
+    }
+  }
+  if (adapter.postToSidebar) {
+    handlers.postToSidebar = (args: unknown) => {
+      const a = (args ?? {}) as { panel?: unknown; message?: unknown }
+      if (typeof a.panel !== 'string' || !a.panel) {
+        throw new Error('postToSidebar: args.panel is required')
+      }
+      adapter.postToSidebar!({ panel: a.panel, message: a.message })
+      return { panel: a.panel, delivered: true }
     }
   }
   return handlers

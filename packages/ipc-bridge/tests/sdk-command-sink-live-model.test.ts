@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  defaultSdkCommandHandlers,
   installLiveModelSink,
   installSdkCommandSink,
   makeLiveModelHandlers,
+  SidebarPanelNotMountedError,
   UnsupportedCommandError,
   type SdkLiveModelAdapter,
 } from '../src/sdk-command-sink'
@@ -111,6 +111,72 @@ describe('makeLiveModelHandlers / installLiveModelSink', () => {
       // bare Node; that contract is covered by
       // `tests/sdk-command-sink.test.ts`.
     ])
+  })
+
+  it('mountSidebar: html + url payloads are accepted, exactly-one is enforced', () => {
+    const calls: Array<{ panel: string; html?: string; url?: string }> = []
+    const h = makeLiveModelHandlers({
+      mountSidebar: (i) => { calls.push(i) },
+    })
+    const r1 = h.mountSidebar!({ panel: 'spell-check', html: '<div>sc</div>' })
+    expect(r1).toEqual({ panel: 'spell-check' })
+    expect(calls).toEqual([{ panel: 'spell-check', html: '<div>sc</div>', url: undefined }])
+    const r2 = h.mountSidebar!({ panel: 'ai-panel', url: 'https://plugins.example/ai' })
+    expect(r2).toEqual({ panel: 'ai-panel' })
+    expect(calls[1]).toEqual({ panel: 'ai-panel', html: undefined, url: 'https://plugins.example/ai' })
+    expect(() => h.mountSidebar!({ panel: 'p' })).toThrow(/exactly one/)
+    expect(() => h.mountSidebar!({ panel: 'p', html: 'x', url: 'y' })).toThrow(/exactly one/)
+    expect(() => h.mountSidebar!({ html: 'x' })).toThrow(/panel is required/)
+    expect(() => h.mountSidebar!({ panel: '', html: 'x' })).toThrow(/panel is required/)
+  })
+
+  it('postToSidebar: returns {panel, delivered:true} and forwards message', () => {
+    const seen: Array<{ panel: string; message: unknown }> = []
+    const h = makeLiveModelHandlers({
+      postToSidebar: (i) => { seen.push(i) },
+    })
+    const r = h.postToSidebar!({ panel: 'spell-check', message: { type: 'progress', pct: 5 } })
+    expect(r).toEqual({ panel: 'spell-check', delivered: true })
+    expect(seen).toEqual([{ panel: 'spell-check', message: { type: 'progress', pct: 5 } }])
+    expect(() => h.postToSidebar!({ message: { type: 'x' } })).toThrow(/panel is required/)
+  })
+
+  it('SidebarPanelNotMountedError carries the SIDEBAR_PANEL_NOT_MOUNTED code', () => {
+    const err = new SidebarPanelNotMountedError('ghost')
+    expect(err.code).toBe('SIDEBAR_PANEL_NOT_MOUNTED')
+    expect(err.name).toBe('SidebarPanelNotMountedError')
+    expect(err.message).toContain('ghost')
+  })
+
+  it('adapter mountSidebar / postToSidebar absent => command falls through to UNSUPPORTED', () => {
+    const handle = installSdkCommandSink({
+      handlers: makeLiveModelHandlers({}),
+    })
+    return Promise.all([
+      handle.dispatch('mountSidebar', { panel: 'p', html: 'x' }).then(
+        () => { throw new Error('expected reject for mountSidebar') },
+        (err: unknown) => { expect(err).toBeInstanceOf(UnsupportedCommandError) },
+      ),
+      handle.dispatch('postToSidebar', { panel: 'p', message: {} }).then(
+        () => { throw new Error('expected reject for postToSidebar') },
+        (err: unknown) => { expect(err).toBeInstanceOf(UnsupportedCommandError) },
+      ),
+    ])
+  })
+
+  it('installLiveModelSink lists mountSidebar / postToSidebar in supported when adapter exposes them', () => {
+    const target: Record<string, unknown> = {}
+    const handle = installLiveModelSink({
+      target,
+      adapter: {
+        getText: () => 'x',
+        mountSidebar: () => undefined,
+        postToSidebar: () => undefined,
+      },
+    })
+    expect(handle.supported).toEqual(
+      expect.arrayContaining(['getContent', 'mountSidebar', 'postToSidebar']),
+    )
   })
 })
 
