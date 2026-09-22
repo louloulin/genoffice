@@ -725,9 +725,45 @@ describe.skipIf(skip)('slides:get-* read-model — tier 3 (sdk1 §11.48)', () =>
     expect(await invoke('slides:font-missing', [], sessionId)).toEqual([])
   })
 
-  it('chart-color-schemes stays [] (engine has no chart palette metadata; M4 backlog)', async () => {
+  it('chart-color-schemes returns the theme-derived palette (sdk1 §11.50)', async () => {
+    // sdk1 §11.50 closes the M4 backlog item "chart-color-schemes":
+    // the empty-stub `[]` used to mean "no palette metadata", which
+    // made the Chart "Change Colors" dialog render with no swatches.
+    // Now it returns the live theme's accent1..6 plus the rotated
+    // + mono-accent gradients (matches the desktop `chartColorSchemes`
+    // in apps/slides/src/main/slides-main.ts:1000).
     const sessionId = await openDeckAndRememberSession()
-    expect(await invoke('slides:chart-color-schemes', [], sessionId)).toEqual([])
+    const schemes = await invoke('slides:chart-color-schemes', [], sessionId) as Array<{
+      key: string
+      label: string
+      colors: string[]
+    }>
+    // default + 2 colorful + 6 mono accents = 9 schemes.
+    expect(schemes.length).toBe(9)
+    // The 'default' scheme carries the empty-colors contract — it means
+    // "don't override the chart's existing palette".
+    expect(schemes[0]?.key).toBe('default')
+    expect(schemes[0]?.colors).toEqual([])
+    // The 'colorful' scheme carries the 6 accent colors as-is.
+    expect(schemes[1]?.key).toBe('colorful')
+    expect(schemes[1]?.colors.length).toBe(6)
+    // The 6 mono-accent schemes each carry a 5-step gradient toward
+    // white, in #RRGGBB uppercase format.
+    for (let i = 0; i < 6; i++) {
+      const mono = schemes[3 + i]
+      expect(mono?.key).toBe(`mono-accent${i + 1}`)
+      expect(mono?.colors.length).toBe(5)
+      for (const c of mono?.colors ?? []) {
+        expect(c).toMatch(/^#[0-9A-F]{6}$/)
+      }
+    }
+  })
+
+  it('chart-color-schemes returns null when no session is bound', async () => {
+    // No SSE session → resolveSlidesReadModel returns null → handler
+    // answers null (the renderer's `await ...then` reads `null` as
+    // "no palette available" rather than crashing on the missing chain).
+    expect(await invoke('slides:chart-color-schemes', [])).toBeNull()
   })
 
   it('table-structure (no table on the slide) returns null (sdk1 §11.49)', async () => {

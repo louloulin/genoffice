@@ -39,7 +39,47 @@ import {
   type SlideComment,
   type SlideDeck,
   type SlideLayoutInfo,
+  parseTheme,
 } from '@genoffice/pptx-engine'
+
+/** Office "colorful" fallback (matches desktop's FALLBACK_ACCENTS). Used when
+ *  the deck has no theme or parseTheme throws — six accent hues that look
+ *  sensible on a fresh blank.pptx. */
+const FALLBACK_ACCENTS = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47']
+
+/** Mix a hex color (#RRGGBB) toward an 8-bit target by `ratio`. Ratio 0
+ *  returns the original; ratio 1 returns the target. Used to build the
+ *  5-step mono gradient per accent. */
+function mixHex(hex: string, target: number, ratio: number): string {
+  const v = parseInt(hex.replace('#', ''), 16)
+  if (!Number.isFinite(v)) return hex
+  const ch = (x: number): number => Math.round(x + (target - x) * ratio)
+  const r = ch((v >> 16) & 255)
+  const g = ch((v >> 8) & 255)
+  const b = ch(v & 255)
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0').toUpperCase()}`
+}
+
+/** Read the deck's theme accent1..6 from the first slide's inheritance
+ *  chain (mirrors `deckAccents` in apps/slides/src/main/slides-main.ts:983).
+ *  Returns FALLBACK_ACCENTS when the deck has no theme or parseTheme
+ *  throws — the renderer's chart palette dialog must always have *some*
+ *  six colors to pick from. */
+function deckAccents(opened: OpenedPptx): string[] {
+  const slide = opened.deck.slides[0]
+  if (!slide) return FALLBACK_ACCENTS
+  try {
+    const chain = opened.archive.resolveSlideChain(slide.path)
+    const xml = chain.themePath ? opened.archive.readText(chain.themePath) : null
+    const colors = xml ? parseTheme(xml).colors : undefined
+    const acc = ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6']
+      .map((k) => colors?.[k])
+      .filter((c): c is string => !!c)
+    return acc.length >= 3 ? acc : FALLBACK_ACCENTS
+  } catch {
+    return FALLBACK_ACCENTS
+  }
+}
 
 const MAX_SLIDES_SESSIONS = 32
 
@@ -620,7 +660,45 @@ export function registerSlidesStateHandlers(): void {
   })
   registerHandle('slides:font-catalog', () => [])
   registerHandle('slides:font-missing', () => [])
-  registerHandle('slides:chart-color-schemes', () => [])
+  // Real chart-color-schemes (sdk1 §11.50): port of the desktop
+  // `chartColorSchemes()` in apps/slides/src/main/slides-main.ts:1000
+  // (M4 backlog closure). Reads the live deck's theme accent1..6 via
+  // parseTheme(theme.xml) and projects to the renderer's
+  // chart-color-schemes contract:
+  //
+  //   Array<{ key, label, colors: string[] }>
+  //
+  // - key 'default' is empty colors (means "use the chart's existing
+  //   palette, don't override")
+  // - 'colorful' / 'colorful2' rotate the 6 accents for a visual swap
+  // - 'mono-accentN' is a 5-step gradient per accent
+  //
+  // The desktop uses i18n keys for `label`; on web we hard-code
+  // English labels — the renderer's Chart dialog passes the raw string
+  // through, no translation layer is required.
+  registerHandle('slides:chart-color-schemes', (event: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return null
+    const acc = deckAccents(rm.opened)
+    const rot = [...acc.slice(3), ...acc.slice(0, 3)]
+    const mono = (c: string): string[] => [
+      mixHex(c, 0, 0.25),
+      c,
+      mixHex(c, 255, 0.25),
+      mixHex(c, 255, 0.45),
+      mixHex(c, 255, 0.65),
+    ]
+    return [
+      { key: 'default', label: 'Theme default', colors: [] },
+      { key: 'colorful', label: 'Colorful', colors: acc },
+      { key: 'colorful2', label: 'Colorful 2', colors: rot },
+      ...acc.map((c, i) => ({
+        key: `mono-accent${i + 1}`,
+        label: `Monochromatic accent ${i + 1}`,
+        colors: mono(c),
+      })),
+    ]
+  })
   registerHandle('slides:clipboard-external', () => ({}))
   registerHandle('slides:clipboard-probe', () => ({}))
   registerHandle('slides:media-data', () => ({}))
