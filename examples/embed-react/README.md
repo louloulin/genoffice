@@ -29,7 +29,26 @@ The Vite dev server proxies `/api` and `/embed` to the web-server on
 | File | Purpose |
 |---|---|
 | `GenOfficeEditor.tsx` | The React component (the deliverable). |
-| `demo.tsx` | Tiny demo app wiring the component to a form. |
-| `index.html` | Vite entry. |
+| `demo.tsx` | Basic single-instance demo app wiring the component to a form. |
+| `demo-kestrel.tsx` | **SDK 2.0 Kestrel end-to-end demo** — four surfaces in one page: multi-instance + comments + plugin runtime + telemetry. Open at `/kestrel.html`. |
+| `panel-stub.html` | Static page used as the sidebar panel URL during the plugin-runtime demo. |
+| `index.html` | Vite entry — links to both Basic and Kestrel demos. |
 | `vite.config.ts` | Vite config with the `/api` and `/embed` proxy. |
 | `tsconfig.json` | Strict TypeScript config with React JSX. |
+
+## SDK 2.0 Kestrel demo
+
+`pnpm dev` then open <http://localhost:5173/kestrel.html>. The page exercises:
+
+1. **Multi-instance** — two `GenOfficeEditor`s side-by-side (`split-A` / `split-B`),
+   each with its own `instanceId`. The Comments panel uses
+   `getEditor('split-A')` to look up a handle from a sibling component.
+2. **Comments API** — `addComment` / `listComments` / `resolveComment`
+   plus `commentAdded` / `commentResolved` event hooks.
+3. **Plugin Runtime** — `mountSidebar({ panelUrl: '/panel-stub.html' })`
+   + `postToSidebar` from the host + `sidebarMessage` events from the
+   panel back into the host (the static `panel-stub.html` ships back
+   `PONG` / `ANSWER` payloads via `window.parent.postMessage`).
+4. **Telemetry** — `createEditor({ telemetry: true })` + `usage` event
+   subscriber. The interval fires every 30 s; click the `insertText`
+   button to bump the `docBytesWritten` counter before the next tick. |

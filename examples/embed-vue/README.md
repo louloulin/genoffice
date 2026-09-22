@@ -29,7 +29,16 @@ The Vite dev server proxies `/api` and `/embed` to the web-server on
 | File | Purpose |
 |---|---|
 | `GenOfficeEditor.vue` | The Vue SFC (the deliverable). |
-| `demo.ts` | Tiny demo app using inline template. |
-| `index.html` | Vite entry. |
+| `demo.ts` | Basic single-instance demo app using inline template. |
+| `demo-kestrel.ts` | **SDK 2.0 Kestrel end-to-end demo** — four surfaces in one page: multi-instance + comments + plugin runtime + telemetry. Open at `/kestrel.html`. |
+| `panel-stub.html` | Static page used as the sidebar panel URL during the plugin-runtime demo. |
+| `index.html` | Vite entry — links to both Basic and Kestrel demos. |
 | `vite.config.ts` | Vite config with the `/api` and `/embed` proxy. |
 | `tsconfig.json` | Strict TypeScript config with Vue JSX preserved. |
+
+## SDK 2.0 Kestrel demo
+
+`pnpm dev` then open <http://localhost:5173/kestrel.html>. Same four
+surfaces as the React demo (`examples/embed-react/demo-kestrel.tsx`):
+multi-instance, Comments, Plugin Runtime, Telemetry — implemented in
+Vue 3 Composition API. |

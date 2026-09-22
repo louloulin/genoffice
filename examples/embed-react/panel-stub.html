@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GenOffice — Demo Sidebar Panel Stub</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; background: #fafafa; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    button { padding: 6px 10px; margin-right: 6px; border: 1px solid #ccc; border-radius: 4px; background: white; cursor: pointer; }
+    pre { background: #eee; padding: 6px; border-radius: 4px; font-size: 11px; max-height: 200px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>AI assistant (demo panel)</h1>
+  <p>In a real plugin this page would render the plugin UI. The
+  buttons below reply to the host SDK so you can see the
+  <code>sidebarMessage</code> event round-trip.</p>
+  <button id="ping">Send "PONG"</button>
+  <button id="answer">Send answer</button>
+  <pre id="log">(host → panel messages appear here)</pre>
+  <script>
+    // Bridge: listen for postMessage from the parent editor iframe and
+    // forward back via window.parent.postMessage. This is the same
+    // protocol a real plugin would use (only the schema is open).
+    window.addEventListener('message', (ev) => {
+      const data = ev.data
+      if (!data || typeof data !== 'object') return
+      // Render inbound for the demo log.
+      if (data.kind === 'event') {
+        const out = document.getElementById('log')
+        if (out) out.textContent = 'host → panel: ' + JSON.stringify(data.payload) + '\n' + out.textContent
+      }
+    })
+    document.getElementById('ping').onclick = () => {
+      window.parent.postMessage({
+        v: '1.0',
+        dir: 'editor→host',
+        kind: 'event',
+        payload: { name: 'sidebarMessage', payload: { type: 'PONG' } },
+      }, '*')
+    }
+    document.getElementById('answer').onclick = () => {
+      window.parent.postMessage({
+        v: '1.0',
+        dir: 'editor→host',
+        kind: 'event',
+        payload: { name: 'sidebarMessage', payload: { type: 'ANSWER', text: 'This document has 3 sections.' } },
+      }, '*')
+    }
+  </script>
+</body>
+</html>

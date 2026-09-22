@@ -2680,6 +2680,27 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 41. **SDK 2.0 Kestrel M3.5 · Plugin Runtime 骨架（mountSidebar / unmountSidebar / postToSidebar + sidebarMessage 事件）**（✅ 本轮）：
 42. **SDK 2.0 Kestrel M4 · File Picker + Telemetry 骨架**（✅ 本轮）：
 43. **SDK 2.0 Kestrel 双语 README 升级到 v2.0**（✅ 本轮，闭合 §B.5.6 验收要求 "README + 双语更新到 v2.0"）：
+44. **SDK 2.0 Kestrel end-to-end demo（React + Vue 双端）**（✅ 本轮，闭合 §B.5.6 验收要求 #3 "examples/embed-react/ 与 examples/embed-vue/ 各增 1 个 demo：多实例 + sidebar mount + comments 完整链路"）：
+    - **examples/embed-react/demo-kestrel.tsx**（NEW，~270 行）：
+      - 4 段 Kestrel surface 同页演示（multi-instance / comments / plugin runtime / telemetry）
+      - `split-A` / `split-B` 双 `GenOfficeEditor`，不同 docId，各自 `instanceId`
+      - `CommentsPanel` 组件用 `getEditor('split-A')` 从兄弟组件查 handle（演示跨组件 EditorRegistry 查找）
+      - `SidebarMountPanel` 用 `mountSidebar({ panelUrl: '/panel-stub.html' })` 挂静态 panel，`postToSidebar` 推 `ASK`，监听 `sidebarMessage` 接收 `PONG` / `ANSWER`
+      - `TelemetryBadge` `createEditor({ telemetry: true })` + `usage` 订阅 + `insertText` 按钮主动 bump `docBytesWritten` 计数器
+      - tsc clean（demo-kestrel.tsx 0 错误；`GenOfficeEditor.tsx` 的 1 个 `ErrorEvent` vs `onError` 类型 mismatch 是 pre-existing，未触碰）
+    - **examples/embed-vue/demo-kestrel.ts**（NEW，~230 行）：
+      - Vue 3 Composition API 等价实现
+      - 同样 4 段 surface（multi-instance + comments + plugin runtime + telemetry）
+      - 修了变量名 `h` 与 Vue 内置 `h()` createElement 冲突（重命名为 `handle`）
+      - tsc clean（demo-kestrel.ts 0 错误；`./GenOfficeEditor.vue` + `@vitejs/plugin-vue` 模块缺失是 pre-existing dev-deps 未安装导致）
+    - **examples/embed-{react,vue}/panel-stub.html**（NEW）：sidebar 演示用的静态 panel，listen `message` 事件记录 host→panel 消息，按钮触发 `window.parent.postMessage({kind:'event', payload:{name:'sidebarMessage', payload:{type:'PONG'}}}, '*')` 回发到 host
+    - **examples/embed-{react,vue}/index-kestrel.html**（NEW）：Kestrel demo 的 Vite 入口（script tag 指向 `/demo-kestrel.ts{x}`，与基础 demo 共用 vite 入口约定）
+    - **examples/embed-{react,vue}/index.html**：加 `<nav>` 链接 "Basic / Kestrel (SDK 2.0)"，两个 demo 通过同一 Vite dev server 暴露
+    - **examples/embed-{react,vue}/README.md**：每个新增文件一行说明 + 单独 "SDK 2.0 Kestrel demo" 段，介绍 4 段 surface 行为与访问路径
+    - **SDK dist 重建**：本轮首次正式 emit `apps/sdk/dist/index.d.ts` 等声明文件 —— 之前 dist 是 M1 时代产物，缺 `getEditor` / `Comment` / `UsageEvent` / `SidebarMessageEvent` 等 M1-M4 export。`tsc` 用现有 tsconfig.json（含 declaration / declarationMap）一次产出
+    - **未做**（demo 收尾）：在 sandbox 内不便跑 `pnpm dev` 实际渲染验证；用户在本地 `pnpm install && pnpm dev` 后访问 `/kestrel.html` 即可看到完整链路
+
+
     - **apps/sdk/README.md**（EN）：273 → 442 行（+169）
       - 新增 6 个章节：Comments API (Kestrel M2) / Versions API (Kestrel M3) / Plugin Runtime (Kestrel M3.5) / File Picker (Kestrel M4) / Telemetry (Kestrel M4) / SDK 2.0 (Kestrel) — surface map
       - 每个新章节含：概述段 + JSDoc 风格的 TypeScript 代码示例 + OAuth scope 注意点（Comments 的 `files:comment` / Versions 的 `files:restore` / File Picker 的 `code: UNSUPPORTED` 拒绝路径）
