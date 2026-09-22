@@ -432,9 +432,14 @@ export function makeLiveModelHandlers(
       if (typeof a.panelUrl !== 'string' || !a.panelUrl) {
         throw new Error('mountSidebar: args.panelUrl is required')
       }
-      const width = typeof a.width === 'number' ? a.width : undefined
-      const title = typeof a.title === 'string' ? a.title : undefined
-      const r = adapter.mountSidebar!({ panelUrl: a.panelUrl, width, title })
+      // Conditionally spread rather than passing explicit `undefined`:
+      // `exactOptionalPropertyTypes: true` (the monorepo default) rejects
+      // `{ width: undefined }` for a `width?: number` parameter.
+      const r = adapter.mountSidebar!({
+        panelUrl: a.panelUrl,
+        ...(typeof a.width === 'number' ? { width: a.width } : {}),
+        ...(typeof a.title === 'string' ? { title: a.title } : {}),
+      })
       if (!r || typeof r.panelId !== 'string' || !r.panelId) {
         throw new Error('mountSidebar: adapter must return {panelId:string}')
       }

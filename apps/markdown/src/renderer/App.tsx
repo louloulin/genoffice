@@ -39,6 +39,7 @@ import { mermaidSvgToPng, renderMermaid } from './editor/mermaid'
 import { resolveImageSrc } from './editor/localImage'
 import type { ExportFormat, SaveMode } from '../shared/ipc'
 import { uiOp } from './editor/ops'
+import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
@@ -215,6 +216,31 @@ export default function App() {
   editorRef.current = editor
   filePathRef.current = filePath
   const findTarget = useMemo(() => (editor ? tiptapFindTarget(editor) : null), [editor])
+
+  // SDK 2.0 §B.5.1 #2 — publish the markdown editor's undo history to the
+  // embed host. `installTextBufferSink` runs in web-bridge.ts at renderer
+  // boot, before this tiptap instance exists; `registerNativeAdapter` is
+  // resolved lazily on every command, so registering on mount is enough.
+  // tiptap has no public history-depth accessor, so `getUndoStack` reports
+  // availability (see the docs adapter for the same tradeoff).
+  useEffect(() => {
+    if (!editor) return
+    return registerNativeAdapter({
+      undo: () => {
+        editor.commands.undo()
+        return true
+      },
+      redo: () => {
+        editor.commands.redo()
+        return true
+      },
+      getUndoStack: () => {
+        const canUndo = editor.can().undo()
+        const canRedo = editor.can().redo()
+        return { length: (canUndo ? 1 : 0) + (canRedo ? 1 : 0), current: canUndo ? 1 : 0 }
+      },
+    })
+  }, [editor])
 
   useEffect(() => {
     setImageBaseDir(filePath ? dirOf(filePath) : null)

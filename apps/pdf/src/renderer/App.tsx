@@ -174,6 +174,7 @@ import {
 import type { LocalTextEdit, LocalTextInsert, TextDraft } from './text-edit-preview'
 import { planEditOps, reduceBucket } from './edit-ops'
 import type { Bucket, Op, OpContext, PlanResult } from './edit-ops'
+import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { rectsNear } from './edit-state'
 import type {
   StampConfig,
@@ -1766,6 +1767,39 @@ export default function App() {
     applySnapshot(top)
     coalesceKeyRef.current = null
   }
+
+  // SDK 2.0 §B.5.1 #2 — publish this editor's undo history to the embed host.
+  // The pdf editor keeps real `EditSnapshot` stacks (capped at 50 by the push
+  // path), so unlike the tiptap / CodeMirror apps we can report a true depth.
+  // The adapter reads `undoStack` / `redoStack` / `undo` / `redo` through
+  // refs so the registration effect can run once without re-subscribing on
+  // every snapshot.
+  const undoStackRef = useRef(undoStack)
+  undoStackRef.current = undoStack
+  const redoStackRef = useRef(redoStack)
+  redoStackRef.current = redoStack
+  const undoRef = useRef(undo)
+  undoRef.current = undo
+  const redoRef = useRef(redo)
+  redoRef.current = redo
+  useEffect(() => {
+    return registerNativeAdapter({
+      undo: () => {
+        if (undoStackRef.current.length === 0) return false
+        undoRef.current()
+        return true
+      },
+      redo: () => {
+        if (redoStackRef.current.length === 0) return false
+        redoRef.current()
+        return true
+      },
+      getUndoStack: () => ({
+        length: undoStackRef.current.length + redoStackRef.current.length,
+        current: undoStackRef.current.length,
+      }),
+    })
+  }, [])
 
   // ── Full-text search ──
 

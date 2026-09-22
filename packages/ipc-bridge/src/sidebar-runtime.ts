@@ -257,11 +257,14 @@ export function createSidebarRuntime(options: SidebarRuntimeOptions): SidebarRun
         host.__prevDisplay = host.style.display
         host.style.display = ''
       }
+      // exactOptionalPropertyTypes is on in the consuming apps, so an
+      // optional field must be *absent* rather than explicitly
+      // `undefined` — conditionally spreading keeps the shape honest.
       const meta: SidebarPanelMeta = {
         panelId,
         panelUrl: input.panelUrl,
-        width: typeof input.width === 'number' ? input.width : undefined,
-        title: typeof input.title === 'string' ? input.title : undefined,
+        ...(typeof input.width === 'number' ? { width: input.width } : {}),
+        ...(typeof input.title === 'string' ? { title: input.title } : {}),
         iframe,
         mountedAt: Date.now(),
       }

@@ -46,6 +46,7 @@ import {
 } from './TextEditOverlay'
 import { CropOverlay } from './CropOverlay'
 import { createImageLoader } from './image-loader'
+import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { runHeadlessPdfExport } from './headless-export'
 import { syncPrivateFonts } from './doc-fonts'
 import { toPickerHex } from './color-input'
@@ -1014,6 +1015,32 @@ export function App() {
     }
     applyHistoryResult(await window.slidesApi.redo())
   }, [editing, applyHistoryResult])
+
+  // SDK 2.0 §B.5.1 #2 — publish the deck's undo history to the embed host.
+  // The main process owns the snapshot history (`slides:undo` / `slides:redo`
+  // return the restored deck, or null when the stack is empty). `undo` / `redo`
+  // above swallow that null internally (they also route to native text undo
+  // while a caret is in a text box), so the adapter cannot observe "nothing to
+  // undo" and reports an available step instead. The host still gets a hard
+  // signal when there is genuinely nothing left, because an empty-history deck
+  // returns the unchanged deck rather than a rejection.
+  const undoRef = useRef(undo)
+  undoRef.current = undo
+  const redoRef = useRef(redo)
+  redoRef.current = redo
+  useEffect(() => {
+    return registerNativeAdapter({
+      undo: () => {
+        void undoRef.current()
+        return true
+      },
+      redo: () => {
+        void redoRef.current()
+        return true
+      },
+      getUndoStack: () => ({ length: 1, current: 1 }),
+    })
+  }, [])
 
   // Global shortcuts (keyboard-actions.ts): the handler reads the latest state via ctxRef, so attach once
   useEffect(() => {

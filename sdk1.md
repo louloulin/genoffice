@@ -2781,6 +2781,82 @@ alias 表没跟着补；`apps/html` 更彻底 —— **完全没有 alias 块**�
 - **构建产物不入库**：`out/` 已 gitignore；本轮的 build 只用于验证，
   CI 会重建。
 
+### 11.39 · §B.5.1 #2 六个 app 全部接线 + ipc-bridge EOPT 类型修复
+
+§11.38 把 undo/redo 的**机制**做完了（sink handler + 双栈 + 注册表），并把
+`apps/docs` 接上 tiptap。本轮把剩下 5 个 app 全部接上各自编辑器的真实
+history，顺手修掉一组让 app typecheck 报错的 `exactOptionalPropertyTypes`
+违规。
+
+#### 11.39.1 六个 app 的 native adapter
+
+| App | 编辑器模型 | `getUndoStack` 精度 | 备注 |
+|---|---|---|---|
+| `docs` | tiptap（ProseMirror） | 可用性（0/1/2） | §11.38 已接 |
+| `markdown` | tiptap | 可用性（0/1/2） | 新增 |
+| `html` | CodeMirror 6 `SourceEditorHandle` | 可用性（0/1/2） | 直接复用 `undo()` / `canUndo()` |
+| `sheets` | Univer `IUndoRedoService` | **真实深度** | 复用已有 `undoRedoStatus$` 订阅，`{length: undos+redos, current: undos}` |
+| `pdf` | 自有 `EditSnapshot` 双栈 | **真实深度** | `{length: undo+redo, current: undo}`，push 侧已 cap 50 |
+| `slides` | 主进程 snapshot 栈 | 常量 1/1 | `slides:undo` 返回 deck 或 null；null 被 renderer 内部吞掉 |
+
+**设计一致性**：六个 app 都用同一个 `registerNativeAdapter()`（惰性解析，
+mount 时注册，boot 时就装好的 sink 立刻开始委派），每 app ~20 行。
+`getText` / `setText` **一律不注册** —— 六个 renderer 的文本往返都由
+`web-bridge.ts` 的 buffer 拥有，改走各自编辑器会绕过它们各自的管线
+（docs 的分页、html 的 version 计数、sheets 的 journal 抑制等）。
+
+**Univer 深度**：`sheets` 的 `undoRedoStatus$` 订阅本来就在（驱动 QAT 按钮
+的灰化），本轮只是把 `{undos, redos}` 同时镜像进 `histRef`，所以拿到的是
+**真实步数**而不是可用性近似。
+
+**slides 的取舍**：`undo` / `redo` 会先判断焦点是否在文本框里（是则走
+`document.execCommand('undo')` 保留原生输入撤销），这条分支让 adapter
+无法观察"栈空"。因此 `getUndoStack` 报常量 `1/1` —— host 的按钮恒亮，
+空栈时 `slides:undo` 返回未变化的 deck 而非报错，属于已知的精度损失
+（已在 §11.39.3 记为 follow-up）。
+
+#### 11.39.2 ipc-bridge `exactOptionalPropertyTypes` 修复
+
+6 个 app 的 `tsc --noEmit` 在 `packages/ipc-bridge` 上各报 1-2 个 TS2379 /
+TS2375（不是本轮引入，是一直存在、被 app 的 typecheck 掩盖的）：
+
+```
+packages/ipc-bridge/src/sdk-command-sink.ts(437,39): error TS2379
+  Argument of type '{ panelUrl: string; width: number | undefined; title: string | undefined; }'
+  is not assignable to parameter of type '{ panelUrl: string; width?: number; title?: string; }'
+  with 'exactOptionalPropertyTypes: true'.
+packages/ipc-bridge/src/sidebar-runtime.ts(260,13): error TS2375 …
+```
+
+根因：两处都把 `typeof x === 'number' ? x : undefined` 的结果直接塞进可选
+字段。`exactOptionalPropertyTypes: true`（monorepo 默认）区分"字段缺失"和
+"字段显式为 undefined"。改成条件展开：
+
+```ts
+...(typeof input.width === 'number' ? { width: input.width } : {}),
+```
+
+修复后 6 个 app 的 `ipc-bridge` 相关错误 **全部归零**（此前每 app 1-2 个）。
+
+#### 11.39.3 验证
+
+- `packages/ipc-bridge` → **6 文件 / 135 测试通过**
+- 6 个 app `electron-vite build` → **全部成功**
+- 6 个 app 的 `tsc --noEmit` → **ipc-bridge 相关错误 0 个**（每 app 的
+  pre-existing 错误——i18n key 表、`pdfjs-dist` worker 声明——不在改动范围）
+- 产物校验：6 个 bundle 都 grep 到 `registerNativeAdapter` ×2
+
+#### 11.39.4 风险与后续
+
+- **`markdown` / `docs` / `html` 的深度是近似值**：tiptap 与 CodeMirror
+  都没有公开的 history-depth API。host 的"能不能撤/重做"是准确的，没有
+  "还能撤 N 步"。要真实深度需要读 tiptap history plugin 的私有 state
+  （脆）或换成自维护快照栈（重），收益很低，暂不做。
+- **`slides` 报常量 1/1**：见 §11.39.1 的取舍。要精确需要把
+  `slides:undo` 的 null 语义透传到 renderer（改 `applyHistoryResult` 的
+  返回形状），属独立小改动。
+- **`insertImage` / `setTheme` / `setLang` 仍无 adapter**：不在本小节范围。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -3358,6 +3434,16 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
   mirror 跨重启可查询。`enterprise/auth-audit.ts` 重写走 `recordAudit` /
   `queryAudit` / `exportAudit` 三函数；`GENOFFICE_AUDIT_PERSIST=0` 供 CI 隔离用。
   §0.4 文档管理功能 13/14 → **14/14** ✅（仅剩协作冲突 = §M4 §C backlog）。
+
+#### ✅ 本轮新增解决（2026-09-22 · §11.39 六 app native adapter + EOPT 修复）
+
+- **§B.5.1 #2 六个 app 全部接线** — docs / markdown / html 走各自编辑器
+  （tiptap / CodeMirror）的 undo；sheets 复用 Univer `undoRedoStatus$` 拿
+  **真实深度**；pdf 复用自有 `EditSnapshot` 双栈拿**真实深度**；slides 走
+  主进程 deck 快照。全部经同一个惰性 `registerNativeAdapter()`。
+- **ipc-bridge `exactOptionalPropertyTypes` 违规** — `sdk-command-sink.ts`
+  与 `sidebar-runtime.ts` 各一处把显式 `undefined` 塞进可选字段，导致 6 个
+  app 的 `tsc --noEmit` 各报 1-2 个 TS2379/TS2375。改为条件展开后归零。
 
 #### ✅ 本轮新增解决（2026-09-22 · §11.38 undo/redo + renderer 构建修复）
 

@@ -15,6 +15,7 @@ import {
 import { useI18n } from './i18n/locale'
 import { parseDocText, serializeDocText, type Envelope } from './document/envelope'
 import { SourceEditor, type CursorInfo, type SourceEditorHandle } from './source/SourceEditor'
+import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { PreviewFrame, type PreviewFrameHandle } from './preview/PreviewFrame'
 import { instrumentForPreview } from './preview/instrument'
 import type { ComputedSnapshot, ElementRect, FromInspector } from './preview/inspector-protocol'
@@ -364,6 +365,42 @@ export default function App() {
   const refreshHistory = useCallback(() => {
     const editor = editorRef.current
     if (editor) setHistoryState({ undo: editor.canUndo(), redo: editor.canRedo() })
+  }, [])
+
+  // SDK 2.0 §B.5.1 #2 — publish this editor's undo history to the embed host.
+  // `installTextBufferSink` runs in web-bridge.ts at renderer boot, before the
+  // CodeMirror view exists; `registerNativeAdapter` is resolved lazily on every
+  // command, so registering once on mount is enough. The adapter is registered
+  // once (not per editor instance) because the handle is stable: every method
+  // dereferences `editorRef.current` at call time.
+  useEffect(() => {
+    return registerNativeAdapter({
+      undo: () => {
+        const editor = editorRef.current
+        if (!editor) return false
+        return editor.undo()
+      },
+      redo: () => {
+        const editor = editorRef.current
+        if (!editor) return false
+        return editor.redo()
+      },
+      getUndoStack: () => {
+        const editor = editorRef.current
+        if (!editor) return { length: 0, current: 0 }
+        // CodeMirror's history plugin doesn't expose a step count, so we
+        // report availability: `current` is 1 when an undo is possible. The
+        // SDK contract explicitly permits an editor that can't report depth
+        // to answer a reduced shape, and reporting 0 while a redo is pending
+        // would grey out the host's redo button.
+        const canUndo = editor.canUndo()
+        const canRedo = editor.canRedo()
+        return {
+          length: (canUndo ? 1 : 0) + (canRedo ? 1 : 0),
+          current: canUndo ? 1 : 0,
+        }
+      },
+    })
   }, [])
 
   /** every text change goes through here so the version counter and the map cache stay coherent */

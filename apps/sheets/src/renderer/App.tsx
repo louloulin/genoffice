@@ -54,6 +54,7 @@ import {
 } from './plan-operations'
 import { isNumericIdentifierText } from './cell-warning'
 import { consumePendingUndoCarry, undoStackDepth } from './undo-carry'
+import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useAutoSavePref, type AiScopeQuoteData } from '@genoffice/ui'
 
@@ -441,6 +442,8 @@ export function App(): React.JSX.Element {
   const lazyWorkbookRef = useRef<LazyWorkbookState | null>(null)
   /// Univer undo/redo stack occupancy (subscribed at mount): drives the QAT button gray states
   const [univerHist, setUniverHist] = useState({ canUndo: false, canRedo: false })
+  /** Live Univer undo/redo depth, mirrored for the SDK adapter below. */
+  const histRef = useRef({ undos: 0, redos: 0 })
   /// True while Univer's in-cell editor is open (AutoSave must not save-reload then).
   const editingCellRef = useRef(false)
   const visualDisposablesRef = useRef<{ dispose(): void }[]>([])
@@ -1549,8 +1552,11 @@ export function App(): React.JSX.Element {
     // Undo/redo stack occupancy: the QAT buttons grey out when there is nothing to apply
     const undoRedoService = runtime.univer.__getInjector().get(IUndoRedoService)
     const undoRedoSub = undoRedoService.undoRedoStatus$.subscribe(
-      ({ undos, redos }: { undos: number; redos: number }) =>
-        setUniverHist({ canUndo: undos > 0, canRedo: redos > 0 }),
+      ({ undos, redos }: { undos: number; redos: number }) => {
+        setUniverHist({ canUndo: undos > 0, canRedo: redos > 0 })
+        // Mirror the real depth for the SDK §B.5.1 #2 adapter.
+        histRef.current = { undos, redos }
+      },
     )
     // Programmatic installs (viewport streaming, file loads, merges, row
     // heights, notes, CF/filter rules) run through the same undoable commands
@@ -3330,6 +3336,31 @@ export function App(): React.JSX.Element {
   function handleRedo(): void {
     void univerRef.current?.univerAPI.redo()
   }
+
+  // SDK 2.0 §B.5.1 #2 — publish Univer's undo history to the embed host.
+  // Unlike the tiptap / CodeMirror apps, Univer reports real stack depth via
+  // `undoRedoStatus$` (the same subscription already drives the QAT buttons),
+  // so we mirror it in a ref and report a true `{ length, current }`. The
+  // `lazyWorkbook` path has no Univer history — it goes through `adapterRef`
+  // and reports 0/0, so the host's buttons grey out honestly.
+  useEffect(() => {
+    return registerNativeAdapter({
+      undo: () => {
+        if (!univerRef.current || histRef.current.undos === 0) return false
+        void univerRef.current.univerAPI.undo()
+        return true
+      },
+      redo: () => {
+        if (!univerRef.current || histRef.current.redos === 0) return false
+        void univerRef.current.univerAPI.redo()
+        return true
+      },
+      getUndoStack: () => {
+        const { undos, redos } = histRef.current
+        return { length: undos + redos, current: undos }
+      },
+    })
+  }, [])
 
   function disposePageBreakLayers(sheetId: string): void {
     const layers = pageBreakLayersRef.current.get(sheetId) ?? []
