@@ -1647,6 +1647,36 @@ Test Files  1 passed (1)
 - 单次使用 token 真实被服务端拒（端到端 hook 闭环）
 
 #### 11.18.5 配套的 sdk1.md 状态
+### 11.19 本轮续作（v2 第 14 轮 commit，2026-09-22）
+
+发现 §A.5 / §11.6 / §11.12 一直在用的"199 个 MD 文件"数字实际已漂移到 **221**（typedoc 加上 §11.16 / §11.17 / §11.18 几轮新增的 public helper 后自然增长）。修数字只解决表面，更稳的修法是加一个 typedoc-count 守门 test：以后每次 CI 跑就把当前文件数打到日志，文件数偏离 200-400 范围就 fail。
+
+#### 11.19.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/tests/typedoc-count.test.ts` | 新增 · 3 测试：跑 `node docs/scripts/gen-typedoc.mjs` 到真实 `docs/api/_generated/`（gitignored，CI 安全），统计 `.md` 文件数；用 `console.log` 把当前数打到 CI 日志供 reviewer 直接对比历史值；bounds 200-400；外加一条 sanity test 把 bounds 写成命名的 const | +101 |
+| `sdk1.md` | 3 处 `199` → `221`（§A.5 typedoc 行 / §A.5 #16 #2 / §A.5 #4 typedoc 实际执行） | +3/-3 |
+
+#### 11.19.2 设计要点
+
+- **不打硬值**：故意不 pin 期望值（"== 221"），只用 bounds + 打印当前值。pin 期望值会让每次新增 public symbol 都要小改 test 数字，噪音；bounds + log 让 reviewer 在 PR 上直接看到 "typedoc-count: 224 this run, was 221 last" 即可决定是否动 sdk1.md 文字。
+- **跑真脚本**：不复制 typedoc 命令，直接 `child_process.execSync('node "${typedocScript}"')` 跑同一份 `docs/scripts/gen-typedoc.mjs`，确保任何未来 typedoc 升级 / plugin 升级 / `--excludeInternal` 一旦漂了，这个 test 也会发现。
+- **不需要 bundle / port**：纯进程内命令，无端口竞争，跟现有 file-management.test.ts 的 flakiness 无关。
+- **跟 public-api-tags.test.ts 一脉相承**：那个守住 `@public` 标记的存在性，这个守住 typedoc 输出文件数；两个合起来覆盖"public surface"是否完整暴露。
+
+#### 11.19.3 验证
+
+- `npx vitest run tests/typedoc-count.test.ts`：3/3 通过；stdout 显示 `[typedoc-count] generated 221 .md files (bounds: 200-400)`
+- `npx vitest run`（web-server 子集，排除 4 个外部依赖 LLM / 超时的 e2e）：61 文件 / 488 测试全绿
+- bundle 不动（test 不进 runtime）
+
+#### 11.19.4 剩余
+
+- typedoc 实跑慢（~3.5s），可以放进 nightly job 而不是每次 PR；本次暂留 PR gate，跟其它 ~30s 总耗时比仍可忽略
+- 还没接进 `docs.yml` workflow 里的额外 step；当前依赖 web-server CI 自动跑 `tests/typedoc-count.test.ts` 间接覆盖
+
+
 
 - §0.3 保存功能验证追加："embed token 也走真校验"
 - §11.3 P1 行的"单次使用约束"从"已实装（仅 mint 路径）"升级为"已实装（mint + verify 路径都真）"
@@ -1724,7 +1754,7 @@ Test Files  1 passed (1)
 | Guide 目录 8 篇 | ✅ | getting-started / installation / quick-start-{web,embed,sdk} / deployment-{docker,kubernetes} / security-best-practices |
 | API 参考 11 篇 | ✅ | rest-api / sdk-typescript / postmessage-protocol / ipc-channels / ipc-channels-auto / ai-skills-protocol / kb-tm-format / provider-plugins / marketplace / agent-protocol / provider-capabilities |
 | Skills 文档 14 篇 | ✅ | official / marketplace / authoring / community + 11 个 per-skill 详解页（EN + ZH）|
-| typedoc 实际执行 | ✅ | 199 个 MD 文件本地跑通，sidebar 链接 + .gitignore + JSDoc 全部就绪 |
+| typedoc 实际执行 | ✅ | **221** 个 MD 文件本地跑通（每次 CI 跑 typedoc-count 守住 200-400 范围），sidebar 链接 + .gitignore + JSDoc 全部就绪 |
 | 双语（中英）全覆盖 | ✅ | SDK README + 18 篇 Guide/API/Skills/About 全部双语；VitePress `sidebarZH` 已覆盖 Guide / API / Skills / About 四大分区 |
 
 ### A.5 已知未做（更新于本轮实施后）
@@ -1855,7 +1885,7 @@ Test Files  1 passed (1)
    - `docs/scripts/gen-typedoc.mjs` 修复了 `--skipErrorDocuments` → `--skipErrorChecking`（typedoc 0.28 重命名）
    - 增加了 `apps/web-server/src/common` 作为额外 entry point，消除 `FileWebhook not included` 警告
    - 给 19 个 v1 handler / 公共 helper 加了完整 TSDoc（含 `route` / `summary` / `scope` / `errors` 字段）
-   - 本地跑：`node docs/scripts/gen-typedoc.mjs` → 199 个 MD 文件输出到 `docs/api/_generated/`
+   - 本地跑：`node docs/scripts/gen-typedoc.mjs` → **221** 个 MD 文件输出到 `docs/api/_generated/`（2026-09-22 实测）
    - VitePress sidebar 加入 `Generated API Reference` 入口链接到 `docs/api/_generated/README`
    - `.gitignore` 加入 `docs/api/_generated/`（避免 JSDoc 微调触发大量 churn diff）
    - `docs/package.json` 已声明 `typedoc@^0.28.0` + `typedoc-plugin-markdown@^4.6.0`
@@ -1889,7 +1919,7 @@ Test Files  1 passed (1)
 15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
 16. **§5.2 发布检查清单逐项落地**（✅ 已完成）：
    - **#1 JSDoc/TSDoc on public APIs** — `auth.ts` (handleAuthJwt / handleOAuthToken / hasScope) + `meta.ts` (handleHealth / handleChangelog) 现已具备 `@route` / `@scope` / `@errors` 标记；其他 5 个 v1 handler 文件（files / ai / kb / webhooks）已具备完整 TSDoc（`commit 8e3d3e8`）
-   - **#2 typedoc 实际执行** — `docs/scripts/gen-typedoc.mjs` 重新生成 **199 个 MD 文件** 到 `docs/api/_generated/`
+   - **#2 typedoc 实际执行** — `docs/scripts/gen-typedoc.mjs` 重新生成 **221 个 MD 文件** 到 `docs/api/_generated/`（2026-09-22 实测）；新增 `typedoc-count.test.ts` 守住 200-400 范围防漂移
    - **#3 SDK README + 5 分钟上手** — `apps/sdk/README.{md,zh-CN.md}` + `docs/guide/quick-start-sdk.md` 全部就绪
    - **#4 ≥3 examples** — 5 个 example（embed-basic / embed-react / embed-vue / custom-provider / custom-skill）已落地
    - **#5 Docker image** — `Dockerfile`（多阶段 Node 22 / 非 root node / `/health` 健康检查 / `/data` 持久卷）+ `.dockerignore` 就绪
@@ -1900,6 +1930,7 @@ Test Files  1 passed (1)
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+19. **typedoc 输出文件数漂移守门**（✅ 本轮 §11.19）：原 §A.5 / §11.6 / §11.12 一致称 `199 个 MD 文件`，实测已 221（typedoc 把 §11.16 / §11.17 / §11.18 几轮新增的 public helper 都收进来了）。新增 `apps/web-server/tests/typedoc-count.test.ts`（3 测试）：跑 `node docs/scripts/gen-typedoc.mjs` → 读 `docs/api/_generated/*.md` → assert 200-400 + 打印当前值到 CI 日志。sdk1.md 三处 `199` → `221`。
 18. **§11.17.5 backlog 真正闭合 · embed 服务端 JWT 验证**（✅ 本轮 §11.18）：`apps/web-server/src/embed/index.ts` 新增 `verifyEmbedToken()` helper + `handleEmbed` 调用；opt-in（`GENOFFICE_JWT_SECRET` 存在且 token 是 JWT 形状时）才跑 `verifyJwtWithRevocation`，失败返 401 UNAUTHENTICATED。新增 `apps/web-server/tests/embed-jwt-validation.test.ts`（6 测试）覆盖：合法 200 / 篡改 401 / 乱码 401 / 一次性 jti 第二次 401 / 过期 401 / 非 JWT 透传（向后兼容）。现在 `/api/v1/files/:id/jwt?oneTime=true` 发的 token 在第二次 embed 访问时**真被服务端拒**，不再是依赖 renderer 端 meta-tag-check。
 17. **§11.3 P1 文件 JWT 单次使用语义 · 真实单元测试**（✅ 本轮 §11.17）：新增 `apps/web-server/tests/files-jwt-revocation.test.ts`（6 测试 / < 5 ms）：直接 import `auth.ts` 的 `verifyJwtWithRevocation` / `setJtiRevocationCheck` / `isJtiRevoked` 三个 helper，覆盖 hook 默认 no-op / first-pass-then-revoke / jti 独立 / 篡改 token 不污染撤销集 / 过期短路。`files-jwt-options-e2e.test.ts` 之前最后一条只是空 mint，已被本单元测补齐真实 verify 路径。后续 backlog（§11.17.5）：`embed/index.ts` 尚未在服务端 verify `?token=`，需要独立 PR 升级为 `verifyJwtWithRevocation` 调用后再返回 HTML。
 
@@ -1907,7 +1938,7 @@ Test Files  1 passed (1)
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation / embed-jwt-validation）| 64 | 501 | ✅ |
+| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation / embed-jwt-validation / typedoc-count）| 65 | 504 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -1926,7 +1957,7 @@ Test Files  1 passed (1)
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **173** | **4301** | ✅ |
+| **总计** | **174** | **4304** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
