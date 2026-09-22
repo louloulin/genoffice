@@ -49,6 +49,20 @@ export interface CreateEditorOptions {
   /** Skip building an iframe — caller manages the iframe lifecycle. */
   skipIframe?: boolean
 
+  /**
+   * Stable identifier for this editor instance within the host page.
+   * Used by `getEditor(instanceId)` to look the handle up from anywhere
+   * in the host code without threading the reference through props.
+   *
+   * If not provided, the SDK auto-generates a unique id (UUID v4 via
+   * `crypto.getRandomValues`). Two `createEditor()` invocations with the
+   * same `instanceId` on one page are rejected as a configuration
+   * error — call `editor.destroy()` (or `getEditor(id).destroy()`) first.
+   *
+   * (sdk1.md §B.5.1 #1 Multi-instance, SDK 2.0 Kestrel M1)
+   */
+  instanceId?: string
+
   mode?: EditorMode
   theme?: EditorTheme
   lang?: EditorLang
@@ -235,6 +249,16 @@ export interface AiSummarizeArgs {
 // ──────────────────────────────────────────────────────────────────────────────
 
 export interface EditorHandle {
+  /**
+   * Stable per-instance id. Equals the `instanceId` passed to
+   * `createEditor()` or the auto-generated UUID the SDK minted when
+   * the option was omitted. Use `getEditor(instanceId)` to retrieve
+   * this handle from anywhere in the host code.
+   *
+   * (sdk1.md §B.5.1 #1 Multi-instance, SDK 2.0 Kestrel M1)
+   */
+  readonly instanceId: string
+
   /** iframe element, or null when `skipIframe: true`. */
   readonly iframe: HTMLIFrameElement | null
 
@@ -266,6 +290,27 @@ export interface EditorCommands {
   aiRewrite: { args: AiRewriteArgs; result: { text: string } }
   aiTranslate: { args: AiTranslateArgs; result: { text: string } }
   aiSummarize: { args: AiSummarizeArgs; result: { text: string } }
+
+  /**
+   * Undo the last edit. Resolves once the editor has rolled the buffer
+   * back one step (the next `dirtyChanged` event reports `dirty: false`
+   * if the buffer was clean before the undo).
+   *
+   * Editors that don't support undo (e.g. read-only mode) reject with
+   * `code: 'UNSUPPORTED'`.
+   *
+   * (sdk1.md §B.5.1 #2 Undo/Redo, SDK 2.0 Kestrel M1)
+   */
+  undo: { args?: Record<string, never>; result: void }
+  /** Redo the last undone edit. See `undo` for resolution semantics. */
+  redo: { args?: Record<string, never>; result: void }
+  /**
+   * Query the current undo stack. Returns the total number of undo
+   * steps and the index of the cursor (i.e. how many `undo()` calls
+   * are available before the buffer reaches its bottom). Editors that
+   * don't track undo return `{ length: 0, current: 0 }`.
+   */
+  getUndoStack: { args?: Record<string, never>; result: { length: number; current: number } }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -2676,6 +2676,35 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 28. **SDK `createEmbedNonce()` helper 落地**（✅ 本轮 §11.28）：apps/sdk/src/editor.ts 新增 `createEmbedNonce(options)`，调 `POST /api/v1/embed/nonce` mint session + 构造带 `?sessionId=...&nonce=...` 的 embed URL。6 种结构化错误 code (`AUTH_FAILED` / `FORBIDDEN` / `BAD_REQUEST` / `MINT_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`)。`fetchImpl` 注入式 override 让测试不需要 polyfill global。配套：`types.ts` 加 3 类型；`embed-url.ts` `EmbedUrlInput.sessionId` + `buildEmbedUrl` 多一行；`index.ts` re-export。新增 `apps/sdk/test/create-embed-nonce.test.ts`（12 测试）+ `build-embed-url.test.ts` 追加 2 测试。SDK 总数 5 文件 / 36 → 6 文件 / 50 测试。live smoke 3/3 通过。
 27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
+38. **SDK 2.0 Kestrel M1 · Multi-instance + Undo/Redo 命令骨架**（✅ 本轮）：
+    - 闭合 §B.5.1 #1 Multi-instance + §B.5.1 #2 Undo/Redo
+    - `apps/sdk/src/types.ts`：
+      - `CreateEditorOptions.instanceId?: string` 新增可选字段（缺省 SDK 自动 mint `ed_` 前缀 12-byte base64url）
+      - `EditorHandle.instanceId: string` 新增必填字段（始终非空）
+      - `EditorCommands` 新增 `undo` / `redo` / `getUndoStack` 3 个 inbound 命令（renderer 实现落地后即可 work）
+    - `apps/sdk/src/editor.ts`：
+      - 模块级 `editorRegistry: Map<instanceId, EditorHandle>` 持久化 live handle
+      - 新增 `getEditor(instanceId): EditorHandle | undefined` + `listEditors(): EditorHandle[]` 公开 API
+      - 新增 `_resetEditorRegistryForTests()` 公开测试钩子
+      - 重名冲突检测：同一 `instanceId` 重复 `createEditor()` 抛带 remediation 提示的错误
+      - iframe `name` 属性 = `genoffice-{instanceId}`（替代脆弱的 `event.source` 单一来源）
+      - `destroy()` 从 registry 摘除（避免 torn-down handle 仍被 `getEditor()` 返回）
+      - `generateInstanceId()` 用 `btoa()` 替代 `Buffer.from(..., 'binary')`，符合 SDK 「无 Node-only globals」契约
+    - `apps/sdk/src/index.ts`：re-export `getEditor` / `listEditors`
+    - 新文件 `apps/sdk/test/kestrel-multi-instance.test.ts`（11 测试）：
+      - auto-mint 唯一 instanceId（两次调用不冲突）
+      - 显式 instanceId 通过 verbatim
+      - `getEditor()` 按 id 找到 / 找不到返 undefined
+      - `listEditors()` 含 live / 不含 destroyed / 返新数组（不暴露内部 map）
+      - 重复 instanceId 抛带 remediation 错误
+      - 空字符串 instanceId 当作缺省（自动 mint）
+      - destroy 后 `getEditor()` 返 undefined
+      - `EditorHandle.instanceId` 始终非空字符串
+      - iframe `name` = `genoffice-{instanceId}`
+      - 双实例 destroy 互不干扰
+    - SDK 测试 108 → 119（+11）；SDK 文件 10 → 11；bundle UMD 24.1 kB（变化忽略不计）
+    - 后续 M1 收尾 = renderer 端把 Ctrl+Z / Ctrl+Shift+Z 暴露成 inbound postMessage handler（apps/{docs,sheets,slides,pdf,markdown,html}/dist 各自 listener）
+
 37. **typedoc-count 显式 step**（✅ 本轮）：
     - 闭合 §11.34.4 #2 + §A.5 unaddressed 小 backlog
     - `.github/workflows/docs.yml` 新增 step `Assert typedoc output count is within bounds`：在 `npm run docs:build` 之后跑 `gen-typedoc.mjs` 显式一遍 → `find docs/api/_generated -name '*.md' | wc -l` → 打印 `[typedoc-count] generated N .md files (bounds: 200-400)` → 越界时 `::error::` 注解 + exit 1

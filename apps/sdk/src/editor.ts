@@ -64,6 +64,83 @@ import {
  * (rejects everything) — callers should default to undefined when they
  * have not configured an allowlist.
  */
+/**
+ * Module-level registry of live editors on the current host page.
+ * Keyed by `instanceId` so a host can call `getEditor(instanceId)`
+ * from anywhere (e.g. an event listener in another component) without
+ * threading the `EditorHandle` reference through props.
+ *
+ * Multi-instance support landed in SDK 2.0 Kestrel M1 (sdk1.md §B.5.1 #1).
+ * Concurrent instances were technically already possible — each
+ * `createEditor()` call has its own closure over `listeners` /
+ * `pending` / `iframe`. What was missing was a public lookup API and
+ * a way to disambiguate message routing by a stable string instead
+ * of `event.source` (which is brittle under iframe replacement).
+ *
+ * Registry is process-local: it does not persist across page reloads.
+ * Hosts that need cross-reload persistence should store
+ * `editor.instanceId` in their own state layer.
+ *
+ * Map<instanceId, EditorHandle> is intentionally NOT a WeakMap:
+ * `EditorHandle` outlives the iframe in some flows (e.g. caller awaits
+ * a command before destroy()), so a strong reference is required.
+ */
+const editorRegistry = new Map<string, EditorHandle>()
+
+/**
+ * Auto-generate an instance id. Uses `crypto.getRandomValues` (in scope
+ * for both browser and modern Node); format is 16 random bytes
+ * base64url-encoded, prefixed with `ed_` for grep-friendliness. Not a
+ * UUID strictly, but the prefix + length keeps it collision-free at
+ * the page-scoped registry's scale.
+ */
+function generateInstanceId(): string {
+  // 12 bytes (96 bits) is plenty for page-scoped uniqueness; collision
+  // probability stays below 10^-9 for typical host pages (< 100 editors).
+  // Uses `btoa` (available in browser + modern Node) instead of Buffer
+  // so the SDK keeps its "no Node-only globals" contract.
+  const bytes = new Uint8Array(12)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  let s = ''
+  for (const b of bytes) s += String.fromCharCode(b)
+  return 'ed_' + btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/**
+ * Look up a live editor handle by its `instanceId`. Returns
+ * `undefined` if no editor with that id is currently mounted (it has
+ * been destroyed, was never created, or lived on another page).
+ *
+ * (sdk1.md §B.5.1 #1 Multi-instance, SDK 2.0 Kestrel M1)
+ */
+export function getEditor(instanceId: string): EditorHandle | undefined {
+  return editorRegistry.get(instanceId)
+}
+
+/**
+ * Snapshot of all live editor handles on the current page. Returned
+ * array is a fresh copy; mutating it does not affect the registry.
+ * Order matches insertion order (first `createEditor` call first).
+ */
+export function listEditors(): EditorHandle[] {
+  return Array.from(editorRegistry.values())
+}
+
+/**
+ * Test-only: clears the module-level editor registry. Production
+ * code must NEVER call this — the registry exists exactly so that
+ * `getEditor()` can find live handles across a host page's lifetime.
+ * Exported with an underscore prefix so reviewers see it as
+ * intentionally test-only at the import site.
+ */
+export function _resetEditorRegistryForTests(): void {
+  editorRegistry.clear()
+}
+
 export function originMatches(origin: string, patterns: string[]): boolean {
   for (const p of patterns) {
     if (p === '*') return true
@@ -140,6 +217,22 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   // an explicit release from its unmount handler.
   const autoRelease = sessionBinding?.autoRelease !== false
 
+  // Resolve instanceId: explicit option wins, otherwise auto-mint a
+  // collision-free id. Reject duplicate ids — the registry is a
+  // singleton map and the second createEditor would silently overwrite
+  // the first handle. Hosts that want a fresh instance must call
+  // `destroy()` (or `getEditor(id).destroy()`) first.
+  const requestedInstanceId = typeof options.instanceId === 'string' && options.instanceId.length > 0
+    ? options.instanceId
+    : null
+  if (requestedInstanceId && editorRegistry.has(requestedInstanceId)) {
+    throw new Error(
+      `createEditor: instanceId '${requestedInstanceId}' is already in use. ` +
+      `Call getEditor('${requestedInstanceId}').destroy() first or pick a fresh id.`,
+    )
+  }
+  const instanceId = requestedInstanceId ?? generateInstanceId()
+
   const handshakeEnabled = options.handshake !== false // default true
   // When a sessionBinding is supplied we use the server-minted nonce as
   // the handshake expected value — there's no point generating a fresh
@@ -166,6 +259,11 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     const container = resolveContainer(options.container)
     iframe = document.createElement('iframe')
     iframe.src = embedUrl
+    // `name` lets the embed script and the host page distinguish
+    // multiple concurrent editors by `window.name` / iframe attribute
+    // instead of relying on `event.source` (which can be replaced when
+    // an iframe is swapped). See sdk1.md §B.5.1 #1.
+    iframe.name = `genoffice-${instanceId}`
     iframe.allow = 'clipboard-read; clipboard-write'
     iframe.style.border = '0'
     iframe.style.width = '100%'
@@ -303,6 +401,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   }
 
   function destroy(): void {
+    // Unregister from the module-level registry BEFORE tearing down
+    // listeners / iframe so a host that calls `getEditor(id)` from
+    // inside an event handler sees the post-destroy state correctly.
+    editorRegistry.delete(instanceId)
     if (destroyed) return
     destroyed = true
     if (handshakeTimer) {
@@ -360,7 +462,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   pushEvent('host.theme', { theme: options.theme ?? 'auto' })
   pushEvent('host.lang', { lang: options.lang ?? 'en-US' })
 
-  return {
+  // Compose the public EditorHandle. We use a getter for `iframe`
+  // so the iframe reference stays live after iframe reflow / re-render.
+  const handle: EditorHandle = {
+    instanceId,
     get iframe() {
       return iframe
     },
@@ -375,6 +480,11 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     command,
     destroy,
   }
+  // Register the handle in the module-level registry so `getEditor(id)`
+  // can find it from anywhere in the host page. `destroy()` removes
+  // this entry (see top of destroy() function above).
+  editorRegistry.set(instanceId, handle)
+  return handle
 }
 
 function resolveContainer(target: string | HTMLElement | undefined): HTMLElement {
