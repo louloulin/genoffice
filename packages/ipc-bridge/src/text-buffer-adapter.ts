@@ -63,6 +63,15 @@ class TextBuffer {
   private past: UndoEntry[] = []
   /** Snapshots popped by `undo()`, newest first, for `redo()`. */
   private future: UndoEntry[] = []
+  /**
+   * Dirty flag for the SDK `isDirty()` host query (sdk1.md §11.60 /
+   * §11.62). Starts `false` (a freshly-opened editor is clean), flips
+   * to `true` on every host- or renderer-driven mutation, and resets
+   * to `false` via `markClean()` after a successful save. The mirror
+   * buffer tracks this independently of any native-editor dirty state
+   * so apps without a native editor still answer `isDirty` correctly.
+   */
+  private dirty = false
 
   getText(): string {
     return this.state.text
@@ -94,6 +103,11 @@ class TextBuffer {
     if (typeof bytes === 'number') this.state.bytes = bytes
     else if (typeof text === 'string') this.state.bytes = utf8Length(text)
     if (typeof cursor === 'number') this.state.cursor = cursor
+    // Any renderer-driven edit (local typing, paste, replace) marks
+    // the buffer dirty. The host `isDirty()` query returns this flag
+    // verbatim, so a UI prompt can detect "Save before close?" without
+    // the app wiring any extra signal.
+    if (this.state.text !== '' || this.state.bytes !== 0) this.dirty = true
     for (const l of this.listeners) l(this.state)
   }
   replaceAll(text: string): void {
@@ -101,6 +115,7 @@ class TextBuffer {
     this.state.text = text
     this.state.bytes = utf8Length(text)
     this.state.cursor = text.length
+    this.dirty = true
     for (const l of this.listeners) l(this.state)
   }
   insertAt(cursor: number, text: string): void {
@@ -111,7 +126,20 @@ class TextBuffer {
     this.state.text = merged
     this.state.bytes = utf8Length(merged)
     this.state.cursor = cursor + text.length
+    this.dirty = true
     for (const l of this.listeners) l(this.state)
+  }
+  /** Returns the current dirty flag (sdk1.md §11.60). */
+  isDirty(): boolean {
+    return this.dirty
+  }
+  /** Reset the dirty flag. Called after a successful save. */
+  markClean(): void {
+    this.dirty = false
+  }
+  /** Force-set the dirty flag (e.g. on session restore). */
+  markDirty(): void {
+    this.dirty = true
   }
   /** Undo the last host-driven mutation. No-op (false) when empty. */
   undo(): boolean {
@@ -251,6 +279,27 @@ export function installTextBufferSink(options?: {
    * insertText + sidebar * 3) without composing the adapter manually.
    */
   sidebar?: SidebarRuntimeLike
+  /**
+   * Renderer-supplied save callback (sdk1.md §11.60 / §11.62). The
+   * mirror buffer doesn't know how to write files, so when the host
+   * calls `editor.command('save')` the bridge delegates to this
+   * function. Apps typically forward to their existing
+   * `xxxApi.save(channel, args)` IPC.
+   *
+   * Returning `{ ok: true, savedPath?, savedAt? }` resolves the SDK
+   * promise AND calls `buffer.markClean()` so a follow-up
+   * `editor.command('isDirty')` returns `false`. Throwing rejects the
+   * SDK promise with the same error and leaves the buffer dirty so a
+   * retry attempt can be made.
+   *
+   * When omitted, `editor.command('save')` rejects with the standard
+   * `UnsupportedCommandError('UNSUPPORTED')` — the renderer hasn't
+   * opted in to save, so the host gets a loud failure instead of a
+   * fake success.
+   */
+  onSave?: () =>
+    | Promise<{ ok: true; savedPath?: string; savedAt?: string }>
+    | { ok: true; savedPath?: string; savedAt?: string }
 }): SdkCommandSinkHandle {
   const buffer = resolveBuffer(options?.target)
   // The native adapter registered by the app (if any) is looked up on
@@ -288,6 +337,39 @@ export function installTextBufferSink(options?: {
       undo: () => pick('undo', () => buffer.undo())(),
       redo: () => pick('redo', () => buffer.redo())(),
       getUndoStack: () => pick('getUndoStack', () => buffer.undoStack())(),
+      // Dirty state + save (sdk1.md §11.60 / §11.62). The buffer
+      // tracks its own dirty flag (flipped on every mutation in the
+      // three mutators above) so a renderer with no native editor
+      // model still answers `isDirty` correctly. `save` delegates to
+      // the optional `onSave` renderer-supplied callback, then marks
+      // the buffer clean on success. Both fall back to the native
+      // adapter when one is registered, matching the existing
+      // undo/redo pattern in this sink.
+      isDirty: () =>
+        pick('isDirty', () => buffer.isDirty())() as boolean,
+      save: async () => {
+        const fn = options?.onSave
+        if (fn) {
+          // Renderer-supplied path: delegate the save, then mark the
+          // buffer clean on success. Throwing leaves the buffer dirty
+          // so a retry attempt picks up where the failed save left off.
+          const out = await fn()
+          buffer.markClean()
+          return out
+        }
+        // Fallback: defer to the native adapter (matches the same
+        // pattern as `downloadAs` / `mountSidebar` / etc.).
+        const nativeSave = native()?.save
+        if (nativeSave) {
+          const out = await nativeSave.call(native())
+          buffer.markClean()
+          return out
+        }
+        // No renderer / no native adapter: throw the standard error so
+        // the host sees a loud failure (matches the rest of the
+        // surface — `downloadAs`, `setTrackChanges`, etc.).
+        throw new UnsupportedCommandError('save')
+      },
       // Revision tracking is app-specific — the mirror buffer has no concept
       // of it, so every call defers to the native adapter. When no app
       // registered one we throw the standard UnsupportedCommandError, which

@@ -409,3 +409,142 @@ describe('text-buffer-adapter · track changes (§B.5.1 #5)', () => {
     )
   })
 })
+
+
+describe('text-buffer-adapter · isDirty / save (sdk1 §11.60 / §11.62)', () => {
+  it('a freshly-installed sink starts clean (isDirty → false)', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: false })
+  })
+
+  it('setContent marks the buffer dirty and isDirty → true', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'hello' })
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+  })
+
+  it('insertText marks the buffer dirty', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'hel' })
+    // After setContent the buffer is dirty; assert insertText keeps it dirty
+    // (and proves the second mutation path also flips the flag).
+    await handle.dispatch('insertText', { text: 'lo' })
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+  })
+
+  it('a renderer-driven updateTextBuffer marks the buffer dirty', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    updateTextBuffer({ text: 'local typing' }, target)
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+  })
+
+  it('save() without onSave rejects with an UnsupportedCommandError (loud failure, not a silent no-op)', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'dirty' })
+    // The bridge throws an UnsupportedCommandError whose message
+    // starts with `sdk command "save" has no handler` — match the
+    // prefix rather than the literal `UNSUPPORTED` substring (the
+    // error code lives on `err.code`, not in the message).
+    await expect(handle.dispatch('save', {})).rejects.toThrow(/sdk command "save" has no handler/)
+    // The dirty flag stays true — a failed save doesn't accidentally
+    // clear the buffer's "needs save" state.
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+  })
+
+  it('save() with onSave calls the renderer, marks the buffer clean, returns savedPath', async () => {
+    const target: Record<string, unknown> = {}
+    let calls = 0
+    const handle = installTextBufferSink({
+      target,
+      onSave: () => {
+        calls += 1
+        return {
+          ok: true as const,
+          savedPath: '/managed/files/note.md',
+          savedAt: '2026-09-22T10:00:00.000Z',
+        }
+      },
+    })
+    await handle.dispatch('setContent', { text: 'something to save' })
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+    const result = (await handle.dispatch('save', {})) as {
+      ok: true
+      savedPath?: string
+      savedAt?: string
+    }
+    expect(result.ok).toBe(true)
+    expect(result.savedPath).toBe('/managed/files/note.md')
+    expect(result.savedAt).toBe('2026-09-22T10:00:00.000Z')
+    expect(calls).toBe(1)
+    // After save, the buffer is clean — a follow-up isDirty returns false.
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: false })
+  })
+
+  it('save() with an onSave that throws leaves the buffer dirty', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({
+      target,
+      onSave: () => {
+        throw new Error('disk full')
+      },
+    })
+    await handle.dispatch('setContent', { text: 'will not save' })
+    await expect(handle.dispatch('save', {})).rejects.toThrow(/disk full/)
+    // The dirty flag stays true so a retry attempt picks up where
+    // the failed save left off.
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+  })
+
+  it('save() with an async onSave awaits the promise', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({
+      target,
+      onSave: async () => {
+        // Yield once to prove the bridge awaits the promise.
+        await Promise.resolve()
+        return { ok: true as const, savedPath: '/managed/x.md' }
+      },
+    })
+    await handle.dispatch('setContent', { text: 'async save' })
+    const result = (await handle.dispatch('save', {})) as { ok: true; savedPath?: string }
+    expect(result.savedPath).toBe('/managed/x.md')
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: false })
+  })
+
+  it('the dirty flag survives undo / redo (host-driven edits stay dirty)', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'v1' })
+    await handle.dispatch('setContent', { text: 'v2' })
+    // Buffer is dirty from the two setContent calls.
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+    // Undo doesn't auto-mark clean — the user still has unsaved v2 in their head.
+    await handle.dispatch('undo', {})
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+  })
+
+  it('a native adapter registered via registerNativeAdapter overrides isDirty / save', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    // Register a native adapter that takes priority over the buffer.
+    registerNativeAdapter(
+      {
+        isDirty: () => true,
+        save: async () => ({ ok: true as const, savedPath: '/native/saved.md' }),
+      },
+      target,
+    )
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+    const result = (await handle.dispatch('save', {})) as { ok: true; savedPath?: string }
+    expect(result.savedPath).toBe('/native/saved.md')
+    // The buffer's own dirty flag is NOT touched when the native
+    // adapter handles save (the native adapter is responsible for
+    // its own state — mirror buffer just provides the fallback).
+    expect(await handle.dispatch('isDirty', {})).toEqual({ dirty: true })
+  })
+})

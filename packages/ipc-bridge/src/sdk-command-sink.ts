@@ -329,6 +329,24 @@ export interface SdkLiveModelAdapter {
   /** `{ length, current }` — see `apps/sdk/src/types.ts:getUndoStack`. */
   getUndoStack?: () => { length: number; current: number }
   /**
+   * Return whether the editor's buffer has unsaved changes
+   * (sdk1.md §11.60 / §11.62). Editors that don't track dirty state
+   * omit this method — the bridge maps the omission onto
+   * `UnsupportedCommandError('UNSUPPORTED')` so the host sees a loud,
+   * actionable failure rather than a silent `false`.
+   */
+  isDirty?: () => boolean
+  /**
+   * Trigger the editor's native save pipeline (sdk1.md §11.60 / §11.62).
+   * Resolves with the saved file's metadata matching the SDK's
+   * `EditorCommands.save` contract (`{ ok: true; savedPath?; savedAt? }`).
+   * Editors without a native save (e.g. PDF read-only viewer) omit this
+   * method and the bridge surfaces `UnsupportedCommandError`.
+   */
+  save?: () =>
+    | Promise<{ ok: true; savedPath?: string; savedAt?: string }>
+    | { ok: true; savedPath?: string; savedAt?: string }
+  /**
    * Revision / track-changes surface (sdk1.md §B.5.1 #5). Apps that
    * implement Word-style tracked changes (docs) expose the four
    * operations; apps without the concept omit them and the matching
@@ -471,6 +489,43 @@ export function makeLiveModelHandlers(
       const length = Number.isFinite(stack?.length) ? Math.max(0, Math.trunc(stack.length)) : 0
       const current = Number.isFinite(stack?.current) ? Math.max(0, Math.trunc(stack.current)) : 0
       return { length, current: Math.min(current, length) }
+    }
+  }
+  if (adapter.isDirty) {
+    // `isDirty()` returns the editor's current dirty state. The adapter
+    // owns the source of truth — the host sees what the adapter decides
+    // to expose, no fallback (so a renderer that hasn't wired this yet
+    // gets `UnsupportedCommandError('UNSUPPORTED')` rather than a
+    // misleading `false`).
+    handlers.isDirty = () => {
+      const d = adapter.isDirty!()
+      // Pin the shape: an adapter that returns `undefined` / a non-boolean
+      // gets coerced to `false` so a buggy renderer doesn't crash the
+      // host. (The shape pin is on the SDK types side; this is the
+      // bridge's defensive layer.)
+      return { dirty: typeof d === 'boolean' ? d : false }
+    }
+  }
+  if (adapter.save) {
+    // `save()` triggers the adapter's native save pipeline. The adapter
+    // returns `{ ok: true; savedPath?; savedAt? }` matching the SDK's
+    // EditorCommands.save contract. Editors that haven't wired this
+    // method get `UnsupportedCommandError('UNSUPPORTED')` at the
+    // command boundary, matching the rest of the live-model surface.
+    handlers.save = async () => {
+      const r = await adapter.save!()
+      // Normalise the result shape so a host SDK gets a consistent
+      // contract regardless of which adapter supplied the save.
+      const out: { ok: true; savedPath?: string; savedAt?: string } = { ok: true }
+      if (r && typeof r === 'object') {
+        if (typeof (r as { savedPath?: unknown }).savedPath === 'string') {
+          out.savedPath = (r as { savedPath: string }).savedPath
+        }
+        if (typeof (r as { savedAt?: unknown }).savedAt === 'string') {
+          out.savedAt = (r as { savedAt: string }).savedAt
+        }
+      }
+      return out
     }
   }
   if (adapter.setTrackChanges) {

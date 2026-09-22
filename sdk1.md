@@ -4058,6 +4058,78 @@ cd apps/sdk && ../../node_modules/.bin/tsc --noEmit -p tsconfig.json
 - §11.60 备注里 `workbook:read-range` 内部还走通用 `NotFoundError`（session 找不到），本轮没改
 - 类型层面仍可有空间扩展 `WorkbookErrorCode` 联合类型（e.g. `WORKBOOK_TIMEOUT` / `WORKBOOK_CONFLICT`），但当前实际错误路径未触发，留作 backlog
 
+### 11.62 · Renderer 侧 `isDirty` / `save` 命令分发（§11.60 完成）
+
+> §11.60 加了 SDK 类型 + 运行时（`lastDirty` 缓存 + 500 ms fallback），
+> 但 renderer 侧还没真正回答这两个命令。本轮在 `ipc-bridge` 完成
+> 完整的 handler 实现，让 6 个用 `installTextBufferSink` 的 app（docs /
+> markdown / html / sheets / slides / pdf）开箱即可用。
+
+#### ✅ 落点
+
+1. **`packages/ipc-bridge/src/sdk-command-sink.ts`**：
+   - `SdkLiveModelAdapter` 接口加 2 个可选方法 `isDirty?` / `save?`
+   - `makeLiveModelHandlers(adapter)` 加对应 handler 注册（与 undo/redo 同模式）：
+     - `isDirty` → 调 adapter.isDirty()，强制返回 `{ dirty: boolean }`
+     - `save` → 调 adapter.save()，规范化 `{ ok: true; savedPath?; savedAt? }` 形状
+
+2. **`packages/ipc-bridge/src/text-buffer-adapter.ts`**：
+   - `TextBuffer` 类加 `private dirty = false` + 3 个方法：
+     - `set / replaceAll / insertAt` 三处 mutator 之后 `this.dirty = true`
+     - 新增 `isDirty()` / `markClean()` / `markDirty()` 公开 API
+   - `installTextBufferSink` 加新 option `onSave?: () => Promise<...>`：
+     - 默认走 `onSave`，save 成功后调 `buffer.markClean()` 自动恢复 clean
+     - 失败抛错则 dirty 保持，retry 还能继续
+     - 无 `onSave` + 无 native adapter → `UnsupportedCommandError('save')`（loud failure）
+
+3. **测试（`packages/ipc-bridge/tests/text-buffer-adapter.test.ts` +10）**：
+   - 初始状态 clean（fresh install）
+   - setContent / insertText / updateTextBuffer 都触发 dirty
+   - 无 onSave 抛 UnsupportedCommandError（loud failure，不静默）
+   - 有 onSave 调 callback + markClean + 返回 savedPath/savedAt
+   - onSave 抛错时 dirty 保持
+   - async onSave 正确 await
+   - dirty 在 undo/redo 后保持（不是"自动 clean"）
+   - native adapter 注册后优先级高于 buffer fallback
+
+#### 📊 基线更新
+
+| 套件 | 之前 | 现在 | Δ |
+|---|---|---|---|
+| packages/ipc-bridge | 6 文件 / 151 通过 | **6 文件 / 161 通过** | +0 文件 / +10 通过 |
+| §A.5 backlog 闭合数 | 59（截至 §11.61）| **60**（+1：renderer 侧 isDirty/save 完成）| +1 |
+
+#### ⚠️ 仍未做（renderer-side follow-up · 已缩为 ~30 行/app）
+
+- **6 个 app `web-bridge.ts` 加 `onSave` 回调**（每 app ~5 行）：
+  ```typescript
+  installTextBufferSink({
+    onSave: async () => {
+      const r = await window.markdownApi.save({ /* renderer-supplied args */ })
+      return { ok: true, savedPath: r.path, savedAt: r.savedAt }
+    },
+  })
+  ```
+  6 app × ~5 行 = ~30 行。`isDirty` 自动通过 buffer 跟踪，无需 app 写额外代码。
+
+- **`slides` / `pdf` 自身 dirty 状态 vs buffer dirty 状态可能不同步**：
+  slides 有自己的 deck 模型，dirty 应来自 deck；pdf 同理。本轮先让
+  buffer 路径工作，native adapter 注册路径已留好 hook — app 写一个
+  `registerNativeAdapter({ isDirty: () => deck.isDirty() })` 即可。
+
+#### 🧪 验证命令
+
+```bash
+# 新增 10 测试
+timeout 60 ./node_modules/.bin/vitest run packages/ipc-bridge/tests/text-buffer-adapter.test.ts
+
+# 跨包回归（ipc-bridge + sdk）
+timeout 90 ./node_modules/.bin/vitest run packages/ipc-bridge/ apps/sdk/
+
+# 类型（ipc-bridge）
+cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
+```
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -4810,7 +4882,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
-| ipc-bridge | 6 | 151 | ✅ |
+| ipc-bridge | 6 | 161 | ✅ |
 | file-parse | 1 | 38 | ✅ |
 | file-management | 1 | 219 | ✅ |
 | pptx-engine | 1 | 957 | ✅ |
@@ -4824,7 +4896,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **199** | **4704** | ✅ |
+| **总计** | **199** | **4714** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
