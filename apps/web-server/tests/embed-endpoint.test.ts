@@ -173,7 +173,12 @@ describe('EMBED_BRIDGE', () => {
   it('posts ready events to window.parent', async () => {
     const mod = await import('../src/embed/index')
     expect(mod.EMBED_BRIDGE).toContain('window.parent.postMessage')
-    expect(mod.EMBED_BRIDGE).toContain('host.command')
+    // sdk1.md §11.34: the bridge no longer dispatches host.command
+    // CustomEvents (no renderer-side consumer exists). Pin absence at
+    // the *code* level — comments may still mention the name for
+    // historical context, but no `new CustomEvent('host.command', …)`
+    // invocation may exist in the IIFE source.
+    expect(mod.EMBED_BRIDGE).not.toMatch(/new\s+CustomEvent\(['"]host\.command['"]/)
   })
 
   it('does not include a hard-coded host origin so postMessage wildcard works', async () => {

@@ -21,8 +21,10 @@
  *   - The injected `<script>` installs a postMessage bridge before the
  *     editor's own JS executes. It forwards outbound lifecycle events
  *     (`ready`, `saved`, `dirtyChanged`, `selectionChange`, `error`,
- *     `closed`) to `window.parent` and proxies inbound commands back to
- *     the editor via a `host.command` CustomEvent on the same window.
+ *     `closed`) to `window.parent` via SSE relay. Inbound host
+ *     commands are consumed by the editor's own postMessage listener
+ *     registered after bridge boot; the bridge itself does not relay
+ *     them (sdk1.md §11.34).
  *
  *   - The page returns a small `text/html` doc so embed consumers can
  *     see the editor loading state immediately; we deliberately do NOT

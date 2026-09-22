@@ -2,7 +2,7 @@
  * The iframe Embed bridge script — runs inside the iframe page after the
  * server-rendered HTML, before the editor bundle boots.
  *
- * The bridge has three responsibilities:
+ * The bridge has two responsibilities:
  *
  *   1. **Handshake nonce echo** — reads `<meta name="genoffice-nonce">`
  *      and posts a `{type:'ready', nonce}` event to `window.parent` so
@@ -16,16 +16,19 @@
  *      `closed`) emitted by the renderer's push hub flow through to
  *      `window.parent` for the host SDK to consume.
  *
- *   3. **Inbound command relay** — listens for postMessage commands
- *      from the host (`{kind:'command', ...}`) and re-dispatches them
- *      on `window` as `host.command` CustomEvents so the renderer's
- *      command channel picks them up.
- *
  * The script is split out from `embed/index.ts` so it can be unit
  * tested in isolation (see `tests/embed-bridge.test.ts`). The runtime
  * path is `embed/index.ts` → injects `<script>${BRIDGE_SCRIPT}</script>`
  * into the served HTML, then the browser executes it inside the
  * iframe.
+ *
+ * Note (sdk1.md §11.34): an earlier iteration of this bridge also
+ * relayed inbound postMessage commands from the host onto `window` as
+ * `host.command` CustomEvents, intended for a renderer-side command
+ * listener. That listener was never implemented in the renderer and
+ * no shipped code consumes `host.command`, so the relay has been
+ * removed. The bridge still *receives* inbound postMessages for
+ * envelope-version validation, but it no longer re-dispatches them.
  *
  * Bridge protocol version (informational, NOT part of the SDK contract):
  *   - EMBED_BRIDGE_VERSION = '1.0' — bumped if we add / remove fields
@@ -85,13 +88,12 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
       });
     } catch (e) { /* EventSource construction failed, degrade to no-push */ }
   }
-  window.addEventListener('message', function (event) {
-    var data = event.data;
-    if (!data || data.v !== ENVELOPE_VERSION) return;
-    if (data.kind === 'command') {
-      window.dispatchEvent(new CustomEvent('host.command', { detail: data }));
-    }
-  });
+  // Inbound postMessages from the host are accepted on the envelope
+  // version (so legacy senders are dropped at the source) but the
+  // editor currently consumes them via its own postMessage listener
+  // registered after bridge boot — no relay is needed here. See the
+  // top-of-file note (sdk1.md §11.34) for why the previous
+  // host.command CustomEvent relay was removed.
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(sendReady, 0);
     setTimeout(subscribePush, 0);

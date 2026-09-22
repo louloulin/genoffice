@@ -2319,7 +2319,54 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 - **`notifyFileSaved` 之外的触发点**：`notifyFileCallback` / `notifyFileDeleted`（如果存在）也应接 DLQ；audit 后再决定
 - **host UI 面板**：当前只有 v1 endpoint 暴露 DLQ，renderer 还没"失败事件列表"面板调用；UI backlog
 - **DLQ metric**：可以加 `/metrics` 暴露 `dlq_size` / `dlq_total_dropped` 计数；当前 v1 list 即 metric
-- **§11.32.4 后续观察**：`destroy()` 自动 release 示例、typedoc-count 显式 step、bridge command 路径测试仍未做；下批
+- **§11.32.4 后续观察**：`destroy()` 自动 release 示例、typedoc-count 显式 step、bridge command 路径测试仍未做；本轮 §11.34 闭合最后一条
+
+### 11.34 本轮续作（v2 第 29 轮 commit，2026-09-22）
+
+§11.32.4 残留 backlog #3 · "bridge 入站 command 路径测试"。审 audio 整个仓库发现更深的问题：bridge IIFE 里 dispatchEvent('host.command') **是 dead code** —— 整个仓库没有任何代码（renderer / IPC bridge / push hub）监听 `'host.command'` CustomEvent。bridge 第 88-93 行派发的事件永远没有消费者。`embed-bridge.test.ts` 用 IIFE eval 测过"inbound command → host.command CustomEvent"——这只是验证 dead code 的精确行为，不是验证真实功能。`embed-endpoint.test.ts` 还把 `host.command` 字符串存在当 positive 守门。本批：① 删除 bridge 中 dispatchEvent('host.command') 死路径；② 替换测试：bridge **不**注册 postMessage 监听（负向守门），endpoint **不**含 `new CustomEvent('host.command', ...)` 代码模式（code-level regex，不匹配注释）；③ bridge.ts / embed/index.ts doc 同步；④ live smoke 验证 served HTML 仍含 ready / SSE / envelope 三件套。
+
+#### 11.34.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/embed/bridge.ts` | 移除 IIFE 内 `window.addEventListener('message', ...)` 派发 `host.command` CustomEvent 的死代码块。top doc 从 3 项 responsibilities 改成 2 项（删 "Inbound command relay"）；加 §11.34 注释说明删除原因；保留 envelope version 字符串 `'1.0'` 与 `var ENVELOPE_VERSION` 常量（供未来 bridge-internal use）|
+| `apps/web-server/src/embed/index.ts` | top doc 中"proxies inbound commands back to the editor via a `host.command` CustomEvent"删掉，改成"inbound host commands are consumed by the editor's own postMessage listener registered after bridge boot" |
+| `apps/web-server/tests/embed-bridge.test.ts` | top doc 重写（2 responsibilities）。删除测试 "relays inbound postMessage commands to window.dispatchEvent as host.command CustomEvent"。替换为 "does NOT dispatch host.command CustomEvent for inbound commands (sdk1.md §11.34)"（pin 负向契约）。删除测试 "ignores postMessages with wrong envelope version"（依赖现在不存在的 listener）。新增 "does NOT install a postMessage listener after §11.34"（pin `messageHandlers.length === 0`）|
+| `apps/web-server/tests/embed-endpoint.test.ts` | "posts ready events to window.parent" 测试：保留 `window.parent.postMessage` 含；把 `expect(mod.EMBED_BRIDGE).toContain('host.command')` 翻成 `expect(mod.EMBED_BRIDGE).not.toMatch(/new\s+CustomEvent\(['"]host\.command['"]/)`（code-level regex 不匹配注释）|
+
+合计 4 文件 / +0 净测试数（删 2 加 2，17 总数不变）。
+
+#### 11.34.2 设计要点
+
+- **删除而非保留**：保留 dead code 让集成商误以为这条路径可用、未来 renderer 可能 hook 上去（但 renderer 实际代码结构不接 CustomEvent，hook 不上）。删除让代码与意图对齐：bridge 只做 nonce echo + SSE relay，inbound postMessage 由 editor 自己处理。
+- **测试改为负向**：原来测"host.command 被派发"，现在测"host.command 不被派发"。负向测试价值相同——一旦有人加回 dead code 测试立刻红。
+- **`messageHandlers.length === 0` 守门**：替代"envelope version 守门"。原 §11.31 测试 "ignores postMessages with wrong envelope version" 假设 bridge 仍注册 listener——前提已不存在，整个 listener 已被删除。新守门 "bridge 不注册 postMessage listener" 是更准确的设计契约。
+- **注释保留 `host.command` 字符串**：bridge.ts top doc 提及 "the previous host.command CustomEvent relay was removed" 是未来 reader 的关键上下文。注释不消耗运行时不进 CustomEvent。endpoint 测试用 regex `new\s+CustomEvent\(['"]host\.command['"]` 精确匹配 code-level pattern，不匹配注释。
+- **不动 SSE / ready / envelope 行为**：bridge 仍（1）echo nonce，（2）subscribe `/api/ipc/events` SSE relay，（3）`ENVELOPE_VERSION = '1.0'`。这些是 §11.31 的核心契约，本批不动。
+- **不动 embed/index.ts dispatcher 路由**：host postMessage command 的消费完全在 iframe 内由 editor bundle 自己的 postMessage listener 完成（`apps/*/src/renderer`），不经过 web-server。bridge 之前的"派发 CustomEvent"中间步骤本就冗余。
+
+#### 11.34.3 验证
+
+- `npx vitest run apps/web-server/tests/embed-bridge.test.ts`：**17/17 通过**（109 ms；删 2 加 2，总数不变）
+- `npx vitest run apps/web-server/tests/embed-endpoint.test.ts`：**11/11 通过**
+- `npx vitest run apps/web-server/tests/` (skip 4 LLM/timeout e2e)：**67 文件 / 564 pass / 1 skip**（was 66/541，bridge.ts 重构无新增独立测试但新增 embed-bridge.test.ts 内部 2 替换测试）
+- `npx tsc` (apps/web-server) 去预存噪音：**0 error**
+- `node scripts/bundle.mjs`：`dist/bundle/index.js 28.5mb ⚠️`（不变）
+- live smoke（PORT=33002 + tmux）：
+  - `GET /embed/:docId?token=&app=docs` → `200` 4067 bytes（was 4025；host.command 派发块删除 ~42 字节）✓
+  - 4 个关键 token 仍 present：`ENVELOPE_VERSION` x2 / `sendReady` x4 / `subscribePush` x4 / `parent.postMessage` x1 ✓
+  - `GET /api/v1/webhooks/dlq` with `webhooks:manage` scope → `200 {entries:[], count:0, limit:50}` ✓
+  → **3/3 live smoke**
+
+#### 11.34.4 后续观察
+
+- **bridge 入站 command 路径 dead code**：✅ 本轮闭合（删 dead code + 负向守门）
+- **§11.32.4 后续观察 `destroy()` 自动 release 示例**：未做（5 min，examples/embed-react/ 加 autoRelease:false demo）
+- **typedoc-count 显式 step**：未做（5 min，docs.yml step 加注释引用 typedoc-count.test.ts）
+- **§11.31.5 真 iframe e2e**：sandbox 内不可达，skip
+- **§11.33.4 DLQ 持久化 / DLQ metric**：留 M4+ 路线图
+- **host.command 替代路径**：若未来要支持 host → iframe 单向命令（如"host wants iframe to switch theme"），直接在 renderer 加 `window.addEventListener('message', ...)` 监听 host postMessage——这是 §11.34 之后 iframe 已有的行为
+- **bridge.ts comment 含 host.command 字符串**：故意保留——注释是 reader context，endpoint 测试用 code-level regex 隔离
 
 ：实施状态（截至 2026-09-22，分支 `release0919`)
 
@@ -2550,7 +2597,7 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
    - `@genoffice/provider-qwen-dashscope` + `@genoffice/provider-zhipu-glm`（同上，5+5 测试）
    - `@genoffice/provider-doubao`（同上，5 测试）
    - `docs/api/provider-capabilities.md`（EN+ZH）能力矩阵更新到 10 行
-15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。**§11.31 增补到 17 条**（embed bridge 独立模块 + 17 单元测试）。**§11.32 增补到 18 条**（SDK verifyEmbedSession 一体化 helper + createEditor sessionBinding 自动 release）。**§11.33 增补到 19 条**（webhook DLQ + host 管理 endpoint）。。。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
+15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。**§11.31 增补到 17 条**（embed bridge 独立模块 + 17 单元测试）。**§11.32 增补到 18 条**（SDK verifyEmbedSession 一体化 helper + createEditor sessionBinding 自动 release）。**§11.33 增补到 19 条**（webhook DLQ + host 管理 endpoint）。**§11.34 增补到 20 条**（bridge dead-code 清理 + 负向守门）。。。。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
 16. **§5.2 发布检查清单逐项落地**（✅ 已完成）：
    - **#1 JSDoc/TSDoc on public APIs** — `auth.ts` (handleAuthJwt / handleOAuthToken / hasScope) + `meta.ts` (handleHealth / handleChangelog) 现已具备 `@route` / `@scope` / `@errors` 标记；其他 5 个 v1 handler 文件（files / ai / kb / webhooks）已具备完整 TSDoc（`commit 8e3d3e8`）
    - **#2 typedoc 实际执行** — `docs/scripts/gen-typedoc.mjs` 重新生成 **221 个 MD 文件** 到 `docs/api/_generated/`（2026-09-22 实测）；新增 `typedoc-count.test.ts` 守住 200-400 范围防漂移
@@ -2613,7 +2660,7 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、SDK verifyEmbedSession 同义别名（19）、SDK createEditor sessionBinding + autoRelease（12）、webhook DLQ ring buffer + v1 endpoint（23）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、SDK verifyEmbedSession 同义别名（19）、SDK createEditor sessionBinding + autoRelease（12）、webhook DLQ ring buffer + v1 endpoint（23）、bridge dead-code 清理（删 2 测加 2 测，净 0）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 

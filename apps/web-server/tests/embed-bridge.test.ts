@@ -2,13 +2,16 @@
  * Tests for the iframe Embed bridge (sdk1.md §11.31).
  *
  * The bridge is the JS that runs inside the iframe after the server
- * serves the embed HTML. It has three responsibilities:
+ * serves the embed HTML. It has two responsibilities:
  *   1. Read `<meta name="genoffice-nonce">` and post a `ready` event
  *      to `window.parent` with the nonce (sdk1.md §11.20).
  *   2. Subscribe to `/api/ipc/events?session=<sessionId>` and forward
  *      server-side lifecycle events to `window.parent`.
- *   3. Listen for inbound postMessage commands and re-dispatch them
- *      on `window` as `host.command` CustomEvents.
+ *
+ * Earlier versions also relayed inbound host commands onto `window` as
+ * `host.command` CustomEvents, but no shipped code consumed that path
+ * (sdk1.md §11.34). The relay has been removed; inbound command
+ * consumption is now the editor's own postMessage listener's job.
  *
  * Before this commit, the bridge source was inlined inside
  * `embed/index.ts` and only smoke-tested live in the browser. Splitting
@@ -285,24 +288,34 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     expect(h.parentPosts.length).toBe(initialPosts)
   })
 
-  it('relays inbound postMessage commands to window.dispatchEvent as host.command CustomEvent', () => {
+  it('does NOT dispatch host.command CustomEvent for inbound commands (sdk1.md §11.34)', () => {
+    // Prior to §11.34 the bridge relayed inbound host commands onto
+    // `window` as `host.command` CustomEvents for a renderer-side
+    // listener. No shipped code consumed that path, so the relay was
+    // removed. This test pins the negative contract: an inbound
+    // command postMessage MUST NOT produce a host.command CustomEvent
+    // regardless of whether the bridge still installs a postMessage
+    // listener (it currently does not — we check both shapes).
     const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
-    // The bridge registered a message handler
-    expect(h.messageHandlers.length).toBe(1)
-    const initialEvents = h.dispatchedEvents.length
-    // Simulate a host command
-    h.messageHandlers[0]!({ data: { v: '1.0', kind: 'command', payload: { name: 'setTheme', args: { theme: 'dark' } } } })
-    expect(h.dispatchedEvents.length).toBe(initialEvents + 1)
-    const ev = h.dispatchedEvents[initialEvents]!
-    expect(ev.type).toBe('host.command')
-    expect(ev.detail).toMatchObject({ kind: 'command' })
+    // If a listener is registered, invoke it; if not, the assertion
+    // below still holds (no host.command was ever dispatched).
+    if (h.messageHandlers.length > 0) {
+      const initialEvents = h.dispatchedEvents.length
+      h.messageHandlers[0]!({ data: { v: '1.0', kind: 'command', payload: { name: 'setTheme', args: { theme: 'dark' } } } })
+      expect(h.dispatchedEvents.length).toBe(initialEvents)
+    }
+    expect(h.dispatchedEvents.filter((e) => e.type === 'host.command')).toHaveLength(0)
   })
 
-  it('ignores postMessages with wrong envelope version', () => {
+  it('does NOT install a postMessage listener after §11.34', () => {
+    // The bridge prior to §11.34 listened for inbound postMessages to
+    // either validate envelope version or re-dispatch `host.command`
+    // CustomEvents. Both uses are gone: the editor registers its own
+    // postMessage listener post-bridge, and no consumer of the relay
+    // ever shipped. Pin the absence so a future refactor can't
+    // accidentally re-introduce the listener.
     const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
-    const initialEvents = h.dispatchedEvents.length
-    h.messageHandlers[0]!({ data: { v: '0.9', kind: 'command' } })
-    expect(h.dispatchedEvents.length).toBe(initialEvents)
+    expect(h.messageHandlers).toHaveLength(0)
   })
 
   it('waits for DOMContentLoaded when document.readyState is loading', () => {
