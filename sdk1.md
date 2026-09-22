@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  91 文件 / 856 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
+apps/web-server/tests/  →  92 文件 / 863 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -3169,7 +3169,7 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**91 文件 / 856 通过 / 1 skipped / 0 失败**（exit 0）——
+- `apps/web-server`：**92 文件 / 863 通过 / 1 skipped / 0 失败**（exit 0）——
   本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
@@ -3230,7 +3230,7 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
 失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
 
-**结果**：`apps/web-server` **91 文件 / 856 通过 / 1 skipped / 0 失败** —— 本分支
+**结果**：`apps/web-server` **92 文件 / 863 通过 / 1 skipped / 0 失败** —— 本分支
 首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
@@ -3840,7 +3840,7 @@ cd apps/web-server
 # 42/42 passed（9 §11.45 + 12 §11.46 + 10 §11.47 + 11 §11.48）
 
 ./node_modules/.bin/vitest run --config ./vitest.config.ts
-# 856 passed | 1 skipped | 0 failures（91 文件；基线 843 → 856 +13）
+# 863 passed | 1 skipped | 0 failures（92 文件；基线 856 → 863 +7）
 
 ../../node_modules/.bin/tsc --noEmit
 # 无新增错误（同 9 个 pre-existing 在 packages/{pptx-ops,xlsx-gateway}）
@@ -4574,6 +4574,13 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
   `dropped_total` 是 rotate 紧急度的领先指标。rotate 脚本本身
   （`GENOFFICE_AUDIT_RETENTION_DAYS` + 周期 worker）仍 M5+。详见 §11.44。
 - **Discord 服务器 / Office Hours**：外部服务，沙箱不可达（§A.3 ⬜ 保留）。
+- **audit-log retention / rotate worker** ✅ §11.52：本批闭合 §A.5 backlog 中"审计日志保留期 / rotate"条目（观测侧 f35524d 已落，本批补 worker）。
+新增 `apps/web-server/src/common/audit-log.ts` 中：
+  - `rotateAuditLog({ retentionDays?, nowMs? })` — 单次 rotate，读 `audit-log.jsonl`，留 `timestamp >= cutoffMs` 行，原地 rename-swap（`FILE.rotate-<pid>-<ts>.tmp` → `FILE`），累加 `totalDropped`。返 `{ kept, dropped, cutoffIso, skipped }` 便于测试。
+  - `startAuditRotateWorker()` — 周期 `setInterval`（`GENOFFICE_AUDIT_ROTATE_INTERVAL_MS` 默认 24h），`unref()` 不阻塞 shutdown；幂等；错误 log 不 throw。
+  - `_stopAuditRotateWorkerForTests()` — 测试用清理接口。
+`apps/web-server/src/index.ts` 在 `initRecentState()` 后 bootstrap worker。测试 +7（drops-older / bumps-totalDropped / no-op-when-nothing-old / skipped-when-no-file / drops-malformed / timer-idempotent / env-override）。
+Prometheus 指标 `genoffice_audit_log_total_dropped` 现首次有真实累加 consumer（之前一直是 process-lifetime 0）。
 - **`slides:get-shape-keys` 真值化** ✅ §11.51：本批将桩（`(_e, _i) => []`）替换为真实 deck projection。Morph transition 特性（`AudienceView.tsx:131` / `SlideShowView.tsx:104` 的 `Promise.all(...getShapeKeys(i))`）之前永远收到空数组 → 静默 no-op。新实现走 `slide.elements.map(el => ({ sourceId: el.id, spid: elementSpid(el), name: el.name ?? '' }))`，端口来自 `apps/slides/src/main/slides-main.ts:3828`。`elementSpid` 从 `@genoffice/pptx-engine/animation` 导出（index.ts:60 re-export）。测试 +2（替换 1 个 no-op 桩断言为 ShapeKey 形状 + sourceId / name / spid 契约 + apply-txn 加 2 个 textbox 后 keys.length >= 2 断言；加 2 个边界：out-of-range slideIndex / no-session 均返 []）。
 - **`slides:chart-color-schemes` 真值化** ✅ §11.50：本批将桩 (`() => []`) 替换为真实 theme-driven palette（9 个 scheme：default + colorful + colorful2 + 6 mono-accent 渐变）。端口来自 `apps/slides/src/main/slides-main.ts:1000` 的 `chartColorSchemes`，新增 `parseTheme` 导入（@genoffice/pptx-engine 已 export）+ `mixHex` / `deckAccents` / `FALLBACK_ACCENTS` 三个本地 helper。handler 仍走 `resolveSlidesReadModel`，session 缺时返 `null`（renderer `then(r => ...)` 把 `null` 读为"无 palette 可用"，避免空数组 `false-pass-through`）。测试 +2（替换 1 个 no-op 桩断言为 9-scheme + 6-color + 5-step gradient + #RRGGBB 格式断言，加 1 个 null 契约断言）。
 - **`slides:table-structure` 错形状桩闭合** ✅ §11.49：本批将桩 (`() => ({})`) 从 `apps/web-server/src/slides/state.ts` 移到 `apps/web-server/src/slides/elements.ts` 真 mutation handler 路径。新实现直接调用 `@genoffice/pptx-engine` 的 `editTableStructure` (已 export，签名 `(opened, slideIndex, elementId, op) => { slide, elementId } | null`)，通过 `legacySession(event)` 查 session，`pushSlidesHistory` 推快照，refused（merged cells / out-of-range / delete-of-last-row）时 `session.undoStack.pop()` 回滚；成功路径 `setSlidesDirty(path, true)` + 返回 `{ slide, sourceId: r.elementId }`。
@@ -4585,7 +4592,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys**）| 91 | 856 | ✅ |
+| web-server（含 .../metrics-endpoint / audit-log-persistence / **audit-log-rotate** / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys**）| 92 | 863 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -4604,7 +4611,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **196** | **4667** | ✅ |
+| **总计** | **197** | **4674** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
