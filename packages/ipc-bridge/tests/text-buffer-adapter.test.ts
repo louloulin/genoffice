@@ -346,3 +346,66 @@ describe('text-buffer-adapter · registerNativeAdapter', () => {
     expect(nativeAdapter(target)).toBe(second)
   })
 })
+
+/**
+ * Track changes passthrough (sdk1.md §B.5.1 #5).
+ *
+ * The mirror buffer has no concept of revisions, so every track-changes
+ * command must either delegate to a registered native adapter or answer
+ * UNSUPPORTED. Fabricating `{ enabled: false, changes: [] }` would be worse
+ * than failing: a tracking-capable host would read that as "this document
+ * has no revisions" rather than "this editor cannot track changes".
+ */
+describe('text-buffer-adapter · track changes (§B.5.1 #5)', () => {
+  it('answers UNSUPPORTED when no native adapter is registered', async () => {
+    const handle = installTextBufferSink({ target: {} })
+    // The commands exist (so the host gets a typed failure, not a timeout)…
+    expect(handle.supported).toEqual(
+      expect.arrayContaining(['setTrackChanges', 'getTrackChanges', 'acceptChange', 'rejectChange']),
+    )
+    // …but they all reject.
+    await expect(handle.dispatch('getTrackChanges', {})).rejects.toMatchObject({
+      code: 'UNSUPPORTED',
+    })
+    await expect(handle.dispatch('setTrackChanges', { enabled: true })).rejects.toMatchObject({
+      code: 'UNSUPPORTED',
+    })
+    await expect(handle.dispatch('acceptChange', { changeId: 'x' })).rejects.toMatchObject({
+      code: 'UNSUPPORTED',
+    })
+    await expect(handle.dispatch('rejectChange', { changeId: 'x' })).rejects.toMatchObject({
+      code: 'UNSUPPORTED',
+    })
+  })
+
+  it('delegates to the native adapter once one is registered', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    const accepted: string[] = []
+    registerNativeAdapter(
+      {
+        setTrackChanges: () => {},
+        getTrackChanges: () => ({
+          enabled: true,
+          changes: [{ id: 'rev_a', kind: 'delete', author: 'bob', date: '', text: 'gone' }],
+        }),
+        acceptChange: (id) => {
+          accepted.push(id)
+          return true
+        },
+        rejectChange: () => false,
+      },
+      target,
+    )
+    expect(await handle.dispatch('getTrackChanges', {})).toEqual({
+      enabled: true,
+      changes: [{ id: 'rev_a', kind: 'delete', author: 'bob', date: '', text: 'gone' }],
+    })
+    expect(await handle.dispatch('acceptChange', { changeId: 'rev_a' })).toEqual({ ok: true })
+    expect(accepted).toEqual(['rev_a'])
+    // The adapter's `false` is surfaced as "unknown id", not silently OK.
+    await expect(handle.dispatch('rejectChange', { changeId: 'rev_a' })).rejects.toThrow(
+      /unknown change id/,
+    )
+  })
+})

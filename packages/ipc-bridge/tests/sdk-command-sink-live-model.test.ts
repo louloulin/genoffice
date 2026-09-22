@@ -213,3 +213,115 @@ describe('makeLiveModelHandlers / installLiveModelSink', () => {
   })
 })
 
+
+/**
+ * Track changes (sdk1.md §B.5.1 #5).
+ *
+ * Four app-specific commands: setTrackChanges / getTrackChanges /
+ * acceptChange / rejectChange. The sink must forward them verbatim when an
+ * adapter implements them and answer `UNSUPPORTED` when it does not, so a
+ * non-revision editor (sheets, slides) fails loudly instead of hanging.
+ */
+describe('sdk-command-sink · track changes (§B.5.1 #5)', () => {
+  const emptyState = () => ({ enabled: false, changes: [] })
+
+  it('registers all four commands when the adapter implements them', () => {
+    const handle = installLiveModelSink({
+      target: {},
+      adapter: {
+        setTrackChanges: () => {},
+        getTrackChanges: emptyState,
+        acceptChange: () => true,
+        rejectChange: () => true,
+      },
+    })
+    expect(handle.supported).toEqual(
+      expect.arrayContaining(['setTrackChanges', 'getTrackChanges', 'acceptChange', 'rejectChange']),
+    )
+  })
+
+  it('setTrackChanges forwards the boolean and returns { ok: true }', async () => {
+    const seen: boolean[] = []
+    const handle = installLiveModelSink({
+      target: {},
+      adapter: { setTrackChanges: (enabled) => seen.push(enabled) },
+    })
+    expect(await handle.dispatch('setTrackChanges', { enabled: true })).toEqual({ ok: true })
+    expect(await handle.dispatch('setTrackChanges', { enabled: false })).toEqual({ ok: true })
+    expect(seen).toEqual([true, false])
+  })
+
+  it('setTrackChanges rejects a non-boolean enabled', async () => {
+    const handle = installLiveModelSink({
+      target: {},
+      adapter: { setTrackChanges: () => {} },
+    })
+    await expect(handle.dispatch('setTrackChanges', { enabled: 'yes' })).rejects.toThrow(
+      /enabled must be a boolean/,
+    )
+    await expect(handle.dispatch('setTrackChanges', {})).rejects.toThrow(
+      /enabled must be a boolean/,
+    )
+  })
+
+  it('getTrackChanges returns the adapter state verbatim', async () => {
+    const state = {
+      enabled: true,
+      changes: [{ id: 'rev_1', kind: 'insert' as const, author: 'alice', date: '2026-09-22', text: 'hi' }],
+    }
+    const handle = installLiveModelSink({
+      target: {},
+      adapter: { getTrackChanges: () => state },
+    })
+    expect(await handle.dispatch('getTrackChanges', {})).toEqual(state)
+  })
+
+  it('acceptChange / rejectChange forward the id and reject unknown ids', async () => {
+    const accepted: string[] = []
+    const rejected: string[] = []
+    const handle = installLiveModelSink({
+      target: {},
+      adapter: {
+        acceptChange: (id) => {
+          if (id !== 'rev_known') return false
+          accepted.push(id)
+          return true
+        },
+        rejectChange: (id) => {
+          rejected.push(id)
+          return true
+        },
+      },
+    })
+    expect(await handle.dispatch('acceptChange', { changeId: 'rev_known' })).toEqual({ ok: true })
+    expect(accepted).toEqual(['rev_known'])
+    await expect(handle.dispatch('acceptChange', { changeId: 'rev_nope' })).rejects.toThrow(
+      /unknown change id/,
+    )
+    expect(await handle.dispatch('rejectChange', { changeId: 'rev_x' })).toEqual({ ok: true })
+    expect(rejected).toEqual(['rev_x'])
+  })
+
+  it('acceptChange rejects a missing / empty changeId', async () => {
+    const handle = installLiveModelSink({
+      target: {},
+      adapter: { acceptChange: () => true, rejectChange: () => true },
+    })
+    await expect(handle.dispatch('acceptChange', {})).rejects.toThrow(/changeId is required/)
+    await expect(handle.dispatch('acceptChange', { changeId: '' })).rejects.toThrow(
+      /changeId is required/,
+    )
+    await expect(handle.dispatch('rejectChange', {})).rejects.toThrow(/changeId is required/)
+  })
+
+  it('an adapter without revision tracking leaves the commands unsupported', async () => {
+    const handle = installLiveModelSink({
+      target: {},
+      adapter: { getText: () => 'x' },
+    })
+    expect(handle.supported).not.toContain('getTrackChanges')
+    await expect(handle.dispatch('getTrackChanges', {})).rejects.toMatchObject({
+      code: 'UNSUPPORTED',
+    })
+  })
+})

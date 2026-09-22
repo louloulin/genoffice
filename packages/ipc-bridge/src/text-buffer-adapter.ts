@@ -26,7 +26,11 @@
 ///     host-driven mutations. Local edits stay on the app's undo manager
 ///     so one Cmd+Z cannot appear to undo twice.
 
-import { installLiveModelSink, type SdkCommandSinkHandle } from './sdk-command-sink'
+import {
+  installLiveModelSink,
+  UnsupportedCommandError,
+  type SdkCommandSinkHandle,
+} from './sdk-command-sink'
 
 interface BufferState {
   text: string
@@ -284,6 +288,33 @@ export function installTextBufferSink(options?: {
       undo: () => pick('undo', () => buffer.undo())(),
       redo: () => pick('redo', () => buffer.redo())(),
       getUndoStack: () => pick('getUndoStack', () => buffer.undoStack())(),
+      // Revision tracking is app-specific — the mirror buffer has no concept
+      // of it, so every call defers to the native adapter. When no app
+      // registered one we throw the standard UnsupportedCommandError, which
+      // is a more honest answer to the host than a fabricated
+      // `{ enabled: false, changes: [] }` that a tracking-capable host would
+      // mistake for "this document has no revisions".
+      setTrackChanges: (enabled: boolean) => {
+        const fn = native()?.setTrackChanges
+        if (!fn) throw new UnsupportedCommandError('setTrackChanges')
+        fn(enabled)
+        return undefined
+      },
+      getTrackChanges: () => {
+        const fn = native()?.getTrackChanges
+        if (!fn) throw new UnsupportedCommandError('getTrackChanges')
+        return fn()
+      },
+      acceptChange: (id: string) => {
+        const fn = native()?.acceptChange
+        if (!fn) throw new UnsupportedCommandError('acceptChange')
+        return fn(id)
+      },
+      rejectChange: (id: string) => {
+        const fn = native()?.rejectChange
+        if (!fn) throw new UnsupportedCommandError('rejectChange')
+        return fn(id)
+      },
     },
   }
   if (options?.target !== undefined) base.target = options.target

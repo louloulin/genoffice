@@ -45,6 +45,71 @@ export interface RevisionRange {
 /** transactions carrying this meta are never recorded as revisions */
 export const TRACK_IGNORE = 'trackIgnore'
 
+/**
+ * Stable, position-independent id for a revision (sdk1.md §B.5.1 #5).
+ *
+ * The host SDK's `acceptChange` / `rejectChange` take a `changeId`, but a
+ * ProseMirror position is invalidated by any edit before it — the host would
+ * hold an id across an unrelated typing burst and target the wrong range.
+ * Hashing the revision's own observable attributes instead gives an id that
+ * survives edits to *other* parts of the document, which is what the SDK
+ * contract promises ("IDs are only unique within one document revision;
+ * re-read after an accept/reject").
+ *
+ * Deliberately excludes `from` / `to`: including them would make the id
+ * change the moment anything earlier in the document moves.
+ */
+export function revisionId(r: RevisionRange): string {
+  // Cheap, dependency-free FNV-1a over the identifying attributes.
+  const material = `${r.kind}\u0000${r.author}\u0000${r.date ?? ''}\u0000${r.text ?? ''}`
+  let hash = 0x811c9dc5
+  for (let i = 0; i < material.length; i++) {
+    hash ^= material.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return `rev_${(hash >>> 0).toString(36)}`
+}
+
+/** Map the internal revision kind onto the SDK's coarse three-value union. */
+export function revisionKindForSdk(
+  kind: RevisionRange['kind'],
+): 'insert' | 'delete' | 'modify' {
+  switch (kind) {
+    case 'ins':
+    case 'rowIns':
+    case 'cellIns':
+    case 'blockIns':
+    case 'moveTo':
+      return 'insert'
+    case 'del':
+    case 'rowDel':
+    case 'cellDel':
+    case 'blockDel':
+    case 'moveFrom':
+      return 'delete'
+    default:
+      // pPrChange / rPrChange / both — a property or mixed revision.
+      return 'modify'
+  }
+}
+
+/** Collect the pending revisions in the SDK's wire shape. */
+export function collectRevisionsForSdk(doc: PmNode): Array<{
+  id: string
+  kind: 'insert' | 'delete' | 'modify'
+  author: string
+  date: string
+  text: string
+}> {
+  return collectRevisions(doc).map((r) => ({
+    id: revisionId(r),
+    kind: revisionKindForSdk(r.kind),
+    author: r.author,
+    date: r.date ?? '',
+    text: (r.text ?? '').slice(0, 500),
+  }))
+}
+
 const TRACKED_FORMAT_MARKS = new Set(['bold', 'italic', 'underline', 'strike', 'docTextStyle'])
 
 const TEXT_STYLE_FIELDS = [
@@ -266,7 +331,11 @@ function stripTrackMarker(raw: string | null, tag: string, container: string): s
   return out
 }
 
-function applyRevisions(editor: Editor, ranges: RevisionRange[], mode: 'accept' | 'reject'): void {
+export function applyRevisions(
+  editor: Editor,
+  ranges: RevisionRange[],
+  mode: 'accept' | 'reject',
+): void {
   if (ranges.length === 0) return
   const { state } = editor
   const tr = state.tr

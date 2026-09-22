@@ -201,7 +201,8 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * NOT included (need the live editor model, so each app wires them):
  * `setContent` / `getContent` / `insertText` / `insertImage` / `undo` /
  * `redo` / `getUndoStack` / `setTheme` / `setLang` / `mountSidebar` /
- * `postToSidebar` / `unmountSidebar`.
+ * `postToSidebar` / `unmountSidebar` / `setTrackChanges` /
+ * `getTrackChanges` / `acceptChange` / `rejectChange`.
  *
  * `undo` / `redo` / `getUndoStack` are part of `SdkLiveModelAdapter` as
  * of sdk1.md §B.5.1 #2, so any app wiring `installLiveModelSink` (or
@@ -327,6 +328,22 @@ export interface SdkLiveModelAdapter {
   redo?: () => boolean
   /** `{ length, current }` — see `apps/sdk/src/types.ts:getUndoStack`. */
   getUndoStack?: () => { length: number; current: number }
+  /**
+   * Revision / track-changes surface (sdk1.md §B.5.1 #5). Apps that
+   * implement Word-style tracked changes (docs) expose the four
+   * operations; apps without the concept omit them and the matching
+   * command answers `UnsupportedCommandError('UNSUPPORTED')` so the
+   * host sees a loud failure instead of a hang.
+   */
+  setTrackChanges?: (enabled: boolean) => void
+  getTrackChanges?: () => {
+    enabled: boolean
+    changes: Array<{ id: string; kind: 'insert' | 'delete' | 'modify'; author: string; date: string; text: string }>
+  }
+  /** Accept one revision. Return `false` when the id is unknown. */
+  acceptChange?: (changeId: string) => boolean
+  /** Reject one revision. Return `false` when the id is unknown. */
+  rejectChange?: (changeId: string) => boolean
 }
 
 /**
@@ -414,6 +431,43 @@ export function makeLiveModelHandlers(
       const length = Number.isFinite(stack?.length) ? Math.max(0, Math.trunc(stack.length)) : 0
       const current = Number.isFinite(stack?.current) ? Math.max(0, Math.trunc(stack.current)) : 0
       return { length, current: Math.min(current, length) }
+    }
+  }
+  if (adapter.setTrackChanges) {
+    handlers.setTrackChanges = (args: unknown) => {
+      const a = (args ?? {}) as { enabled?: unknown }
+      if (typeof a.enabled !== 'boolean') {
+        throw new Error('setTrackChanges: args.enabled must be a boolean')
+      }
+      adapter.setTrackChanges!(a.enabled)
+      return { ok: true as const }
+    }
+  }
+  if (adapter.getTrackChanges) {
+    handlers.getTrackChanges = () => adapter.getTrackChanges!()
+  }
+  if (adapter.acceptChange) {
+    handlers.acceptChange = (args: unknown) => {
+      const a = (args ?? {}) as { changeId?: unknown }
+      if (typeof a.changeId !== 'string' || !a.changeId) {
+        throw new Error('acceptChange: args.changeId is required')
+      }
+      if (!adapter.acceptChange!(a.changeId)) {
+        throw new Error(`acceptChange: unknown change id: ${a.changeId}`)
+      }
+      return { ok: true as const }
+    }
+  }
+  if (adapter.rejectChange) {
+    handlers.rejectChange = (args: unknown) => {
+      const a = (args ?? {}) as { changeId?: unknown }
+      if (typeof a.changeId !== 'string' || !a.changeId) {
+        throw new Error('rejectChange: args.changeId is required')
+      }
+      if (!adapter.rejectChange!(a.changeId)) {
+        throw new Error(`rejectChange: unknown change id: ${a.changeId}`)
+      }
+      return { ok: true as const }
     }
   }
   if (adapter.setTheme) {

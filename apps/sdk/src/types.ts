@@ -499,6 +499,42 @@ export interface EditorCommands {
   getUndoStack: { args?: Record<string, never>; result: { length: number; current: number } }
 
   /**
+   * Turn revision/track-changes recording on or off. While enabled, the
+   * editor records edits as tracked revisions rather than applying them
+   * silently, so a reviewer can accept or reject each one. Editors that
+   * don't implement revision tracking reject with `code: 'UNSUPPORTED'`.
+   *
+   * (sdk1.md §B.5.1 #5 Track changes, SDK 2.0 Kestrel M2)
+   */
+  setTrackChanges: { args: { enabled: boolean }; result: { ok: true } }
+  /**
+   * Read the current tracking state together with the pending revisions.
+   * `changes[].id` is a stable, position-independent handle: it is derived
+   * from the revision's content and author, so the host can hold an id
+   * across edits and still address the same change with `acceptChange` /
+   * `rejectChange`. IDs are only unique within one document revision —
+   * re-read after an accept/reject.
+   */
+  getTrackChanges: {
+    args?: Record<string, never>
+    result: {
+      enabled: boolean
+      changes: Array<{
+        id: string
+        kind: 'insert' | 'delete' | 'modify'
+        author: string
+        /** ISO-8601 when known; empty string otherwise. */
+        date: string
+        text: string
+      }>
+    }
+  }
+  /** Accept one pending revision by id (see `getTrackChanges`). */
+  acceptChange: { args: { changeId: string }; result: { ok: true } }
+  /** Reject one pending revision by id. */
+  rejectChange: { args: { changeId: string }; result: { ok: true } }
+
+  /**
    * Report an aggregated usage sample so the web-server can expose it
    * alongside its own metrics (`GET /api/v1/metrics`, sdk1.md §11.36).
    *

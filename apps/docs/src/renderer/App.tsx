@@ -245,7 +245,15 @@ import { setDkColor } from './editor/dark-page'
 import { useUiThemeIsDark } from './ui-theme'
 import { type InkAnnotation, type InkTool } from './editor/ink'
 import { InkOverlay } from './components/InkOverlay'
-import { collectRevisions, gotoRevision, type TrackChangesStorage } from './editor/revisions'
+import {
+  applyRevisions,
+  collectRevisions,
+  collectRevisionsForSdk,
+  gotoRevision,
+  revisionId,
+  type RevisionRange,
+  type TrackChangesStorage,
+} from './editor/revisions'
 import { NavPane } from './components/NavPane'
 import { Ruler } from './components/Ruler'
 import { docBodyFont, docLineFactor, docThemeCss } from './doc-style-css'
@@ -2096,6 +2104,32 @@ export function App() {
     zoteroControllerRef.current = null
   }, [editor])
 
+  /**
+   * Accept / reject one revision addressed by its stable id (sdk1.md
+   * §B.5.1 #5). Reuses the same accept/reject engine the Review ribbon
+   * drives, so the operation lands as ONE tracked transaction (TRACK_IGNORE
+   * meta, single undo step) rather than a raw doc mutation — a host that
+   * calls acceptChange must not be able to leave the document in a state the
+   * in-app "accept all" wouldn't have produced.
+   *
+   * Lives outside the component so the adapter closure stays tiny; takes the
+   * resolver as a parameter because `collectRevisions` is position-based and
+   * must run against the *current* doc at call time.
+   */
+  const handleRevisionById = (
+    editorInstance: Editor,
+    changeId: string,
+    mode: 'accept' | 'reject',
+    resolve: (id: string) => RevisionRange | null,
+  ): boolean => {
+    const target = resolve(changeId)
+    if (!target) return false
+    // One call, one tracked transaction, one undo step — identical to what
+    // the Review ribbon's "accept/reject this revision" produces.
+    applyRevisions(editorInstance, [target], mode)
+    return true
+  }
+
   // SDK 2.0 §B.5.1 #2 — expose the editor's own undo history to the embed
   // host. `installTextBufferSink` runs in web-bridge.ts at renderer boot,
   // before this tiptap instance exists; `registerNativeAdapter` registers
@@ -2127,8 +2161,30 @@ export function App() {
         const depth = (canUndo ? 1 : 0) + (canRedo ? 1 : 0)
         return { length: depth, current: canUndo ? 1 : 0 }
       },
+      // SDK 2.0 §B.5.1 #5 — Track changes. `trackChanges` is the same state
+      // the Review ribbon toggle drives, so a host that flips tracking sees
+      // the UI follow along (and vice versa). Reads go through the live
+      // editor so `getTrackChanges` reflects the document at call time.
+      setTrackChanges: (enabled: boolean) => setTrackChanges(enabled),
+      getTrackChanges: () => {
+        const storage = editor.storage.trackChanges as TrackChangesStorage | undefined
+        return {
+          enabled: storage?.enabled ?? trackChanges,
+          changes: collectRevisionsForSdk(editor.state.doc),
+        }
+      },
+      acceptChange: (changeId: string) =>
+        handleRevisionById(editor, changeId, 'accept', (id) => {
+          const r = collectRevisions(editor.state.doc).find((x) => revisionId(x) === id)
+          return r ?? null
+        }),
+      rejectChange: (changeId: string) =>
+        handleRevisionById(editor, changeId, 'reject', (id) => {
+          const r = collectRevisions(editor.state.doc).find((x) => revisionId(x) === id)
+          return r ?? null
+        }),
     })
-  }, [editor])
+  }, [editor, trackChanges])
 
   useEffect(
     () =>

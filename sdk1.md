@@ -2857,6 +2857,87 @@ packages/ipc-bridge/src/sidebar-runtime.ts(260,13): error TS2375 …
   返回形状），属独立小改动。
 - **`insertImage` / `setTheme` / `setLang` 仍无 adapter**：不在本小节范围。
 
+### 11.40 · §B.5.1 #5 Track changes 全链路
+
+§B.5.1 的 9 个 surface 里，第 5 个（Track changes / 修订追踪）此前只有
+`apps/docs/src/renderer/editor/revisions.ts`（约 600 行的 Word 修订引擎）
+和 Review ribbon 的 UI，**SDK 侧完全没有通道** —— host 无法打开追踪、读不到
+待决修订、也无法接受/拒绝。
+
+#### 11.40.1 协议
+
+`apps/sdk/src/types.ts` 的 `EditorCommands` 新增 4 条：
+
+```ts
+setTrackChanges:  { args: { enabled: boolean }, result: { ok: true } }
+getTrackChanges:  { args?: {}, result: {
+  enabled: boolean
+  changes: Array<{ id: string; kind: 'insert'|'delete'|'modify'
+                   author: string; date: string; text: string }>
+} }
+acceptChange:     { args: { changeId: string }, result: { ok: true } }
+rejectChange:     { args: { changeId: string }, result: { ok: true } }
+```
+
+**`changeId` 的设计（本节的关键难点）**：host 要拿着 id 调
+`acceptChange`，但 ProseMirror 的位置在它前面的任何编辑之后全部失效 ——
+host 在一次无关的打字之后调用，就会命中错误的 range。所以 id 由修订自身的
+**可观察属性**哈希得到（FNV-1a over `kind\0author\0date\0text`），
+**故意排除 `from` / `to`**：
+
+```ts
+export function revisionId(r: RevisionRange): string   // rev_<base36>
+export function revisionKindForSdk(kind)               // 12 种内部 kind → 3 值
+export function collectRevisionsForSdk(doc)            // 直接给 SDK 线格式
+```
+
+12 种内部 revision kind（`ins` / `del` / `both` / `pPrChange` / `moveFrom` /
+`moveTo` / `rPrChange` / `rowIns` / `rowDel` / `cellIns` / `cellDel` /
+`blockIns` / `blockDel`）折叠成 SDK 的 3 值 union：插入类（ins / rowIns /
+cellIns / blockIns / moveTo）→ `insert`；删除类 → `delete`；其余（属性修改 /
+混合）→ `modify`。`applyRevisions` 顺带从 `function` 改为 `export`，让
+按 id 的操作能直接复用 Review ribbon 的引擎 —— 保证 host 的一次
+`acceptChange` 落地为**一个带 `TRACK_IGNORE` meta 的 tracked transaction、
+一步 undo**，与应用内"接受此修订"完全一致。
+
+#### 11.40.2 三层接线
+
+| 层 | 改动 |
+|---|---|
+| `apps/sdk/src/types.ts` | `EditorCommands` +4（共 31 条命令）|
+| `packages/ipc-bridge/src/sdk-command-sink.ts` | `SdkLiveModelAdapter` +4 可选方法；`makeLiveModelHandlers` 注册 4 个 handler（`enabled` 非布尔 → 报错；`changeId` 缺失/空 → 报错；adapter 返回 `false` → `unknown change id` 报错）|
+| `packages/ipc-bridge/src/text-buffer-adapter.ts` | 4 条命令**永远委派** native adapter；没注册时抛 `UnsupportedCommandError` |
+| `apps/docs/src/renderer/App.tsx` | 注册真实实现：`setTrackChanges` 直通 Review ribbon 的 `setTrackChanges` state；`getTrackChanges` 读 `editor.storage.trackChanges.enabled` + `collectRevisionsForSdk(editor.state.doc)`；`acceptChange` / `rejectChange` 经 `handleRevisionById` → `applyRevisions` |
+
+**为什么 buffer 版本要抛错而不是返空**：`{ enabled: false, changes: [] }`
+看起来"安全"，但对一个支持追踪的 host 来说，这读起来是"这个文档没有修订"
+而不是"这个编辑器不支持追踪" —— 后者才需要 host 显示降级 UI。SDK 契约里
+`UNSUPPORTED` 就是干这个的。
+
+#### 11.40.3 验证
+
+- `packages/ipc-bridge` → **6 文件 / 144 测试通过**（+9：7 个 sink 用例覆盖
+  注册 / 转发 / 非布尔拒绝 / 空 id 拒绝 / 未知 id 拒绝 / 无 adapter 时
+  UNSUPPORTED；2 个 buffer 用例覆盖委派与未注册时的 typed 失败）
+- `apps/sdk` → **16 文件 / 201 测试通过**
+- `apps/docs` typecheck → **App.tsx 0 错误**；`electron-vite build` 成功，
+  产物 grep 到 4 条命令 + `collectRevisionsForSdk` + `rev_` 前缀
+- 其余 5 个 app typecheck → `ipc-bridge` / `types.ts` 相关错误 **0**
+
+#### 11.40.4 风险与后续
+
+- **id 碰撞**：FNV-1a 32 位，同一文档里两个属性完全相同的修订（同 kind、
+  同作者、同日期、同文本）会撞 id。Word 的场景下同作者同秒的同文本修订本就
+  少见，且契约明确"ID 只在同一文档版本内唯一，accept/reject 后请重读"。
+  真要消除需要内容哈希 + 去重计数，收益不匹配复杂度。
+- **`text` 字段截断 500 字符**：避免超大删除段落把 webhook/IPC payload 撑爆。
+- **`sheets` / `slides` / `pdf` / `markdown` / `html` 未实现追踪**：这几个
+  编辑器的文档模型里本来就没有修订概念（PDF 不是可修订格式、Markdown 无
+  Word 修订语义）。当前返回 `UNSUPPORTED` 是正确行为，不是缺口。
+- **`acceptAllChange` / `rejectAllChange` 未暴露**：应用内有
+  `acceptAllRevisions` / `rejectAllRevisions`。host 目前只能逐个处理；批量
+  变体留 follow-up（需要定义"all"在并发编辑下的语义）。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -3322,7 +3403,33 @@ bridge 优先走 `window.__GENOFFICE_COMMAND_SINK__`（renderer 装上时），
       `registerNativeAdapter()` 惰性注册表；`apps/docs` 已注册 tiptap 真实
       history。剩余 5 个 app 接各自编辑器的 history 为 follow-up（每 app ~10 行）。
 
-37. **typedoc-count 显式 step**（✅ 本轮）：
+36. **SDK 2.0 Kestrel M2 · Track changes 全链路**（✅ §11.40）：
+    - 闭合 §B.5.1 #5 Track changes
+    - `apps/sdk/src/types.ts`：`EditorCommands` +4（`setTrackChanges` /
+      `getTrackChanges` / `acceptChange` / `rejectChange`）；命令总数 27 → 31
+    - `packages/ipc-bridge/src/sdk-command-sink.ts`：`SdkLiveModelAdapter`
+      +4 可选方法；`makeLiveModelHandlers` 注册 4 个 handler，含入参校验
+      （`enabled` 非布尔 / `changeId` 缺失或空 / adapter 返 `false` → 结构化报错）
+    - `packages/ipc-bridge/src/text-buffer-adapter.ts`：4 条命令**永远**委派
+      native adapter，未注册时抛 `UnsupportedCommandError`（而不是伪造
+      `{enabled:false, changes:[]}` —— 那会被 host 读成"文档没有修订"）
+    - `apps/docs/src/renderer/editor/revisions.ts`：
+      - `revisionId(r)` — FNV-1a over `kind/author/date/text`，
+        **故意排除 `from`/`to`**，让 id 在被修订内容之外的编辑中保持稳定
+      - `revisionKindForSdk(kind)` — 12 种内部 kind → SDK 的 3 值 union
+      - `collectRevisionsForSdk(doc)` — 直接产出 SDK 线格式
+      - `applyRevisions` 从私有改为 `export`，让按 id 的操作复用 Review
+        ribbon 的引擎（一个 `TRACK_IGNORE` transaction、一步 undo）
+    - `apps/docs/src/renderer/App.tsx`：`registerNativeAdapter` 增加
+      `setTrackChanges`（直通 Review ribbon state）/ `getTrackChanges`
+      （读 `editor.storage.trackChanges.enabled` + 收集修订）/
+      `acceptChange` / `rejectChange`（经 `handleRevisionById` → `applyRevisions`）
+    - 测试：`packages/ipc-bridge` 135 → **144**（+9）；`apps/sdk` 201 全绿
+    - 未做：`acceptAllChange` / `rejectAllChange`（应用内有
+      `acceptAllRevisions` / `rejectAllRevisions`，但"all"在并发编辑下的语义
+      要先定义）——留 follow-up
+
+ 37. **typedoc-count 显式 step**（✅ 本轮）：
     - 闭合 §11.34.4 #2 + §A.5 unaddressed 小 backlog
     - `.github/workflows/docs.yml` 新增 step `Assert typedoc output count is within bounds`：在 `npm run docs:build` 之后跑 `gen-typedoc.mjs` 显式一遍 → `find docs/api/_generated -name '*.md' | wc -l` → 打印 `[typedoc-count] generated N .md files (bounds: 200-400)` → 越界时 `::error::` 注解 + exit 1
     - 之前依赖 `apps/web-server/tests/typedoc-count.test.ts` 在 `npm test` 间接跑；现在 docs 部署流程本身显式 assert，CI 日志可见，缩短 typedoc 漂移检测链路（不依赖 test job 通过）
@@ -3435,6 +3542,16 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
   `queryAudit` / `exportAudit` 三函数；`GENOFFICE_AUDIT_PERSIST=0` 供 CI 隔离用。
   §0.4 文档管理功能 13/14 → **14/14** ✅（仅剩协作冲突 = §M4 §C backlog）。
 
+#### ✅ 本轮新增解决（2026-09-22 · §11.40 §B.5.1 #5 Track changes）
+
+- **Track changes 全链路** — `EditorCommands` +4（setTrackChanges /
+  getTrackChanges / acceptChange / rejectChange），sink +4 handler，
+  apps/docs 接真实 tiptap 修订引擎。`changeId` 用修订内容哈希而非
+  ProseMirror 位置，避免 host 跨编辑后命中错误 range。
+- **§B.5.1 进度 7/9**（#1 Multi-instance ✅ · #2 Undo/Redo ✅ · #3 versions ✅ ·
+  #4 comments ✅ · **#5 track changes ✅** · #7 file picker ✅ ·
+  #8 sidebar ✅ · #9 telemetry ✅）；剩 #6 Export（downloadAs）。
+
 #### ✅ 本轮新增解决（2026-09-22 · §11.39 六 app native adapter + EOPT 修复）
 
 - **§B.5.1 #2 六个 app 全部接线** — docs / markdown / html 走各自编辑器
@@ -3474,7 +3591,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
-| ipc-bridge | 6 | 135 | ✅ |
+| ipc-bridge | 6 | 144 | ✅ |
 | file-parse | 1 | 38 | ✅ |
 | file-management | 1 | 219 | ✅ |
 | pptx-engine | 1 | 957 | ✅ |
