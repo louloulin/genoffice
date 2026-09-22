@@ -39,6 +39,7 @@ import {
   sweepWebTempRoot,
   encodeTransportValue,
   getHandler,
+  getHandlerEntry,
   handlerCount,
   listChannels,
 } from './common/index'
@@ -74,6 +75,7 @@ import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
+import { requireScopeFromHeaders } from './api/v1/auth'
 import { handleApiV1 } from './api/v1/index'
 import { handleEmbed } from './embed/index'
 import { registerSdkCommandHandlers } from './embed/sdk-commands'
@@ -496,8 +498,21 @@ const server = createServer(async (request, response) => {
       const args = parsed.args ?? []
       decodedArgs = (args as unknown[]).map((arg) => decodeTransportValue(arg))
 
-      const handler = getHandler(channel)
-      if (handler) {
+      const entry = getHandlerEntry(channel)
+      if (entry) {
+        // Scope gate (sdk1 §A.5 #10 audit:log close): if the handler opted
+        // into a scope, enforce it via the same gate the v1 REST layer
+        // uses. Channels without a registered scope fall through to the
+        // legacy trust model (WEB_TOKEN-cookie or no-auth dev mode).
+        if (entry.scope) {
+          const gate = requireScopeFromHeaders(request.headers, entry.scope)
+          if (!gate.ok) {
+            sendJson(response, gate.status, {
+              error: { code: gate.code, message: gate.message, channel },
+            })
+            return
+          }
+        }
         // Pass the SSE session id through to handlers via the event object so
         // they can look up per-session state (currentSlidesPath, dirty
         // tracking, etc.). The id on sender stays -1 because there is no
@@ -516,7 +531,7 @@ const server = createServer(async (request, response) => {
           },
         }
 
-        const result = await handler(event, ...decodedArgs)
+        const result = await entry.handler(event, ...decodedArgs)
         const encodedResult = encodeTransportValue(result)
         sendJson(response, 200, { ok: true, result: encodedResult })
       } else {

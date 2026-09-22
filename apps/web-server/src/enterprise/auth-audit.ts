@@ -91,7 +91,9 @@ export function registerAuditHandlers(): void {
       ...(tenantId ? { tenantId } : {}),
     })
     return { ok: true, id }
-  })
+  },
+    { scope: 'audit:write' },
+  )
 
   registerHandle('audit:query', (_event: unknown, args: unknown) => {
     const { userId, action, resource, startDate, endDate, limit, offset, tenantId } = (args || {}) as {
@@ -117,7 +119,9 @@ export function registerAuditHandlers(): void {
       ...(typeof offset === 'number' ? { offset } : {}),
       ...(tenantId ? { tenantId } : {}),
     })
-  })
+  },
+    { scope: 'audit:read' },
+  )
 
   registerHandle('audit:export', async (_event: unknown, args: unknown) => {
     const { format, startDate, endDate, tenantId } = (args || {}) as {
@@ -140,5 +144,7 @@ export function registerAuditHandlers(): void {
       ...(typeof endDate === 'number' ? { endDate } : {}),
       ...(tenantId ? { tenantId } : {}),
     })
-  })
+  },
+    { scope: 'audit:read' },
+  )
 }

@@ -3413,7 +3413,7 @@ cd apps/web-server
   systemd timer / k8s CronJob）仍 M5+。本轮只是给它准备了"我什么时候溢出"
   的信号。
 - `audit:log` scope gate（"只有合法 IPC 调用方能写审计"）是另一条独立 M5+
-  backlog（§11.37.6），本次不动。
+  backlog（§11.37.6），**本轮闭合**：见 §A.5 #10。
 - 跨进程并发安全（cluster 模式下多进程写同一 JSONL）需要换 SQLite 或
   Postgres backend；本轮 `records` / `totalRecorded` / `totalDropped` 仍是
   进程内态，与 M4+ cluster 化时统一规划。
@@ -5176,7 +5176,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 - **CRDT/OT 协作（M4 backlog）**：单人模式通；collab:* 通道骨架有，但多人同时写编辑合并 peer 未实装。
 - **`workbook:read-range` 返空 cells bug**：实测 Rust sidecar 的 read_range 命令对 inlineStr / sharedString 解析返回 `cells: []`，无论 open 后还是 save 后。涉及 Rust 二进制改动，沙箱不可 rebuild，留 M4+ 路线图。当前 PR 回退了 JS 侧的 refresh 实验（不能修），仅在本节记录。
-- **audit:log scope gate 缺失**：M5+ backlog（§11.37.6 记录）。当前任何已认证 IPC 调用方都能写审计日志。
+- **audit:log scope gate**：✅ 本轮闭合 — `audit:log` → `audit:write`；`audit:query` / `audit:export` → `audit:read`；9 e2e 测试 in `apps/web-server/tests/ipc-scope-gate.test.ts`。M5+ backlog 移出。
 - **审计日志保留期 / rotate**（观测已完成 ✅ `f35524d`，rotate 本身仍 M5+）：
   10k 条内存 mirror + 磁盘 JSONL 无限增长。`genoffice_audit_log_records` /
   `genoffice_audit_log_persisted_bytes` / `genoffice_audit_log_recorded_total` /
@@ -5732,8 +5732,7 @@ save handler
 6. **Slide get-* 通道剩余 10 个真值化**（M4 模板复用）
    - font-catalog / font-missing / font-download / font-install-local
    - media-data / native-clipboard / clipboard-external / clipboard-probe
-7. **audit:log scope gate**（M5+，但值得优先做）
-   - IPC dispatcher 加 scope middleware
+7. **audit:log scope gate**（✅ 本轮落地：`apps/web-server/src/common/registry.ts` 的 `registerHandle(channel, handler, options?)` + `getHandlerEntry`；`apps/web-server/src/index.ts` IPC dispatcher 在 handler 调用前跑 `requireScopeFromHeaders`；`audit:log` → `audit:write`，`audit:query` / `audit:export` → `audit:read`；9 e2e 测试 in `apps/web-server/tests/ipc-scope-gate.test.ts`）
 8. **引擎层稳定 id 改造**（pptx-engine 层）
    - 引入 `e_<guid8>` 形式
    - reparse 不打断 renderer 持有 id
