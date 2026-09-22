@@ -21,6 +21,7 @@ import {
 } from '@genoffice/ipc-bridge/web-native'
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
+import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createDesktopApi, createProjectApi } from '../shared/desktop-api-factory'
 import type { DesktopApi } from '../shared/ipc'
 import { parseDataflareTranslateResponse } from '../shared/dataflare-translate-response'
@@ -53,7 +54,17 @@ if (!isElectronRuntime()) {
    * commands that are pure browser operations — `openFileDialog` (file
    * input → base64 PickedFile[]) and `print`. App-specific commands that
    * need the live editor model are added here as the renderer wires them. */
-  installSdkCommandSink({ handlers: defaultSdkCommandHandlers() })
+  // SDK 2.0 Kestrel command sink. `installTextBufferSink` ships the
+  // sdk-shared defaults (`openFileDialog`, `print`) plus a text-buffer
+  // adapter that fulfils `setContent` / `getContent` / `insertText`
+  // against a renderer-side buffer. The docs renderer can call
+  // `updateTextBuffer({ text, bytes })` after a local edit and
+  // subscribe via `onBufferChange` to mirror host-driven edits back
+  // into the editor. Real tiptap integration is wired separately in
+  // apps/docs/src/renderer/editor; this scaffold makes the host's
+  // `editor.command('setContent' | 'getContent' | 'insertText')`
+  // round-trip work end-to-end.
+  installTextBufferSink()
   const embeddedPathPrefix = window.location.pathname.startsWith('/office-engine/')
     ? '/office-engine'
     : ''
