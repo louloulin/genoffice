@@ -35,7 +35,14 @@ import {
 } from './registry'
 import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
 import { csvToXlsxBuffer, decodeCsvBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
-import { CorruptError, InvalidArgumentError, NotFoundError } from '../ai/errors'
+import { InvalidArgumentError, NotFoundError } from '../ai/errors'
+import {
+  WorkbookCorruptError,
+  WorkbookInvalidArgumentError,
+  WorkbookNotFoundError,
+  WorkbookOpenFailedError,
+  WorkbookSaveFailedError,
+} from './errors'
 
 const sheetsSidecar = new WebSheetsSidecar()
 
@@ -105,14 +112,14 @@ export function registerSheetsHandlers(): void {
         path = staged
       } catch (err) {
         if (err instanceof StorageNotFoundError) {
-          throw new NotFoundError('workbook:open-path', `File not found: ${String(filePath)}`)
+          throw new WorkbookNotFoundError('workbook:open-path', `File not found: ${String(filePath)}`)
         }
         throw err
       }
     } else {
       path = requireManagedPath('workbook:open-path', filePath)
       if (!existsSync(path)) {
-        throw new NotFoundError('workbook:open-path', `File not found: ${path}`)
+        throw new WorkbookNotFoundError('workbook:open-path', `File not found: ${path}`)
       }
     }
 
@@ -153,7 +160,7 @@ export function registerSheetsHandlers(): void {
       // Legacy BIFF `.xls` needs the Rust `convertWorkbook` the desktop calls;
       // that command is not exposed on `WebSheetsSidecar`. Naming the real
       // reason beats the misleading "corrupt archive" a zip-only parse gives.
-      throw new CorruptError(
+      throw new WorkbookCorruptError(
         'workbook:open-path',
         'Legacy .xls workbooks are not supported by the web build yet — convert to .xlsx first.',
       )
@@ -174,7 +181,7 @@ export function registerSheetsHandlers(): void {
       // server fault: this used to surface as an unhandled 500. The finally
       // block cleans up any staged copy so a corrupt upload does not leave
       // a `*.staged-<ts>` orphan in FILES_DIR.
-      throw new CorruptError(
+      throw new WorkbookCorruptError(
         'workbook:open-path',
         `Failed to parse workbook: ${err instanceof Error ? err.message : String(err)}`,
         err,
@@ -340,11 +347,11 @@ export function registerSheetsHandlers(): void {
 
   registerHandle('workbook:open-for-merge', (_event: unknown, paths: unknown) => {
     if (!Array.isArray(paths) || paths.length === 0 || paths.length > 20) {
-      throw new InvalidArgumentError('workbook:open-for-merge', 'merge sources must be 1-20 files')
+      throw new WorkbookInvalidArgumentError('workbook:open-for-merge', 'merge sources must be 1-20 files')
     }
     return paths.map((path) => {
       if (typeof path !== 'string' || !isManagedPath(path)) {
-        throw new InvalidArgumentError('workbook:open-for-merge', PATH_OUTSIDE_STORAGE)
+        throw new WorkbookInvalidArgumentError('workbook:open-for-merge', PATH_OUTSIDE_STORAGE)
       }
       if (!existsSync(path)) {
         // A caller-supplied path that does not exist is a 404, not a server
@@ -376,7 +383,8 @@ export function registerSheetsHandlers(): void {
   //   - Recents are recorded on successful save so the home grid shows
   //     `modified: true`, matching docs/markdown behaviour.
   //   - A renderer that never opened a workbook (calls `workbook:save`
-  //     with an unknown sessionId) gets a structured `NotFoundError`
+  //     with an unknown sessionId) gets a structured `NotFoundError` (legacy
+//     contract; new code should throw `WorkbookNotFoundError` from `./errors`)
   //     instead of the previous silently-accepted `{ok: false}`.
 
   type WorkbookFormat = 'xlsx' | 'xlsm' | 'csv' | 'xls'

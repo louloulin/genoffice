@@ -17,6 +17,9 @@
  *     FILES_DIR (verified by reading the bytes back).
  *   - workbook:save with an unknown sessionId surfaces as a structured 404
  *     NOT_FOUND, not the previous silently-accepted `{ok:false}` shape.
+ *     (`workbook:open-path` uses the workbook-specific `WORKBOOK_NOT_FOUND` /
+ *     `WORKBOOK_CORRUPT` / `WORKBOOK_INVALID_ARGUMENT` codes — see
+ *     `tests/workbook-error-codes.test.ts` for the contract.)
  *   - workbook:save without any edits still succeeds (a renderer that wants
  *     to commit "no-op" must not crash).
  *   - Recents row gets `modified: true` after a successful save (matching
@@ -375,7 +378,7 @@ describe.skipIf(skip)('workbook format routing (csv / xls)', () => {
     // src/index.ts `handleIpcInvoke`). The body is the same envelope shape.
     expect(r.status).toBe(422)
     const body = r.body as { error?: { message: string; code: string; channel: string } }
-    expect(body.error?.code).toBe('CORRUPT')
+    expect(body.error?.code).toBe('WORKBOOK_CORRUPT')
     expect(body.error?.message).toMatch(/Legacy \.xls .*not supported/)
     expect(body.error?.channel).toBe('workbook:open-path')
   })

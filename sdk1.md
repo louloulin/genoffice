@@ -3869,6 +3869,99 @@ cd apps/web-server
 "需 desktop clipboard 探测"三类细分。
 
 
+### 11.59 · Workbook 错误码统一（DX win · §A.5 backlog 收口）
+
+> 本轮闭合 `sdk1.md §A.5 backlog` 中 "Workbook error code unification (DX win)"
+> 项。所有 `workbook:*` 通道的错误码从通用 `INVALID_ARGUMENT` / `NOT_FOUND` /
+> `CORRUPT` 升级为 workbook 专用 `WORKBOOK_*` 前缀码，让 renderer 的错误恢复
+> 分支可以精确判断"是文件没了 vs. session 没了 vs. 文档已损坏 vs. 参数不对"。
+
+#### ✅ 落点
+
+1. **新增 `apps/web-server/src/sheets/errors.ts`（85 行）**：
+   - `WorkbookError` 基类，固定 `.code / .channel / .cause` 形状（与
+     `apps/web-server/src/ai/errors.ts` 的 `InvalidArgumentError` 等同类一致）
+   - 5 个具体子类 + 1 个 `WorkbookErrorCode` 联合类型：
+     - `WorkbookNotFoundError` → `WORKBOOK_NOT_FOUND`（404）
+     - `WorkbookCorruptError` → `WORKBOOK_CORRUPT`（422）
+     - `WorkbookOpenFailedError` → `WORKBOOK_OPEN_FAILED`（500）
+     - `WorkbookSaveFailedError` → `WORKBOOK_SAVE_FAILED`（500）
+     - `WorkbookInvalidArgumentError` → `WORKBOOK_INVALID_ARGUMENT`（400）
+   - `cause` 透传（Corrupt / OpenFailed / SaveFailed 三个保留 cause 链，
+     NotFound / InvalidArgument 不带 cause）
+
+2. **HTTP 状态映射**：`apps/web-server/src/ai/errors.ts` 的 `ipcErrorStatus()`
+   新增 5 个 case，按通用对应关系映射（404 / 422 / 500 / 400）。envelope
+   形态不变 — `sendIpcError` 仍然只读 `.message / .code / .channel`，
+   renderer 不需要任何改动即可拿到新 code
+
+3. **handler 切换**（`apps/web-server/src/sheets/index.ts`）：6 处 throw 升级
+   - `workbook:open-path` 文件缺失（managed path） → `WorkbookNotFoundError`
+   - `workbook:open-path` legacy `.xls` → `WorkbookCorruptError`（保留
+     "convert to .xlsx" 文案）
+   - `workbook:open-path` zip parse 失败 → `WorkbookCorruptError`（保留 cause）
+   - `workbook:open-for-merge` 超过 20 个源 → `WorkbookInvalidArgumentError`
+   - `workbook:open-for-merge` 路径越界 → `WorkbookInvalidArgumentError`
+   - 通用 `InvalidArgumentError` / `NotFoundError` import 保留 — workbook:save
+     / workbook:read-range / workbook:export-csv 三个 handler 仍走通用码
+     （留作下一轮专项收口，避免本 PR 改动面过大）
+
+4. **测试**（`apps/web-server/tests/workbook-error-codes.test.ts`，9 测试）：
+   - workbook:open-path 缺失文件 → `WORKBOOK_NOT_FOUND` (404)
+   - workbook:open-path legacy .xls → `WORKBOOK_CORRUPT` (422) + 文案断言
+   - workbook:open-path 随机字节 → `WORKBOOK_CORRUPT` (422)
+   - envelope shape（.code / .channel / .message 三字段都在）
+   - workbook:open-for-merge 超过 20 源 → `WORKBOOK_INVALID_ARGUMENT` (400)
+   - workbook:open-for-merge 0 源 → `WORKBOOK_INVALID_ARGUMENT` (400)
+   - WorkbookError 5 子类形态单元测试（instanceof + code 前缀 + channel 前缀）
+   - cause 链保留 / 不保留两类断言
+   - 沿用 `tests/helpers/server-process.ts:stopServer(server, dataDir)` 模式，
+     与 `workbook-save-e2e.test.ts` 同结构（env 变量 `PORT`/`DATA_DIR`、
+     `node` 启动 bundle、`/health` 轮询 ≤ 20s）
+
+5. **回归覆盖**：
+   - `tests/workbook-save-e2e.test.ts` 把 "legacy .xls" 断言从
+     `CORRUPT` 改成 `WORKBOOK_CORRUPT`（代码已升级，断言跟着升级）
+   - 现有 "workbook:save unknown sessionId → NOT_FOUND (404)" 不动 —
+     workbook:save 仍走通用 NotFoundError
+   - 6 个相关套件（workbook-save / workbook-error-codes / html-save-atomic
+     / atomic / file-management / slides-save）86/86 全过
+
+#### ⚠️ 仍未做（已知未在本轮 PR 范围）
+
+- **workbook:save / workbook:read-range / workbook:export-csv 三 handler
+  升级到 WORKBOOK_* 系列**：本轮刻意保留通用码，等专项 PR 改。
+  renderer 视角看，目前 workbook:open-path 已能用新码分支，
+  其他三个还按通用码分支（混合期），下轮统一。
+- **M4 backlog 其余项**：slides legacy stubs 余 ~5 个、engine stable id、
+  CRDT/OT 协作、移动端 H5、HTML→DOCX、DOCX→PDF、S3/minio promote — 均按
+  §A.5 既有节奏推进。
+
+#### 🧪 验证命令
+
+```bash
+# 仅新测试
+cd apps/web-server && timeout 90 ./node_modules/.bin/vitest run \
+  --config ./vitest.config.ts tests/workbook-error-codes.test.ts
+
+# 6 套件联合回归（workbook / html / atomic / file-mgmt / slides-save）
+cd apps/web-server && timeout 120 ./node_modules/.bin/vitest run \
+  --config ./vitest.config.ts \
+  tests/workbook-save-e2e.test.ts tests/workbook-error-codes.test.ts \
+  tests/html-save-atomic.test.ts tests/atomic.test.ts \
+  tests/file-management.test.ts tests/slides-save-e2e.test.ts
+
+# 类型
+cd apps/web-server && ../../node_modules/.bin/tsc --noEmit
+```
+
+#### 📊 基线更新
+
+| 套件 | 之前 | 现在 | Δ |
+|---|---|---|---|
+| web-server | 92 文件 / 881 通过 / 1 skipped / 1 flake | **93 文件 / 890 通过 / 1 skipped / 1 flake** | +1 文件 / +9 通过 |
+| §A.5 backlog 闭合数 | 56（截至 §11.58）| **57**（+1：workbook 错误码统一）| +1 |
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -4616,7 +4709,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../metrics-endpoint / audit-log-persistence / audit-log-tenant / **audit-log-rotate** / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys** / **§11.53 font-catalog + font-missing** / **§11.54 documented renderer-owned stubs** / **§11.56 tenant-aware audit logging** / **§11.57 per-tenant audit metric** / **§11.58 real xlsx export**）| 93 | 882 | ✅ | (878 passed + 0 skipped = 876, +15 vs §11.52 baseline of 863)
+| web-server（含 .../metrics-endpoint / audit-log-persistence / audit-log-tenant / **audit-log-rotate** / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys** / **§11.53 font-catalog + font-missing** / **§11.54 documented renderer-owned stubs** / **§11.56 tenant-aware audit logging** / **§11.57 per-tenant audit metric** / **§11.58 real xlsx export** / **§11.59 workbook error code unification**）| 94 | 891 | ✅ | (890 passed + 1 skipped = 891, +9 vs §11.58 baseline of 882)
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -4635,7 +4728,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **197** | **4674** | ✅ |
+| **总计** | **198** | **4683** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 

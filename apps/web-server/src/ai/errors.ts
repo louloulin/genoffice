@@ -85,6 +85,15 @@ export function ipcErrorStatus(code: string | undefined): number {
       return 404
     case 'CORRUPT':
       return 422
+    case 'WORKBOOK_NOT_FOUND':
+      return 404
+    case 'WORKBOOK_CORRUPT':
+      return 422
+    case 'WORKBOOK_OPEN_FAILED':
+    case 'WORKBOOK_SAVE_FAILED':
+      return 500
+    case 'WORKBOOK_INVALID_ARGUMENT':
+      return 400
     case 'PAYLOAD_TOO_LARGE':
       return 413
     case 'CLIENT_ABORTED':
