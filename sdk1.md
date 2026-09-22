@@ -1729,6 +1729,50 @@ SDK (host page)                 bash
 - bundle auto-rebuild OK
 
 #### 11.20.5 剩余（不算技术债）
+### 11.21 本轮续作（v2 第 16 轮 commit，2026-09-22）
+
+把 SDK iframe handshake 的 10 s timeout 从闭包内部硬编码提升为可配置项 `handshakeTimeoutMs`，给慢网络 / 冷启动 iframe boot 一个逃生口。
+
+#### 11.21.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/sdk/src/types.ts` | `CreateEditorOptions.handshakeTimeoutMs?: number` 字段（1 s – 60 s 范围，默认 10 s）| +12 |
+| `apps/sdk/src/editor.ts` | 把原本在 createEditor 闭包内部的硬编码 `setTimeout(…, 10_000)` 提到模块级 exported `clampHandshakeTimeout(ms)` helper，调用点 `handshakeTimeoutMs = clampHandshakeTimeout(options.handshakeTimeoutMs)` | +19 / -7 |
+| `apps/sdk/test/handshake-timeout.test.ts` | 新增 · 6 测试覆盖 undefined / NaN / Infinity / 范围内 / 下限 / 上限 / 分数 / 负数 | +62 |
+
+#### 11.21.2 设计要点
+
+- **clamp 是 module-level exported function**：方便测试（无需 mock DOM），也让"1-60s"这个契约成为公开可观察的事实
+- **下限 1 s**：再低就是 DoS — 用户 refresh 太快 → iframe 永远 timeout，没必要
+- **上限 60 s**：超过这个就该用 ping/pong 心跳，不是握手
+- **`Math.floor`**：5.7 s → 5 s；让契约 deterministic，避免"`setTimeout` 实际可能 5 s 或 6 s 取决于 V8 优化"的迷惑
+- **负数 → 下限 1 s**（不取 abs）：用户输 -5000 应该被视为 "忘了 ms 单位"，clamp 到下限比 clamp 到 5 s 更安全
+- **不影响 backward compat**：`handshake: false` 的 host 完全不受影响；默认 10 s 与旧 SDK 行为一致
+
+#### 11.21.3 测试矩阵
+
+| 输入 | 期望输出 |
+|---|---|
+| `undefined` / `null` / `NaN` / `Infinity` | 10000 |
+| `1000` / `10000` / `30000` / `60000` | 自身 |
+| `0` / `500` / `999` | 1000（下限）|
+| `60001` / `120000` / `86400000` | 60000（上限）|
+| `5700` / `5700.9` | 5700（floor）|
+| `-5000` / `-1` | 1000（下限，不是 abs）|
+
+#### 11.21.4 验证
+
+- `npx vitest run test/handshake-timeout.test.ts`：6/6 通过
+- `npx vitest run`（apps/sdk 全量）：**5 文件 / 30 测试**全绿（was 4/24 +1 文件 / +6 测试）
+- typecheck：clean
+
+#### 11.21.5 后续观察
+
+- SDK bundle 当前 build 脚本（`scripts/build.mjs`）在沙箱内报 `MODULE_NOT_FOUND`（pre-existing，与本 PR 无关）— 验证由 vitest 直接 import src 覆盖
+- 真正想做 e2e：需要 jsdom 或 happy-dom 模拟 iframe.contentWindow + document.querySelector，测试 setTimeout 真的在配置时间内 fire。这留给 backlog，本轮只验 unit-level contract
+
+
 
 - 如果未来要让 nonce 也走服务端校验（即 SDK 端 verify 的同时 server 端在握手完成后绑定 session 与 nonce），需要再单独 PR；当前 server 端 nonce 路径只 inject，校验仍由 SDK host 端做（这与 §B.2 #1 的设计一致：nonce 鉴权是 client-side 防同源冒充，JWT 鉴权是 server-side 鉴授权）
 - `apps/docs/src/renderer/App.tsx` 和 `apps/sheets/src/renderer/App.tsx` 等多个 renderer 内部也有 `nonce: Date.now()` 的 React state — 那些是 React 内部 nonce（用于 `useEffect` 触发 re-render），与 handshake nonce 无关，但建议未来统一命名（如 `renderNonce`）以免混淆
@@ -1992,6 +2036,7 @@ SDK (host page)                 bash
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+21. **SDK handshake timeout 可配置**（✅ 本轮 §11.21）：原本 SDK iframe handshake 的 10 s timeout 在 createEditor 闭包内硬编码，慢网络 host 没有逃生口。新增 `CreateEditorOptions.handshakeTimeoutMs` + module-level exported `clampHandshakeTimeout(ms)`（范围 1 s – 60 s，floor 整数，默认 10 s）。新增 6 测试覆盖 undefined / NaN / Infinity / 范围内 / 上下限 clamp / 分数 / 负数 → 下限（不取 abs）。
 20. **iframe handshake nonce 静默丢包修复**（✅ 本轮 §11.20）：发现 `apps/sdk/src/embed-url.ts` 的 `buildEmbedUrl` **完全没有把 `nonce` 写到 query param**，导致 §B.2 #1 那段 SDK handshake nonce 安全保证**从未生效**——每个 SDK 启动的 embed iframe 都会在 10s 后 `HANDSHAKE_FAILED`。新增 `EmbedUrlInput.nonce` + `params.set('nonce', …)`；embed handler 端把 `?nonce=` 写到 `<meta name="genoffice-nonce">`，bridge `sendReady()` 读 meta 把 nonce 放进 ready postMessage payload。新增 4 + 6 测试覆盖；side-effect 修了 embed-jwt-validation 的 env mutation 问题。
 19. **typedoc 输出文件数漂移守门**（✅ 本轮 §11.19）：原 §A.5 / §11.6 / §11.12 一致称 `199 个 MD 文件`，实测已 221（typedoc 把 §11.16 / §11.17 / §11.18 几轮新增的 public helper 都收进来了）。新增 `apps/web-server/tests/typedoc-count.test.ts`（3 测试）：跑 `node docs/scripts/gen-typedoc.mjs` → 读 `docs/api/_generated/*.md` → assert 200-400 + 打印当前值到 CI 日志。sdk1.md 三处 `199` → `221`。
 18. **§11.17.5 backlog 真正闭合 · embed 服务端 JWT 验证**（✅ 本轮 §11.18）：`apps/web-server/src/embed/index.ts` 新增 `verifyEmbedToken()` helper + `handleEmbed` 调用；opt-in（`GENOFFICE_JWT_SECRET` 存在且 token 是 JWT 形状时）才跑 `verifyJwtWithRevocation`，失败返 401 UNAUTHENTICATED。新增 `apps/web-server/tests/embed-jwt-validation.test.ts`（6 测试）覆盖：合法 200 / 篡改 401 / 乱码 401 / 一次性 jti 第二次 401 / 过期 401 / 非 JWT 透传（向后兼容）。现在 `/api/v1/files/:id/jwt?oneTime=true` 发的 token 在第二次 embed 访问时**真被服务端拒**，不再是依赖 renderer 端 meta-tag-check。
@@ -2015,12 +2060,12 @@ SDK (host page)                 bash
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist / embed-url-nonce）| 4 | 24 | ✅ |
+| web-sdk（含 handshake / origin allowlist / embed-url-nonce / handshake-timeout）| 5 | 30 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **175** | **4308** | ✅ |
+| **总计** | **176** | **4314** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 

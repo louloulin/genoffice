@@ -89,6 +89,16 @@ export interface CreateEditorOptions {
    * protection (e.g. local dev / Storybook).
    */
   handshake?: boolean
+
+  /**
+   * Maximum milliseconds to wait for the iframe's `ready` event to echo
+   * the handshake nonce before tearing down the editor. Default is
+   * `10_000` (10 seconds). Bump this up on slow networks / cold iframe
+   * boot, drop it for stricter security posture.
+   *
+   * Has no effect when `handshake: false`.
+   */
+  handshakeTimeoutMs?: number
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

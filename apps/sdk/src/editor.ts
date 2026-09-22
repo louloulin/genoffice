@@ -91,6 +91,20 @@ export function makeNonce(): string {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
+/**
+ * Clamp a user-supplied handshake timeout to the SDK's allowed range.
+ * Exported so the test suite can pin the contract without spinning up
+ * a fake DOM. Range: 1 s (fastest useful timeout) to 60 s (beyond this
+ * we should fail the platform, not wait forever). Default 10 s when the
+ * input is missing or non-finite.
+ */
+export function clampHandshakeTimeout(ms: number | undefined): number {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return 10_000
+  if (ms < 1_000) return 1_000
+  if (ms > 60_000) return 60_000
+  return Math.floor(ms)
+}
+
 /** Public entry — kept tiny so the SDK bundle stays small. */
 export function createEditor(options: CreateEditorOptions): EditorHandle {
   if (!options) throw new Error('createEditor: options required')
@@ -130,6 +144,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   let nextCorrelation = 0
   let destroyed = false
 
+  // Configurable handshake timeout. Default 10 s; honor the option when
+  // present. Clamp to a sane range (1 s … 60 s) so a misconfigured
+  // host doesn't accidentally never time out or fire instantly.
+  const handshakeTimeoutMs = clampHandshakeTimeout(options.handshakeTimeoutMs)
   let handshakeDone = !handshakeEnabled
   let handshakeTimer: ReturnType<typeof setTimeout> | null = null
   if (handshakeEnabled && expectedNonce) {
@@ -141,7 +159,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         try { options.onError(err) } catch { /* listener errors are best-effort */ }
       }
       destroy()
-    }, 10_000)
+    }, handshakeTimeoutMs)
   }
 
   function originAllowed(origin: string): boolean {
