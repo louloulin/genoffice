@@ -809,10 +809,31 @@ export function registerSlidesStateHandlers(): void {
       })),
     ]
   })
+  // Documented renderer-owned stubs (sdk1 §11.54): these channels are
+  // fundamentally desktop/browser-environment features that have no
+  // meaningful server-side implementation. Recording the boundary
+  // explicitly so the M4 backlog list stays honest about WHY they're
+  // not implemented here (not "we forgot").
+  //
+  //   - clipboard-external / clipboard-probe / native-clipboard:
+  //       OS-native clipboard write/read. Desktop writes through
+  //       Electron's clipboard API; web writes through the browser's
+  //       async Clipboard API. The server has no clipboard, so a
+  //       server-side implementation would be theatre. The renderer's
+  //       `web-bridge` should resolve these locally and not hit IPC.
+  //       Returning `{}` keeps the channel registered (so the renderer
+  //       doesn't fail with "no handler" on legacy code paths) but
+  //       produces no observable side-effect.
+  //
+  //   - media-data: binary bytes for an embedded media asset (audio /
+  //       video inside a slide). Desktop has the file system; web has
+  //       the iframe blob URL the user just dropped. Same situation —
+  //       the server has neither. Renderer fetches bytes from its own
+  //       blob store.
   registerHandle('slides:clipboard-external', () => ({}))
   registerHandle('slides:clipboard-probe', () => ({}))
-  registerHandle('slides:media-data', () => ({}))
   registerHandle('slides:native-clipboard', () => ({}))
+  registerHandle('slides:media-data', () => ({}))
   // Real private-font-data: re-walk listEmbeddedFonts(archive) so the
   // renderer can fetch one face's sfnt bytes by index. Each face is
   // typically 100-300 KB (TTF/OTF) so we never broadcast the whole

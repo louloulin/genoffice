@@ -1240,4 +1240,60 @@ describe.skipIf(skip)('slides:font-catalog + font-missing real impl (sdk1 §11.5
     for (const f of r) expect(catalogFamilies.has(f)).toBe(true)
   })
 })
+
+describe.skipIf(skip)('slides:clipboard + media-data documented renderer-owned stubs (sdk1 §11.54)', () => {
+  let server: ChildProcess | undefined
+  let base: string
+  let dataDir: string
+
+  beforeAll(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'slides-stubs-doc-'))
+    const port = 32273 + Math.floor(Math.random() * 8000)
+    base = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [bundle], {
+      env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await pollHealth(base, 15_000)
+  })
+
+  afterAll(async () => {
+    if (server) await stopServer(server)
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  async function invoke(channel: string, args: unknown[]): Promise<unknown> {
+    const r = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ args: args.map((a) => encodeTransportValue(a)) }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { result?: unknown }
+    return body.result
+  }
+
+  // Each of these channels is documented (sdk1 §11.54) as a
+  // renderer-owned stub: the server has no clipboard / no media store,
+  // so the registered handler returns {} as a no-op shape. The renderer
+  // is expected to short-circuit these on web (use the browser Clipboard
+  // API / blob URLs directly) rather than going through IPC. The test
+  // pins the contract so a future "fix" can't accidentally start
+  // shipping data the server doesn't have.
+  for (const channel of [
+    'slides:clipboard-external',
+    'slides:clipboard-probe',
+    'slides:native-clipboard',
+    'slides:media-data',
+  ]) {
+    it(`${channel} returns {} (renderer-owned stub)`, async () => {
+      expect(await invoke(channel, [])).toEqual({})
+    })
+    it(`${channel} returns {} even with arbitrary args`, async () => {
+      // The handler must ignore any payload — server has no business
+      // doing anything with these arguments.
+      expect(await invoke(channel, ['arbitrary', 42, { foo: 'bar' }])).toEqual({})
+    })
+  }
+})
 })
