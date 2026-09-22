@@ -245,7 +245,18 @@ export function createSidebarRuntime(options: SidebarRuntimeOptions): SidebarRun
       iframe.setAttribute('data-panel-id', panelId)
       if (typeof input.width === 'number') iframe.setAttribute('data-panel-width', String(input.width))
       if (typeof input.title === 'string') iframe.setAttribute('data-panel-title', input.title)
-      if (options.host.appendChild) options.host.appendChild(iframe)
+      const host = options.host as unknown as { appendChild?: (c: unknown) => void; style?: { display?: string }; __prevDisplay?: string }
+      if (host.appendChild) host.appendChild(iframe)
+      // Toggle the host visible on first mount \u2014 apps that pre-set
+      // display:none (e.g. via inline style for a lazy body-aside) get
+      // the sidebar shown automatically; apps with custom CSS can
+      // override via `[data-sidebar-mounted]` selectors. The previous
+      // display value is restored when the last panel unmounts so
+      // apps don't have to manually toggle visibility.
+      if (panels.size === 0 && host.style && (host.style.display === 'none' || host.style.display === '')) {
+        host.__prevDisplay = host.style.display
+        host.style.display = ''
+      }
       const meta: SidebarPanelMeta = {
         panelId,
         panelUrl: input.panelUrl,
@@ -261,12 +272,23 @@ export function createSidebarRuntime(options: SidebarRuntimeOptions): SidebarRun
       const meta = panels.get(panelId)
       if (!meta) return false
       panels.delete(panelId)
-      if (options.host.removeChild) {
+      const host = options.host as unknown as { removeChild?: (c: unknown) => void; style?: { display?: string }; __prevDisplay?: string }
+      if (host.removeChild) {
         try {
-          options.host.removeChild(meta.iframe)
+          host.removeChild(meta.iframe)
         } catch {
           /* already detached \u2014 ignore */
         }
+      }
+      // Restore the host's display when the last panel leaves. We
+      // restore to whatever it was before mountSidebar (saved as
+      // __prevDisplay) \u2014 default 'none' if we never had to flip from
+      // a non-empty value. Apps that pre-set their own visibility
+      // via CSS (no inline display:none) won't have a saved value
+      // and we leave the host as-is.
+      if (panels.size === 0 && host.style && typeof host.__prevDisplay === 'string') {
+        host.style.display = host.__prevDisplay
+        delete host.__prevDisplay
       }
       return true
     },

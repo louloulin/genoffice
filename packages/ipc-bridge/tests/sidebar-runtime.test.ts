@@ -322,6 +322,41 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     ).not.toThrow()
   })
 
+  it('auto-toggles host display from none on first mount, restores on last unmount', () => {
+    const posted: FakeIframe[] = []
+    // Host with a pre-set display:none (matches the body-aside pattern
+    // every app's web-bridge.ts uses).
+    const hostWithStyle: SidebarHostLike & { style: { display: string } } = {
+      style: { display: 'none' },
+      appendChild: () => undefined,
+      removeChild: () => undefined,
+    }
+    const rt = createSidebarRuntime({ host: hostWithStyle, createIframe: makeIframeFactory({ list: posted }) })
+    const a = rt.mount({ panelUrl: '/a' })
+    expect(hostWithStyle.style.display).toBe('') // flipped visible
+    const b = rt.mount({ panelUrl: '/b' })
+    expect(hostWithStyle.style.display).toBe('') // stays visible for 2nd panel
+    rt.unmount(a.panelId)
+    expect(hostWithStyle.style.display).toBe('') // still one panel left
+    rt.unmount(b.panelId)
+    expect(hostWithStyle.style.display).toBe('none') // restored
+  })
+
+  it('leaves a host with non-inline display untouched (app owns its CSS chrome)', () => {
+    const posted: FakeIframe[] = []
+    // Host with display:'grid' (an app that manages its own visibility).
+    const hostWithStyle: SidebarHostLike & { style: { display: string } } = {
+      style: { display: 'grid' },
+      appendChild: () => undefined,
+      removeChild: () => undefined,
+    }
+    const rt = createSidebarRuntime({ host: hostWithStyle, createIframe: makeIframeFactory({ list: posted }) })
+    const a = rt.mount({ panelUrl: '/a' })
+    expect(hostWithStyle.style.display).toBe('grid') // not touched
+    rt.unmount(a.panelId)
+    expect(hostWithStyle.style.display).toBe('grid')
+  })
+
   describe('integration: installLiveModelSink + createSidebarRuntime', () => {
     it('mountSidebar -> {panelId}, unmountSidebar -> void, postToSidebar writes the envelope', async () => {
       const posted: FakeIframe[] = []
