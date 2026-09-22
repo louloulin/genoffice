@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  90 文件 / 775 测试 通过 · 1 skipped  (~31s wall · 2026-09-22 实测)
+apps/web-server/tests/  →  90 文件 / 778 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -3169,12 +3169,69 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**90 文件 / 775 通过 / 1 skipped**（exit 0）。
+- `apps/web-server`：**90 文件 / 778 通过 / 1 skipped / 0 失败**（exit 0）——
+  本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
   `slides-apply-txn-ops-e2e` 4/4。
 - typecheck：9 个错误，**全部既有**（已用 stash 与 HEAD 逐条比对确认）——
   `packages/pptx-ops` 的 `?raw` import ×6、`packages/xlsx-gateway` 的 `never` ×3。
+
+#### 11.42.5b 收尾时又抓到两个问题（同一轮修掉）
+
+**① 自查发现：`{ok:false}` 也是真值 —— 规则写了却没落到代码上。**
+
+§11.42.2 把规则写进了 `elements.ts` 的注释（"`{ok:false}` object would be TRUTHY
+and get handed to applySlide as if it were a page"），但**同文件里 53 处参数校验
+仍然返回 `{ok:false, error}`**。也就是说：上一轮修掉的 bug 类别，被上一轮自己
+重新引入了 53 次。
+
+后果是具体的，以 `delete-element` 为例：
+
+```ts
+window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
+```
+
+任何漏传 `slideIndex` 的调用都会拿到真值 → 走成功分支 → 把错误对象当作页面存起来
+（正是上一轮要消灭的白屏污染）。`boolean` 契约的通道更隐蔽：`App.tsx:614` 是
+`const ok = await setNotes(...); if (ok) setDirty(true)`，参数错误会**报告"批注已
+保存"**。`copy-elements` 是唯一侥幸逃过的（它写的是 `if (n > 0)`）。
+
+现在 52 处校验统一走 `badArgs(message)`：打 stderr + 返 `null`，与
+`warnNoSession` / `warnOpFailed` 和桌面 handler 的 `if (!session) return null`
+一致。`applyLegacyMutation` 的失败分支同样去掉 `{ok:false}` 变体。
+**唯一例外是 `slides:apply-edit-script`**：它声明的返回类型就是
+`{ slide } | { error: string } | null`，且 AI skill 消费方读 `.error`，所以结构化
+失败是契约内的。
+
+**加了三道守门**（因为"写下来的约定"已经失效过一次）：
+
+| 守门 | 内容 |
+|---|---|
+| 源码扫描 | 剥离注释后不得出现 `{ok:false` 字面量（注释里那段说明本身含该字符串，所以必须先剥注释） |
+| 日志守门 | `warnNoSession` / `warnOpFailed` / `badArgs` 都必须 `process.stderr.write`，`null` 不允许静默 |
+| e2e | 发畸形参数，断言返回 `null` / `false` |
+
+守门**验证过会咬**：把 `{ok:false}` 重新注入某个分支，20 例里 2 例立刻变红；撤回
+后恢复绿。
+
+**② 两个 e2e 因硬编码 python 路径长期必红，与代码无关，但堵死了"0 失败"门禁。**
+
+`translate-pdf-e2e` / `translate-coverage-e2e` 都 spawn 一个绝对路径
+`/Users/louloulin/.cache/codex-runtimes/.../python3`（前者要 reportlab 造中文 PDF，
+后者要 openpyxl 造 xlsx）。该路径只在特定机器存在，其他环境一律 `spawn … ENOENT`，
+**看起来像产品 bug**。它们正是全量跑里仅有的 2 个红文件，也是"0 失败"门禁对所有人
+不可达的原因。
+
+新增 `tests/helpers/python.ts`：按 `$CODEX_PYTHON` → homebrew / /usr/local / /usr
+→ 原 Codex 路径顺序探测，且**必须真的能 `import <module>` 才算命中**（有 python
+≠ 有 reportlab：本机 `/usr/bin/python3` 两个都没有，`/opt/homebrew/bin/python3`
+两个都有）。两个套件改用 `describe.skipIf(!PY)` —— 缺解释器是环境缺口，不是回归，
+应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
+失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
+
+**结果**：`apps/web-server` **90 文件 / 778 通过 / 1 skipped / 0 失败** —— 本分支
+首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
 
@@ -3890,7 +3947,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../webhooks-dlq / metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e**）| 90 | 776 | ✅ |
+| web-server（含 .../webhooks-dlq / metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e**）| 90 | 779 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
