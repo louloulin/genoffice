@@ -121,7 +121,7 @@ describe('audit log export tenant filter (sdk1 §11.56)', () => {
     const { recordAudit, exportAudit } = await loadModule()
     recordAudit({ action: 'file.saved', resource: 'a.docx', tenantId: 'acme' })
     recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'globex' })
-    const result = exportAudit({ format: 'json' })
+    const result = await exportAudit({ format: 'json' })
     expect(result.recordCount).toBe(2)
   })
 
@@ -130,7 +130,7 @@ describe('audit log export tenant filter (sdk1 §11.56)', () => {
     recordAudit({ action: 'file.saved', resource: 'a.docx', tenantId: 'acme' })
     recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'globex' })
     recordAudit({ action: 'file.saved', resource: 'c.docx' })
-    const acme = exportAudit({ format: 'json', tenantId: 'acme' })
+    const acme = await exportAudit({ format: 'json', tenantId: 'acme' })
     expect(acme.recordCount).toBe(1)
     const body = JSON.parse(acme.body!) as Array<{ resource: string; tenantId: string }>
     expect(body[0].resource).toBe('a.docx')
@@ -141,7 +141,7 @@ describe('audit log export tenant filter (sdk1 §11.56)', () => {
     const { recordAudit, exportAudit } = await loadModule()
     recordAudit({ action: 'file.saved', resource: 'a.docx', tenantId: 'acme' })
     recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'globex' })
-    const result = exportAudit({ format: 'csv', tenantId: 'acme' })
+    const result = await exportAudit({ format: 'csv', tenantId: 'acme' })
     expect(result.recordCount).toBe(1)
     expect(result.body).toMatch(/^id,tenantId,userId,/)
     // Only one data row (the header is also a line, so 2 lines total).
@@ -155,7 +155,7 @@ describe('audit log export tenant filter (sdk1 §11.56)', () => {
     const { recordAudit, exportAudit } = await loadModule()
     recordAudit({ action: 'file.saved', resource: 'a.docx' }) // default
     recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'acme' })
-    const result = exportAudit({ format: 'json', tenantId: '' })
+    const result = await exportAudit({ format: 'json', tenantId: '' })
     expect(result.recordCount).toBe(1)
     const body = JSON.parse(result.body!) as Array<{ resource: string }>
     expect(body[0].resource).toBe('a.docx')
@@ -164,7 +164,7 @@ describe('audit log export tenant filter (sdk1 §11.56)', () => {
   it('exportAudit() unknown tenantId returns empty (no false-positive default)', async () => {
     const { recordAudit, exportAudit } = await loadModule()
     recordAudit({ action: 'file.saved', resource: 'a.docx' })
-    const result = exportAudit({ format: 'json', tenantId: 'does-not-exist' })
+    const result = await exportAudit({ format: 'json', tenantId: 'does-not-exist' })
     expect(result.recordCount).toBe(0)
   })
 })
@@ -197,6 +197,56 @@ describe('audit log metrics byTenant (sdk1 §11.57)', () => {
     vi.resetModules()
     const { auditMetrics } = await loadModule()
     expect(auditMetrics().byTenant).toEqual({ acme: 1, globex: 1 })
+  })
+})
+
+
+describe('audit log xlsx export (sdk1 §11.58)', () => {
+  it('exportAudit({ format: xlsx }) returns base64-encoded body, no fake downloadUrl', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'file.saved', resource: 'a.xlsx', tenantId: 'acme' })
+    recordAudit({ action: 'file.deleted', resource: 'b.xlsx', tenantId: 'globex' })
+    const result = await exportAudit({ format: 'xlsx' })
+    expect(result.format).toBe('xlsx')
+    expect(result.recordCount).toBe(2)
+    expect(result.bodyEncoding).toBe('base64')
+    expect(typeof result.body).toBe('string')
+    expect(result.body!.length).toBeGreaterThan(0)
+    // No more fake downloadUrl — the body ships inline.
+    expect(result.downloadUrl).toBeUndefined()
+    // Decoding the base64 should yield a real xlsx file (OOXML zip starts with "PK")
+    const decoded = Buffer.from(result.body!, 'base64')
+    expect(decoded[0]).toBe(0x50) // 'P'
+    expect(decoded[1]).toBe(0x4b) // 'K'
+  })
+
+  it('exportAudit xlsx respects tenantId filter', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'a', resource: 'a', tenantId: 'acme' })
+    recordAudit({ action: 'a', resource: 'b', tenantId: 'globex' })
+    const acme = await exportAudit({ format: 'xlsx', tenantId: 'acme' })
+    expect(acme.recordCount).toBe(1)
+    const decoded = Buffer.from(acme.body!, 'base64')
+    expect(decoded[0]).toBe(0x50)
+    expect(decoded[1]).toBe(0x4b)
+  })
+
+  it('exportAudit xlsx with no matching records returns empty body (no throw)', async () => {
+    const { exportAudit } = await loadModule()
+    const result = await exportAudit({ format: 'xlsx', tenantId: 'does-not-exist' })
+    expect(result.recordCount).toBe(0)
+    expect(result.body).toBe('')
+  })
+
+  it('exportAudit csv / json still work as utf-8 plaintext (no bodyEncoding flag)', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'a', resource: 'a' })
+    const csv = await exportAudit({ format: 'csv' })
+    expect(csv.bodyEncoding).toBeUndefined()
+    expect(csv.body).toMatch(/^id,tenantId,userId,action,resource,resourceId,timestamp,status/)
+    const json = await exportAudit({ format: 'json' })
+    expect(json.bodyEncoding).toBeUndefined()
+    expect(JSON.parse(json.body!)).toHaveLength(1)
   })
 })
 

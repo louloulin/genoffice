@@ -119,7 +119,7 @@ export function registerAuditHandlers(): void {
     })
   })
 
-  registerHandle('audit:export', (_event: unknown, args: unknown) => {
+  registerHandle('audit:export', async (_event: unknown, args: unknown) => {
     const { format, startDate, endDate, tenantId } = (args || {}) as {
       format?: 'csv' | 'json' | 'xlsx'
       startDate?: number
@@ -129,7 +129,12 @@ export function registerAuditHandlers(): void {
     if (tenantId !== undefined && typeof tenantId !== 'string') {
       throw new InvalidArgumentError('audit:export', 'tenantId must be a string when provided')
     }
-    return exportAudit({
+    // exportAudit is async since §11.58 — the xlsx branch routes through
+    // @genoffice/xlsx-gateway's csvToXlsxBuffer (same helper used by
+    // workbook:save). Pre-§11.58 the handler returned a fake downloadUrl
+    // that had no server handler; the body now ships inline (utf-8 for
+    // json/csv, base64 for xlsx) just like the other audit IPC envelopes.
+    return await exportAudit({
       ...(format ? { format } : {}),
       ...(typeof startDate === 'number' ? { startDate } : {}),
       ...(typeof endDate === 'number' ? { endDate } : {}),

@@ -96,7 +96,7 @@ describe('audit log disk persistence (sdk1.md §M5)', () => {
     recordAudit({ action: 'file.saved', resource: 'doc-1.docx', userId: 'alice' })
     recordAudit({ action: 'file.saved', resource: 'doc-2.docx', userId: 'bob' })
 
-    const json = exportAudit({ format: 'json' })
+    const json = await exportAudit({ format: 'json' })
     expect(json.format).toBe('json')
     expect(json.recordCount).toBe(2)
     expect(typeof json.body).toBe('string')
@@ -104,14 +104,21 @@ describe('audit log disk persistence (sdk1.md §M5)', () => {
     expect(Array.isArray(parsed)).toBe(true)
     expect(parsed).toHaveLength(2)
 
-    const csv = exportAudit({ format: 'csv' })
+    const csv = await exportAudit({ format: 'csv' })
     expect(csv.format).toBe('csv')
     expect(csv.body).toContain('id,tenantId,userId,action,resource')
     expect(csv.body!.split('\n').filter(Boolean).length).toBe(3) // header + 2 rows
 
-    const xlsx = exportAudit({ format: 'xlsx' })
+    const xlsx = await exportAudit({ format: 'xlsx' })
     expect(xlsx.format).toBe('xlsx')
-    expect(xlsx.downloadUrl).toMatch(/^\/audit\/exports\/.+\.xlsx$/)
+    // §11.58: xlsx ships inline as base64 (no fake downloadUrl — the URL
+    // never had a server handler). Decoding yields a real OOXML zip.
+    expect(xlsx.downloadUrl).toBeUndefined()
+    expect(xlsx.bodyEncoding).toBe('base64')
+    const decoded = Buffer.from(xlsx.body!, 'base64')
+    expect(decoded.length).toBeGreaterThan(0)
+    expect(decoded[0]).toBe(0x50) // 'P'
+    expect(decoded[1]).toBe(0x4b) // 'K'
   })
 
   it('skips malformed lines on hydrate (kill -9 partial tail)', async () => {

@@ -46,6 +46,7 @@
 import * as fssync from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { csvToXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import { DATA_DIR } from './state'
 
 export interface AuditRecord {
@@ -302,18 +303,24 @@ export function snapshotAuditLog(): AuditRecord[] {
 
 /**
  * Render an export payload. The JSON / CSV branches return a string;
- * the XLSX branch returns a download URL placeholder (the actual
- * workbook generation is M5+; today we mirror the placeholder the
- * legacy `audit:export` handler emitted so downstream tests stay
- * green).
+ * the XLSX branch (sdk1 §11.58) routes through
+ * @genoffice/xlsx-gateway's csvToXlsxBuffer to produce a real OOXML
+ * zip, base64-encodes it into `body`, and tags it with
+ * `bodyEncoding: 'base64'`. Pre-§11.58 the xlsx branch returned a
+ * `{ downloadUrl: '/audit/exports/<id>.xlsx' }` placeholder — a URL
+ * with no server handler, so callers got 404 when they tried to
+ * download. Now the body ships inline like csv / json.
  */
-export function exportAudit(opts: ExportAuditFilters = {}): {
+export async function exportAudit(opts: ExportAuditFilters = {}): Promise<{
   exportId: string
   format: 'csv' | 'json' | 'xlsx'
   recordCount: number
   body?: string
+  /** 'base64' when body carries binary xlsx bytes (csv / json are utf-8 plaintext, no encoding flag). */
+  bodyEncoding?: 'base64'
+  /** Pre-§11.58 placeholder; no server handler. */
   downloadUrl?: string
-} {
+}> {
   let logs = records
   if (typeof opts.tenantId === 'string') {
     const want = opts.tenantId === '' ? 'default' : opts.tenantId
@@ -344,12 +351,33 @@ export function exportAudit(opts: ExportAuditFilters = {}): {
       .join('\n')
     return { exportId, format, recordCount: logs.length, body: header + rows + '\n' }
   }
-  // xlsx placeholder — future M5: route through @genoffice/xlsx-gateway.
+  // xlsx export (sdk1 §11.58): real OOXML via @genoffice/xlsx-gateway's
+  // csvToXlsxBuffer. We build a CSV from the same row format as the
+  // csv branch above, then convert; the helper returns a Buffer that
+  // we base64-encode for the IPC envelope. Empty record sets skip the
+  // helper (it throws on empty input) and ship an empty body.
+  const xlsxHeader = 'id,tenantId,userId,action,resource,resourceId,timestamp,status\n'
+  const xlsxRows = logs
+    .map((l) =>
+      [l.id, l.tenantId, l.userId, l.action, l.resource, l.resourceId, l.timestamp, l.status]
+        .map((v) => {
+          const s = String(v)
+          return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+        })
+        .join(','),
+    )
+    .join('\n')
+  const xlsxCsv = xlsxHeader + xlsxRows + (xlsxRows ? '\n' : '')
+  if (logs.length === 0) {
+    return { exportId, format: 'xlsx', recordCount: 0, body: '' }
+  }
+  const xlsxBytes = await csvToXlsxBuffer(xlsxCsv, 'AuditExport')
   return {
     exportId,
     format: 'xlsx',
     recordCount: logs.length,
-    downloadUrl: `/audit/exports/${exportId}.xlsx`,
+    body: xlsxBytes.toString('base64'),
+    bodyEncoding: 'base64',
   }
 }
 
