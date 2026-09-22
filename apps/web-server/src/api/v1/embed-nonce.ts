@@ -28,7 +28,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
 import { requireScopeFromHeaders, type JwtPayload } from './auth'
-import { mintEmbedNonce, verifyEmbedNonce } from '../../embed/nonce-store'
+import { mintEmbedNonce, verifyEmbedNonce, removeEmbedNonce } from '../../embed/nonce-store'
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000
 const MAX_TTL_MS = 60 * 60 * 1000 // 1 h — hard cap so a misconfigured client can't hoard sessions forever
@@ -129,5 +129,48 @@ export async function handleEmbedVerifyNonce(ctx: {
     return true
   }
   sendJson(ctx.response, 200, { valid: false, reason: result.reason })
+  return true
+}
+
+/**
+ * `DELETE /api/v1/embed/nonce`
+ *
+ * Forcefully evict a session from the server's nonce store. Used by the
+ * host SDK when the iframe is torn down — releases the LRU slot
+ * eagerly instead of waiting for the session to expire on its TTL.
+ *
+ * Body: `{ sessionId: string }`
+ * Returns: `{ released: boolean }` — true if the session existed and
+ * was removed; false if it was already gone (race with TTL / LRU).
+ *
+ * **Required scope**: `files:read`
+ *
+ * **Errors**: `400 BAD_REQUEST` (missing sessionId), `401 UNAUTHENTICATED`,
+ * `403 FORBIDDEN`.
+ *
+ * Like `verify-nonce`, "session not found" is NOT an error envelope
+ * — it returns `{ released: false }` so the SDK can call this
+ * defensively from `destroy()` without try/catch around a known-race
+ * scenario.
+ * @public
+ */
+export async function handleEmbedReleaseNonce(ctx: {
+  request: IncomingMessage
+  response: ServerResponse
+}): Promise<boolean> {
+  const gate = requireEmbedScope(ctx.request.headers)
+  if (!gate.ok) {
+    sendError(ctx.response, gate.status, gate.message, gate.code, 'embed:release-nonce')
+    return true
+  }
+  const raw = await readBody(ctx.request)
+  const body = raw ? JSON.parse(raw) : {}
+  const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+  if (!sessionId) {
+    sendError(ctx.response, 400, 'sessionId required', 'BAD_REQUEST', 'embed:release-nonce')
+    return true
+  }
+  const released = removeEmbedNonce(sessionId)
+  sendJson(ctx.response, 200, { released })
   return true
 }

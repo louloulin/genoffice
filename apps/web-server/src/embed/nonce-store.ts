@@ -154,3 +154,20 @@ export function verifyEmbedNonce(
 export function _embedNonceStoreSize(): number {
   return SESSIONS.size
 }
+
+/**
+ * Forcefully remove a session from the store. Returns true if the
+ * session existed and was removed; false if it was already gone
+ * (unknown id or already evicted by LRU / TTL sweeper).
+ *
+ * Use this when the host SDK tears down the iframe — frees up the
+ * LRU slot eagerly instead of waiting for TTL. The client side is
+ * allowed to call this on a sessionId it minted itself; we don't
+ * authenticate the call (same as `/api/v1/embed/verify-nonce`) because
+ * the caller is the entity that received the sessionId from this
+ * very process.
+ */
+export function removeEmbedNonce(sessionId: string): boolean {
+  if (!sessionId) return false
+  return SESSIONS.delete(sessionId)
+}

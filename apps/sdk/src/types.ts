@@ -371,3 +371,41 @@ export interface VerifyEmbedNonceOptions {
   /** Override the fetch implementation (used in tests). */
   fetchImpl?: typeof fetch
 }
+
+/**
+ * Result of `releaseEmbedNonce()`. `released: true` means the session
+ * was live and has been evicted; `released: false` means it was
+ * already gone (unknown id / already LRU-evicted / already TTL-ed).
+ *
+ * Like `verifyEmbedNonce()`, a `released: false` is a normal return —
+ * not a throw — because the caller's typical scenario is "tear down
+ * iframe, release the session I know I minted". If the session
+ * already disappeared (race with TTL), that's still success from the
+ * caller's perspective.
+ */
+export interface ReleaseEmbedNonceResult {
+  released: boolean
+}
+
+/**
+ * Error envelope for `releaseEmbedNonce()`. Same vocabulary as
+ * `CreateEmbedNonceError` for transport-level failures; a
+ * `released: false` is not an error.
+ */
+export interface ReleaseEmbedNonceError {
+  code: 'AUTH_FAILED' | 'FORBIDDEN' | 'RELEASE_FAILED' | 'NETWORK_ERROR' | 'INVALID_RESPONSE'
+  message: string
+  status?: number
+}
+
+/**
+ * Arguments to `releaseEmbedNonce()`. Mirrors `VerifyEmbedNonceOptions`
+ * minus `nonce` (the release call only needs `sessionId` — the server
+ * looks it up and evicts).
+ */
+export interface ReleaseEmbedNonceOptions {
+  sessionId: string
+  host: string
+  jwt: string
+  fetchImpl?: typeof fetch
+}

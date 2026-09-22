@@ -103,6 +103,20 @@ if (!audit.valid) {
 
 `verifyEmbedNonce()` returns `{valid:true, expiresAt}` on success or `{valid:false, reason:'unknown'|'expired'}` on failure — failures are not throws, only HTTP / network / parse errors are. See `sdk1.md §11.29`.
 
+When the iframe is torn down, free the server-side slot eagerly with `releaseEmbedNonce()`:
+
+```ts
+import { releaseEmbedNonce } from '@genoffice/web-sdk'
+
+editor.on('closed', () => {
+  void releaseEmbedNonce({ sessionId, host: 'https://genoffice.app', jwt: 'eyJ…' })
+  // released:true → server evicted; released:false → already gone (race with TTL).
+  // Only HTTP / network / parse errors throw.
+})
+```
+
+See `sdk1.md §11.30` for the DELETE-style endpoint contract.
+
 ## Typed Surface
 
 | Event | Fires when |

@@ -105,6 +105,7 @@ async function loadHandlers() {
   return {
     handleEmbedNonce: mod.handleEmbedNonce as Handler,
     handleEmbedVerifyNonce: mod.handleEmbedVerifyNonce as Handler,
+    handleEmbedReleaseNonce: mod.handleEmbedReleaseNonce as Handler,
   }
 }
 
@@ -327,6 +328,97 @@ describe('embed nonce session store (sdk1.md §11.26)', () => {
     })
     expect(fake.status()).toBe(200)
     expect(fake.json()).toEqual({ valid: false, reason: 'unknown' })
+  })
+
+  // ── release (DELETE /api/v1/embed/nonce) — sdk1.md §11.30 ──────────────
+
+  it('release removes a live session and returns released:true', async () => {
+    const { handleEmbedNonce, handleEmbedReleaseNonce } = await loadHandlers()
+    const adminToken = await mintJwt(['files:read'])
+    const mintFake = fakeResponse()
+    await handleEmbedNonce({
+      request: fakeRequest('POST', { authorization: `Bearer ${adminToken}` }, JSON.stringify({ docId: 'rel_1' })),
+      response: mintFake.res,
+    })
+    const { sessionId } = mintFake.json() as { sessionId: string }
+
+    const releaseFake = fakeResponse()
+    await handleEmbedReleaseNonce({
+      request: fakeRequest('DELETE', { authorization: `Bearer ${adminToken}` }, JSON.stringify({ sessionId })),
+      response: releaseFake.res,
+    })
+    expect(releaseFake.status()).toBe(200)
+    expect(releaseFake.json()).toEqual({ released: true })
+
+    // And the session is now gone: verify returns valid:false
+    const verifyFake = fakeResponse()
+    const { handleEmbedVerifyNonce } = await loadHandlers()
+    await handleEmbedVerifyNonce({
+      request: fakeRequest('POST', { authorization: `Bearer ${adminToken}` }, JSON.stringify({ sessionId, nonce: sessionId })),
+      response: verifyFake.res,
+    })
+    expect(verifyFake.json()).toEqual({ valid: false, reason: 'unknown' })
+  })
+
+  it('release on unknown sessionId returns released:false (NOT an error envelope)', async () => {
+    const { handleEmbedReleaseNonce } = await loadHandlers()
+    const adminToken = await mintJwt(['files:read'])
+    const fake = fakeResponse()
+    await handleEmbedReleaseNonce({
+      request: fakeRequest('DELETE', { authorization: `Bearer ${adminToken}` }, JSON.stringify({ sessionId: 'never-minted' })),
+      response: fake.res,
+    })
+    expect(fake.status()).toBe(200)
+    expect(fake.json()).toEqual({ released: false })
+  })
+
+  it('release without auth returns 401 UNAUTHENTICATED', async () => {
+    const { handleEmbedReleaseNonce } = await loadHandlers()
+    const fake = fakeResponse()
+    await handleEmbedReleaseNonce({
+      request: fakeRequest('DELETE', {}, JSON.stringify({ sessionId: 's' })),
+      response: fake.res,
+    })
+    expect(fake.status()).toBe(401)
+    expect(fake.json()).toMatchObject({ error: { code: 'UNAUTHENTICATED', channel: 'embed:release-nonce' } })
+  })
+
+  it('release without files:read scope returns 403 FORBIDDEN', async () => {
+    const { handleEmbedReleaseNonce } = await loadHandlers()
+    const aiOnly = await mintJwt(['ai:chat'])
+    const fake = fakeResponse()
+    await handleEmbedReleaseNonce({
+      request: fakeRequest('DELETE', { authorization: `Bearer ${aiOnly}` }, JSON.stringify({ sessionId: 's' })),
+      response: fake.res,
+    })
+    expect(fake.status()).toBe(403)
+    expect(fake.json()).toMatchObject({ error: { code: 'FORBIDDEN', channel: 'embed:release-nonce' } })
+  })
+
+  it('release without sessionId returns 400 BAD_REQUEST', async () => {
+    const { handleEmbedReleaseNonce } = await loadHandlers()
+    const adminToken = await mintJwt(['files:read'])
+    const fake = fakeResponse()
+    await handleEmbedReleaseNonce({
+      request: fakeRequest('DELETE', { authorization: `Bearer ${adminToken}` }, JSON.stringify({})),
+      response: fake.res,
+    })
+    expect(fake.status()).toBe(400)
+    expect(fake.json()).toMatchObject({ error: { code: 'BAD_REQUEST', channel: 'embed:release-nonce' } })
+  })
+
+  it('v1 dispatcher routes DELETE /api/v1/embed/nonce to handleEmbedReleaseNonce', async () => {
+    const dispatcher = await loadDispatcher()
+    const adminToken = await mintJwt(['files:read'])
+    const fake = fakeResponse()
+    await dispatcher({
+      request: fakeRequest('DELETE', { authorization: `Bearer ${adminToken}` }, JSON.stringify({ sessionId: 'x' })),
+      response: fake.res,
+      pathname: '/api/v1/embed/nonce',
+      method: 'DELETE',
+    })
+    expect(fake.status()).toBe(200)
+    expect(fake.json()).toEqual({ released: false })
   })
 })
 

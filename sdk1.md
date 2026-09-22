@@ -2097,6 +2097,55 @@ SDK `verifyEmbedNonce()` helper 落地，§11.28 `createEmbedNonce()` 的对称 
 #### 11.29.4 后续观察
 
 - **可加 SDK `verifyEmbedSession()` 一体化**：把 createEditor 的 ready 监听 + verifyEmbedNonce 封装成 `await editor.verifiedReady` 一行；本期不做
+
+### 11.30 本轮续作（v2 第 25 轮 commit，2026-09-22）
+
+iframe destroy → 服务端主动清理 nonce session。`DELETE /api/v1/embed/nonce` endpoint + SDK `releaseEmbedNonce()` helper。fire-and-forget 友好，让 host 从 `destroy()` handler 调一句就清 LRU slot。
+
+#### 11.30.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/embed/nonce-store.ts` | 新增 `removeEmbedNonce(sessionId): boolean`（true = 存在并移除，false = 不存在）；同模块私有 Map 状态 |
+| `apps/web-server/src/api/v1/embed-nonce.ts` | 新增 `handleEmbedReleaseNonce(ctx)`：`files:read` scope gate；body `{sessionId}`；400 sessionId 缺失；200 `{released:true\|false}` |
+| `apps/web-server/src/api/v1/index.ts` | import + 1 行 router dispatch（DELETE `/api/v1/embed/nonce`） |
+| `apps/web-server/tests/embed-nonce-session.test.ts` | +6 测试：release success + 验证后 isvalid false / release unknown = false / 401 / 403 / 400 sessionId 缺失 / v1 dispatcher 路由 DELETE |
+| `apps/sdk/src/types.ts` | 3 新类型：`ReleaseEmbedNonceOptions`（4 required 字段含 `fetchImpl`）+ `ReleaseEmbedNonceResult`（`released`）+ `ReleaseEmbedNonceError`（5 code）|
+| `apps/sdk/src/editor.ts` | 新增 `releaseEmbedNonce(options)`：参数 guard + `fetchImpl` 注入；DELETE `host/api/v1/embed/nonce` Bearer + body `{sessionId}`；按 status 码映射；非 OK 抛错，OK 校验 `released:true\|false` |
+| `apps/sdk/src/index.ts` | re-export `releaseEmbedNonce` + 3 新类型 |
+| `apps/sdk/test/release-embed-nonce.test.ts` | **新增 · 165 行 · 12 测试**：happy released:true / released:false race / DELETE + Bearer + body / 401 / 403 / 5xx / fetch throws / malformed JSON / 字段缺失 / trailing slash / `undefined` options / 缺 sessionId |
+| `apps/sdk/README.md` + `README.zh-CN.md` | 在 §11.29 audit pattern 后追加 release example |
+
+合计 8 文件 / +18 测试。
+
+#### 11.30.2 设计要点
+
+- **`released:false` 不是 throw**：与 `verifyEmbedNonce` 一致，host `destroy()` handler 用 `void releaseEmbedNonce(...)` 即可，不需要 try/catch；TTL race 自动变成正常结果
+- **DELETE 复用 POST endpoint 路径**：URL 相同 `/api/v1/embed/nonce`，method 区分；host SDK `releaseEmbedNonce` 内部构造的 fetch 是 `method:'DELETE'`，与 §11.26 mint 不冲突
+- **`removed` 返回 boolean 而非 404**：避免 race 情况变成 error envelope；host 关心的不是"session 在不在"，而是"IO 成功与否"
+- **scope gate 复用 `files:read`**：与 mint / verify-nonce 一致；host 用 mint 的同一个 JWT 调用 release，不引入额外权限
+- **fire-and-forget 友好**：返回 Promise 而不是带 callback；让宿主写 `void releaseEmbedNonce(...)`（不 await）从 destroy handler 调；错误如果想看可以包 try/catch
+- **不接进 createEditor.destroy()**：因为 destroy() 内部被多种事件触发（closed / page navigation / beforeunload），自动 release 会增加 destroy 失败概率；让 host SDK 显式调更稳
+
+#### 11.30.3 验证
+
+- `npx vitest run apps/web-server/tests/embed-nonce-session.test.ts`：19/19 通过（was 13/13，+6 release 测试）
+- `npx vitest run test/release-embed-nonce.test.ts` (SDK)：12/12 通过（488ms）
+- `npx vitest run --config vitest.config.ts test/` (SDK)：**8 文件 / 77 测试**全绿（was 7/65，+1 文件 / +12 测试）
+- web-server critical path 6 文件 / 63 pass / 1 skip（embed-nonce-session / embed-nonce-handler / embed-jwt-validation / embed-nonce-roundtrip / atomic / scope-gate）
+- live smoke（PORT=33001 + GENOFFICE_JWT_SECRET）：
+  - mint → `200 {sessionId, nonce, expiresAt}` ✓
+  - DELETE release → `200 {released:true}` ✓
+  - DELETE again（已 evict）→ `200 {released:false}` ✓
+  - verify after release → `200 {valid:false, reason:unknown}` ✓
+  - DELETE no auth → `401` ✓
+  - DELETE empty sessionId → `400 BAD_REQUEST` ✓
+
+#### 11.30.4 后续观察
+
+- **可加 SDK `verifyEmbedSession()` 一体化 helper**：包 ready + verifyEmbedNonce + releaseEmbedNonce 三个调用；本期不做
+- **可选接进 createEditor.destroy()**：失败概率可控后再做；本期显式调用
+- **可选 rate limit**：单 IP 短时间大量 mint 不限流；当前 LRU 1024 + TTL 5min 顶得住；后续按需
 - **iframe destroy → 服务端主动清理 session**：LRU 自带 5 min TTL + 1024 上限够用，但 destroy 时主动 DELETE-style 让缓存更整洁；§11.28.4 后续观察 #2 留待后续
 - **JS bundle 大小**：SDK 增加 ~70 行（编辑器 ~580 行）→ dist 增量约 200 字节；不影响 bundle 大小预算
 - **可加 `destroy()` 自动清理 server session**：iframe destroy 时主动调 DELETE-style endpoint 让 LRU 立刻腾位；本期不做（LRU 自带 TTL + 上限够用）
@@ -2352,6 +2401,7 @@ SDK `verifyEmbedNonce()` helper 落地，§11.28 `createEmbedNonce()` 的对称 
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+30. **`DELETE /api/v1/embed/nonce` endpoint + SDK `releaseEmbedNonce()` helper**（✅ 本轮 §11.30）：iframe destroy → 服务端主动清理 session。`nonce-store.ts` 加 `removeEmbedNonce(sessionId)`；`api/v1/embed-nonce.ts` 加 `handleEmbedReleaseNonce`（DELETE method + `files:read` scope gate）；SDK 加 `releaseEmbedNonce(options)`（`fetchImpl` 注入 + fire-and-forget 友好）。`released:true` 真移除 / `released:false` race with TTL（不是 throw）。web-server 测试 +6（19 total），SDK 测试 +12（77 total）。live smoke 6/6 通过。
 29. **SDK `verifyEmbedNonce()` helper 落地**（✅ 本轮 §11.29）：§11.28 `createEmbedNonce()` 的对称 counterpart，调 `POST /api/v1/embed/verify-nonce` audit。返 `{valid:true, expiresAt}` 或 `{valid:false, reason:'unknown'|'expired'}`——audit 失败不 throw。5 种错误 code（`AUTH_FAILED` / `FORBIDDEN` / `VERIFY_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`）。配套：types.ts 3 类型；editor.ts 重 re-export；README 双语 audit pattern example。新增 `apps/sdk/test/verify-embed-nonce.test.ts`（15 测试）。SDK 7 文件 / 65 测试。
 28. **SDK `createEmbedNonce()` helper 落地**（✅ 本轮 §11.28）：apps/sdk/src/editor.ts 新增 `createEmbedNonce(options)`，调 `POST /api/v1/embed/nonce` mint session + 构造带 `?sessionId=...&nonce=...` 的 embed URL。6 种结构化错误 code (`AUTH_FAILED` / `FORBIDDEN` / `BAD_REQUEST` / `MINT_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`)。`fetchImpl` 注入式 override 让测试不需要 polyfill global。配套：`types.ts` 加 3 类型；`embed-url.ts` `EmbedUrlInput.sessionId` + `buildEmbedUrl` 多一行；`index.ts` re-export。新增 `apps/sdk/test/create-embed-nonce.test.ts`（12 测试）+ `build-embed-url.test.ts` 追加 2 测试。SDK 总数 5 文件 / 36 → 6 文件 / 50 测试。live smoke 3/3 通过。
 27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
@@ -2370,7 +2420,7 @@ SDK `verifyEmbedNonce()` helper 落地，§11.28 `createEmbedNonce()` 的对称 
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler）| 69 | 534 | ✅ |
+| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler）| 69 | 540 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -2384,17 +2434,17 @@ SDK `verifyEmbedNonce()` helper 落地，§11.28 `createEmbedNonce()` 的对称 
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce）| 7 | 65 | ✅ |
+| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce / release-embed-nonce）| 8 | 77 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **181** | **4373** | ✅ |
+| **总计** | **181** | **4379** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 

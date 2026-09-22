@@ -37,6 +37,9 @@ import type {
   VerifyEmbedNonceOptions,
   VerifyEmbedNonceResult,
   VerifyEmbedNonceError,
+  ReleaseEmbedNonceOptions,
+  ReleaseEmbedNonceResult,
+  ReleaseEmbedNonceError,
 } from './types'
 import { buildEmbedUrl } from './embed-url'
 // crypto.getRandomValues is in scope for both browser and modern Node;
@@ -560,5 +563,83 @@ function makeVerifyError(
   message: string,
   status?: number,
 ): VerifyEmbedNonceError {
+  return status !== undefined ? { code, message, status } : { code, message }
+}
+
+/**
+ * Evict a server-side nonce session. Symmetric counterpart to
+ * `createEmbedNonce()` (§11.30). Use this from the host's iframe
+ * `destroy()` path so the LRU slot is freed immediately instead of
+ * waiting for the 5-min TTL.
+ *
+ * Returns `{released:true}` when the session was live and was
+ * removed; `{released:false}` when it was already gone (race with
+ * TTL / LRU). Both are normal results — only HTTP / network / parse
+ * failures throw.
+ *
+ * Fire-and-forget friendly — the caller can `void releaseEmbedNonce(...)`
+ * from a `destroy()` handler without awaiting; failures are observable
+ * via the standard try/catch on the returned promise.
+ */
+export async function releaseEmbedNonce(
+  options: ReleaseEmbedNonceOptions,
+): Promise<ReleaseEmbedNonceResult> {
+  if (!options) throw makeReleaseError('INVALID_RESPONSE', 'releaseEmbedNonce: options required')
+  if (!options.sessionId) throw makeReleaseError('INVALID_RESPONSE', 'releaseEmbedNonce: sessionId required')
+  if (!options.host) throw makeReleaseError('INVALID_RESPONSE', 'releaseEmbedNonce: host required')
+  if (!options.jwt) throw makeReleaseError('INVALID_RESPONSE', 'releaseEmbedNonce: jwt required')
+
+  const f = options.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : null)
+  if (!f) throw makeReleaseError('NETWORK_ERROR', 'releaseEmbedNonce: no fetch implementation available')
+
+  const url = `${options.host.replace(/\/$/, '')}/api/v1/embed/nonce`
+  let res: Response
+  try {
+    res = await f(url, {
+      method: 'DELETE',
+      headers: {
+        authorization: `Bearer ${options.jwt}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ sessionId: options.sessionId }),
+    })
+  } catch (err) {
+    throw makeReleaseError(
+      'NETWORK_ERROR',
+      `releaseEmbedNonce: network error — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  if (res.status === 401) {
+    throw makeReleaseError('AUTH_FAILED', 'releaseEmbedNonce: 401 Unauthorized', 401)
+  }
+  if (res.status === 403) {
+    throw makeReleaseError('FORBIDDEN', 'releaseEmbedNonce: 403 Forbidden', 403)
+  }
+  if (!res.ok) {
+    throw makeReleaseError('RELEASE_FAILED', `releaseEmbedNonce: ${res.status} ${res.statusText}`, res.status)
+  }
+
+  let body: { released?: unknown }
+  try {
+    body = (await res.json()) as typeof body
+  } catch (err) {
+    throw makeReleaseError(
+      'INVALID_RESPONSE',
+      `releaseEmbedNonce: response not JSON — ${err instanceof Error ? err.message : String(err)}`,
+      res.status,
+    )
+  }
+  if (body.released !== true && body.released !== false) {
+    throw makeReleaseError('INVALID_RESPONSE', 'releaseEmbedNonce: response missing released:true|false', res.status)
+  }
+  return { released: body.released }
+}
+
+function makeReleaseError(
+  code: ReleaseEmbedNonceError['code'],
+  message: string,
+  status?: number,
+): ReleaseEmbedNonceError {
   return status !== undefined ? { code, message, status } : { code, message }
 }

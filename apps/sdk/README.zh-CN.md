@@ -101,6 +101,20 @@ if (!audit.valid) {
 ```
 
 `verifyEmbedNonce()` 成功返 `{valid:true, expiresAt}`，失败返 `{valid:false, reason:'unknown'|'expired'}`——失败不抛错，只有 HTTP / 网络 / 解析错误才抛。详见 `sdk1.md §11.29`。
+
+iframe 销毁时，调用 `releaseEmbedNonce()` 主动释放服务端 LRU slot：
+
+```ts
+import { releaseEmbedNonce } from '@genoffice/web-sdk'
+
+editor.on('closed', () => {
+  void releaseEmbedNonce({ sessionId, host: 'https://genoffice.app', jwt: 'eyJ…' })
+  // released:true → 服务端已驱逐；released:false → 已不在（与 TTL race）。
+  // 只有 HTTP / 网络 / 解析错误才抛。
+})
+```
+
+详见 `sdk1.md §11.30` 的 DELETE-style endpoint 契约。
 | `<script src=…>` | 没有构建管线（CMS / 无打包工具的老项目）。 |
 
 ## 类型化 API
