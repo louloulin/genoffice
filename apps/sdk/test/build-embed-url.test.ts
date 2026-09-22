@@ -144,4 +144,29 @@ describe('buildEmbedUrl handshake nonce (sdk1.md §11.20)', () => {
     expect(url).toContain('nonce=a+b%26c%3Dd')
     expect(url).not.toContain('nonce=a b&c=d')
   })
+
+
+  it('writes ?sessionId=... when provided (sdk1.md §11.27)', () => {
+    const url = buildEmbedUrl({
+      host: 'https://genoffice.app',
+      documentId: 'd',
+      app: 'docs',
+      token: 't',
+      nonce: 'n',
+      sessionId: 's',
+    })
+    expect(url).toContain('sessionId=s')
+    expect(url).toContain('nonce=n')
+  })
+
+  it('does not write ?sessionId=... when not supplied', () => {
+    const url = buildEmbedUrl({
+      host: 'https://genoffice.app',
+      documentId: 'd',
+      app: 'docs',
+      token: 't',
+      nonce: 'n',
+    })
+    expect(url).not.toContain('sessionId=')
+  })
 })

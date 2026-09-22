@@ -56,6 +56,34 @@ editor.destroy()
 |---|---|
 | `createEditor({ container })` | 希望 SDK 全权管理 iframe 生命周期。 |
 | `buildEmbedUrl({ … })` | 希望手写 `<iframe>`，把它放进 SSR 模板 / 邮件正文。 |
+
+## 纵深防御握手（v2）
+
+默认的 `createEditor` / `buildEmbedUrl` 使用**纯客户端** nonce 校验（iframe 在 `ready` 里回显 host 生成的 nonce，host SDK 校验匹配）。当 host 页面完全可信时这就够了。
+
+当你希望**服务端**也参与校验——比如把编辑器嵌到不能信任周围 JS 的第三方门户——先调 `createEmbedNonce()` mint 一个 server-bound session，然后把返回的 URL 放进 iframe：
+
+```ts
+import { createEmbedNonce, createEditor } from '@genoffice/web-sdk'
+
+const { embedUrl, sessionId, nonce } = await createEmbedNonce({
+  documentId: 'doc_abc',
+  app: 'docs',
+  jwt: 'eyJ…', // 必须带 `files:read` scope
+  host: 'https://genoffice.app',
+  ttlMs: 5 * 60 * 1000, // 可选，默认 5 min
+})
+
+// 传给 createEditor({ url }) …
+const editor = createEditor({
+  documentId: 'doc_abc', app: 'docs', jwt: 'eyJ…', host: 'https://genoffice.app',
+  url: embedUrl, container: '#genoffice-mount',
+})
+
+// …或者直接放进 <iframe src={embedUrl} />。
+```
+
+web-server 会拒绝渲染编辑器，除非 URL 里的 `?nonce=` 与 `?sessionId=` 对应的服务端签发值一致。被篡改或重放的 URL 会拿到 `401 NONCE_SESSION_INVALID` 而不是编辑器 HTML。详见 `sdk1.md §11.26 / §11.27 / §11.28`。
 | `<script src=…>` | 没有构建管线（CMS / 无打包工具的老项目）。 |
 
 ## 类型化 API

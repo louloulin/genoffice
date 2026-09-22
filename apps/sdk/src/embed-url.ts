@@ -27,6 +27,17 @@ export interface EmbedUrlInput {
    * `?nonce=` parameter was silently dropped — see sdk1.md §11.20.
    */
   nonce?: string
+  /**
+   * Optional server-side nonce session id (sdk1.md §11.26 + §11.27).
+   * When present alongside `nonce`, the embed handler binds the URL
+   * to a server-minted session and rejects mismatched or unknown
+   * sessions with 401 / 400 envelopes. This upgrades the handshake
+   * nonce from a client-only check to a server-attested one.
+   *
+   * Pair with `createEmbedNonce()` rather than constructing the URL
+   * by hand so the server side stays in sync.
+   */
+  sessionId?: string
   features?: Record<string, boolean | string | number>
 }
 
@@ -36,6 +47,7 @@ export function buildEmbedUrl(input: EmbedUrlInput): string {
   params.set('app', input.app)
   params.set('token', input.token)
   if (input.nonce) params.set('nonce', input.nonce)
+  if (input.sessionId) params.set('sessionId', input.sessionId)
   if (input.mode) params.set('mode', input.mode)
   if (input.theme) params.set('theme', input.theme)
   if (input.lang) params.set('lang', input.lang)

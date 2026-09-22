@@ -8,7 +8,7 @@
  * REST API; the SDK only consumes the resulting token.
  */
 
-export { createEditor } from './editor'
+export { createEditor, createEmbedNonce } from './editor'
 export { buildEmbedUrl } from './embed-url'
 export type { EmbedUrlInput } from './embed-url'
 

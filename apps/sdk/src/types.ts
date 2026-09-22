@@ -230,3 +230,84 @@ export interface EditorCommands {
   aiTranslate: { args: AiTranslateArgs; result: { text: string } }
   aiSummarize: { args: AiSummarizeArgs; result: { text: string } }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Server-minted nonce session helper (sdk1.md §11.28)
+//
+// Use `createEmbedNonce()` instead of `buildEmbedUrl()` when you want the
+// web-server to participate in the handshake nonce (the optional
+// defense-in-depth path from §11.26 + §11.27). The helper mints a
+// nonce ↔ sessionId pair via `POST /api/v1/embed/nonce`, then builds
+// an embed URL that carries both `?sessionId=` and `?nonce=`. The
+// embed handler will then refuse to render the editor unless the URL
+// nonce matches the server-minted one.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Arguments to `createEmbedNonce()`. Mirrors `CreateEditorOptions` minus
+ * the runtime-only fields (container, callbacks, handshake, …).
+ */
+export interface CreateEmbedNonceOptions {
+  /** Document id (the `:docId` path segment of `/embed/:docId`). */
+  documentId: string
+  /** App type — drives which editor loads. */
+  app: EditorApp
+  /** JWT token minted by `POST /api/v1/auth/jwt` (or `POST /api/v1/files/:id/jwt`). */
+  jwt: string
+  /** GenOffice web-server origin. e.g. `https://genoffice.app`. */
+  host: string
+
+  /** Optional display mode passed through to the embed query string. */
+  mode?: EditorMode
+  theme?: EditorTheme
+  lang?: EditorLang
+  toolbar?: EditorToolbar
+  features?: Record<string, boolean | string | number>
+
+  /**
+   * Server-side nonce session TTL in milliseconds. Default 5 min.
+   * Hard-capped at 1 h by the server.
+   */
+  ttlMs?: number
+
+  /**
+   * Override the fetch implementation (used in tests). Defaults to
+   * the global `fetch`. Set this to a stub in unit tests so you
+   * don't need to spin up a web-server.
+   */
+  fetchImpl?: typeof fetch
+}
+
+/**
+ * Result of `createEmbedNonce()`. `embedUrl` is the URL to drop into
+ * the host's `<iframe>`; `sessionId` + `nonce` are also returned so
+ * the host SDK can call `POST /api/v1/embed/verify-nonce` after the
+ * `ready` event to confirm the server knew the nonce when the iframe
+ * was opened.
+ */
+export interface CreateEmbedNonceResult {
+  sessionId: string
+  nonce: string
+  /** Epoch milliseconds (UTC). */
+  expiresAt: number
+  /** Embed URL with `?sessionId=` and `?nonce=` already populated. */
+  embedUrl: string
+}
+
+/**
+ * Error envelope thrown by `createEmbedNonce()`. Always a stable shape
+ * so the host SDK can branch on `code` without try/catching string
+ * messages.
+ */
+export interface CreateEmbedNonceError {
+  code:
+    | 'AUTH_FAILED'
+    | 'FORBIDDEN'
+    | 'BAD_REQUEST'
+    | 'MINT_FAILED'
+    | 'NETWORK_ERROR'
+    | 'INVALID_RESPONSE'
+  message: string
+  /** HTTP status code when the failure was HTTP-driven. */
+  status?: number
+}

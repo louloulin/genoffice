@@ -58,6 +58,34 @@ editor.destroy()
 | `buildEmbedUrl({ … })` | You want to hand-roll the `<iframe>` and drop it into your SSR template / email. |
 | `<script src=…>` | You can't ship a build pipeline (CMS / no-bundler legacy app). |
 
+## Defense-in-depth handshake (v2)
+
+The default `createEditor` / `buildEmbedUrl` paths use a **client-side** nonce check (the iframe echoes a host-generated nonce in `ready`; the host SDK verifies the match). This is sufficient when the host page is fully trusted.
+
+When you want the **server** to also participate — e.g. you're embedding into a third-party portal where you can't trust the surrounding JS — call `createEmbedNonce()` first to mint a server-bound session, then drop the resulting URL into your iframe:
+
+```ts
+import { createEmbedNonce, createEditor } from '@genoffice/web-sdk'
+
+const { embedUrl, sessionId, nonce } = await createEmbedNonce({
+  documentId: 'doc_abc',
+  app: 'docs',
+  jwt: 'eyJ…', // must have `files:read` scope
+  host: 'https://genoffice.app',
+  ttlMs: 5 * 60 * 1000, // optional, default 5 min
+})
+
+// Either pass the URL to createEditor({ url }) …
+const editor = createEditor({
+  documentId: 'doc_abc', app: 'docs', jwt: 'eyJ…', host: 'https://genoffice.app',
+  url: embedUrl, container: '#genoffice-mount',
+})
+
+// …or drop it straight into your own <iframe src={embedUrl} />.
+```
+
+The web-server will refuse to render the editor unless the URL `?nonce=` matches the server-minted one for `?sessionId=`. Tampered or replayed URLs get `401 NONCE_SESSION_INVALID` instead of the editor HTML. See `sdk1.md §11.26 / §11.27 / §11.28` for the protocol details.
+
 ## Typed Surface
 
 | Event | Fires when |

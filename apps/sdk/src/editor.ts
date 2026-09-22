@@ -31,6 +31,9 @@ import type {
   EditorError,
   EditorHandle,
   EditorCommands,
+  CreateEmbedNonceOptions,
+  CreateEmbedNonceResult,
+  CreateEmbedNonceError,
 } from './types'
 import { buildEmbedUrl } from './embed-url'
 // crypto.getRandomValues is in scope for both browser and modern Node;
@@ -334,3 +337,127 @@ function resolveContainer(target: string | HTMLElement | undefined): HTMLElement
 }
 
 export { ENVELOPE_VERSION }
+
+/**
+ * Mint a server-side nonce session and return an embed URL that carries
+ * both `?sessionId=` and `?nonce=`. This is the SDK-side companion to
+ * `POST /api/v1/embed/nonce` (sdk1.md §11.26) — calling this means the
+ * web-server participates in the handshake nonce and the embed handler
+ * will refuse to render the editor if the URL nonce doesn't match the
+ * server-minted value (§11.27).
+ *
+ * Why use this over `buildEmbedUrl()`:
+ *   - Defense-in-depth against attacker-controlled iframes / proxy
+ *     rewrites of the URL: the nonce is stored server-side and never
+ *     transmitted except in the URL itself.
+ *   - Integrator gets a single call that produces the embed URL, so
+ *     no chance of forgetting to plumb the `sessionId` query param.
+ *
+ * Why NOT use this:
+ *   - Requires the host to already have a JWT that includes `files:read`
+ *     scope (the endpoint is scope-gated). For anonymous public embeds,
+ *     use `buildEmbedUrl()` and rely on the client-side nonce check from
+ *     §11.20.
+ *
+ * Throws a `CreateEmbedNonceError` on any failure. Never throws a raw
+ * HTTP error so the caller can branch on `.code`.
+ */
+export async function createEmbedNonce(
+  options: CreateEmbedNonceOptions,
+): Promise<CreateEmbedNonceResult> {
+  if (!options) throw makeNonceError('INVALID_RESPONSE', 'createEmbedNonce: options required')
+  if (!options.documentId) throw makeNonceError('INVALID_RESPONSE', 'createEmbedNonce: documentId required')
+  if (!options.jwt) throw makeNonceError('INVALID_RESPONSE', 'createEmbedNonce: jwt required')
+  if (!options.host) throw makeNonceError('INVALID_RESPONSE', 'createEmbedNonce: host required')
+
+  const f = options.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : null)
+  if (!f) throw makeNonceError('NETWORK_ERROR', 'createEmbedNonce: no fetch implementation available')
+
+  const url = `${options.host.replace(/\/$/, '')}/api/v1/embed/nonce`
+  let res: Response
+  try {
+    res = await f(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${options.jwt}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        docId: options.documentId,
+        ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+      }),
+    })
+  } catch (err) {
+    throw makeNonceError(
+      'NETWORK_ERROR',
+      `createEmbedNonce: network error — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  if (res.status === 401) {
+    throw makeNonceError('AUTH_FAILED', 'createEmbedNonce: 401 Unauthorized — JWT invalid or expired', 401)
+  }
+  if (res.status === 403) {
+    throw makeNonceError('FORBIDDEN', 'createEmbedNonce: 403 Forbidden — JWT lacks files:read scope', 403)
+  }
+  if (res.status === 400) {
+    let detail = ''
+    try {
+      const body = (await res.json()) as { error?: { message?: string } }
+      detail = body.error?.message ? `: ${body.error.message}` : ''
+    } catch {
+      /* non-JSON body — leave detail empty */
+    }
+    throw makeNonceError('BAD_REQUEST', `createEmbedNonce: 400 Bad Request${detail}`, 400)
+  }
+  if (!res.ok) {
+    throw makeNonceError('MINT_FAILED', `createEmbedNonce: ${res.status} ${res.statusText}`, res.status)
+  }
+
+  let body: { sessionId?: unknown; nonce?: unknown; expiresAt?: unknown }
+  try {
+    body = (await res.json()) as typeof body
+  } catch (err) {
+    throw makeNonceError(
+      'INVALID_RESPONSE',
+      `createEmbedNonce: response not JSON — ${err instanceof Error ? err.message : String(err)}`,
+      res.status,
+    )
+  }
+  if (
+    typeof body.sessionId !== 'string' ||
+    typeof body.nonce !== 'string' ||
+    typeof body.expiresAt !== 'number'
+  ) {
+    throw makeNonceError('INVALID_RESPONSE', 'createEmbedNonce: response missing sessionId/nonce/expiresAt', res.status)
+  }
+
+  const embedUrl = buildEmbedUrl({
+    host: options.host,
+    documentId: options.documentId,
+    app: options.app,
+    token: options.jwt,
+    mode: options.mode,
+    theme: options.theme,
+    lang: options.lang,
+    toolbar: options.toolbar,
+    features: options.features,
+    nonce: body.nonce,
+    sessionId: body.sessionId,
+  })
+
+  return {
+    sessionId: body.sessionId,
+    nonce: body.nonce,
+    expiresAt: body.expiresAt,
+    embedUrl,
+  }
+}
+
+function makeNonceError(
+  code: CreateEmbedNonceError['code'],
+  message: string,
+  status?: number,
+): CreateEmbedNonceError {
+  return status !== undefined ? { code, message, status } : { code, message }
+}
