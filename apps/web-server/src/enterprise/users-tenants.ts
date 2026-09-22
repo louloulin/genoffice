@@ -13,12 +13,12 @@ export function registerUserHandlers(): void {
       email: u.email,
       role: u.role,
     }))
-  })
+  }, { scope: 'users:read' })
 
   registerHandle('users:get', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     return USERS.get(id) || null
-  })
+  }, { scope: 'users:read' })
 
   registerHandle('users:create', (_event: unknown, args: unknown) => {
     const { name, email, role } = args as { name: string; email: string; role?: string }
@@ -31,7 +31,7 @@ export function registerUserHandlers(): void {
       createdAt: Date.now(),
     })
     return { ok: true, id }
-  })
+  }, { scope: 'users:write' })
 
   registerHandle('users:update', (_event: unknown, args: unknown) => {
     const { id, name, email, role } = args as { id: string; name?: string; email?: string; role?: string }
@@ -41,14 +41,14 @@ export function registerUserHandlers(): void {
     if (email) user.email = email
     if (role) user.role = role as 'admin' | 'editor' | 'viewer'
     return { ok: true }
-  })
+  }, { scope: 'users:write' })
 
   registerHandle('users:delete', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     if (!USERS.has(id)) return { ok: false, error: 'User not found' }
     USERS.delete(id)
     return { ok: true }
-  })
+  }, { scope: 'users:write' })
 }
 
 export function registerTenantHandlers(): void {
@@ -60,7 +60,7 @@ export function registerTenantHandlers(): void {
       plan: t.plan,
       status: t.status,
     }))
-  })
+  }, { scope: 'tenant:read' })
 
   registerHandle('tenant:create', (_event: unknown, args: unknown) => {
     const { name, domain, plan } = (args || {}) as {
@@ -79,12 +79,12 @@ export function registerTenantHandlers(): void {
       status: 'trial',
     })
     return { ok: true, id }
-  })
+  }, { scope: 'tenant:write' })
 
   registerHandle('tenant:get', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     return TENANTS.get(id) || null
-  })
+  }, { scope: 'tenant:read' })
 
   registerHandle('tenant:update', (_event: unknown, args: unknown) => {
     const { id, name, plan, settings, status } = (args || {}) as {
@@ -101,5 +101,5 @@ export function registerTenantHandlers(): void {
     if (settings) tenant.settings = { ...tenant.settings, ...settings }
     if (status) tenant.status = status
     return { ok: true }
-  })
+  }, { scope: 'tenant:write' })
 }

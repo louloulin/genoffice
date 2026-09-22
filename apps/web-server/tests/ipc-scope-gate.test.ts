@@ -191,3 +191,82 @@ describe('IPC dispatcher scope gate (sdk1 §A.5 #10)', () => {
     // process; their scope wiring is covered by the e2e tests above.
   })
 })
+
+describe('IPC dispatcher scope gate — users + tenant (sdk1 §11.74)', () => {
+  it('users:create requires users:write', async () => {
+    const denied = await callIpc('users:create', noScopeToken, [
+      { name: 'alice', email: 'a@x.test' },
+    ])
+    expect(denied.status).toBe(403)
+    expect(denied.body.error?.code).toBe('FORBIDDEN')
+    // A reader-only token doesn't have users:write.
+    const deniedReader = await callIpc('users:create', readToken, [
+      { name: 'bob', email: 'b@x.test' },
+    ])
+    expect(deniedReader.status).toBe(403)
+  })
+
+  it('users:create accepts the users:* wildcard', async () => {
+    const wildcardToken = await mint('users-wildcard', ['users:*'])
+    const r = await callIpc('users:create', wildcardToken, [
+      { name: 'carol', email: 'c@x.test' },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+  })
+
+  it('users:list + users:get require users:read (write-only token denied)', async () => {
+    // Write-only token (no read scope) — list/get should reject.
+    const writeOnly = await mint('users-write-only', ['users:write'])
+    const listDenied = await callIpc('users:list', writeOnly, [])
+    expect(listDenied.status).toBe(403)
+    const getDenied = await callIpc('users:get', writeOnly, [{ id: 'user-1' }])
+    expect(getDenied.status).toBe(403)
+  })
+
+  it('tenant:list accepts a tenant:* wildcard', async () => {
+    const wildcardToken = await mint('tenant-wildcard', ['tenant:*'])
+    const r = await callIpc('tenant:list', wildcardToken, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('tenant:create requires tenant:write', async () => {
+    const r = await callIpc('tenant:create', wrongScopeToken, [
+      { name: 'Acme', domain: 'acme.test' },
+    ])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('tenant:update requires tenant:write', async () => {
+    const r = await callIpc('tenant:update', readToken, [
+      { id: 'tenant-x', name: 'New Name' },
+    ])
+    expect(r.status).toBe(403)
+  })
+
+  it('admin sub bypasses users/tenant scope gates', async () => {
+    const list = await callIpc('users:list', adminToken, [])
+    expect(list.status).toBe(200)
+    const create = await callIpc('tenant:create', adminToken, [
+      { name: 'Admin Tenant', domain: 'admin.test' },
+    ])
+    expect(create.status).toBe(200)
+  })
+
+  it('handler registry round-trips users/tenant scopes via getHandlerEntry', async () => {
+    // Unit-level: register a test handler with each scope, then assert
+    // getHandlerEntry round-trips the metadata. The e2e tests above
+    // already prove the running bundle wires users/tenant correctly;
+    // this one just pins the registry contract.
+    const registry = await import('../src/common/registry')
+    const channels = [
+      'test:users-read-' + Math.random().toString(36).slice(2),
+      'test:tenant-write-' + Math.random().toString(36).slice(2),
+    ]
+    registry.registerHandle(channels[0], () => ({ ok: true }), { scope: 'users:read' })
+    registry.registerHandle(channels[1], () => ({ ok: true }), { scope: 'tenant:write' })
+    expect(registry.getHandlerEntry(channels[0])?.scope).toBe('users:read')
+    expect(registry.getHandlerEntry(channels[1])?.scope).toBe('tenant:write')
+  })
+})

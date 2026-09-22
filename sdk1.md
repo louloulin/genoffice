@@ -4593,7 +4593,66 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 - §A.5 backlog 闭合数 62 → **63**（+1：S3/minio cross-backend promote）
 - §0.7 风险表 storage backend 行 ✅；§E.4 风险表对应行 P2/M5 → ✅
 
-### 11.73 · §A.5 backlog 本轮（2026-09-23）总结
+### 11.74 · Enterprise users / tenant IPC scope gate 扩展（§11.71 模式复用）
+
+> 续 §11.71 的 IPC scope gate — 把同样的模式铺到 `enterprise/users-tenants.ts`
+> 的 9 个 IPC 处理器（之前任何已认证 IPC 调用方都能读写 enterprise 表）。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/enterprise/users-tenants.ts`** — 9 个 registerHandle
+   全部加上 scope option：
+
+   | Channel | Scope |
+   |---|---|
+   | `users:list` | `users:read` |
+   | `users:get` | `users:read` |
+   | `users:create` | `users:write` |
+   | `users:update` | `users:write` |
+   | `users:delete` | `users:write` |
+   | `tenant:list` | `tenant:read` |
+   | `tenant:get` | `tenant:read` |
+   | `tenant:create` | `tenant:write` |
+   | `tenant:update` | `tenant:write` |
+
+   `admin` sub 与 `users:*` / `tenant:*` 前缀通配继续工作（继承 §11.5
+   `hasScope` 的语义）。
+
+2. **`apps/web-server/tests/ipc-scope-gate.test.ts`** — 在原有 9 个
+   audit 用例基础上，新增 8 个 users / tenant 用例（§11.74 describe 块）：
+
+   - `users:create` 403 on no-scope + 403 on read-only token
+   - `users:create` 200 on `users:*` wildcard
+   - `users:list` + `users:get` 403 on write-only token
+   - `tenant:list` 200 on `tenant:*` wildcard
+   - `tenant:create` 403 on wrong-scope token
+   - `tenant:update` 403 on read-only token
+   - admin sub bypasses both users and tenant
+   - registry round-trips users / tenant scopes via `getHandlerEntry`
+
+#### 🧪 验证
+
+- `apps/web-server/tests/ipc-scope-gate.test.ts`：**17 / 17 通过**
+- `apps/web-server` typecheck：clean（9 处 pptx-ops / xlsx-gateway
+  pre-existing 错误已排除）
+- esbuild bundle 重建 29.3 MB，所有 562 通道仍注册（9 个新加 scope metadata）
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 63 → **64**（+1：enterprise users/tenant scope gate）
+- IPC dispatcher 现在共 gate **12 个 channel**（3 audit + 5 users + 4 tenant）
+- 其他敏感通道（settings write、key rotation、recents admin delete）可按
+  同样 1 行 registerHandle option 接入，不需要 dispatcher / registry 改动
+
+### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
+
+| §Section | 主题 | 闭合数增量 | 累计 |
+|---|---|---|---|
+| §11.70 | slides engine stable id | +1 | 61 |
+| §11.71 | audit:log IPC scope gate | +1 | 62 |
+| §11.72 | cross-backend atomic promote | +1 | 63 |
+| §11.74 | enterprise users/tenant scope gate | +1 | **64** |
+| §A.5 backlog 闭合总数 |  |  | **64** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
