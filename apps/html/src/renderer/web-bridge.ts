@@ -17,7 +17,10 @@ import {
 } from '@genoffice/ipc-bridge/web-native'
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
-import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
+import {
+  installTextBufferSink,
+  textBufferGetText,
+} from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
 import { createHtmlApi, createHtmlProjectApi } from '../shared/html-api-factory'
 import type { ExportDocxRequest, ExportPdfRequest, ExportHtmlRequest } from '../shared/ipc'
@@ -64,6 +67,26 @@ if (!isElectronRuntime()) {
    * input → base64 PickedFile[]) and `print`. App-specific commands that
    * need the live editor model are added here as the renderer wires them. */
   installTextBufferSink({
+    // sdk1.md §11.63 — host-driven save. Translate the html save
+    // result shape (which mirrors markdown's three-way union) into
+    // the SDK's neutral { ok, savedPath? } contract.
+    onSave: async () => {
+      const r = (await window.htmlApi.save({
+        mode: 'save',
+        text: textBufferGetText(),
+        imageSources: [],
+      })) as
+        | { ok: true; path: string; imageRewrites?: unknown }
+        | { ok: true; canceled: true }
+        | { ok: false; error: string }
+      if (!r || r.ok !== true) {
+        throw new Error((r && 'error' in r && r.error) || 'html:save was canceled')
+      }
+      if ('canceled' in r) {
+        throw new Error('html:save was canceled')
+      }
+      return { ok: true as const, savedPath: r.path }
+    },
     sidebar: createSidebarRuntime({
       // Auto-forward inbound panel messages to window.parent as a
       // sidebarMessage EditorEvent (sdk1.md §B.5.1 #8). Closes the

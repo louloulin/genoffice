@@ -4164,6 +4164,32 @@ cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
 - sheets / slides / pdf 已有自己的 live-model adapter，需要走
   `registerNativeAdapter({ isDirty, save })` 路径（与 text-buffer 不同）
 
+### 11.64 · HTML renderer 侧 save 接线（§11.63 模式复用 · 第 2 个 app）
+
+> 续 §11.63。html 的 `SaveHtmlRequest` / `SaveHtmlResult` 形状与 markdown
+> 完全一致，所以 `onSave` adapter 一字不差复用。
+
+#### ✅ 落点
+
+1. **`apps/html/src/renderer/web-bridge.ts`**：
+   - `installTextBufferSink` 加 `onSave` 选项
+   - 内部调 `window.htmlApi.save({ mode: 'save', text: textBufferGetText(), imageSources: [] })`
+   - 适配 `SaveHtmlResult` 三种 union → SDK 形状（同 markdown）
+
+#### 🧪 验证
+
+- html typecheck clean
+- 179 / 179 html 测试通过
+
+#### 📊 进度
+
+- §11.63 + §11.64 闭合 markdown + html 两个 text-buffer app
+- 余 4 app：
+  - docs（text-buffer，需要同样模式）
+  - sheets（text-buffer，需要同样模式，但走 `workbook:save` 通道）
+  - slides（live-model path — slides 有自己的 deck，dirty 来自 deck）
+  - pdf（live-model path — pdf 有自己的 state）
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
