@@ -9,7 +9,7 @@
     "genoffice-web": "./dist/bundle/index.js"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx --import ./scripts/register-loaders.mjs watch src/index.ts",
     "build": "tsc && node scripts/bundle.mjs",
     "bundle:esbuild": "node scripts/bundle.mjs",
     "typecheck": "tsc --noEmit",
@@ -21,7 +21,8 @@
     "pkg:all": "pkg dist/bundle/index.js --targets node22-linux-x64,node22-win-x64,node22-macos-x64 --output dist/genoffice-web",
     "bundle": "node scripts/bundle.mjs",
     "test": "vitest run --reporter=dot",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dev:once": "tsx --import ./scripts/register-loaders.mjs src/index.ts"
   },
   "dependencies": {
     "@genoffice/agent-core": "*",
