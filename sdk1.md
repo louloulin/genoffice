@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  90 文件 / 778 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
+apps/web-server/tests/  →  90 文件 / 787 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -3169,7 +3169,7 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**90 文件 / 778 通过 / 1 skipped / 0 失败**（exit 0）——
+- `apps/web-server`：**90 文件 / 787 通过 / 1 skipped / 0 失败**（exit 0）——
   本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
@@ -3230,7 +3230,7 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
 失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
 
-**结果**：`apps/web-server` **90 文件 / 778 通过 / 1 skipped / 0 失败** —— 本分支
+**结果**：`apps/web-server` **90 文件 / 787 通过 / 1 skipped / 0 失败** —— 本分支
 首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
