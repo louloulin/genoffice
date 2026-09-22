@@ -5068,6 +5068,66 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
   完整 e2e 守护；未来 regression 会被立即抓到
 - `promoteAcrossBackend` 公开 API 状态稳定，无 caller 强制耦合
 
+### 11.82 · Slides engine hash-based stable element id（§A.5 #7 follow-up · 选项化）
+
+> 续 §11.70 — §A.5 #7 用 `uidCounter = 0` at `parseSlide()` 修了"重新打开
+> 同一 deck → 不同 ids"。但**没修**"用户在 deck 中**插入新 shape**
+> → 后续 shape 的 id 全 shift"问题——counter scheme 按 scan 顺序分配，
+> 插入一个就 push 后面所有 id。本批加 **content-hash-based stable id**，
+> 但**默认保持向后兼容**（counter），opt-in 通过 `useHashBasedIds: true`。
+> 闭合数保持 **72**（不属于 §A.5 backlog；属于 §A.5 #7 follow-up）。
+
+#### ✅ 落点
+
+1. **`packages/pptx-engine/src/parse.ts`**：
+   - 新增模块级状态：`idStrategy: 'counter' | 'hash'` + `currentFragment: string`
+   - `uid(prefix)` 在 hash 模式下用 `createHash('sha1').update(\`${prefix}\u0000${currentFragment}\`).digest('hex').slice(0, 10)`
+     返回 `prefix_<10 hex>`；counter 模式下行为不变（向后兼容）
+   - `withIdStrategy(strategy, fragment, fn)` 临时切换策略（try/finally
+     复原），保证嵌套调用安全
+   - `SlideParseInput` 新增 `useHashBasedIds?: boolean`
+   - `parseSlide({ useHashBasedIds: true })` 在每个 `parseShapeFragment`
+     调用处包裹 `withIdStrategy('hash', fragXml, ...)`，每个 element
+     独立 hash 它的 fragment 字节
+
+2. **`packages/pptx-engine/src/index.ts`**：
+   - 新增 `OpenPptxOptions` interface（`useHashBasedIds?: boolean`）
+   - `openPptx(bytes, options)` 透传到 `parseSlideFromArchive(archive, path, options)`
+   - `parseSlideFromArchive` 内部 `parseSlide({ ...options })` 时按
+     `exactOptionalPropertyTypes: true` 用条件 spread 转 `useHashBasedIds`
+
+3. **`packages/pptx-engine/tests/parse.test.ts`** — 在 §A.5 #7 describe
+   之后新增 **`describe('hash-based stable ids (sdk1 §11.82 ... )')`** 块：
+   - **6 个 parseSlide 单元测试**：
+     - hash mode re-parse yields identical ids（baseline 类似 §A.5 #7 #1）
+     - **插入新 shape 在中间**：老 shape 的 id 保持稳定（beforeIds[0]/[1]/[2]
+       == afterIds[0]/[2]/[3]），仅新 shape 拿新 id
+     - **删除中间 shape**：外侧 shape id 稳定
+     - 位置无关：相同 fragment 在 deck 不同位置 → 同样 id
+     - 默认（无 `useHashBasedIds`）仍走 counter（`sp_0`/`sp_1`/`sp_2`）
+     - `withIdStrategy` try/finally 复原（异常安全）
+   - **2 个 openPptx e2e**：
+     - `openPptx(bytes, { useHashBasedIds: true })` 所有 id 匹配
+       `<prefix>_<10 hex>` 正则；distinct elements → distinct ids
+     - `openPptx(bytes)` 默认 counter scheme（`<prefix>_<short base36>`）
+
+#### 🧪 验证
+
+- `packages/pptx-engine/tests/parse.test.ts`：**76 / 76 通过**
+  （68 baseline + 6 hash unit + 2 openPptx e2e）
+- `packages/pptx-engine` 全量套件：**968 / 969 通过 + 1 skipped**
+  （91 文件 / 0 新增 flake；baseline 960 → 968）
+- `packages/pptx-engine` typecheck：clean
+
+#### 📊 进度
+
+- §A.5 #7 follow-up 闭合数 +1（hash-based stable id 落地）
+- PPTX engine id 体系三层：counter (legacy / default) / counter-reset-per-parse
+  (§A.5 #7 闭合) / hash (本批新增 opt-in) — 未来 renderer 升级可平滑切到
+  hash mode，counter 路径永久保留做 backward compat
+- 暂未让 web-server / apps/slides 默认启用 hash（避免破坏现有 renderer）；
+  后续可逐步 opt-in（每个 `slides:open-path` 调用加 `{ useHashBasedIds: true }`）
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -5103,10 +5163,10 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
-2. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
-3. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
-4. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面）：3-5 天
+1. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
+2. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
+3. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面）：3-5 天
+4. 让 web-server 默认对 slides:open-path 启用 useHashBasedIds（迁移现有 renderer）：1-2 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

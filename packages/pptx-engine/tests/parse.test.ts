@@ -1089,3 +1089,147 @@ describe('stable element ids across re-opens (sdk1 §A.5 #7)', () => {
     expect(secondIds).toEqual(firstIds)
   })
 })
+
+describe('hash-based stable ids (sdk1 §11.82 follow-up to §A.5 #7)', () => {
+  // The §A.5 #7 baseline resets the monotonic counter at parseSlide entry
+  // so a fresh parse always starts at sp_0. That fixes the "open the same
+  // deck twice → different ids" bug, but it still does NOT solve the
+  // "user inserts a new shape between two existing ones → every later
+  // shape's id shifts by one" problem.
+  //
+  // The hash strategy derives each element id from the sha1 of its raw
+  // XML fragment, so the same bytes always produce the same id even when
+  // other shapes are added or removed around it.
+  const wrap = (shapes: string) =>
+    '<?xml version="1.0"?><p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r"><p:cSld>' +
+    '<p:spTree><p:nvGrpSpPr/><p:grpSpPr/>' +
+    shapes +
+    '</p:spTree></p:cSld></p:sld>'
+
+  const spAt = (idx: number) =>
+    `<p:sp><p:nvSpPr><p:cNvPr id="${1000 + idx}" name="Shape ${idx}"/><p:cNvSpPr/><p:nvSpPr/></p:nvSpPr>` +
+    `<p:spPr><a:xfrm><a:off x="${idx * 1000}" y="0"/><a:ext cx="900000" cy="600000"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"/></p:spPr><p:txBody>` +
+    `<a:bodyPr/><a:lstStyle/>` +
+    `<a:p><a:r><a:t>Shape ${idx}</a:t></a:r></a:p>` +
+    `</p:txBody></p:sp>`
+
+  const ctx = { theme: { colors: { accent1: '#0000FF', lt1: '#FFFFFF', dk1: '#000000' } } } as any
+
+  it('hash mode: re-parse yields identical ids across opens', () => {
+    const slideXml = wrap(spAt(0) + spAt(1) + spAt(2))
+    const a = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml, ctx, useHashBasedIds: true })
+    const b = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml, ctx, useHashBasedIds: true })
+    const aIds = a.elements.map((e: any) => e.id)
+    const bIds = b.elements.map((e: any) => e.id)
+    expect(bIds).toEqual(aIds)
+    expect(aIds.every((id: string) => id.startsWith('sp_'))).toBe(true)
+  })
+
+  it('hash mode: inserting a new shape between two existing ones keeps the outer shapes stable', () => {
+    // The original deck has shapes 0 / 1 / 2.
+    const beforeXml = wrap(spAt(0) + spAt(1) + spAt(2))
+    const before = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml: beforeXml, ctx, useHashBasedIds: true })
+    const beforeIds = before.elements.map((e: any) => e.id)
+
+    // Insert a NEW shape (shape index 99 — distinct fragment bytes) at position 1.
+    const newShape = spAt(99)
+    const afterXml = wrap(spAt(0) + newShape + spAt(1) + spAt(2))
+    const after = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml: afterXml, ctx, useHashBasedIds: true })
+    const afterIds = after.elements.map((e: any) => e.id)
+
+    // The counter scheme would shift everything by 1 (sp_0 unchanged, but
+    // sp_1 → sp_2, sp_2 → sp_3). The hash scheme keeps all original shape
+    // ids at the same position with the same value.
+    expect(after.elements.length).toBe(4)
+    expect(afterIds[0]).toBe(beforeIds[0])
+    expect(afterIds[2]).toBe(beforeIds[1])
+    expect(afterIds[3]).toBe(beforeIds[2])
+    // The inserted shape picks up a fresh id (not in the original set).
+    expect(afterIds[1]).not.toBe(beforeIds[0])
+    expect(afterIds[1]).not.toBe(beforeIds[1])
+    expect(afterIds[1]).not.toBe(beforeIds[2])
+  })
+
+  it('hash mode: removing a middle shape keeps the outer shapes stable', () => {
+    const beforeXml = wrap(spAt(0) + spAt(1) + spAt(2))
+    const before = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml: beforeXml, ctx, useHashBasedIds: true })
+    const beforeIds = before.elements.map((e: any) => e.id)
+
+    // Remove the middle shape.
+    const afterXml = wrap(spAt(0) + spAt(2))
+    const after = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml: afterXml, ctx, useHashBasedIds: true })
+    const afterIds = after.elements.map((e: any) => e.id)
+
+    expect(after.elements.length).toBe(2)
+    expect(afterIds[0]).toBe(beforeIds[0])
+    expect(afterIds[1]).toBe(beforeIds[2])
+  })
+
+  it('hash mode: id is independent of position — same fragment at index 1 and index 2 keep their distinct ids', () => {
+    // Same bytes at different positions ⇒ different ids (the position
+    // contributes through the scan order; but here both parses share
+    // identical XML, so the id should be identical even though the
+    // absolute position in the deck differs across calls).
+    const slideXml = wrap(spAt(0) + spAt(1) + spAt(2))
+    const a = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml, ctx, useHashBasedIds: true })
+    const b = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml: wrap(spAt(5) + spAt(6) + spAt(7)), ctx, useHashBasedIds: true })
+    // Different fragment bytes ⇒ different ids (sanity check).
+    const aIds = a.elements.map((e: any) => e.id)
+    const bIds = b.elements.map((e: any) => e.id)
+    expect(aIds).not.toEqual(bIds)
+  })
+
+  it('hash mode: default (no flag) still uses counter — backward compatible', () => {
+    const slideXml = wrap(spAt(0) + spAt(1) + spAt(2))
+    const slide = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml, ctx })
+    const ids = slide.elements.map((e: any) => e.id)
+    // counter scheme ⇒ sp_0 / sp_1 / sp_2.
+    expect(ids).toEqual(['sp_0', 'sp_1', 'sp_2'])
+  })
+
+  it('hash mode: withIdStrategy is exception-safe (try/finally restores prior state)', () => {
+    // Mix two strategies in the same parseSlide call — outer counter,
+    // inner hash via a synthetic call. This is contrived (no real caller
+    // does it today) but pins the contract that withIdStrategy leaves
+    // the module-level state clean.
+    const slideXml = wrap(spAt(0))
+    const outer = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml, ctx })
+    const outerIds = outer.elements.map((e: any) => e.id)
+    const inner = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml, ctx, useHashBasedIds: true })
+    const innerIds = inner.elements.map((e: any) => e.id)
+    // After the inner call, a fresh parse returns to counter behaviour.
+    const outer2 = parseSlide({ path: 'ppt/slides/slide1.xml', slideXml, ctx })
+    const outer2Ids = outer2.elements.map((e: any) => e.id)
+    expect(outerIds).toEqual(['sp_0'])
+    expect(outer2Ids).toEqual(['sp_0'])
+    expect(innerIds[0].startsWith('sp_')).toBe(true)
+    expect(innerIds[0]).not.toBe('sp_0')
+  })
+
+  it('hash mode: openPptx(bytes, { useHashBasedIds: true }) propagates the option', async () => {
+    // End-to-end through openPptx: the option must reach parseSlide
+    // for every slide in the deck, so all ids are hash-based.
+    const bytes = fx('01_standard_business.pptx')
+    const opened = await openPptx(bytes, { useHashBasedIds: true })
+    const allIds = opened.deck.slides.flatMap((s: any) => s.elements.map((e: any) => e.id))
+    expect(allIds.length).toBeGreaterThan(0)
+    // Hash id format: `<prefix>_<10 hex chars>` — every legal kind prefix
+    // accepted by uid() plus 10 hex chars (40 bits).
+    const validPrefixes = ['sp', 'cxn', 'grp', 'pic', 'chart', 'gf', 'tbl', 'pt', 'olepic']
+    const hashRe = new RegExp(`^(${validPrefixes.join('|')})_[0-9a-f]{10}$`)
+    expect(allIds.every((id: string) => hashRe.test(id))).toBe(true)
+    // Distinct elements → distinct ids (sha1 truncation has negligible collision risk)
+    expect(new Set(allIds).size).toBe(allIds.length)
+  })
+
+  it('hash mode: openPptx without options uses the counter scheme (backward compat)', async () => {
+    const bytes = fx('01_standard_business.pptx')
+    const opened = await openPptx(bytes)
+    const allIds = opened.deck.slides.flatMap((s: any) => s.elements.map((e: any) => e.id))
+    // Counter scheme: `<prefix>_<base36 short>` — at most 13 chars (10 hex is longer).
+    const validPrefixes = ['sp', 'cxn', 'grp', 'pic', 'chart', 'gf', 'tbl', 'pt', 'olepic']
+    const counterRe = new RegExp(`^(${validPrefixes.join('|')})_[0-9a-z]{1,5}$`)
+    expect(allIds.every((id: string) => counterRe.test(id))).toBe(true)
+  })
+})

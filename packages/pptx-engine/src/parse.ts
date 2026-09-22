@@ -160,11 +160,71 @@ export interface SlideParseInput {
   layoutPath?: string
   masterPath?: string
   ctx: ParseContext
+  /**
+   * sdk1 §11.82 — opt in to content-hash-based stable element ids.
+   * Default (false / unset) keeps the original monotonic counter
+   * scheme (sdk1 §A.5 #7 baseline). Set to true to derive each
+   * top-level element id from a sha1 of its raw XML fragment, so
+   * the same element bytes always produce the same id even when
+   * other shapes are added or removed around it. The hash is
+   * truncated to 10 hex chars (40 bits) and prefixed with the
+   * original kind tag (sp_, cxn_, grp_, pic_, chart_, gf_, tbl_,
+   * pt_, olepic_) so existing IPC contracts that check for a
+   * string-prefix match continue to work.
+   */
+  useHashBasedIds?: boolean
 }
 
 let uidCounter = 0
+/**
+ * Module-level id-strategy switch (sdk1 §11.82 follow-up to §A.5 #7).
+ *
+ * `'counter'` — the original monotonic id scheme. The counter resets
+ *   at the top of every `parseSlide()` so a fresh parse always starts
+ *   at `sp_0`. Same bytes ⇒ same ids, as long as nothing inside the
+ *   deck shifts position.
+ *
+ * `'hash'` — content-stable ids. `uid()` hashes the current fragment
+ *   bytes plus the prefix and returns `prefix_<10 hex chars>`. The
+ *   fragment comes from the parse caller via `setIdStrategy(..., fragment)`;
+ *   when no fragment is set, hash mode falls back to the counter
+ *   (defensive — never produce two ids in the same parse that share
+ *   a hash because of an unset fragment).
+ *
+ * The strategy is set per top-level element via `withIdStrategy(...)`
+ * so a parse can mix strategies, but the public API is just
+ * `parseSlide({ useHashBasedIds: true })`.
+ */
+let idStrategy: 'counter' | 'hash' = 'counter'
+let currentFragment = ''
+
 function uid(prefix: string): string {
+  if (idStrategy === 'hash' && currentFragment) {
+    // sha1 is overkill for 10 hex chars but already in the stdlib.
+    // Truncated to 10 hex = 40 bits, ample for a single-deck
+    // collision space (one in a trillion for 1M elements).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createHash } = require('node:crypto') as typeof import('node:crypto')
+    const hash = createHash('sha1').update(`${prefix}\u0000${currentFragment}`).digest('hex').slice(0, 10)
+    return `${prefix}_${hash}`
+  }
   return `${prefix}_${(uidCounter++).toString(36)}`
+}
+
+/**
+ * Run `fn` with the module-level id strategy set to `'hash'` and the
+ * fragment bytes used as the hash input. Restores the prior strategy
+ * on exit (try/finally) so nested calls are safe.
+ */
+function withIdStrategy<T>(strategy: 'counter' | 'hash', fragment: string, fn: () => T): T {
+  const prevStrategy = idStrategy
+  const prevFragment = currentFragment
+  idStrategy = strategy
+  currentFragment = fragment
+  try { return fn() } finally {
+    idStrategy = prevStrategy
+    currentFragment = prevFragment
+  }
 }
 
 export function parseSlide(input: SlideParseInput): Slide {
@@ -180,6 +240,7 @@ export function parseSlide(input: SlideParseInput): Slide {
   const scan = scanSlide(slideXml)
 
   // Parse each shape's XML fragment with fast-xml-parser (independent parses, naturally aligned with scan order)
+  const strategy: 'counter' | 'hash' = input.useHashBasedIds ? 'hash' : 'counter'
   const elements: SlideElement[] = []
   scan.elements.forEach((sp, idx) => {
     const fragXml = slideXml.slice(sp.start, sp.end)
@@ -189,7 +250,7 @@ export function parseSlide(input: SlideParseInput): Slide {
       range: [sp.start, sp.end],
       ...(sp.gapAfter ? { gapAfter: sp.gapAfter } : {}),
     }
-    const el = parseShapeFragment(sp, fragXml, anchor, ctx)
+    const el = withIdStrategy(strategy, fragXml, () => parseShapeFragment(sp, fragXml, anchor, ctx))
     if (el) elements.push(el)
   })
 

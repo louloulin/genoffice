@@ -323,7 +323,7 @@ export interface OpenedPptx {
 }
 
 /** Parse one slide from the archive (assembling the inheritance-chain ctx); shared by openPptx and duplicateSlide. */
-function parseSlideFromArchive(archive: PackageArchive, slidePath: string): Slide | null {
+function parseSlideFromArchive(archive: PackageArchive, slidePath: string, options: OpenPptxOptions = {}): Slide | null {
   const slideXml = archive.readText(slidePath)
   if (slideXml == null) return null
 
@@ -476,6 +476,7 @@ function parseSlideFromArchive(archive: PackageArchive, slidePath: string): Slid
     layoutPath: chain.layoutPath,
     masterPath: chain.masterPath,
     ctx,
+    ...(options.useHashBasedIds ? { useHashBasedIds: true } : {}),
   })
 
   // master/layout decoration layer (logos/color bars + enabled footer/slide number/date), read-only render
@@ -617,13 +618,25 @@ function buildDecorations(
   return out
 }
 
-export async function openPptx(bytes: Uint8Array): Promise<OpenedPptx> {
+export interface OpenPptxOptions {
+  /**
+   * sdk1 §11.82 — opt in to content-hash-based stable element ids.
+   * Default (false / unset) keeps the original monotonic counter
+   * scheme. Set to true to derive each element id from a sha1 of its
+   * raw XML fragment, so the same element bytes always produce the
+   * same id even when other shapes are added or removed around it.
+   * Forwarded to `parseSlide({ useHashBasedIds })` for each slide.
+   */
+  useHashBasedIds?: boolean
+}
+
+export async function openPptx(bytes: Uint8Array, options: OpenPptxOptions = {}): Promise<OpenedPptx> {
   const archive = await PackageArchive.open(bytes)
   const { size, slidePaths } = archive.readPresentation()
 
   const slides: Slide[] = []
   for (const slidePath of slidePaths) {
-    const slide = parseSlideFromArchive(archive, slidePath)
+    const slide = parseSlideFromArchive(archive, slidePath, options)
     if (slide) slides.push(slide)
   }
 
