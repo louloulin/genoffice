@@ -177,7 +177,44 @@ editor.on('ready', async () => {
 
 | `<script src=…>` | 没有构建管线（CMS / 无打包工具的老项目）。 |
 
+## 多实例（Kestrel M1）
+
+> SDK 2.0 Kestrel 第 1 个里程碑在 `release0919` 落地。详见 `sdk1.md` §B.5.1 #1 / §A.5 #38。
+
+两个改动让单页挂多个编辑器变得很简单：
+
+```ts
+// 每个编辑器拿到稳定的 instanceId。host 代码任何地方都能查，
+// 不必把 EditorHandle 透传过 props。
+const editorA = createEditor({ container: '#left',  documentId: 'doc-1', jwt, host, instanceId: 'split-left' })
+const editorB = createEditor({ container: '#right', documentId: 'doc-2', jwt, host, instanceId: 'split-right' })
+
+// host 代码任何位置：
+import { getEditor, listEditors } from '@genoffice/web-sdk'
+
+getEditor('split-left').command('setTheme', { theme: 'dark' })
+listEditors() // [editorA, editorB] 按创建顺序
+```
+
+三条契约：
+
+- **`instanceId` 始终存在**于 `EditorHandle`。不传则 SDK 自动 mint `ed_<base64url>` 格式 id；传字符串则固定。两次 `createEditor()` 用同一 id 会抛带 remediation 的错误 —— 先调 `getEditor(id).destroy()`。
+- **`<iframe name>` = `genoffice-{instanceId}`**，postMessage `event.source` 匹配有强 anchor（不再仅依赖 window 等同性）。
+- **`destroy()` 自动从 registry 摘除** —— `getEditor(id)` 之后返 `undefined`。
+
+三个新命令（renderer 端落地是 renderer-team 工作，SDK 双向协议已就绪）：
+
+```ts
+await editor.command('undo')                                  // 撤销上一次编辑
+await editor.command('redo')                                  // 重做
+const { length, current } = await editor.command('getUndoStack') // {length: number, current: number}
+```
+
+不支持撤销的编辑器（例如 read-only 模式）以 `{ code: 'UNSUPPORTED' }` 拒绝。
+
 ## 类型化 API
+
+
 
 | 事件 | 触发时机 |
 |---|---|

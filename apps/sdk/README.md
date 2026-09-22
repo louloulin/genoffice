@@ -176,7 +176,44 @@ editor.on('ready', async () => {
 
 Use either `verifyEmbedNonce()` or `verifyEmbedSession()` — they're aliases over the same `POST /api/v1/embed/verify-nonce` endpoint. Pick the one that reads better at your call site.
 
+## Multi-instance (Kestrel M1)
+
+> SDK 2.0 Kestrel milestone 1 landed in `release0919`. See `sdk1.md` §B.5.1 #1 / §A.5 #38.
+
+Two changes that make mounting more than one editor on a single page trivial:
+
+```ts
+// Each editor gets a stable per-instance id. Look it up from anywhere
+// in the host code without threading the EditorHandle through props.
+const editorA = createEditor({ container: '#left',  documentId: 'doc-1', jwt, host, instanceId: 'split-left' })
+const editorB = createEditor({ container: '#right', documentId: 'doc-2', jwt, host, instanceId: 'split-right' })
+
+// Anywhere in the host code:
+import { getEditor, listEditors } from '@genoffice/web-sdk'
+
+getEditor('split-left').command('setTheme', { theme: 'dark' })
+listEditors() // [editorA, editorB] in insertion order
+```
+
+Three contract pins:
+
+- **`instanceId` is always present** on `EditorHandle`. Omit the option to let the SDK auto-mint a `ed_<base64url>` id; pass a string to pin it. Two `createEditor()` calls with the same id throw a remediation error — call `getEditor(id).destroy()` first.
+- **`<iframe name>` is `genoffice-{instanceId}`** so postMessage `event.source` matching has a strong anchor (not just window equality).
+- **`destroy()` removes from the registry** — `getEditor(id)` returns `undefined` afterward.
+
+Three new commands (renderer-side wiring is renderer-team work; SDK round-trip is ready):
+
+```ts
+await editor.command('undo')                                  // roll back last edit
+await editor.command('redo')                                  // redo last undone edit
+const { length, current } = await editor.command('getUndoStack') // {length: number, current: number}
+```
+
+Editors that don't support undo (e.g. read-only mode) reject with `{ code: 'UNSUPPORTED' }`.
+
 ## Typed Surface
+
+
 
 | Event | Fires when |
 |---|---|
