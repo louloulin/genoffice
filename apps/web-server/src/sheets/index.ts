@@ -35,7 +35,6 @@ import {
 } from './registry'
 import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
 import { csvToXlsxBuffer, decodeCsvBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
-import { InvalidArgumentError, NotFoundError } from '../ai/errors'
 import {
   WorkbookCorruptError,
   WorkbookInvalidArgumentError,
@@ -356,7 +355,7 @@ export function registerSheetsHandlers(): void {
       if (!existsSync(path)) {
         // A caller-supplied path that does not exist is a 404, not a server
         // fault: the renderer shows "file moved or deleted" for this case.
-        throw new NotFoundError(
+        throw new WorkbookNotFoundError(
           'workbook:open-for-merge',
           `Merge source not found: ${String(path)}`,
         )
@@ -384,10 +383,10 @@ export function registerSheetsHandlers(): void {
   //     `modified: true`, matching docs/markdown behaviour.
   //   - A renderer that never opened a workbook (calls `workbook:save`
   //     with an unknown sessionId) gets a structured `WorkbookNotFoundError`
-//     from `./errors`. The generic `NotFoundError` import is still kept
-//     for non-workbook channels (`workbook:open-for-merge` is the only
-//     remaining caller as of §11.61).
-  //     instead of the previous silently-accepted `{ok: false}`.
+  //     from `./errors` instead of the previous silently-accepted
+  //     `{ok: false}`. Every workbook:* throwable is now routed through the
+  //     workbook-specific error module so HTTP status mapping and renderer
+  //     payloads are uniform (sdk1 §11.65 — full workbook unification).
 
   type WorkbookFormat = 'xlsx' | 'xlsm' | 'csv' | 'xls'
 

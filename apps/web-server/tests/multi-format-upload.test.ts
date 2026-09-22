@@ -206,6 +206,15 @@ describe.skipIf(!haveBundle)('multi-format upload + open', () => {
        * text, not a zip, so the channel correctly refuses the wrong
        * extension. Real uploads of real files never hit this. */
       'MAGIC_MISMATCH',
+      /* Workbook-specific codes (sdk1 §11.59) — `workbook:open-path` on
+       * stub bytes now throws `WorkbookCorruptError` (WORKBOOK_CORRUPT)
+       * instead of the generic CORRUPT. Adding the full namespace so the
+       * contract assertion stays robust against future channel additions. */
+      'WORKBOOK_NOT_FOUND',
+      'WORKBOOK_CORRUPT',
+      'WORKBOOK_OPEN_FAILED',
+      'WORKBOOK_SAVE_FAILED',
+      'WORKBOOK_INVALID_ARGUMENT',
     ])
     const failures: string[] = []
     for (const c of CASES) {

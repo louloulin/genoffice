@@ -4190,6 +4190,52 @@ cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
   - slides（live-model path — slides 有自己的 deck，dirty 来自 deck）
   - pdf（live-model path — pdf 有自己的 state）
 
+### 11.65 · Workbook 错误码统一收口（最后两处 + 测试同步）
+
+> 续 §11.59 + §11.61。workbook 通道的所有 throwable 已统一走
+> `apps/web-server/src/sheets/errors.ts` 的 `WorkbookError` 体系，本轮
+> 闭合 3 项收口工作。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/sheets/index.ts`**：
+   - 第 359 行 `workbook:open-for-merge` 的"merge 源不存在"分支
+     `throw new NotFoundError(...)` → `throw new WorkbookNotFoundError(...)`。
+     与 §11.59 引入的 workbook-specific `WORKBOOK_NOT_FOUND` 码对齐。
+   - 380 行附近过时注释（"`NotFoundError` import 仍被
+     `workbook:open-for-merge` 保留"）已替换为"全部 throwable 走
+     `./errors` 统一收口（§11.65）"的描述。
+   - 顶部 `import { InvalidArgumentError, NotFoundError } from '../ai/errors'`
+     删除——workbook 通道不再引用裸错误类，TS strict 编译通过。
+
+2. **`apps/web-server/tests/multi-format-upload.test.ts`**：
+   - 第 200 行附近 `knownErrorCodes` 集合新增 5 个 `WORKBOOK_*` 码：
+     `WORKBOOK_NOT_FOUND` / `WORKBOOK_CORRUPT` / `WORKBOOK_OPEN_FAILED`
+     / `WORKBOOK_SAVE_FAILED` / `WORKBOOK_INVALID_ARGUMENT`。
+   - `workbook:open-path` 解析 stub 字节时抛 `WorkbookCorruptError`
+     → IPC envelope `code: WORKBOOK_CORRUPT`，此前因不在白名单而失败的
+     "every editor channel is registered for the matching fixture"
+     测试重新通过。
+
+#### 🧪 验证
+
+- `apps/web-server` typecheck：clean（无 `git apply` 错误，排除已知的
+  `packages/{pptx-ops,xlsx-gateway}` 9 处历史错误后）
+- `tests/workbook-save-e2e.test.ts` + `tests/workbook-error-codes.test.ts`：
+  **36 / 36 通过**（19 + 17）
+- `tests/multi-format-upload.test.ts`：**3 / 3 通过**（新增 WORKBOOK_*
+  白名单后）
+- 全量 web-server 套件：**900 / 902 通过**（1 个 known flake ·
+  `translate-bucket-isolation-e2e` LLM-dependent；与本次改动无关）
+
+#### 📊 进度
+
+- §11.59 + §11.61 + §11.65 三轮已闭合 workbook:* 通道全部 throwable
+  路由至 `./errors`，HTTP 状态映射走 `ai/errors.ts:ipcErrorStatus()`
+  共享 404 / 422 / 400 / 500 语义
+- 与 docs / markdown / html / pdf 的"应用专属错误码"模式对齐
+- §A.5 backlog 第 1 项（workbook 错误码统一）正式完成
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
