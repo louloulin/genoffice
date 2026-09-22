@@ -3072,6 +3072,10 @@ updateTextBuffer({ text, bytes })             // renderer → host
 
 Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `target` 入参）。`onBufferChange` 在每次 `setContent` / `insertText` / `updateTextBuffer` 后 fire 让 renderer 把 buffer 同步回自己的编辑器。apps/docs/src/renderer/web-bridge.ts 从 `installSdkCommandSink({handlers: defaultSdkCommandHandlers()})` 切到 `installTextBufferSink()`——docs 渲染器的 tiptap 集成（独立 PR）后续调 `updateTextBuffer` + `onBufferChange` 即可。4 个测试覆盖：setContent + listener fire / insertText 光标推进 / updateTextBuffer local-edit / sink dispatch 'getContent' 圆环。
 
+60. **`sdk-command-text-buffer-roundtrip-e2e.test.ts` 5/5 修复 · 真端到端证明 §11.36.5 round-trip**（✅）：上一会话留下的 e2e 5/5 失败，三处 bug 同时踩坑——① `evalBridgeWithSink(opts?: {...})` 声明 optional 但 body 调 `opts.bufferText` 直接解引用，两个不传 opts 的 case (`setLang with no adapter` + `envelope version mismatch is dropped`) 在 bridge 跑前就 throw `Cannot read properties of undefined`；② `installTextBufferSink` 走 `Promise.resolve(sink(name, args)).then(replyCommand)`，bridge 的 `parent.postMessage` 是 microtask 不是同步的，断言 `lastReply` 立刻在 `deliver` 后必拿 null；③ SDK `insertText` 语义是"在当前 cursor 插入"，fresh buffer `cursor:0` + `insertAt(0, 'bar')` 在 `text:'foo'` 上得 `'barfoo'`，测试期望的 `'foobar'` 与 SDK 契约不符。修：① `o = opts ?? {}` + `o.cursor` 透传；② `await flush()`（10 个 `Promise.resolve()` tick）在每个 `deliver` 之后；③ `cursor: 'foo'.length` 让 `insertAt` 落到末尾。**Bridge ↔ renderer text-buffer 路径从此端到端有真凭据**（之前仅有 embed-bridge-renderer-sink-e2e.test.ts 的 `setTheme` 单点 + 此处的 source-only evidence）。
+
+61. **`SdkLiveModelAdapter.mountSidebar / postToSidebar` · §11.36.5 第二批补全**（✅）：§11.36.5 列了 7 个需 live editor 模型的命令，前一轮（#58）接通 5 个：`setContent` / `getContent` / `insertText` / `setTheme` / `setLang`。本轮把剩下的 2 个——`mountSidebar({panel, html?|url?})` + `postToSidebar({panel, message})`——也加进 adapter：`SdkLiveModelAdapter` 加两个 optional 方法 + 新 `SidebarPanelNotMountedError` (code `SIDEBAR_PANEL_NOT_MOUNTED`) 给 postToSidebar 在 panel 未挂载时抛（保持现有 `err.code` 在 wire 上 verbatim 的契约）。`mountSidebar` 校验 `html`/`url` 二选一（两者都给或都不给都 throw）。每个 app 仍只需在 `installLiveModelSink({adapter: {...}})` 一次性声明——apps/docs|sheets|slides|pdf|markdown|html/src/renderer/web-bridge.ts 当前用 `installTextBufferSink()`，文本命令面有 setContent|getContent|insertText，sidebar 命令面默认返 `UNSUPPORTED`，等 app 自带 sidebar 壳（`SidebarTaskPane）`上线时即可 `installLiveModelSink({adapter: {mountSidebar, postToSidebar, ...}})` 一行接入。**§11.36.5 的"命令面偏窄"项收口**——SDK 2.0 Kestrel iframe 表面从 5 命令扩到 7 命令，与 host SDK 的 7 个 `EditorCommands` adapter-bound 子集对齐。5 个新测试覆盖：html + url 各一种 ok / html+url 都缺 or 都给 or panel 缺 都 throw / postToSidebar 返回 `{panel, delivered:true}` 且 forward message / `SidebarPanelNotMountedError.code === 'SIDEBAR_PANEL_NOT_MOUNTED'` / adapter 不挂 sidebar 方法时 command 落到 `UnsupportedCommandError`。
+
 #### ⚠️ 仍未做 / 已知缺陷
 
 - **CRDT/OT 协作（M4 backlog）**：单人模式通；collab:* 通道骨架有，但多人同时写编辑合并 peer 未实装。
@@ -3088,7 +3092,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
-| ipc-bridge | 1 | 60 | ✅ |
+| ipc-bridge | 5 | 97 | ✅ |
 | file-parse | 1 | 38 | ✅ |
 | file-management | 1 | 219 | ✅ |
 | pptx-engine | 1 | 957 | ✅ |
@@ -3102,7 +3106,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **191** | **4548** | ✅ |
+| **总计** | **194** | **4607** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
