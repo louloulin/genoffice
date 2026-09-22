@@ -249,6 +249,79 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     expect(() => rt.mount({ panelUrl: '/c' })).toThrow(/disposed/)
   })
 
+  it('outboundToHost:true mirrors inbound messages as sidebarMessage EditorEvent envelopes to window.parent', () => {
+    const posted: FakeIframe[] = []
+    const { host } = makeHost()
+    const parentPosts: Array<{ data: unknown; origin: string }> = []
+    const outboundTarget = {
+      postMessage(data: unknown, origin: string) {
+        parentPosts.push({ data, origin })
+      },
+    }
+    const rt = createSidebarRuntime({
+      host,
+      createIframe: makeIframeFactory({ list: posted }),
+      bindWindow: false,
+      outboundToHost: true,
+      outboundTarget,
+    })
+    const meta = rt.mount({ panelUrl: 'https://plugins.example/x' })
+    rt.handleInboundMessage({
+      data: { v: 'sidebar.v1', panelId: meta.panelId, message: { kind: 'PONG', n: 7 } },
+      origin: 'https://plugins.example',
+    })
+    expect(parentPosts).toEqual([{
+      data: {
+        v: '1.0',
+        dir: 'editor→host',
+        kind: 'event',
+        payload: {
+          name: 'sidebarMessage',
+          payload: { panelId: meta.panelId, message: { kind: 'PONG', n: 7 } },
+        },
+      },
+      origin: '*',
+    }])
+  })
+
+  it('outboundToHost:false (default) does NOT post anything to window.parent', () => {
+    const posted: FakeIframe[] = []
+    const { host } = makeHost()
+    const parentPosts: Array<unknown> = []
+    const outboundTarget = {
+      postMessage(data: unknown) {
+        parentPosts.push(data)
+      },
+    }
+    const rt = createSidebarRuntime({
+      host,
+      createIframe: makeIframeFactory({ list: posted }),
+      bindWindow: false,
+      outboundTarget,
+    })
+    const meta = rt.mount({ panelUrl: '/x' })
+    rt.handleInboundMessage({
+      data: { v: 'sidebar.v1', panelId: meta.panelId, message: { x: 1 } },
+    })
+    expect(parentPosts).toEqual([])
+  })
+
+  it('outboundToHost:true degrades to no-op when no window.parent is reachable', () => {
+    // No outboundTarget supplied and globalThis.window.parent doesn't exist
+    // (vitest bare node). The runtime must NOT throw at construction —
+    // apps that run outside an iframe have no host to forward to.
+    const posted: FakeIframe[] = []
+    const { host } = makeHost()
+    expect(() =>
+      createSidebarRuntime({
+        host,
+        createIframe: makeIframeFactory({ list: posted }),
+        bindWindow: false,
+        outboundToHost: true,
+      }),
+    ).not.toThrow()
+  })
+
   describe('integration: installLiveModelSink + createSidebarRuntime', () => {
     it('mountSidebar -> {panelId}, unmountSidebar -> void, postToSidebar writes the envelope', async () => {
       const posted: FakeIframe[] = []

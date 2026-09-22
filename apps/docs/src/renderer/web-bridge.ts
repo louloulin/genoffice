@@ -75,6 +75,14 @@ if (!isElectronRuntime()) {
   // DOM cost when no host plugin is mounted.
   installTextBufferSink({
     sidebar: createSidebarRuntime({
+      // Auto-forward inbound panel messages to window.parent as a
+      // sidebarMessage EditorEvent (sdk1.md §B.5.1 #8). Closes the
+      // panel → host half of the round-trip so the host SDK's
+      // `editor.on('sidebarMessage', cb)` fires without an app-side
+      // shim. Degrades to a no-op when there's no parent window
+      // (apps run standalone in the browser tab fall back silently).
+      outboundToHost: true,
+
       // `host` is a real DOM container, but we make it lazy via a getter
       // so the aside is only created the first time `mountSidebar` runs.
       // The runtime reads `options.host` inside mount(), so this getter

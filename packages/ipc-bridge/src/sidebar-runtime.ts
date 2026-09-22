@@ -106,6 +106,26 @@ export interface SidebarRuntimeOptions {
     addEventListener?(evt: 'message', handler: (e: { data: unknown; origin?: string }) => void): void
     removeEventListener?(evt: 'message', handler: (e: { data: unknown; origin?: string }) => void): void
   }
+  /**
+   * Auto-forward inbound panel messages to the host as a
+   * \`sidebarMessage\` EditorEvent (sdk1.md §B.5.1 #8, EditorEvent
+   * union). When true, the runtime subscribes an internal handler
+   * that calls \`window.parent.postMessage({ v:'1.0', dir:'editor→host',
+   * kind:'event', payload:{name:'sidebarMessage', payload:{panelId,
+   * message}} }, '*')\`. Default false — apps that already have a
+   * manual outbound handler (or want to suppress the editor→host
+   * direction) can leave it off. Apps in a non-embed top-level
+   * browser tab have no window.parent to forward to; the runtime
+   * checks \`windowLike.parent\` existence before posting.
+   */
+  outboundToHost?: boolean
+  /**
+   * Target for the outbound postMessage. Defaults to
+   * \`globalThis.window?.parent\`. Injectable for tests.
+   */
+  outboundTarget?: {
+    postMessage?(data: unknown, origin: string): void
+  }
 }
 
 export interface SidebarRuntime {
@@ -304,6 +324,25 @@ export function createSidebarRuntime(options: SidebarRuntimeOptions): SidebarRun
 
   if (options.onInboundMessage) {
     rt.onMessage(options.onInboundMessage)
+  }
+
+  // Outbound editor→host forwarding. When enabled, every dispatch() is also
+  // mirrored to window.parent as a sidebarMessage EditorEvent envelope
+  // so the host SDK's `editor.on('sidebarMessage', cb)` fires — closing
+  // the panel → host half of the round-trip without an app-side shim.
+  if (options.outboundToHost) {
+    const target = options.outboundTarget
+      ?? ((globalThis as unknown as { window?: { parent?: { postMessage?: (data: unknown, origin: string) => void } } }).window?.parent ?? null)
+    if (target && typeof target.postMessage === 'function') {
+      rt.onMessage((panelId, message) => {
+        target.postMessage!({
+          v: '1.0',
+          dir: 'editor→host',
+          kind: 'event',
+          payload: { name: 'sidebarMessage', payload: { panelId, message } },
+        }, '*')
+      })
+    }
   }
 
   return rt

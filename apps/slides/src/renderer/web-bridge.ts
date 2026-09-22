@@ -46,6 +46,14 @@ if (!isElectronRuntime()) {
    * need the live editor model are added here as the renderer wires them. */
   installTextBufferSink({
     sidebar: createSidebarRuntime({
+      // Auto-forward inbound panel messages to window.parent as a
+      // sidebarMessage EditorEvent (sdk1.md §B.5.1 #8). Closes the
+      // panel → host half of the round-trip so the host SDK's
+      // `editor.on('sidebarMessage', cb)` fires without an app-side
+      // shim. Degrades to a no-op when there's no parent window
+      // (apps run standalone in the browser tab fall back silently).
+      outboundToHost: true,
+
       // Lazy body-aside host: zero DOM cost until mountSidebar runs.
       // Each app owns its sidebar chrome via app-specific CSS in
       // apps/{app}/src/renderer/styles.css. The runtime also sets
