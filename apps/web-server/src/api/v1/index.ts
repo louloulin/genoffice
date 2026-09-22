@@ -22,6 +22,7 @@ import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiImage, h
 import { handleKbSearch, handleKbEntries } from './kb'
 import { handleWebhooksUpsert, handleWebhooksDelete, handleCallbacksFire } from './webhooks'
 import { handleHealth, handleChangelog } from './meta'
+import { handleEmbedNonce, handleEmbedVerifyNonce } from './embed-nonce'
 
 export interface ApiV1Context {
   request: IncomingMessage
@@ -81,6 +82,10 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
   if (pathname === '/api/v1/webhooks' && method === 'POST') return handleWebhooksUpsert(ctx)
   if (pathname === '/api/v1/webhooks' && method === 'DELETE') return handleWebhooksDelete(ctx)
   if (pathname === '/api/v1/callbacks' && method === 'POST') return handleCallbacksFire(ctx)
+
+  // embed nonce session (§11.26 — server-side nonce ↔ session binding)
+  if (pathname === '/api/v1/embed/nonce' && method === 'POST') return handleEmbedNonce(ctx)
+  if (pathname === '/api/v1/embed/verify-nonce' && method === 'POST') return handleEmbedVerifyNonce(ctx)
 
   return false
 }

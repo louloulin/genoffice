@@ -1938,6 +1938,47 @@ SDK (host page)                 bash
 - `apps/docs/src/renderer/components/FindPanel.tsx` 的 `focusReplaceNonce` prop 是 docs-internal 命名，未在本轮统一（单独 PR 处理更干净，避免和 §11.25 语义混在一起）
 - 不再需要 `apps/docs/src/renderer/.../App.tsx:5318` 注释里"truthy nonce"表述——已改为 "truthy revision"，但保留了"bugbot"追溯来源
 
+
+### 11.26 本轮续作（v2 第 21 轮 commit，2026-09-22）
+
+关闭 §11.20.5 backlog：服务端 nonce ↔ session 绑定，让 host SDK 可以主动问"server 是否 known 这个 nonce when iframe 加载"。背景见 §B.2 #1 + §11.20 nonce 握手修复——之前 handshake 完全是客户端校验，被 patch SDK / proxy iframe 都能绕过。本轮把 nonce 变成服务端 issue 的实际保存信物。
+
+#### 11.26.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/embed/nonce-store.ts` | **新增 · 156 行**：in-memory `Map<sessionId, NonceSession>`，方法 `mintEmbedNonce(docId, ttlMs?)` + `verifyEmbedNonce(sessionId, nonce)` + `_resetEmbedNonceStore()` + `_embedNonceStoreSize()`。LRU cap 1024 + 5 min 默认 TTL + 30 s 后台 sweeper（`unref()` 不阻塞 process exit）。`sessionId === nonce`（同一 16 字节 base64url 字符串）；server 仅认自己 mint 的 nonce |
+| `apps/web-server/src/api/v1/embed-nonce.ts` | **新增 · 130 行**：`handleEmbedNonce`（`POST /api/v1/embed/nonce`）+ `handleEmbedVerifyNonce`（`POST /api/v1/embed/verify-nonce`）。两者都走 `requireScopeFromHeaders('files:read')` gate；verify 失败返 `200 {valid:false}`（非错误信封，让 SDK 可以直接 branch）|
+| `apps/web-server/src/api/v1/index.ts` | import + 2 行 router dispatch（按 POST + path 精确匹配）|
+| `apps/web-server/tests/embed-nonce-session.test.ts` | **新增 · 334 行 · 13 测试**：mint happy / verify happy / wrong nonce / unknown sessionId / expired session / 401 / 403 / 400 empty docId / 400 zero ttlMs / ttlMs hard cap 1 h / LRU cap 1024 / v1 dispatcher 路由 nonce / v1 dispatcher 路由 verify-nonce |
+
+#### 11.26.2 设计要点
+
+- **client-生成 vs server-生成共存**：保留 §11.20 client-side nonce（host SDK 仍可自己生成 `?nonce=...`，不被强制走新 endpoint）；本轮新增的 server-side nonce 是**可选的 defense-in-depth**，host 想用就调 `/api/v1/embed/nonce`，不想用就维持原状。这避免了 breaking change 给现有集成方
+- **`sessionId === nonce` 简化**：本来可以让两者不同（host 拿到 `{sessionId, nonce}` 分别管理），但单值更易嵌入 iframe URL（host SDK 可以选其一塞进 `?nonce=`）；server 内部用 sessionId 做 lookup key，nonce 一致是因为 server 自己签发的就是同一个值
+- **TTL 1 h hard cap**：防止配置错误客户端拿 24h TTL 占满 LRU（1024 × 1h ≈ 100K sessions/day，是单实例 web-server 的合理上限）
+- **sweeper `unref()`**：30 s interval timer 不应阻止 process 退出（pm2 / docker stop 场景）；测试用 `_resetEmbedNonceStore()` 显式关掉
+- **不在 embed handler 强制 verify**：当前 `/embed/:docId?sessionId=...&nonce=...` 仍把 sessionId 当可选透传（向后兼容）；强制 verify 是 §M（re-center with embed handler）阶段的工作，避免本轮 scope 过大
+- **错误信封 vs valid:false**：verify 失败**不是**错误信封（不用 `401/403`），而是 `200 {valid:false, reason}`。这让 host SDK 可以做 `if (!result.valid) 走降级路径` 而不是 `try/catch`，语义更干净
+
+#### 11.26.3 验证
+
+- `npx vitest run apps/web-server/tests/embed-nonce-session.test.ts`：13/13 通过（1.48 s）
+- 关键路径回归 8 文件 / 65 pass / 1 skip（atomic + files-jwt-revocation + embed-jwt-validation + scope-gate + version-sot + typedoc-count + embed-nonce-roundtrip + embed-nonce-session）
+- live smoke（PORT=32997 + GENOFFICE_JWT_SECRET）：
+  - mint → `200 {sessionId, nonce, expiresAt:1790043694503, ttlMs:300000}` ✓
+  - verify same → `200 {valid:true, expiresAt}` ✓
+  - verify wrong nonce → `200 {valid:false, reason:unknown}` ✓
+  - mint no auth → `401` ✓
+  - mint no scope (`ai:chat` only) → `403` ✓
+  - mint empty docId → `400` ✓
+
+#### 11.26.4 后续观察
+
+- **真正接入 embed handler**（§M）：让 `/embed/:docId` 在 `?sessionId=` 存在时校验 `?nonce=` 与 store 一致，否则 401。这是真正的端到端 defense-in-depth，但会引入新 breaking change，留给 M 阶段
+- **SDK 端 `createEmbedNonce()` helper**：可以加一个 SDK helper `await createEmbedNonce({docId, host, jwt})` 包 mint + buildEmbedUrl 调用，让集成商少写 5 行；本期不做（SDK 端 scope 是 v0.9.x work）
+- **server-side 持久化**：当前 store 是 process-local，restart 后所有 session 失效，host SDK 会看到 `valid:false` 但不影响 graceful degradation；要持久化得引入 Redis，本期不做
+
 ：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -2181,6 +2222,7 @@ SDK (host page)                 bash
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
 25. **renderer-internal `nonce` 字段统一重命名为 `revision`**（✅ 本轮 §11.25）：renderer 里 `nonce: Date.now()` 字段实际是 React re-trigger 计数器（useEffect deps / React key），不是 crypto nonce；与 SDK handshake nonce (`apps/sdk/src/editor.ts`) 同名造成 code review / grep 误判。改名范围严格限定在 renderer-internal React state shape：`packages/ui/src/find-panel.tsx` 的 `FindFocusRequest.nonce` + apps/{docs,html,pdf,slides,markdown}/src/renderer 下的 useState/setState/useEffect/key deps （AiPreset / hoverAnim / anim / morph / findFocus / previewVersion / ribbonTabRequest 8 种 shape）。SDK handshake nonce（`apps/sdk/src/editor.ts`）/ web-bridge nonce（`apps/web-server/src/embed/index.ts`）/ `<iframe>` CSP nonce / docs `FindPanel.focusReplaceNonce` prop 全部不动（向后兼容 / 公共 API）。19 文件 / ~78 处编辑；`grep -rn "nonce" apps/*/src/renderer packages/ui/src` 仅剩法语 `annonce` 一词。
 24. **`CreateEditorOptions` doc typo 修复 + container contract 回归测试**（✅ 本轮 §11.24）：`apps/sdk/src/types.ts` 旧 JSDoc 提到 `containerElement` 字段，但接口里**根本没有**这个字段（早期迭代残留笔误），集成商按字面 join 后会在生产环境遇到 TS 编译报错。修正为"Provide exactly one of `container` or `url`"+ 明确"无 separate containerElement field，直接通过 `container` 传元素"。新增 `apps/sdk/test/container-resolve.test.ts`（6 测试）：source-grep 守门（`containerElement` 只允许出现 1 次在 denial comment）+`createEditor()` no-opts 抛 `options required` +缺 `documentId` / `jwt` / `host` 各抛结构化错误 +Node 环境无 container 抛 `container required when document is not available`。私有 helper `resolveContainer` 通过 public `createEditor` 的 runtime guard 间接验证，避免泄漏内部 API。
 23. **web-server 版本号单一源**（✅ 本轮 §11.23）：`'0.8.0'` 之前硬编码在 5 个文件（`index.ts` boot banner + `/health` / `app-info.ts` / `embed/index.ts` bridge ready payload）。新增 `common/version.ts` 导出 `WEB_SERVER_VERSION` 常量，4 个消费点改 import + 模板字符串插值。新增 5 测试守门：常量 == package.json 版本 / 没有 hardcoded `'0.8.0'`（除 `version.ts` 与 `package.json`）/ boot banner 用 `${...}` / bridge 用 `${...}` / app-info 用 `() => WEB_SERVER_VERSION`。live smoke 验 4 个消费点全报 `0.8.0`。
@@ -2195,7 +2237,7 @@ SDK (host page)                 bash
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot）| 67 | 515 | ✅ |
+| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session）| 68 | 528 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -2214,12 +2256,12 @@ SDK (host page)                 bash
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **177** | **4325** | ✅ |
+| **总计** | **178** | **4338** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 
