@@ -78,6 +78,8 @@ export interface QueryAuditFilters {
   userId?: string
   action?: string
   resource?: string
+  /** Filter to records with `tenantId === filters.tenantId`. Empty string matches the 'default' tenant. */
+  tenantId?: string
   startDate?: number
   endDate?: number
   limit?: number
@@ -205,6 +207,10 @@ export function queryAudit(filters: QueryAuditFilters = {}): {
   if (filters.userId) logs = logs.filter((l) => l.userId === filters.userId)
   if (filters.action) logs = logs.filter((l) => l.action.includes(filters.action!))
   if (filters.resource) logs = logs.filter((l) => l.resource === filters.resource)
+  if (typeof filters.tenantId === 'string') {
+    const want = filters.tenantId === '' ? 'default' : filters.tenantId
+    logs = logs.filter((l) => l.tenantId === want)
+  }
   if (typeof filters.startDate === 'number') {
     logs = logs.filter((l) => l.timestamp >= filters.startDate!)
   }
