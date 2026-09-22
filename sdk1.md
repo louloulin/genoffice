@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  90 文件 / 822 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
+apps/web-server/tests/  →  90 文件 / 833 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -275,7 +275,7 @@ Features: AI, Collab, Files, Projects, AnyDoc
 | Slides 68 个 legacy element 通道返错形状的 `{ok:true}` | ✅（§11.42：全部按契约作答，零字面桩）| — |
 | Slides undo/redo / 元素剪贴板 / AI 快照 | ✅（§11.42：state.ts 快照栈 + batch + 应用级剪贴板）| — |
 | **解析期 element id 不稳定**（`sp_0` / `sp_2` / `sp_4`）| ⚠️ 引擎层约束：同一字节两次 parse 得不同 id，任何 reparse 都会打断 renderer 持有的 id。现以"保活内存模型 + save 不 reparse"绕开；根治需引擎侧发稳定 id（`e_<guid8>` 形式已稳定）| P1（引擎） |
-| Slides 只读 `slides:get-*` 通道（首批 12 个真值化：tier-0 §11.45 三件 + tier-1 §11.46 五件 + tier-2 §11.47 四件）| 🟡→✅ 12/25 已实装（§11.45–§11.47）；余 ~13 仍 M4 backlog | P2（M4）|
+| Slides 只读 `slides:get-*` 通道（首批 15 个真值化：tier-0 §11.45 三件 + tier-1 §11.46 五件 + tier-2 §11.47 四件 + tier-3 §11.48 三件 + 1 文档化）| 🟡→✅ 15/25 已实装（§11.45–§11.48）；余 ~10 仍 M4 backlog | P2（M4）|
 | html: Word 导出（`html2docx`）真实实现 | 需无头浏览器；当前诚实拒绝 | P2（M4+） |
 | docx → pdf 转换（`anydoc:convert`） | 需 LibreOffice / print-to-PDF 服务 | P2（M4+） |
 | 移动端 H5 编辑器 | 缺移动生产力场景 | P1（M4） |
@@ -3169,7 +3169,7 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**90 文件 / 822 通过 / 1 skipped / 0 失败**（exit 0）——
+- `apps/web-server`：**90 文件 / 833 通过 / 1 skipped / 0 失败**（exit 0）——
   本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
@@ -3230,13 +3230,13 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
 失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
 
-**结果**：`apps/web-server` **90 文件 / 822 通过 / 1 skipped / 0 失败** —— 本分支
+**结果**：`apps/web-server` **90 文件 / 833 通过 / 1 skipped / 0 失败** —— 本分支
 首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
 
-- **~25 个只读 `slides:get-*` 通道**（✅ `b0e60d9` + `1759c2b` + `486f749` 闭合前 12 个，余 ~13 个仍 M4 backlog）：`slides:get-comments` / `get-selection` /
-  `slides:get-slide-size` / `get-notes` / `get-render-slides`（§11.45）+ tier-1（§11.46：get-slide-links / get-run-links / get-link / get-animations / get-header-footer）+ tier-2（§11.47：get-comments / get-chart-data / get-sections / get-layouts，共 12 个）已实装。余 ~13 个仍返空骨架，**可达但不改文档**（renderer 用它做面板
+- **~25 个只读 `slides:get-*` 通道**（✅ `b0e60d9` + `1759c2b` + `486f749` + `5ccaeef` 闭合前 15 个，余 ~10 个仍 M4 backlog）：`slides:get-comments` / `get-selection` /
+  `slides:get-slide-size` / `get-notes` / `get-render-slides`（§11.45）+ tier-1（§11.46：get-slide-links / get-run-links / get-link / get-animations / get-header-footer）+ tier-2（§11.47：get-comments / get-chart-data / get-sections / get-layouts）+ tier-3（§11.48：has-slide-clipboard / private-font-faces / private-font-data / cloud-gen-status 文档化，共 15 个）已实装。余 ~10 个仍返空骨架，**可达但不改文档**（renderer 用它做面板
   初值，返空 = "无选中 / 无批注"），要真做需把 live 模型投影成读模型。列入 M4。
 - **引擎侧稳定 id**：解析期 id 不稳定的根治在 pptx-engine，不在 web-server。
 - **CRDT / OT 协作、移动端 H5**：M4 路线图不变。
@@ -3761,6 +3761,107 @@ infrastructure 类（与 live deck 模型不同），按类型分：
 §A.5 "只读 `slides:get-*` 通道" 现标注 ✅ `b0e60d9` + `1759c2b` + `486f749`
 （共 12 个），余 ~13 个仍 M4 backlog；infrastructure 类（~13 个）留 M4
 单独 track。
+
+
+### 11.48 · Slides 只读 `slides:get-*` 通道 tier 3 批次（infrastructure 投影 · 4 个）
+
+> 承接 §11.47.7 把 ~13 个 infrastructure 类 channel 单列：每个都需要自己
+> 的小 projection helper（不是 "live deck → read-model"）。本轮完成 3 个
+> 真值化 + 1 个文档化：`has-slide-clipboard` / `private-font-faces` /
+> `private-font-data` / `cloud-gen-status`（文档化 idle）。剩 ~10 个仍
+> M4 backlog（font-catalog / font-missing / chart-color-schemes / media-data
+> / native-clipboard / private-font-data 仍部分未做 / table-structure /
+> clipboard-external / clipboard-probe / 各类 font 下载与 install 等）。`5ccaeef`。
+
+#### 11.48.1 之前的样子
+
+| 通道 | 之前 | 错误面 |
+|---|---|---|
+| `slides:has-slide-clipboard` | `false` | Paste 菜单永远可点（点完无效果）|
+| `slides:private-font-faces` | `[]` | 字体 picker 看不到 deck 自带的字体 |
+| `slides:private-font-data` | `{}` | 私有字体 sfnt 字节拉不到 |
+| `slides:cloud-gen-status` | `{ status: 'idle' }` | 已 idle（**真实 idle，不是 fake**）|
+
+#### 11.48.2 引擎侧真实来源
+
+| 通道 | 引擎函数 / 数据 |
+|---|---|
+| `has-slide-clipboard` | `getSlidesElementClipboard()` —— §11.42 已经实现的 app-level clipboard |
+| `private-font-faces` | `listEmbeddedFonts(archive)` —— `packages/pptx-engine/src/embedded-fonts.ts:325` 解析 `<p:embeddedFontLst>` |
+| `private-font-data` | `listEmbeddedFonts(archive)` 二次遍历（按 index 取 `face.sfnt`）|
+| `cloud-gen-status` | （无引擎实现；idle 是诚实兜底）|
+
+#### 11.48.3 4 个 handler 改写
+
+| 通道 | 新实现 |
+|---|---|
+| `slides:has-slide-clipboard()` | `getSlidesElementClipboard().length > 0`（5 行）|
+| `slides:private-font-faces()` | `listEmbeddedFonts(opened.archive).map(f => ({ typeface, style }))` —— **不 ship sfnt 字节**（单字 100+ KB，picker 列表只显示 `{ typeface, style }`）|
+| `slides:private-font-data(id)` | 重新走 `listEmbeddedFonts(archive)` 取第 `id` 个 face 的 sfnt 字节；越界返 `null` |
+| `slides:cloud-gen-status()` | 仍 `{ status: 'idle' }`；注释升级解释为何不假装 progress |
+
+#### 11.48.4 不在本轮范围内的 documented stubs（写明原因）
+
+§11.48 同时给以下通道加注释，说明为何保持当前形状：
+
+- `slides:font-catalog` —— 引擎无 theme-font enumeration 模型
+- `slides:font-missing` —— 引擎无 missing-font detector
+- `slides:chart-color-schemes` —— 引擎无 chart palette metadata
+- `slides:table-structure` —— 引擎无 table layout helper
+- `slides:media-data` —— 媒体字节管理，desktop 专属
+- `slides:native-clipboard` —— 系统剪贴板，浏览器环境差异
+- `slides:clipboard-external` / `slides:clipboard-probe` —— desktop clipboard 内容探测
+
+这些留 M4 backlog，需引擎或 host SDK 补充 projection helper。
+
+#### 11.48.5 测试（`apps/web-server/tests/slides-read-model-e2e.test.ts` 新增 describe）
+
+11 个 e2e case：
+
+- **`has-slide-clipboard`（2）**：fresh server → `false`；session-bound
+  后做一次 no-op copy（`sourceIds: ['sp_does_not_exist']` 让
+  `copy-elements` 返 `0`）→ 仍 `false`。**true 路径**需要元素 id 发现
+  （desktop bridge 在 slides-legacy-* 测试里覆盖），web-bridge 路径用
+  同一份 state。
+- **`private-font-faces`（1）**：blank.pptx 无 `<p:embeddedFontLst>` →
+  `[]`。
+- **`private-font-data`（2）**：未知 session → `null`；越界 id → `null`。
+- **`cloud-gen-status`（2）**：fresh → `idle`；session-bound → 仍 `idle`。
+- **documented stubs（4）**：`font-catalog` / `font-missing` /
+  `chart-color-schemes` / `table-structure` 各 1 个空形状断言，列出来
+  让未来 reader 知道"不是回归"。
+
+#### 11.48.6 验证
+
+```
+cd apps/web-server
+./node_modules/.bin/vitest run --config ./vitest.config.ts tests/slides-read-model-e2e.test.ts
+# 42/42 passed（9 §11.45 + 12 §11.46 + 10 §11.47 + 11 §11.48）
+
+./node_modules/.bin/vitest run --config ./vitest.config.ts
+# 833 passed | 1 skipped | 0 failures（91 文件；基线 822 → 833 +11）
+
+../../node_modules/.bin/tsc --noEmit
+# 无新增错误（同 9 个 pre-existing 在 packages/{pptx-ops,xlsx-gateway}）
+```
+
+#### 11.48.7 不在本轮范围内的 ~10 个（M4 backlog）
+
+按 §11.47.7 分类，剩 ~10 个：
+
+- 字体 enumeration 类（`font-catalog` / `font-missing` / `font-download` /
+  `font-install-local`）—— 引擎需补 `theme.fonts` enumeration
+- 媒体 / 剪贴板（`media-data` / `native-clipboard` /
+  `clipboard-external` / `clipboard-probe`）—— 浏览器环境差异大
+- 表格 metadata（`table-structure`）—— 引擎需补 layout helper
+- chart palette（`chart-color-schemes`）—— 引擎需补 chart model palette
+- cloud / font download —— 需要上游服务
+
+#### 11.48.8 收口结果
+
+§A.5 "只读 `slides:get-*` 通道" 现标注 ✅ `b0e60d9` + `1759c2b` +
+`486f749` + `5ccaeef`（共 15 个），余 ~10 个仍 M4 backlog；按"需引擎补充
+projection helper" / "需 host SDK 支持"两类细分。
 
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
@@ -4474,7 +4575,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e**）| 91 | 822 | ✅ |
+| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e**）| 91 | 833 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
