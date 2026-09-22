@@ -721,3 +721,168 @@ describe('IPC dispatcher scope gate — soft scope (sdk1 §11.78)', () => {
     expect(entry?.scope).toBe('soft:admin')
   })
 })
+
+describe('IPC dispatcher scope gate — auth JWT rotation (sdk1 §11.79)', () => {
+  it('auth:revoke-jti requires auth:rotate (hard gate)', async () => {
+    const r = await callIpc('auth:revoke-jti', null, [{ jti: 'test-jti-1' }])
+    expect(r.status).toBe(401)
+    expect(r.body.error?.code).toBe('UNAUTHENTICATED')
+
+    const noScope = await mint('no-rotate', ['auth:read'])
+    const denied = await callIpc('auth:revoke-jti', noScope, [{ jti: 'test-jti-1' }])
+    expect(denied.status).toBe(403)
+    expect(denied.error?.code ?? denied.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('auth:revoke-jti accepts a token with auth:rotate', async () => {
+    const rotator = await mint('rotator', ['auth:rotate'])
+    const r = await callIpc('auth:revoke-jti', rotator, [
+      { jti: 'rotate-test-' + Math.random().toString(36).slice(2), reason: 'rotation-test' },
+    ])
+    expect(r.status).toBe(200)
+    const result = r.body.result ?? r.body
+    expect(result.ok).toBe(true)
+    expect(result.added).toBe(true)
+    expect(result.reason).toBe('rotation-test')
+  })
+
+  it('auth:revoke-jti is idempotent: revoking the same jti twice returns added=false', async () => {
+    const rotator = await mint('rotator-2', ['auth:rotate'])
+    const jti = 'idempotent-' + Math.random().toString(36).slice(2)
+    const first = await callIpc('auth:revoke-jti', rotator, [{ jti }])
+    const second = await callIpc('auth:revoke-jti', rotator, [{ jti }])
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+    expect((first.body.result ?? first.body).added).toBe(true)
+    expect((second.body.result ?? second.body).added).toBe(false)
+  })
+
+  it('auth:revoke-jti rejects empty / non-string jti with INVALID_ARGUMENT', async () => {
+    const rotator = await mint('rotator-3', ['auth:rotate'])
+    const r1 = await callIpc('auth:revoke-jti', rotator, [{ jti: '' }])
+    expect(r1.status).toBe(400)
+    expect(r1.body.error?.code).toBe('INVALID_ARGUMENT')
+  })
+
+  it('auth:list-revoked-jtis requires auth:read (hard gate)', async () => {
+    const r = await callIpc('auth:list-revoked-jtis', null, [])
+    expect(r.status).toBe(401)
+  })
+
+  it('auth:list-revoked-jtis returns the registered jtis in insertion order', async () => {
+    const rotator = await mint('rotator-4', ['auth:rotate'])
+    const tag = 'order-' + Math.random().toString(36).slice(2)
+    const a = tag + '-a'
+    const b = tag + '-b'
+    const c = tag + '-c'
+    await callIpc('auth:revoke-jti', rotator, [{ jti: a }])
+    await callIpc('auth:revoke-jti', rotator, [{ jti: b }])
+    await callIpc('auth:revoke-jti', rotator, [{ jti: c }])
+
+    const reader = await mint('reader', ['auth:read'])
+    const r = await callIpc('auth:list-revoked-jtis', reader, [{ limit: 1000, offset: 0 }])
+    expect(r.status).toBe(200)
+    const result = r.body.result ?? r.body
+    const jtis: string[] = result.jtis
+    expect(jtis).toContain(a)
+    expect(jtis).toContain(b)
+    expect(jtis).toContain(c)
+    // Insertion order: a precedes b precedes c
+    const idx = (x: string) => jtis.indexOf(x)
+    expect(idx(a)).toBeLessThan(idx(b))
+    expect(idx(b)).toBeLessThan(idx(c))
+    expect(result.total).toBeGreaterThanOrEqual(3)
+  })
+
+  it('admin sub bypass: adminToken works on both auth:* channels', async () => {
+    const tag = 'admin-bypass-' + Math.random().toString(36).slice(2)
+    const revoke = await callIpc('auth:revoke-jti', adminToken, [{ jti: tag }])
+    expect(revoke.status).toBe(200)
+    expect((revoke.body.result ?? revoke.body).ok).toBe(true)
+
+    const list = await callIpc('auth:list-revoked-jtis', adminToken, [{ limit: 1000, offset: 0 }])
+    expect(list.status).toBe(200)
+    const result = list.body.result ?? list.body
+    expect(result.jtis).toContain(tag)
+  })
+
+  it('handler registry round-trips auth:* scopes via getHandlerEntry', async () => {
+    const registry = await import('../src/common/registry')
+    const channels = [
+      'test:auth-rotate-' + Math.random().toString(36).slice(2),
+      'test:auth-read-' + Math.random().toString(36).slice(2),
+    ]
+    registry.registerHandle(channels[0], () => ({ ok: true }), { scope: 'auth:rotate' })
+    registry.registerHandle(channels[1], () => ({ ok: true }), { scope: 'auth:read' })
+    expect(registry.getHandlerEntry(channels[0])?.scope).toBe('auth:rotate')
+    expect(registry.getHandlerEntry(channels[1])?.scope).toBe('auth:read')
+  })
+
+  it('revoke-jti rejects auth:read scope with 403 (read cannot rotate)', async () => {
+    const reader = await mint('reader-2', ['auth:read'])
+    const r = await callIpc('auth:revoke-jti', reader, [{ jti: 'x' }])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('list-revoked-jtis accepts auth:* wildcard', async () => {
+    const wildcard = await mint('auth-wild', ['auth:*'])
+    const r = await callIpc('auth:list-revoked-jtis', wildcard, [])
+    expect(r.status).toBe(200)
+  })
+})
+
+describe('IPC dispatcher scope gate — additional sensitive surfaces (sdk1 §11.79)', () => {
+  it('docs:set-password soft scope: no auth → legacy pass-through', async () => {
+    const r = await callIpc('docs:set-password', null, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('docs:set-password soft scope: auth:write JWT → handler runs', async () => {
+    const auth = await mint('auth-writer', ['auth:write'])
+    const r = await callIpc('docs:set-password', auth, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('auth:sso-login soft scope: no auth → legacy pass-through', async () => {
+    const r = await callIpc('auth:sso-login', null, [{ provider: 'google' }])
+    expect(r.status).toBe(200)
+  })
+
+  it('auth:sso-login soft scope: wrong-scope JWT → 403', async () => {
+    const wrong = await mint('wrong-scope', ['files:read'])
+    const r = await callIpc('auth:sso-login', wrong, [{ provider: 'google' }])
+    expect(r.status).toBe(403)
+  })
+
+  it('auth:logout soft scope: no auth → legacy pass-through', async () => {
+    const r = await callIpc('auth:logout', null, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('anydoc:set-config soft scope: no auth → legacy pass-through', async () => {
+    const r = await callIpc('anydoc:set-config', null, [{ ocrEnabled: false }])
+    expect(r.status).toBe(200)
+  })
+
+  it('anydoc:set-config soft scope: admin sub bypass', async () => {
+    const r = await callIpc('anydoc:set-config', adminToken, [{ ocrEnabled: true }])
+    expect(r.status).toBe(200)
+  })
+
+  it('anydoc:set-config soft scope: wrong-scope JWT → 403', async () => {
+    const wrong = await mint('wrong-2', ['files:read'])
+    const r = await callIpc('anydoc:set-config', wrong, [{ ocrEnabled: true }])
+    expect(r.status).toBe(403)
+  })
+
+  it('anydoc:render-preview soft scope: no auth → legacy pass-through (gate skipped)', async () => {
+    // The handler validates its own args (anydoc rejects with INVALID_ARGUMENT
+    // for missing fields). We only need to prove the gate did not pre-empt
+    // the handler — i.e. status is NOT 401/403.
+    const r = await callIpc('anydoc:render-preview', null, [])
+    expect([200, 400]).toContain(r.status)
+    expect(r.status).not.toBe(401)
+    expect(r.status).not.toBe(403)
+  })
+})

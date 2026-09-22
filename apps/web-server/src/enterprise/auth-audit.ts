@@ -25,7 +25,7 @@ export function registerAuthHandlers(): void {
       authUrl: `https://sso.genoffice.ai/authorize?provider=${provider}&redirect_uri=${redirectUri || ''}`,
       state: `state-${Date.now()}`,
     }
-  })
+  }, { scope: 'soft:auth:write' })
 
   registerHandle('auth:sso-callback', async (_event: unknown, args: unknown) => {
     // NOTE (placeholder): a real OIDC implementation must validate `state`
@@ -45,12 +45,12 @@ export function registerAuthHandlers(): void {
         name: 'SSO User',
       },
     }
-  })
+  }, { scope: 'soft:auth:write' })
 
   registerHandle('auth:logout', (_event: unknown) => ({
     ok: true,
     redirectUrl: '/',
-  }))
+  }), { scope: 'soft:auth:write' })
 }
 
 export function registerAuditHandlers(): void {

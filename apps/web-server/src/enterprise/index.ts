@@ -4,6 +4,7 @@
  * the shared registry.
  */
 import { registerAuditHandlers, registerAuthHandlers } from './auth-audit'
+import { registerEnterpriseAuthJwtHandlers } from './auth-jwt'
 import { registerCalendarHandlers, registerMailHandlers } from './communications'
 import { registerEnterprisePermissionHandlers } from './permissions'
 import { registerTenantHandlers, registerUserHandlers } from './users-tenants'
@@ -18,4 +19,5 @@ export function registerEnterpriseHandlers(): void {
   registerAuthHandlers()
   registerAuditHandlers()
   registerEnterprisePermissionHandlers()
+  registerEnterpriseAuthJwtHandlers()
 }

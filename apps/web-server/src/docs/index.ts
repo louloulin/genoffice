@@ -383,7 +383,7 @@ export function registerDocsHandlers(): void {
   registerHandle('docs:set-password', () => ({
     ok: false,
     error: 'WEB_UNSUPPORTED: DOCX password protection requires the desktop renderer',
-  }))
+  }), { scope: 'soft:auth:write' })
 
   registerHandle('docs:ai-generate-image', () => ({
     ok: false,

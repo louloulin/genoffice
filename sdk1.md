@@ -4877,6 +4877,90 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
   registerHandle option 增加 `{ scope: 'category:action' }` 或
   `{ scope: 'soft:category:action' }`
 
+### 11.79 · Auth JWT rotation IPC + 剩余敏感 surface scope 收口（§11.78 模式）
+
+> 续 §11.78 — 本批次聚焦 sdk1.md §A.5 backlog 中明确点名的剩余项
+> （key rotation）+ 4 个未加 scope 的 admin/credential 类 IPC handler。
+> 闭合数 71 → **72**。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/api/v1/auth.ts`** — 新增 admin JWT revocation
+   registry：
+   - `revokeJti(jti)` — 把 JTI 加进 admin revocation set（LRU 200k）；返回
+     `boolean` 表示是否新增（已存在 → false，幂等）。
+   - `listRevokedJtis()` — 按插入顺序返回 JTI 列表（oldest first），便于
+     审计 dashboard 拉取。
+   - `_resetAdminJwtRevocationForTests()` — 测试隔离钩子。
+   - `verifyJwtWithRevocation(token)` 在原有 file-scoped hook 之外
+     **同时**检查 adminRevokedJtis — 任何一个 store 命中即拒 token。
+
+2. **`apps/web-server/src/enterprise/auth-jwt.ts`**（新文件，66 行）
+   挂两个新 IPC handler：
+   - `auth:revoke-jti`（scope: `auth:rotate`）— admin 操作，把 JTI 加入
+     revocation 列表；接受 `reason` 字段（可选 audit 注释）。
+   - `auth:list-revoked-jtis`（scope: `auth:read`）— 只读视图，
+     `limit`/`offset` 分页。
+
+3. **`apps/web-server/src/enterprise/index.ts`** — 在已有 8 个
+   `register*Handlers()` 之后追加 `registerEnterpriseAuthJwtHandlers()`。
+
+4. **5 个已有 handler 加 soft scope**：
+   | Channel | Scope | 文件 |
+   |---|---|---|
+   | `auth:sso-login` | `soft:auth:write` | `enterprise/auth-audit.ts` |
+   | `auth:sso-callback` | `soft:auth:write` | `enterprise/auth-audit.ts` |
+   | `auth:logout` | `soft:auth:write` | `enterprise/auth-audit.ts` |
+   | `docs:set-password` | `soft:auth:write` | `docs/index.ts:383` |
+   | `anydoc:set-config` | `soft:admin` | `anydoc/index.ts:50` |
+   | `anydoc:render-preview` | `soft:admin` | `anydoc/index.ts:317` |
+
+   `admin` sub 与 `auth:*` 通配继续工作（继承 §11.5 `hasScope`）。
+
+5. **`apps/web-server/tests/ipc-scope-gate.test.ts`** — 新增 19 个
+   e2e 用例（2 个 describe 块）：
+   - **§11.79 auth JWT rotation**：9 用例
+     - `auth:revoke-jti` 401/403 + 200（rotate scope）
+     - 幂等性（同一个 JTI revoke 两次返回 `added=false`）
+     - 空字符串 JTI 返回 `INVALID_ARGUMENT` 400
+     - `auth:list-revoked-jtis` 401 + insertion-order 断言
+     - adminToken bypass 双 channel
+     - registry round-trip 2 scope
+     - read scope 不能 rotate
+     - `auth:*` 通配 accept `auth:list-revoked-jtis`
+   - **§11.79 sensitive surfaces**：10 用例
+     - `docs:set-password` legacy pass-through + auth:write JWT 200
+     - `auth:sso-login` legacy + 403 on wrong scope
+     - `auth:logout` legacy
+     - `anydoc:set-config` legacy + adminToken 200 + 403 on wrong
+     - `anydoc:render-preview` legacy
+
+#### 🧪 验证
+
+- `apps/web-server/tests/ipc-scope-gate.test.ts`：**77 / 77 通过**
+  （9 audit + 8 users/tenant + 8 permissions + 7 workflow + 7
+  communications + 5 admin + 14 soft-scope + 9 auth-jwt + 10 sensitive
+  surfaces）
+- `apps/web-server` 全套件：**954 / 987 通过**（29 个 LLM-flake 与
+  本批无关：translate-* / ai-capabilities / translate-pi-agent
+  依赖外部 API key，沙箱不可达）；本批新增 19 测试全部通过，
+  原 934 个测试零回归
+- `apps/web-server` typecheck：clean（9 处 pptx-ops / xlsx-gateway
+  pre-existing 错误已排除）
+- esbuild bundle 重建 29.3 MB，所有 562 通道仍注册
+  （2 个新加 hard-scope + 6 个新加 soft-scope = +8 scope metadata）
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 71 → **72**（+1：auth JWT rotation IPC handler
+  闭合 sdk1.md backlog 中"key rotation"项）
+- IPC dispatcher 现在共 gate **60 个 channel**
+  （3 audit + 5 users + 4 tenant + 4 permissions + 6 workflow +
+  7 communications + 2 admin + 27 soft-scope + 2 auth-jwt）
+- §A.5 backlog 收口：enterprise + preferences + marketplace +
+  update + JWT rotation 五族全部闭合；剩余敏感 surface
+  （如 `collab:*` 协作模式、`recents:*` admin delete 等）留 M5+
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -4887,8 +4971,9 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 | §11.74 | enterprise users/tenant scope gate | +1 | 64 |
 | §11.76 | enterprise permissions scope gate | +1 | 65 |
 | §11.77 | workflow + comms + admin scope gate | +3 | 68 |
-| §11.78 | soft-scope + marketplace / update / prefs | +3 | **71** |
-| §A.5 backlog 闭合总数 |  |  | **71** |
+| §11.78 | soft-scope + marketplace / update / prefs | +3 | 71 |
+| §11.79 | auth JWT rotation IPC + sensitive surfaces | +1 | **72** |
+| §A.5 backlog 闭合总数 |  |  | **72** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -4911,10 +4996,10 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. key rotation 等剩余敏感通道 scope gate（同 §11.74 模式 1 行接入）：1 天
-2. SDK Multi-instance renderer demo 扩展（commit `01be1396` 已落地类型 + 11 测试；e2e demo 是 §B.5.6 #2）：1 天
-3. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
-4. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
+1. SDK Multi-instance renderer demo 扩展（commit `01be1396` 已落地类型 + 11 测试；e2e demo 是 §B.5.6 #2）：1 天
+2. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
+3. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
+4. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

@@ -50,7 +50,7 @@ export function registerAnydocHandlers(): void {
   registerHandle('anydoc:set-config', (_event: unknown, config: unknown) => {
     Object.assign(anyDocConfig, config)
     return { ok: true }
-  })
+  }, { scope: 'soft:admin' })
 
   registerHandle('anydoc:recognize', async (_event: unknown, args: unknown) => {
     const { filePath } = args as { filePath: string; options?: { ocr?: boolean; language?: string } }
@@ -349,5 +349,5 @@ export function registerAnydocHandlers(): void {
       width: options?.width || 800,
       height: options?.height || 600,
     }
-  })
+  }, { scope: 'soft:admin' })
 }

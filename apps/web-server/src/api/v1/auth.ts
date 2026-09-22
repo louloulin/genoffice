@@ -140,6 +140,47 @@ export function isJtiRevoked(jti: string): boolean {
 }
 
 /**
+ * Admin JWT revocation registry (§11.79). Distinct from the file-scoped
+ * single-use JTI revocation that `files.ts` installs via
+ * `setJtiRevocationCheck`: that store auto-revokes each JTI on first
+ * verify (LRU 200k). This registry is the *manual* admin surface —
+ * `auth:revoke-jti` adds a JTI here, `auth:list-revoked-jtis` reads it.
+ * Both stores are honoured by `verifyJwtWithRevocation` so a token whose
+ * JTI is on either list is rejected.
+ *
+ * The registry keeps insertion order so `listRevokedJtis()` returns
+ * a deterministic, oldest-first view. Capacity cap matches the file
+ * revocation store; once exceeded, the oldest entry is evicted to
+ * bound memory.
+ */
+const ADMIN_MAX_REVOCATIONS = 200_000
+const adminRevokedJtis = new Set<string>()
+const adminRevocationOrder: string[] = []
+
+export function revokeJti(jti: string): boolean {
+  if (typeof jti !== 'string' || jti.length === 0) return false
+  if (adminRevokedJtis.has(jti)) return false
+  adminRevokedJtis.add(jti)
+  adminRevocationOrder.push(jti)
+  while (adminRevocationOrder.length > ADMIN_MAX_REVOCATIONS) {
+    const oldest = adminRevocationOrder.shift()
+    if (oldest) adminRevokedJtis.delete(oldest)
+  }
+  return true
+}
+
+export function listRevokedJtis(): string[] {
+  return [...adminRevocationOrder]
+}
+
+/** Test-only reset; mirrors `_resetFileJwtState()` in files.ts. */
+export function _resetAdminJwtRevocationForTests(): void {
+  adminRevokedJtis.clear()
+  adminRevocationOrder.length = 0
+}
+
+
+/**
  * Verify a JWT with the revocation check layered on top of `verifyJwt`.
  * Returns the decoded payload, or null on revocation / signature /
  * expiry failures. Use this entrypoint from any handler that consumes
@@ -148,7 +189,13 @@ export function isJtiRevoked(jti: string): boolean {
 export function verifyJwtWithRevocation(token: string): JwtPayload | null {
   const payload = verifyJwt(token)
   if (!payload) return null
-  if (payload.jti && jtiRevocationHook(payload.jti)) return null
+  if (payload.jti) {
+    if (jtiRevocationHook(payload.jti)) return null
+    // Admin revocation registry (§11.79): a JTI explicitly revoked via
+    // `auth:revoke-jti` invalidates the token even before the file-scoped
+    // hook fires. The two stores are independent.
+    if (adminRevokedJtis.has(payload.jti)) return null
+  }
   return payload
 }
 
