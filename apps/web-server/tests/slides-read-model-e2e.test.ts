@@ -730,9 +730,295 @@ describe.skipIf(skip)('slides:get-* read-model — tier 3 (sdk1 §11.48)', () =>
     expect(await invoke('slides:chart-color-schemes', [], sessionId)).toEqual([])
   })
 
-  it('table-structure stays {} (engine has no table layout helper; M4 backlog)', async () => {
+  it('table-structure (no table on the slide) returns null (sdk1 §11.49)', async () => {
+    // The blank fixture carries no table, so the engine returns null —
+    // the renderer reads this as "the action refused" and surfaces the
+    // status bar message. The old stub returned {} which the renderer's
+    // `if (r)` guard treated as truthy and pretended to succeed.
     const sessionId = await openDeckAndRememberSession()
-    expect(await invoke('slides:table-structure', [{ slideIndex: 0, sourceId: 'sp_0' }], sessionId)).toEqual({})
+    const r = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: 'sp_0', kind: 'insert-row', index: 0 }],
+      sessionId,
+    )
+    expect(r).toBeNull()
+  })
+
+  it('table-structure (no live session) returns null', async () => {
+    // No session header → setCurrentSlidesPath(event.sessionId) returns
+    // undefined → legacySession is undefined → warnNoSession + return null.
+    const r = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: 'sp_0', kind: 'insert-row', index: 0 }],
+    )
+    expect(r).toBeNull()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// §11.49 — slides:table-structure real implementation
+//
+// Closes the §A.5 backlog entry that pointed at "table-structure is a
+// mutation, returns wrong shape {}". The handler now calls
+// editTableStructure(opened, slideIndex, sourceId, op) on the live
+// deck, marks the session dirty, snapshots for undo, and returns
+// { slide, sourceId } on success / null on refusal.
+//
+// The renderer contract is at apps/slides/src/renderer/table-actions.ts
+// (r.slide + r.sourceId on success, r === null on refusal).
+// ─────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(skip)('slides:table-structure real impl (sdk1 §11.49)', () => {
+  let server: ChildProcess | undefined
+  let base: string
+  let dataDir: string
+  let filesDir: string
+  let pptxPath: string
+
+  beforeAll(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'genoffice-slides-table-structure-e2e-'))
+    filesDir = join(dataDir, 'files')
+    mkdirSync(filesDir, { recursive: true })
+    pptxPath = join(filesDir, 'deck.pptx')
+    copyFileSync(blankTemplate, pptxPath)
+
+    const port = 33000 + Math.floor(Math.random() * 8000)
+    base = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [bundle], {
+      cwd: pkgRoot,
+      env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await pollHealth(base, 15_000)
+  }, 30_000)
+
+  afterAll(async () => {
+    if (server) await stopServer(server)
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  async function openDeckAndRememberSession(): Promise<string> {
+    const sessionId = `ts-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const r = await fetch(`${base}/api/ipc/slides%3Aopen-path`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-ipc-session': sessionId },
+      body: JSON.stringify({ args: [encodeTransportValue(pptxPath)] }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { error?: { code: string } }
+    expect(body.error, JSON.stringify(body)).toBeUndefined()
+    return sessionId
+  }
+
+  async function invoke(channel: string, args: unknown[], sessionId?: string): Promise<unknown> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (sessionId) headers['x-ipc-session'] = sessionId
+    const r = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ args: args.map((a) => encodeTransportValue(a)) }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { result?: unknown }
+    return body.result
+  }
+
+  /** Add a 2x2 table on slide 0 via the dedicated channel; return the new sourceId.
+   *
+   * The renderer's table-actions.ts inserts tables via
+   * `slidesApi.addTable(...)`, which routes through `slides:add-table`
+   * and returns `{ slide, sourceId }` directly (see elements.ts:471
+   * commitCreated). That's the cleanest way to mint a fresh table id
+   * in the test: apply-txn's success shape on the web build is
+   * `{ applied, slides }` — slideSummary, no `records` — so a test
+   * that wants the new element id round-trips through add-table. */
+  async function add2x2Table(sessionId: string): Promise<string> {
+    const r = (await invoke(
+      'slides:add-table',
+      [{
+        slideIndex: 0,
+        rows: 2,
+        cols: 2,
+        xPx: 80,
+        yPx: 80,
+        wPx: 320,
+        hPx: 160,
+      }],
+      sessionId,
+    )) as { slide: { nodes?: Array<{ sourceId: string; type?: string }> }; sourceId: string } | null
+    expect(r, 'slides:add-table returned null (no session? bad args?)').not.toBeNull()
+    expect(typeof r!.sourceId).toBe('string')
+    return r!.sourceId
+  }
+
+
+
+  it('insert-row on a 2x2 table grows rows to 3; delete-down-to-1-then-refuse', async () => {
+    // Verifies the full structural round-trip: insert one row, then
+    // delete down to the last legal row, then confirm a third delete
+    // is refused (engine refuses to leave a table with 0 rows).
+    // After every successful editTableStructure call the engine
+    // re-materialises the slide and hands back a fresh id; we thread
+    // it forward through each step.
+    const sessionId = await openDeckAndRememberSession()
+    let tableId = await add2x2Table(sessionId)
+    // 2 rows → 3 rows.
+    const ins = (await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'insert-row', index: 0 }],
+      sessionId,
+    )) as { slide: unknown; sourceId: string } | null
+    expect(ins).not.toBeNull()
+    expect(typeof ins!.sourceId).toBe('string')
+    expect(ins!.sourceId.length).toBeGreaterThan(0)
+    tableId = ins!.sourceId
+    // 3 rows → 2 rows.
+    const del1 = (await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'delete-row', index: 0 }],
+      sessionId,
+    )) as { sourceId: string } | null
+    expect(del1).not.toBeNull()
+    tableId = del1!.sourceId
+    // 2 rows → 1 row.
+    const del2 = (await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'delete-row', index: 0 }],
+      sessionId,
+    )) as { sourceId: string } | null
+    expect(del2).not.toBeNull()
+    tableId = del2!.sourceId
+    // 1 row → 0 rows is refused.
+    const del3 = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'delete-row', index: 0 }],
+      sessionId,
+    )
+    expect(del3).toBeNull()
+  })
+
+  it('insert-col on a 2x2 table grows cols from 2 to 3', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const tableId = await add2x2Table(sessionId)
+    const r = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'insert-col', index: 0 }],
+      sessionId,
+    )
+    expect(r).not.toBeNull()
+    expect(typeof (r as { sourceId: string }).sourceId).toBe('string')
+    expect((r as { sourceId: string }).sourceId.length).toBeGreaterThan(0)
+  })
+
+  it('delete-row refuses when only 1 row remains', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const tableId = await add2x2Table(sessionId)
+    const firstDel = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'delete-row', index: 0 }],
+      sessionId,
+    )
+    expect(firstDel).not.toBeNull()
+    const newId = (firstDel as { sourceId: string }).sourceId
+    const secondDel = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: newId, kind: 'delete-row', index: 0 }],
+      sessionId,
+    )
+    expect(secondDel).toBeNull()
+  })
+
+  it('delete-col refuses when only 1 col remains', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const tableId = await add2x2Table(sessionId)
+    const firstDel = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'delete-col', index: 0 }],
+      sessionId,
+    )
+    expect(firstDel).not.toBeNull()
+    const newId = (firstDel as { sourceId: string }).sourceId
+    const secondDel = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: newId, kind: 'delete-col', index: 0 }],
+      sessionId,
+    )
+    expect(secondDel).toBeNull()
+  })
+
+  it('insert-row marks the deck dirty and undo restores pre-edit row count', async () => {
+    // Pre-edit: 2 rows. After insert-row: 3 rows. Undo brings it back
+    // to 2 rows. After undo, the original tableId is again the right
+    // target — and one more delete-row takes us from 2 rows down to
+    // 1, the next delete is refused (last-row protected).
+    const sessionId = await openDeckAndRememberSession()
+    const tableId = await add2x2Table(sessionId)
+    const ins = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'insert-row', index: 0 }],
+      sessionId,
+    )
+    expect(ins).not.toBeNull()
+    // The handler marks the deck dirty.
+    const dirty = await invoke('slides:is-dirty', [pptxPath], sessionId)
+    expect(dirty).toBe(true)
+    // Undo restores the pre-edit 2-row state. The handler returns
+    // the post-restore RenderSlide[] array — an array means undo fired.
+    const undo = await invoke('slides:undo', [], sessionId) as unknown[] | null
+    expect(Array.isArray(undo)).toBe(true)
+    // After undo, the original tableId works again (the snapshot
+    // restore re-issues the pre-insert element id). One more
+    // delete-row: 2 rows → 1 row. Then 1 row → 0 is refused.
+    const del1 = (await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: tableId, kind: 'delete-row', index: 0 }],
+      sessionId,
+    )) as { sourceId: string } | null
+    expect(del1).not.toBeNull()
+    const del2 = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: del1!.sourceId, kind: 'delete-row', index: 0 }],
+      sessionId,
+    )
+    expect(del2).toBeNull()
+  })
+
+  it('unknown sourceId returns null (no crash)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const r = await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: 'sp_does_not_exist', kind: 'insert-row', index: 0 }],
+      sessionId,
+    )
+    expect(r).toBeNull()
+  })
+
+  it('bad args return null without crashing', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    // missing kind
+    expect(await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: 'sp_0', index: 0 }],
+      sessionId,
+    )).toBeNull()
+    // missing index
+    expect(await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: 'sp_0', kind: 'insert-row' }],
+      sessionId,
+    )).toBeNull()
+    // bad kind
+    expect(await invoke(
+      'slides:table-structure',
+      [{ slideIndex: 0, sourceId: 'sp_0', kind: 'merge-up', index: 0 }],
+      sessionId,
+    )).toBeNull()
+    // non-number slideIndex
+    expect(await invoke(
+      'slides:table-structure',
+      [{ slideIndex: '0', sourceId: 'sp_0', kind: 'insert-row', index: 0 }],
+      sessionId,
+    )).toBeNull()
   })
 })
 

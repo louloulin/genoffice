@@ -58,9 +58,11 @@ import {
 import { buildWebRenderSlide, buildWebRenderSlides } from './core'
 import {
   copyElementData,
+  editTableStructure,
   getSections,
   getSlideComments,
   type OpenedPptx,
+  type TableStructureOp,
 } from '@genoffice/pptx-engine'
 import { runTxn, type Op } from '@genoffice/pptx-ops'
 import { EMU_PER_PX_96 } from '@genoffice/pptx-render'
@@ -1194,6 +1196,68 @@ export function registerSlidesElementHandlers(): void {
       }) as unknown as Op,
       o.slideIndex,
     )
+  })
+  // Real table-structure (sdk1 §A.5 closure + §11.49): the legacy stub
+  // returned {} which the renderer's `if (r)` guard read as truthy, so a
+  // right-click "insert row above" silently pretended to succeed. The
+  // engine exports editTableStructure(opened, slideIndex, elementId, op)
+  // returning { slide, elementId } | null (null on merged cells / out of
+  // range / delete-of-last-row — see engine source for the full set of
+  // refusal reasons). The renderer's contract is { slide, sourceId } | null
+  // so we rename elementId → sourceId on the way out.
+  //
+  // Unlike the other table-* channels this one does NOT go through runTxn:
+  // the op layer has no tableStructure op; editTableStructure is a
+  // dedicated engine call that does its own XML surgery + materialization.
+  // We still take a snapshot before and pop it on failure so Undo /
+  // redo remain consistent with every other mutation channel.
+  registerHandle('slides:table-structure', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as {
+      slideIndex?: number
+      sourceId?: string
+      kind?: TableStructureOp['kind']
+      index?: number
+      before?: boolean
+    }
+    if (
+      typeof o.slideIndex !== 'number' ||
+      typeof o.sourceId !== 'string' ||
+      (o.kind !== 'insert-row' &&
+        o.kind !== 'delete-row' &&
+        o.kind !== 'insert-col' &&
+        o.kind !== 'delete-col') ||
+      typeof o.index !== 'number'
+    ) {
+      return badArgs(
+        'slides:table-structure requires { slideIndex, sourceId, kind, index, before? }',
+      )
+    }
+    const session = legacySession(event)
+    if (!session) {
+      warnNoSession('slides:table-structure')
+      return null
+    }
+    const structOp: TableStructureOp = {
+      kind: o.kind,
+      index: o.index,
+      ...(typeof o.before === 'boolean' ? { before: o.before } : {}),
+    }
+    pushSlidesHistory(session)
+    const r = editTableStructure(session.opened, o.slideIndex, o.sourceId, structOp)
+    if (!r) {
+      // Refused by the engine (merged cells / out-of-range / delete-of-last).
+      // Drop the snapshot so Undo doesn't restore to a state the failure
+      // already left in place — mirrors the runTxn failure branch.
+      session.undoStack.pop()
+      warnOpFailed(
+        'slides:table-structure',
+        `engine refused ${o.kind} on ${o.sourceId} (likely merged cells or out-of-range)`,
+      )
+      return null
+    }
+    setSlidesDirty(session.path, true)
+    const slide = buildWebRenderSlide(session.opened, session.fitWidthPx, o.slideIndex)
+    return slide ? { slide, sourceId: r.elementId } : null
   })
   registerHandle('slides:replace-picture-bytes', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }

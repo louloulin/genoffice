@@ -625,7 +625,6 @@ export function registerSlidesStateHandlers(): void {
   registerHandle('slides:clipboard-probe', () => ({}))
   registerHandle('slides:media-data', () => ({}))
   registerHandle('slides:native-clipboard', () => ({}))
-  registerHandle('slides:table-structure', () => ({}))
   // Real private-font-data: re-walk listEmbeddedFonts(archive) so the
   // renderer can fetch one face's sfnt bytes by index. Each face is
   // typically 100-300 KB (TTF/OTF) so we never broadcast the whole
