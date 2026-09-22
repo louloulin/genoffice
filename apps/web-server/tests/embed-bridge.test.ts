@@ -158,7 +158,7 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     expect(h.parentPosts.length).toBeGreaterThan(0)
     const first = h.parentPosts[0]!.data as { v: string; dir: string; kind: string; payload: { name: string; payload: { type: string; nonce: string; app: string; version: string } } }
     expect(first.v).toBe('1.0')
-    expect(first.dir).toBe('editor->host')
+    expect(first.dir).toBe('editor→host')
     expect(first.kind).toBe('event')
     expect(first.payload.name).toBe('ready')
     expect(first.payload.payload.type).toBe('ready')
@@ -332,5 +332,32 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     // Flush the setTimeout(_, 0) inside the DOMContentLoaded handler
     vi.runAllTimers()
     expect(h.parentPosts.length).toBeGreaterThan(0)
+  })
+
+  it('every outbound postMessage uses the U+2192 arrow dir, never ASCII hyphen', () => {
+    // SDK isEnvelope (apps/sdk/src/envelope.ts:76) strictly compares
+    // `dir === 'editor→host' || dir === 'host→editor'`. The bridge
+    // previously emitted `'editor->host'` (ASCII hyphen, U+002D) which
+    // isEnvelope rejected silently — every SSE-relayed lifecycle event
+    // (`saved`, `dirtyChanged`, `selectionChange`) was dropped at the
+    // SDK side. This test guards the wire format by scanning the bridge
+    // source for any ASCII-hyphen occurrences.
+    const asciiHits = (EMBED_BRIDGE_SOURCE.match(/'editor->host'/g) || []).length
+    const arrowHits = (EMBED_BRIDGE_SOURCE.match(/'editor→host'/g) || []).length
+    expect(asciiHits).toBe(0)
+    expect(arrowHits).toBeGreaterThan(0)
+  })
+
+  it('emits dir as U+2192 arrow in all live postMessages, not ASCII hyphen', () => {
+    // Live-runtime equivalent of the source-grep guard above: exercise
+    // the bridge under the standard fake-iframe environment and verify
+    // every postMessage uses the exact arrow character that SDK
+    // isEnvelope accepts.
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
+    expect(h.parentPosts.length).toBeGreaterThan(0)
+    for (const post of h.parentPosts) {
+      const d = post.data as { dir?: string }
+      expect(d.dir).toBe('editor→host')
+    }
   })
 })

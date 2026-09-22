@@ -52,7 +52,7 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
     try {
       window.parent.postMessage({
         v: ENVELOPE_VERSION,
-        dir: 'editor->host',
+        dir: 'editor→host',
         kind: 'event',
         payload: { name: name, payload: payload }
       }, '*');
