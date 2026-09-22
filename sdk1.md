@@ -4130,6 +4130,40 @@ timeout 90 ./node_modules/.bin/vitest run packages/ipc-bridge/ apps/sdk/
 cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
 ```
 
+### 11.63 · Markdown renderer 侧 save 接线（§11.62 首个落地 app）
+
+> §11.62 在 `installTextBufferSink` 上加了 `onSave` 框架。本轮把 markdown
+> 第一个接上 — 验证端到端形状适配可行。剩余 5 app（docs / html / sheets
+> / slides / pdf）按相同模式各 ~10 行即可，留作后续小 PR。
+
+#### ✅ 落点
+
+1. **`packages/ipc-bridge/src/text-buffer-adapter.ts`**：
+   - 导出新 helper `textBufferGetText(target?)`：从 mirror buffer 读当前文本
+   - 用途：renderer 在 `onSave` 回调里读 buffer 文本喂给 app 自己的 `xxxApi.save`
+   - 不需要 renderer 自己维护 `onBufferChange → 缓存` 的样板
+
+2. **`apps/markdown/src/renderer/web-bridge.ts`**：
+   - `installTextBufferSink` 加 `onSave: async () => { ... }`
+   - 内部调 `window.markdownApi.save({ mode: 'save', text: textBufferGetText(), imageSources: [] })`
+   - 适配 `SaveMarkdownResult` 三种 union（happy / canceled / error）→ SDK 形状：
+     - `{ ok: true; path }` → `{ ok: true, savedPath: path }`
+     - `{ ok: true; canceled: true }` → throw（bridge 报错 → buffer 保持 dirty）
+     - `{ ok: false; error }` → throw 同上
+
+#### 🧪 验证
+
+- markdown typecheck clean（`tsc --noEmit -p apps/markdown` 0 错误）
+- 261 / 262 markdown 测试通过；唯一失败 `find-panel.test.ts > refocuses...`
+  是 pre-existing flake（基线复现），与本 PR 无关
+
+#### 📊 进度
+
+- §11.63 闭合 §11.62 "仍未做" 列表第 1 项（markdown）
+- 余 5 app（docs / html / sheets / slides / pdf）按 ~10 行模式各自接线
+- sheets / slides / pdf 已有自己的 live-model adapter，需要走
+  `registerNativeAdapter({ isDirty, save })` 路径（与 text-buffer 不同）
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动

@@ -242,6 +242,20 @@ export function textBufferUndoStack(target?: BufferTarget): { length: number; cu
 }
 
 /**
+ * Read the current text from the mirror buffer (sdk1.md §11.62). Used by
+ * the host-driven `save` callback (`installTextBufferSink({ onSave })`)
+ * to pull the latest text without each renderer re-implementing the
+ * `onBufferChange → cache` pattern.
+ *
+ * Returns an empty string when the buffer hasn't been seeded yet
+ * (i.e. the renderer hasn't loaded a document); the save callback can
+ * then decide whether to no-op or refuse.
+ */
+export function textBufferGetText(target?: BufferTarget): string {
+  return resolveBuffer(target).getText()
+}
+
+/**
  * Install the SDK command sink with a text-buffer-backed live-model
  * adapter. Apps that don't have their own editor model yet use this
  * to satisfy §11.36.5 setContent / getContent / insertText:
