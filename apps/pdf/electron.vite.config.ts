@@ -30,8 +30,11 @@ export default defineConfig({
       alias: {
         // subpath before the bare name: string aliases are prefix replacements
         '@genoffice/ipc-bridge/client': resolve(__dirname, '../../packages/ipc-bridge/src/client.ts'),
-  '@genoffice/ipc-bridge/web-native': resolve(__dirname, '../../packages/ipc-bridge/src/web-native.ts'),
-  '@genoffice/ipc-bridge/web-tabs': resolve(__dirname, '../../packages/ipc-bridge/src/web-tabs.ts'),
+        '@genoffice/ipc-bridge/web-native': resolve(__dirname, '../../packages/ipc-bridge/src/web-native.ts'),
+        '@genoffice/ipc-bridge/web-tabs': resolve(__dirname, '../../packages/ipc-bridge/src/web-tabs.ts'),
+        '@genoffice/ipc-bridge/sdk-command-sink': resolve(__dirname, '../../packages/ipc-bridge/src/sdk-command-sink.ts'),
+        '@genoffice/ipc-bridge/text-buffer-adapter': resolve(__dirname, '../../packages/ipc-bridge/src/text-buffer-adapter.ts'),
+        '@genoffice/ipc-bridge/sidebar-runtime': resolve(__dirname, '../../packages/ipc-bridge/src/sidebar-runtime.ts'),
         '@genoffice/ipc-bridge': resolve(__dirname, '../../packages/ipc-bridge/src/index.ts'),
       },
     },

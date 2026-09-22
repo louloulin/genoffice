@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   installTextBufferSink,
+  nativeAdapter,
   onBufferChange,
+  redoTextBuffer,
+  registerNativeAdapter,
+  textBufferUndoStack,
+  undoTextBuffer,
   updateTextBuffer,
 } from '../src/text-buffer-adapter'
 
@@ -117,5 +122,227 @@ describe('text-buffer-adapter', () => {
       .then(() => {
         expect(unmounted).toEqual(['panel-1'])
       })
+  })
+})
+
+/**
+ * Undo / redo / getUndoStack (sdk1.md §B.5.1 #2, SDK 2.0 Kestrel M1).
+ *
+ * The buffer only tracks host-driven mutations (`setContent` /
+ * `insertText`). Local edits reported through `updateTextBuffer` are
+ * deliberately excluded so a single Cmd+Z in a tiptap-backed app cannot
+ * appear to undo twice.
+ */
+describe('text-buffer-adapter · undo/redo (§B.5.1 #2)', () => {
+  it('exposes undo / redo / getUndoStack in the sink surface', () => {
+    const handle = installTextBufferSink({ target: {} })
+    expect(handle.supported).toEqual(
+      expect.arrayContaining(['undo', 'redo', 'getUndoStack']),
+    )
+  })
+
+  it('setContent then undo restores the previous buffer', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'first' })
+    await handle.dispatch('setContent', { text: 'second' })
+    await handle.dispatch('undo', {})
+    const r = (await handle.dispatch('getContent', {})) as { text: string }
+    expect(r.text).toBe('first')
+  })
+
+  it('undo → redo round-trips back to the newest state', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'a' })
+    await handle.dispatch('setContent', { text: 'b' })
+    await handle.dispatch('undo', {})
+    await handle.dispatch('redo', {})
+    const r = (await handle.dispatch('getContent', {})) as { text: string }
+    expect(r.text).toBe('b')
+  })
+
+  it('getUndoStack reports { length, current } and tracks a mutation', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 0, current: 0 })
+    await handle.dispatch('setContent', { text: 'x' })
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 1, current: 1 })
+    await handle.dispatch('undo', {})
+    // After undo the step lives on the redo branch: still counted in
+    // `length`, no longer reachable by `undo`.
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 1, current: 0 })
+  })
+
+  it('undo on an empty stack rejects with UNSUPPORTED', async () => {
+    const handle = installTextBufferSink({ target: {} })
+    await expect(handle.dispatch('undo', {})).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+  })
+
+  it('a fresh mutation clears the redo branch', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'a' })
+    await handle.dispatch('setContent', { text: 'b' })
+    await handle.dispatch('undo', {})
+    await handle.dispatch('setContent', { text: 'c' })
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 2, current: 2 })
+    await expect(handle.dispatch('redo', {})).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+  })
+
+  it('local edits (updateTextBuffer) stay off the undo stack', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'host' })
+    updateTextBuffer({ text: 'host + local typing' }, target)
+    // Only the host-driven mutation is undoable.
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 1, current: 1 })
+    await handle.dispatch('undo', {})
+    const r = (await handle.dispatch('getContent', {})) as { text: string }
+    expect(r.text).toBe('')
+  })
+
+  it('undo / redo notify change listeners so the editor can re-sync', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    const seen: string[] = []
+    onBufferChange((s) => seen.push(s.text), target)
+    await handle.dispatch('setContent', { text: 'v1' })
+    await handle.dispatch('setContent', { text: 'v2' })
+    seen.length = 0
+    await handle.dispatch('undo', {})
+    expect(seen).toEqual(['v1'])
+    seen.length = 0
+    await handle.dispatch('redo', {})
+    expect(seen).toEqual(['v2'])
+  })
+
+  it('caps the undo stack at 100 steps (oldest entries dropped)', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    for (let i = 0; i < 130; i++) {
+      await handle.dispatch('setContent', { text: `v${i}` })
+    }
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 100, current: 100 })
+  })
+
+  it('programmatic undoTextBuffer / redoTextBuffer helpers mirror the commands', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    await handle.dispatch('setContent', { text: 'one' })
+    await handle.dispatch('setContent', { text: 'two' })
+    expect(undoTextBuffer(target)).toBe(true)
+    // Two host mutations were pushed, one was just undone: the step is
+    // still counted in `length` but sits on the redo branch, so `current`
+    // (undoable steps) is 1.
+    expect(textBufferUndoStack(target)).toEqual({ length: 2, current: 1 })
+    expect(redoTextBuffer(target)).toBe(true)
+    expect(redoTextBuffer(target)).toBe(false)
+  })
+
+  it('a native adapter override wins over the buffer for undo/redo', async () => {
+    const target: Record<string, unknown> = {}
+    let nativeUndo = 0
+    const handle = installTextBufferSink({
+      target,
+      adapter: {
+        undo: () => {
+          nativeUndo += 1
+          return true
+        },
+        getUndoStack: () => ({ length: 7, current: 3 }),
+      },
+    })
+    await handle.dispatch('setContent', { text: 'buffered' })
+    await handle.dispatch('undo', {})
+    expect(nativeUndo).toBe(1)
+    // getUndoStack is also delegated, and the count is normalised.
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 7, current: 3 })
+    // Untouched keys still fall through to the buffer.
+    const r = (await handle.dispatch('getContent', {})) as { text: string }
+    expect(r.text).toBe('buffered')
+  })
+
+  it('getUndoStack normalises a garbage adapter result', async () => {
+    const handle = installTextBufferSink({
+      target: {},
+      adapter: {
+        // Deliberately hostile: negative, fractional, current > length.
+        getUndoStack: () => ({ length: 3.9, current: 99 }),
+      },
+    })
+    expect(await handle.dispatch('getUndoStack', {})).toEqual({ length: 3, current: 3 })
+  })
+})
+
+/**
+ * Native-adapter registry.
+ *
+ * `installTextBufferSink` runs during renderer boot, but the editor
+ * (a tiptap instance, a Univer workbook…) only exists after React
+ * mounts. The registry lets the sink resolve the real adapter lazily on
+ * every command, which is what makes sdk1.md §B.5.1 #2's "expose the
+ * existing Ctrl+Z / Ctrl+Shift+Z as postMessage commands" a two-line
+ * change per app instead of a boot-order puzzle.
+ */
+describe('text-buffer-adapter · registerNativeAdapter', () => {
+  it('a registered adapter takes over after the sink was installed', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    // Before registration: buffer-backed.
+    await handle.dispatch('setContent', { text: 'buffered' })
+    expect(nativeAdapter(target)).toBeUndefined()
+
+    let nativeUndo = 0
+    const dispose = registerNativeAdapter(
+      {
+        getText: () => 'from-native',
+        undo: () => {
+          nativeUndo += 1
+          return true
+        },
+      },
+      target,
+    )
+
+    // getText now delegates; keys the native adapter omits still fall
+    // through to the buffer.
+    const content = (await handle.dispatch('getContent', {})) as { text: string }
+    expect(content.text).toBe('from-native')
+    await handle.dispatch('undo', {})
+    expect(nativeUndo).toBe(1)
+    expect(((await handle.dispatch('getUndoStack', {})) as { length: number }).length).toBe(1)
+
+    dispose()
+    expect(nativeAdapter(target)).toBeUndefined()
+    const after = (await handle.dispatch('getContent', {})) as { text: string }
+    expect(after.text).toBe('buffered')
+  })
+
+  it('binds adapter methods so a `this`-using object keeps its receiver', async () => {
+    const target: Record<string, unknown> = {}
+    const handle = installTextBufferSink({ target })
+    const adapter = {
+      calls: 0,
+      getText() {
+        this.calls += 1
+        return `calls=${this.calls}`
+      },
+    }
+    registerNativeAdapter(adapter, target)
+    expect(((await handle.dispatch('getContent', {})) as { text: string }).text).toBe('calls=1')
+    expect(((await handle.dispatch('getContent', {})) as { text: string }).text).toBe('calls=2')
+    expect(adapter.calls).toBe(2)
+  })
+
+  it('dispose only clears its own registration (remount race)', () => {
+    const target: Record<string, unknown> = {}
+    const first = { getText: () => 'first' }
+    const second = { getText: () => 'second' }
+    const disposeFirst = registerNativeAdapter(first, target)
+    registerNativeAdapter(second, target)
+    // A stale unmount must not wipe the newer adapter.
+    disposeFirst()
+    expect(nativeAdapter(target)).toBe(second)
   })
 })

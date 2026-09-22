@@ -2676,6 +2676,111 @@ sdk1.md                                         | +96 (本节)
   包含 `'comment.added'` / `'comment.resolved'` / `'comment.removed'`
   才会收（与 `file.saved` 同机制）。
 
+### 11.38 · §B.5.1 #2 Undo/Redo/getUndoStack + renderer alias 构建修复
+
+> 本轮兑现 SDK 2.0 §B.5.1 #2（undo / redo / getUndoStack），顺带修复了
+> 一个让 **6 个编辑器 renderer 全部无法重新构建** 的真实缺陷。
+
+#### 11.38.1 §B.5.1 #2 — Undo / Redo / getUndoStack
+
+**问题**：`apps/sdk/src/types.ts` 早就声明了 `undo` / `redo` / `getUndoStack`
+三个命令（`EditorCommands` union），但没有任何一层实现它们：
+
+| 层 | 之前 | 之后 |
+|---|---|---|
+| `apps/sdk` 类型 | ✅ 已声明 | ✅ 不变 |
+| `packages/ipc-bridge` sink | ⬜ handler 不存在 → `UNSUPPORTED` | ✅ `makeLiveModelHandlers` 注册 3 个 |
+| `text-buffer-adapter` | ⬜ 无 undo 栈 | ✅ 100 步上限的 past/future 双栈 |
+| `apps/docs` renderer | ⬜ Ctrl+Z 只走键盘 | ✅ 注册 tiptap 的 `commands.undo/redo` |
+
+**落实**：
+
+1. `packages/ipc-bridge/src/text-buffer-adapter.ts`
+   - `TextBuffer` 新增 `past` / `future` 双栈（`MAX_UNDO_DEPTH = 100`）
+   - `pushUndo()` 只在 **host 发起的** mutation（`setContent` /
+     `insertText`）前快照；`updateTextBuffer` 的本地编辑**故意不入栈** ——
+     应用自己的 undo manager（tiptap / Univer）已经管着它们，双份记录会让
+     一次 Cmd+Z 看起来撤销两次
+   - `undo()` / `redo()` / `undoStack()` 三个方法；`undoStack()` 返回
+     `{ length: past+future, current: past.length }`，与 SDK 契约一致
+   - 新导出 `undoTextBuffer()` / `redoTextBuffer()` / `textBufferUndoStack()`
+2. `packages/ipc-bridge/src/sdk-command-sink.ts`
+   - `SdkLiveModelAdapter` 新增 `undo?` / `redo?` / `getUndoStack?`
+   - `makeLiveModelHandlers` 注册三个 handler；`undo` / `redo` 返回 `false`
+     时抛 `UnsupportedCommandError`（SDK 契约里"没东西可撤"最近似
+     `UNSUPPORTED`）
+   - `getUndoStack` 做归一化（`Math.trunc` + `Math.max(0, …)` +
+     `current ≤ length`），防止写坏的 adapter 把 `NaN` / 负数喂给 host 的
+     "能否撤销"按钮状态
+3. **`registerNativeAdapter()` 注册表（关键设计）**
+   - `installTextBufferSink` 在 renderer boot 时执行，但编辑器实例要等 React
+     mount 才存在 —— 顺序矛盾。新增全局注册表 + 每次命令 **惰性查找**，
+     应用在编辑器 mount effect 里 `registerNativeAdapter(...)` 即可，已安装
+     的 sink 自动开始委派
+   - 注册的方法**绑定到 adapter 对象**，所以 `{ undo() { return this.editor.undo() } }`
+     写法保留 `this`
+   - dispose 只在"仍指向自己"时清除，避免快速 unmount/remount 把新 adapter 抹掉
+4. `apps/docs/src/renderer/App.tsx`
+   - `editorRef` effect 旁新增注册 effect：`undo` / `redo` 直通
+     tiptap `commands.undo()` / `redo()`；`getUndoStack` 由
+     `editor.can().undo() / can().redo()` 推导
+   - `getText` / `setText` **故意不注册** —— docs 的 buffer 往返由
+     `web-bridge.ts` 拥有，走 tiptap 会绕过分页管线
+
+#### 11.38.2 renderer alias 构建修复（6 app 全部构建失败）
+
+**症状**：`electron-vite build` 在 6 个编辑器上全部失败：
+
+```
+[vite:load-fallback] Could not load …/packages/ipc-bridge/src/index.ts/sidebar-runtime
+  (imported by src/renderer/web-bridge.ts): ENOTDIR
+```
+
+**根因**：Vite 的字符串 alias 是**前缀替换**，不是精确匹配。各 app 的
+`localAlias` 里 `'@genoffice/ipc-bridge'` → `…/src/index.ts` 排在子路径
+之前，于是 `'@genoffice/ipc-bridge/sidebar-runtime'` 被改写为
+`…/src/index.ts/sidebar-runtime`。`docs` / `sheets` / `slides` / `pdf` /
+`markdown` 五个 app 是 §11.36 加 sidebar 时才引入子路径 import 的，
+alias 表没跟着补；`apps/html` 更彻底 —— **完全没有 alias 块**，renderer
+一直在从 `node_modules` 打包一个 §11.36 之前的 ipc-bridge 副本。
+
+**落实**：
+- 5 个 app 的 `localAlias` 补齐 3 条子路径（`sdk-command-sink` /
+  `text-buffer-adapter` / `sidebar-runtime`），全部排在 bare 之前
+- `apps/html/electron.vite.config.ts` 补出完整 alias 块 + 把
+  `@genoffice/ipc-bridge` 加进 main/preload 的 `externalizeDepsPlugin.exclude`
+  （workspace 包是裸 TS 源码，externalize 会让浏览器拿到未解析的 bare import）
+- 新增守门测试 `apps/web-server/tests/renderer-alias-order.test.ts`（18 例）：
+  6 个 app × 3 条断言 —— 子路径别名存在、都排在 bare 之前、ipc-bridge 未被
+  externalize。**已验证该测试能抓到这个 bug**（故意把 docs 的 bare 行挪到
+  sidebar-runtime 之前 → 测试立刻红）。
+
+#### 11.38.3 验证
+
+- `packages/ipc-bridge` → **6 文件 / 135 测试通过**（+15：12 个 undo/redo +
+  3 个注册表）
+- `apps/web-server/tests/renderer-alias-order.test.ts` → **18/18 通过**
+- 6 个 app `electron-vite build` → **全部成功**，产物含新 surface
+  （`docs` bundle grep 到 `getUndoStack` ×5 / `registerNativeAdapter` ×2 /
+  `__GENOFFICE_NATIVE_ADAPTER__` / `sidebarMessage`）
+- `apps/docs` typecheck → 0 个新错误（仅 pre-existing `ShortcutsDialog.tsx`
+  i18n-key 与 `file-parse/src/pdf.ts` 类型声明，均不在改动集合内）
+
+#### 11.38.4 风险与后续
+
+- **tiptap 无深度 API**：`getUndoStack` 返回 `{ length: depth, current }`，
+  其中 depth 由 `can().undo()` + `can().redo()` 推导（0/1/2），不是真实
+  步数。SDK 契约明确允许"不跟踪深度的编辑器"返回 `{length:0,current:0}`，
+  而真实深度需要 tiptap 内部 history plugin 的私有状态。host 侧按钮状态
+  （能不能撤 / 能不能重做）是准确的，只是没有"还能撤 N 步"的展示。
+- **其余 5 个 app 尚未注册 native adapter**：`sheets`（Univer 有
+  `univer-state.ts` 的 redo 栈）、`slides` / `pdf` / `markdown` / `html`
+  目前走 text-buffer 的 host-mutation 栈。逐个接 Univer / 各编辑器的
+  history 是机械工作，留作 follow-up（每 app ~10 行）。
+- **`insertImage` / `setTheme` / `setLang` 仍无 adapter**：不在本小节范围。
+- **构建产物不入库**：`out/` 已 gitignore；本轮的 build 只用于验证，
+  CI 会重建。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -3135,7 +3240,11 @@ bridge 优先走 `window.__GENOFFICE_COMMAND_SINK__`（renderer 装上时），
       - iframe `name` = `genoffice-{instanceId}`
       - 双实例 destroy 互不干扰
     - SDK 测试 108 → 119（+11）；SDK 文件 10 → 11；bundle UMD 24.1 kB（变化忽略不计）
-    - 后续 M1 收尾 = renderer 端把 Ctrl+Z / Ctrl+Shift+Z 暴露成 inbound postMessage handler（apps/{docs,sheets,slides,pdf,markdown,html}/dist 各自 listener）
+    - ~~后续 M1 收尾 = renderer 端把 Ctrl+Z / Ctrl+Shift+Z 暴露成 inbound postMessage handler~~
+      **✅ 已完成 · 见 §11.38**：`SdkLiveModelAdapter` 新增 `undo` / `redo` /
+      `getUndoStack`，`text-buffer-adapter` 加 100 步双栈 +
+      `registerNativeAdapter()` 惰性注册表；`apps/docs` 已注册 tiptap 真实
+      history。剩余 5 个 app 接各自编辑器的 history 为 follow-up（每 app ~10 行）。
 
 37. **typedoc-count 显式 step**（✅ 本轮）：
     - 闭合 §11.34.4 #2 + §A.5 unaddressed 小 backlog
@@ -3250,6 +3359,17 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
   `queryAudit` / `exportAudit` 三函数；`GENOFFICE_AUDIT_PERSIST=0` 供 CI 隔离用。
   §0.4 文档管理功能 13/14 → **14/14** ✅（仅剩协作冲突 = §M4 §C backlog）。
 
+#### ✅ 本轮新增解决（2026-09-22 · §11.38 undo/redo + renderer 构建修复）
+
+- **§B.5.1 #2 Undo / Redo / getUndoStack** — `SdkLiveModelAdapter` 新增三个方法，
+  `text-buffer-adapter` 加 100 步 past/future 双栈，`apps/docs` 注册 tiptap 真实
+  history。`registerNativeAdapter()` 注册表解决了"boot 时装 sink、mount 后才有
+  编辑器"的顺序矛盾。
+- **renderer alias 前缀替换缺陷** — `@genoffice/ipc-bridge` 的 bare alias 排在
+  子路径之前，导致 6 个 app 的 `electron-vite build` 全部 ENOTDIR 失败；`apps/html`
+  根本没有 alias 块。已全部修复并加 18 例守门测试（已验证能抓到该 bug）。
+  **这不是理论问题：修之前 6 个编辑器的 web 构建产物都无法刷新。**
+
 #### ⚠️ 仍未做 / 已知缺陷
 
 - **CRDT/OT 协作（M4 backlog）**：单人模式通；collab:* 通道骨架有，但多人同时写编辑合并 peer 未实装。
@@ -3263,12 +3383,12 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../webhooks-dlq / **metrics-endpoint** / **audit-log-persistence** / **comment-webhook**）| 86 | 724 | ✅ |
+| web-server（含 .../webhooks-dlq / **metrics-endpoint** / **audit-log-persistence** / **comment-webhook** / **renderer-alias-order**）| 87 | 742 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
-| ipc-bridge | 5 | 115 | ✅ |
+| ipc-bridge | 6 | 135 | ✅ |
 | file-parse | 1 | 38 | ✅ |
 | file-management | 1 | 219 | ✅ |
 | pptx-engine | 1 | 957 | ✅ |

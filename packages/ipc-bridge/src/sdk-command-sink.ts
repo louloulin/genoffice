@@ -200,7 +200,12 @@ export function bytesToBase64(bytes: Uint8Array): string {
  *
  * NOT included (need the live editor model, so each app wires them):
  * `setContent` / `getContent` / `insertText` / `insertImage` / `undo` /
- * `redo` / `setTheme` / `setLang` / `mountSidebar` / `postToSidebar`.
+ * `redo` / `getUndoStack` / `setTheme` / `setLang` / `mountSidebar` /
+ * `postToSidebar` / `unmountSidebar`.
+ *
+ * `undo` / `redo` / `getUndoStack` are part of `SdkLiveModelAdapter` as
+ * of sdk1.md §B.5.1 #2, so any app wiring `installLiveModelSink` (or
+ * `installTextBufferSink`) gets them for free.
  */
 export function defaultSdkCommandHandlers(): Record<string, SdkCommandHandler> {
   return {
@@ -267,6 +272,10 @@ export function guessMimeType(name: string): string {
  *     SidebarPanelNotMountedError (code SIDEBAR_PANEL_NOT_MOUNTED)
  *     when panelId is unknown so the host sees a structured failure
  *     instead of a silent drop.
+ *   • undo() / redo() → roll the host-driven edit history back / forward
+ *     one step; return `false` when the relevant stack is empty.
+ *   • getUndoStack() → `{ length, current }` for the host's
+ *     "can I undo?" button state (sdk1.md §B.5.1 #2).
  *
  * Apps that don't need one of these (e.g. a read-only preview) can omit
  * the corresponding method — the matching command then answers
@@ -302,6 +311,22 @@ export interface SdkLiveModelAdapter {
    * onto the command-result envelope.
    */
   postToSidebar?: (input: { panelId: string; message: unknown }) => void
+  /**
+   * Undo the last host-driven edit (sdk1.md §B.5.1 #2). Returns
+   * `true` when a step was rolled back and `false` when the undo stack
+   * was already empty — the bridge maps `false` onto the SDK's
+   * `UNSUPPORTED` rejection so the host can distinguish "nothing to
+   * undo" from "this editor has no undo".
+   *
+   * Apps with a native editor (tiptap / Univer) should delegate to that
+   * editor's own history and only fall back to the text-buffer history
+   * when they don't track one.
+   */
+  undo?: () => boolean
+  /** Redo the last undone edit. See `undo` for the `false` semantics. */
+  redo?: () => boolean
+  /** `{ length, current }` — see `apps/sdk/src/types.ts:getUndoStack`. */
+  getUndoStack?: () => { length: number; current: number }
 }
 
 /**
@@ -357,6 +382,38 @@ export function makeLiveModelHandlers(
       const a = (args ?? {}) as { text?: unknown }
       if (typeof a.text !== 'string') throw new Error('insertText: args.text is required')
       adapter.insertText!(a.text)
+    }
+  }
+  if (adapter.undo) {
+    handlers.undo = () => {
+      const ok = adapter.undo!()
+      // `false` == the stack was empty. The SDK contract for `undo`
+      // resolves `void` on success and rejects `UNSUPPORTED` when the
+      // editor can't undo; an empty stack on an undo-capable editor is
+      // the closest thing, so we reject.
+      if (!ok) {
+        throw new UnsupportedCommandError('undo')
+      }
+      return undefined
+    }
+  }
+  if (adapter.redo) {
+    handlers.redo = () => {
+      const ok = adapter.redo!()
+      if (!ok) {
+        throw new UnsupportedCommandError('redo')
+      }
+      return undefined
+    }
+  }
+  if (adapter.getUndoStack) {
+    handlers.getUndoStack = () => {
+      const stack = adapter.getUndoStack!()
+      // Normalise so a buggy adapter can't hand the host NaN / negative
+      // values that would break its "can I undo?" button state.
+      const length = Number.isFinite(stack?.length) ? Math.max(0, Math.trunc(stack.length)) : 0
+      const current = Number.isFinite(stack?.current) ? Math.max(0, Math.trunc(stack.current)) : 0
+      return { length, current: Math.min(current, length) }
     }
   }
   if (adapter.setTheme) {

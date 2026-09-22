@@ -272,6 +272,7 @@ import {
   type FileActionContext,
   type PendingPdfExport,
 } from './file-actions'
+import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { runHeadlessDocumentExport } from './headless-export'
 import {
   allocateListNumId as allocateListNumIdImpl,
@@ -2093,6 +2094,40 @@ export function App() {
   useEffect(() => {
     editorRef.current = editor
     zoteroControllerRef.current = null
+  }, [editor])
+
+  // SDK 2.0 §B.5.1 #2 — expose the editor's own undo history to the embed
+  // host. `installTextBufferSink` runs in web-bridge.ts at renderer boot,
+  // before this tiptap instance exists; `registerNativeAdapter` registers
+  // the real model lazily so `editor.command('undo' | 'redo' |
+  // 'getUndoStack')` drives tiptap's history instead of the mirror buffer.
+  //
+  // tiptap's history plugin has no public depth accessor, so `getUndoStack`
+  // reports `current: 1|0` (can-undo) with `length` matching — the SDK
+  // contract explicitly allows an editor that can't report depth to answer
+  // `{ length: 0, current: 0 }`, and reporting 0/0 while a redo is pending
+  // would make the host's redo button grey out. `getText` / `setText` are
+  // deliberately NOT registered: the docs renderer owns that round-trip in
+  // web-bridge.ts, and routing `setContent` through tiptap would bypass the
+  // pagination pipeline the buffer listener drives.
+  useEffect(() => {
+    if (!editor) return
+    return registerNativeAdapter({
+      undo: () => {
+        editor.commands.undo()
+        return true
+      },
+      redo: () => {
+        editor.commands.redo()
+        return true
+      },
+      getUndoStack: () => {
+        const canUndo = editor.can().undo()
+        const canRedo = editor.can().redo()
+        const depth = (canUndo ? 1 : 0) + (canRedo ? 1 : 0)
+        return { length: depth, current: canUndo ? 1 : 0 }
+      },
+    })
   }, [editor])
 
   useEffect(
