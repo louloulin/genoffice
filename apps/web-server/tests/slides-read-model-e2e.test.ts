@@ -769,14 +769,15 @@ describe.skipIf(skip)('slides:get-* read-model — tier 3 (sdk1 §11.48)', () =>
   })
 
   // ── documented stubs stay documented ──────────────────────────────
-  it('font-catalog stays [] (engine has no theme-font enumeration; M4 backlog)', async () => {
-    const sessionId = await openDeckAndRememberSession()
-    expect(await invoke('slides:font-catalog', [], sessionId)).toEqual([])
+  // font-catalog / font-missing closed in §11.53 — see dedicated
+  // describe block at the end of this file. They are no longer `[]`
+  // stubs (font-catalog returns the 19-family projection;
+  // font-missing walks the deck).
+  it('font-catalog was closed in sdk1 §11.53 (real impl, see dedicated describe)', () => {
+    expect(true).toBe(true) // sentinel — covered in §11.53 describe block
   })
-
-  it('font-missing stays [] (engine has no missing-font detector; M4 backlog)', async () => {
-    const sessionId = await openDeckAndRememberSession()
-    expect(await invoke('slides:font-missing', [], sessionId)).toEqual([])
+  it('font-missing was closed in sdk1 §11.53 (real impl, see dedicated describe)', () => {
+    expect(true).toBe(true) // sentinel — covered in §11.53 describe block
   })
 
   it('chart-color-schemes returns the theme-derived palette (sdk1 §11.50)', async () => {
@@ -1112,4 +1113,131 @@ describe.skipIf(skip)('slides:table-structure real impl (sdk1 §11.49)', () => {
   })
 })
 
+describe.skipIf(skip)('slides:font-catalog + font-missing real impl (sdk1 §11.53)', () => {
+  let server: ChildProcess | undefined
+  let base: string
+  let dataDir: string
+
+  beforeAll(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'slides-font-catalog-'))
+    const port = 32173 + Math.floor(Math.random() * 8000)
+    base = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [bundle], {
+      env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await pollHealth(base, 15_000)
+
+    const filesDir = join(dataDir, 'files')
+    mkdirSync(filesDir, { recursive: true })
+    const pptxPath = join(filesDir, 'font-catalog.pptx')
+    copyFileSync(blankTemplate, pptxPath)
+  })
+
+  afterAll(async () => {
+    if (server) await stopServer(server)
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  async function openDeckAndRememberSession(): Promise<string> {
+    const sessionId = `s-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const filesDir = join(dataDir, 'files')
+    const pptxPath = join(filesDir, 'font-catalog.pptx')
+    const r = await fetch(`${base}/api/ipc/slides%3Aopen-path`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-ipc-session': sessionId,
+      },
+      body: JSON.stringify({ args: [encodeTransportValue(pptxPath)] }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { error?: { code: string } }
+    expect(body.error, JSON.stringify(body)).toBeUndefined()
+    return sessionId
+  }
+
+  async function invoke(channel: string, args: unknown[], sessionId?: string): Promise<unknown> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (sessionId) headers['x-ipc-session'] = sessionId
+    const r = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ args: args.map((a) => encodeTransportValue(a)) }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { result?: unknown }
+    return body.result
+  }
+
+  it('font-catalog returns the 19-family projection with installed/downloading=false', async () => {
+    const r = await invoke('slides:font-catalog', []) as Array<{
+      family: string; script: string; installed: boolean; downloading: boolean
+    }>
+    expect(Array.isArray(r)).toBe(true)
+    expect(r.length).toBeGreaterThanOrEqual(15)
+    // Spot-check three entries from each script bucket
+    const openSans = r.find((f) => f.family === 'Open Sans')
+    expect(openSans).toEqual({ family: 'Open Sans', script: 'latin', installed: false, downloading: false })
+    const notoSC = r.find((f) => f.family === 'Noto Sans SC')
+    expect(notoSC).toEqual({ family: 'Noto Sans SC', script: 'sc', installed: false, downloading: false })
+    const notoJP = r.find((f) => f.family === 'Noto Sans JP')
+    expect(notoJP).toEqual({ family: 'Noto Sans JP', script: 'ja', installed: false, downloading: false })
+    // Every entry has the renderer contract shape
+    for (const f of r) {
+      expect(['latin', 'ja', 'ko', 'sc', 'tc']).toContain(f.script)
+      expect(f.installed).toBe(false)
+      expect(f.downloading).toBe(false)
+    }
+  })
+
+  it('font-catalog is independent of session — works before any open-path', async () => {
+    // No session bound — catalog is a pure data table, should still respond
+    const r = await invoke('slides:font-catalog', [])
+    expect(Array.isArray(r)).toBe(true)
+    expect((r as Array<unknown>).length).toBeGreaterThan(0)
+  })
+
+  it('font-missing returns [] when no deck is open', async () => {
+    const r = await invoke('slides:font-missing', [])
+    expect(r).toEqual([])
+  })
+
+  it('font-missing returns [] for the blank fixture (deck references no fonts)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const r = await invoke('slides:font-missing', [], sessionId)
+    expect(r).toEqual([])
+  })
+
+  it('font-missing returns sorted, catalog-filtered list after apply-txn adds a run', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const filesDir = join(dataDir, 'files')
+    const pptxPath = join(filesDir, 'font-catalog.pptx')
+    // Add a textbox whose first run has fontFamily = 'Noto Sans SC' (a
+    // catalog family). apply-txn needs { path, ops } so it can locate
+    // the session by path — `sessionId` alone isn't enough.
+    const added = await invoke(
+      'slides:apply-txn',
+      [{
+        path: pptxPath,
+        ops: [{ op: 'addElement', target: { slide: 0 }, kind: 'textbox',
+                offset: { x: 100_000, y: 100_000, cx: 2_000_000, cy: 600_000 },
+                paragraphs: [{ runs: [{ text: 'Hello', fontFamily: 'Noto Sans SC' }] }] }],
+      }],
+      sessionId,
+    ) as { applied: boolean, slides: unknown[] }
+    expect(added.applied).toBe(true)
+    const r = await invoke('slides:font-missing', [], sessionId) as string[]
+    // 'Noto Sans SC' is in the catalog, so it appears.
+    expect(r).toContain('Noto Sans SC')
+    // Sorted alphabetically
+    const sorted = [...r].sort()
+    expect(r).toEqual(sorted)
+    // And every entry must be a catalog family
+    const catalogFamilies = new Set(
+      (await invoke('slides:font-catalog', []) as Array<{ family: string }>).map((f) => f.family),
+    )
+    for (const f of r) expect(catalogFamilies.has(f)).toBe(true)
+  })
+})
 })

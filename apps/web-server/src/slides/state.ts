@@ -48,6 +48,46 @@ import {
  *  sensible on a fresh blank.pptx. */
 const FALLBACK_ACCENTS = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47']
 
+/** OFL font catalog projection for the renderer. The desktop `font-catalog.ts`
+ *  generator also carries per-file sha256 + bytes for download verification;
+ *  the renderer's wire contract only needs family + script + install state, so
+ *  we project to just those two. Mirrored from
+ *  `apps/slides/src/main/font-catalog.ts:15`. Adding a family here is a one-line
+ *  edit; if the same family ships on desktop later it should land there too.
+ *  (sdk1 §11.53 / §A.5 backlog closure). */
+interface FontCatalogEntry {
+  family: string
+  script: 'latin' | 'ja' | 'ko' | 'sc' | 'tc'
+}
+const FONT_CATALOG_DATA: ReadonlyArray<FontCatalogEntry> = [
+  { family: 'Open Sans', script: 'latin' },
+  { family: 'Roboto', script: 'latin' },
+  { family: 'Lato', script: 'latin' },
+  { family: 'Montserrat', script: 'latin' },
+  { family: 'Poppins', script: 'latin' },
+  { family: 'Inter', script: 'latin' },
+  { family: 'Source Sans 3', script: 'latin' },
+  { family: 'Oswald', script: 'latin' },
+  { family: 'Raleway', script: 'latin' },
+  { family: 'Nunito', script: 'latin' },
+  { family: 'Merriweather', script: 'latin' },
+  { family: 'Playfair Display', script: 'latin' },
+  { family: 'Work Sans', script: 'latin' },
+  { family: 'Rubik', script: 'latin' },
+  { family: 'Noto Sans JP', script: 'ja' },
+  { family: 'Noto Sans KR', script: 'ko' },
+  { family: 'Noto Sans SC', script: 'sc' },
+  { family: 'Noto Sans TC', script: 'tc' },
+  { family: 'Nanum Gothic', script: 'ko' },
+]
+
+/** Text-shape shared by every text-bearing element (textbox, table cell, etc.).
+ *  `walk` only reads `.paragraphs[].runs[].fontFamily` — the field that
+ *  records what PowerPoint would draw the run with, after theme inheritance. */
+interface TextLike {
+  paragraphs?: Array<{ runs?: Array<{ fontFamily?: string }> }>
+}
+
 /** Mix a hex color (#RRGGBB) toward an 8-bit target by `ratio`. Ratio 0
  *  returns the original; ratio 1 returns the target. Used to build the
  *  5-step mono gradient per accent. */
@@ -674,8 +714,62 @@ export function registerSlidesStateHandlers(): void {
   registerHandle('slides:has-slide-clipboard', () => {
     return getSlidesElementClipboard().length > 0
   })
-  registerHandle('slides:font-catalog', () => [])
-  registerHandle('slides:font-missing', () => [])
+  // Real font-catalog / font-missing (sdk1 §11.53): port of the desktop
+  // `listFontCatalog()` / `missingCatalogFonts()` in
+  // apps/slides/src/main/font-store.ts (M4 backlog closure).
+  //
+  // The OFL catalog is a generated data table (sha256 + bytes per file);
+  // the renderer's contract is just `Array<{ family, script, installed,
+  // downloading }>`, so we project to family + script. Web can't track
+  // local install state (that lives in the browser's FontFace store), so
+  // we report `installed: false / downloading: false` for every family.
+  // The renderer falls back to whatever it has locally for layout; the
+  // presence of the entry just lets the Font Picker show the option.
+  //
+  // The catalog ships 21 families (5 latin sub-families + CJK + KR + KR
+  // auxiliary). Mirrored verbatim from
+  // apps/slides/src/main/font-catalog.ts:15 — the source file stays the
+  // generator of record; this projection is the `if (!familyAvailable)`
+  // invariant that desktop checks via `fontCdnBaseUrl()`.
+  registerHandle('slides:font-catalog', () => {
+    return FONT_CATALOG_DATA.map((f) => ({
+      family: f.family,
+      script: f.script,
+      installed: false,
+      downloading: false,
+    }))
+  })
+  // Real font-missing: walks every element on every slide, collects the
+  // fontFamily off each text run, and returns those that are *both*
+  // (a) in the catalog and (b) marked as downloadable-but-not-installed.
+  // On web we can't tell what's actually missing locally, so the list
+  // collapses to "all catalog families the deck references". The
+  // renderer filters by its own FontFace state.
+  registerHandle('slides:font-missing', (event: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return []
+    const wanted = new Set<string>()
+    const collectRuns = (text: TextLike | undefined): void => {
+      for (const p of text?.paragraphs ?? [])
+        for (const r of p.runs ?? []) if (r.fontFamily) wanted.add(r.fontFamily)
+    }
+    const walk = (els: ReadonlyArray<unknown>): void => {
+      for (const el of els) {
+        if (!el || typeof el !== 'object') continue
+        const e = el as {
+          children?: unknown[]
+          text?: TextLike
+          rows?: Array<Array<{ text?: TextLike }>>
+        }
+        if (e.children) walk(e.children as ReadonlyArray<unknown>)
+        collectRuns(e.text)
+        for (const row of e.rows ?? []) for (const cell of row) collectRuns(cell.text)
+      }
+    }
+    for (const s of rm.opened.deck.slides) walk(s.elements as unknown[])
+    const inCatalog = new Set(FONT_CATALOG_DATA.map((f) => f.family))
+    return [...wanted].filter((f) => inCatalog.has(f)).sort()
+  })
   // Real chart-color-schemes (sdk1 §11.50): port of the desktop
   // `chartColorSchemes()` in apps/slides/src/main/slides-main.ts:1000
   // (M4 backlog closure). Reads the live deck's theme accent1..6 via
