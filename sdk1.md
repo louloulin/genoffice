@@ -3241,6 +3241,84 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 - **引擎侧稳定 id**：解析期 id 不稳定的根治在 pptx-engine，不在 web-server。
 - **CRDT / OT 协作、移动端 H5**：M4 路线图不变。
 
+### 11.43 · CSV save round-trip on web（§A.5 收口）
+
+> 承接 §11.44 的 `.csv` open 路径修复（`csvToXlsxBuffer` + `csvPath` 回填，本轮
+> 之前是 b8e25a2）。本节闭合 save 路径，让 File → Export as CSV 在 web 构建下
+> 不再 UNSUPPORTED。`fc36dc4`。
+
+#### 11.43.1 之前的样子
+
+renderer 入口（`apps/sheets/src/renderer/csv-export.ts`）：
+
+```ts
+const result = await desktopApi.exportCsv({ fileName, content, hasFormulas, targetPath })
+```
+
+- desktop 路径走 `IPC_CHANNELS.exportCsv` → `apps/sheets/src/main/sheets-main.ts:2878`，完整 native dialog + UTF-8 BOM + atomic write。
+- web 路径走 `apps/sheets/src/renderer/web-bridge.ts`，之前**没有** `exportCsv` 方法 → 落到 `UNSUPPORTED` 分支 → console 错误、菜单点了没反应。
+- web-server `src/sheets/index.ts` **没有** `workbook:export-csv` 处理器（`grep -n 'export-csv'` 0 命中）。
+
+整条 round-trip 在 web 下断在 save 端。
+
+#### 11.43.2 三处改动
+
+1. **`apps/web-server/src/sheets/index.ts`** — 新增 `workbook:export-csv` handler：
+   - 校验 `fileName`（1-255 char string）、`content`（string，≤ 64 MB —— 与桌面
+     `MAX_CSV_EXPORT_CHARS` 对齐）、`targetPath`（string or undefined）。
+   - `targetPath` 缺省返 `{ canceled: true }`（web 无原生 save dialog；renderer
+     走 `downloadAs` 或自有 UI）。
+   - `targetPath` 通过 `requireManagedPath` 校验受管路径，缺 `.csv` 时补上。
+   - `atomicWriteFile(targetPath, Buffer.concat([BOM_3bytes, content]))` 落盘；
+     Excel 在 Windows 上读 BOM + UTF-8 才不会乱码（与 `workbook:create-document`
+     同字节序列）。
+   - 空内容拒绝：0 byte 的 BOM-only 文件对 Excel 和下游工具都是噪音，IPC 边界
+     上几乎一定是 renderer bug → `INVALID_ARGUMENT`。
+   - 成功后 `notifyFileSaved(targetPath, { format: 'csv', size })` + `recordRecentDoc(targetPath, { modified: true })`，
+     与 docs/slides/markdown 走同一 recents 链路。
+
+2. **`apps/sheets/src/renderer/web-bridge.ts`** — 在 `confirmCsvSave` 与
+   `pickAttachments` 之间插入 `exportCsv: (req) => transport.invoke('workbook:export-csv', req)`。
+   顺序与 desktop bridge 一致，未来切桌面时无需重排。
+
+3. **`apps/web-server/tests/workbook-save-e2e.test.ts`** — 6 个新 e2e：
+   - 写 UTF-8 BOM + content 到受管路径，断言首三字节 `0xef 0xbb 0xbf`；
+   - `targetPath` 缺扩展名时自动补 `.csv`；
+   - `targetPath` 缺省返 `{ canceled: true }`；
+   - 受管路径校验失败返 `INVALID_ARGUMENT`（`requireManagedPath` 抛 `InvalidArgumentError`，
+     整个 IPC envelope 都是同一 code，不另立 `PATH_OUTSIDE_STORAGE`）；
+   - 空内容拒绝 `INVALID_ARGUMENT`；
+   - 不留 `.tmp-*` 临时文件。
+
+#### 11.43.3 验证
+
+```
+cd apps/web-server
+./node_modules/.bin/vitest run --config ./vitest.config.ts tests/workbook-save-e2e.test.ts
+# 17/17 passed（11 既有 + 6 新增）
+
+./node_modules/.bin/vitest run --config ./vitest.config.ts
+# 787 passed | 1 skipped | 0 failures（90 文件）
+
+../../node_modules/.bin/tsc --noEmit
+# 无新增错误（同 9 个 pre-existing 在 packages/{pptx-ops,xlsx-gateway}）
+```
+
+#### 11.43.4 向后兼容
+
+- renderer 改动是加法：旧 desktopApi 调用方不受影响；desktop 端继续走
+  `IPC_CHANNELS.exportCsv` 直接通道，不经过 bridge。
+- handler 的 `{ canceled: true }` / `{ canceled: false, path }` 形状与
+  `workbookExportCsvResultSchema`（`desktop-api.ts:2409`）逐字段对齐，
+  renderer 现有 `result.canceled === true` 分支不需改动。
+- 字节序列与桌面 `saveCsv` 完全一致：BOM 3 字节 + UTF-8 content；下游消费
+  desktop 产 `.csv` 的工具同样能读 web 产 `.csv`。
+
+#### 11.43.5 收口结果
+
+§A.5 那条 backlog（filed in cda3f12）现标记为 ✅ `fc36dc4`。CSV open + save
+两端的 round-trip 在 web 构建下完整闭合。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -3942,7 +4020,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 - **审计日志保留期 / rotate**：当前 10k 条内存 mirror + 磁盘 JSONL 无限增长。生产环境需要
   `GENOFFICE_AUDIT_RETENTION_DAYS` + 周期 rotate 脚本（M5+）。
 - **Discord 服务器 / Office Hours**：外部服务，沙箱不可达（§A.3 ⬜ 保留）。
-- **CSV 保存 round-trip on web**（§11.44 之后）：`.csv` 的 open 路径已用 `csvToXlsxBuffer(decodeCsvBuffer(...))` + `csvPath` 回填走完（§11.44）；但 renderer's `csv-export.ts` 通过 `desktopApi.exportCsv(...)` 把值写回 `.csv`，**web-bridge 和 web-server 都没注册该通道**。打开 .csv 后点 Save 会 console UNSUPPORTED。需要补：web-bridge 加 `exportCsv`，web-server 加 `workbook:export-csv` handler（targetPath 受管路径校验 + `atomicWriteFile(targetPath, Buffer.concat([BOM, content]))` 匹配桌面 §11.41.3 已有的 5MB 上限和 BOM 行为）。
+- ~~**CSV 保存 round-trip on web**~~ ✅ `fc36dc4`：`.csv` 的 open 路径已用 `csvToXlsxBuffer(decodeCsvBuffer(...))` + `csvPath` 回填走完（§11.44）；save 路径已通过 web-bridge `exportCsv` + web-server `workbook:export-csv` handler 闭合（`atomicWriteFile(targetPath, Buffer.concat([BOM, content]))` + 64MB ceiling + 空内容拒绝 + 受管路径校验）。详见 §11.43。
 
 ### A.6 测试现状（本轮实施后更新）
 
