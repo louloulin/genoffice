@@ -199,6 +199,13 @@ export async function fireCallback(
  * id (basename — the same id the REST API surfaces at /api/v1/files) and
  * fires `file.saved` on any registered callback.
  *
+ * Dead-letter handling: when `fireCallback` returns a `delivered: false`
+ * result, this wrapper writes the entry to the in-process DLQ
+ * (`webhooks-dlq.ts`) so hosts can replay / inspect / drop it via
+ * `GET/POST/DELETE /api/v1/webhooks/dlq`. The DLQ is LRU-capped at
+ * 1024 entries and process-local (same durability model as the nonce
+ * store and version history); see sdk1.md §11.33.
+ *
  * Non-blocking: callers should not `await` this unless they need delivery
  * confirmation. Network errors and slow targets are swallowed by
  * `fireCallback`, so a flaky webhook target cannot stall the save pipeline.
@@ -208,6 +215,34 @@ export async function fireCallback(
  */
 export function notifyFileSaved(filePath: string, extra: { size?: number; format?: string } = {}): void {
   const fileId = filePath.split(/[\\/]/).pop() ?? filePath
-  // fire-and-forget; errors are logged inside fireCallback
-  void fireCallback('file.saved', fileId, { path: filePath, ...extra })
+  // fire-and-forget; on failure the entry is pushed to the DLQ so hosts
+  // can replay/inspect it. The DLQ import is deferred (dynamic) so this
+  // module stays circular-import-free with webhooks-dlq.ts.
+  void fireCallback('file.saved', fileId, { path: filePath, ...extra }).then(async (result) => {
+    if (!result || result.delivered) return
+    // Lazy require: avoids the cyclic-import dance and only loads DLQ
+    // code paths when something actually fails.
+    const { pushDeadLetter } = await import('./webhooks-dlq')
+    // Caller-fault 4xx (other than 429) is non-retryable — fireCallback
+    // exits after a single attempt. We surface those as `non_retryable_4xx`
+    // so operators can branch their tooling (e.g. fix the URL / auth
+    // header) without confusing them with transient server-side failures.
+    const reason: 'max_attempts' | 'non_retryable_4xx' =
+      result.attempts === 1 && result.finalStatus !== null && result.finalStatus >= 400 && result.finalStatus < 500 && result.finalStatus !== 429
+        ? 'non_retryable_4xx'
+        : 'max_attempts'
+    pushDeadLetter({
+      url: result.url,
+      event: result.event,
+      fileId,
+      body: JSON.stringify({ v: '1.0', event: result.event, ts: Math.floor(Date.now() / 1000), fileId, data: { path: filePath, ...extra } }),
+      attempts: result.attempts,
+      lastStatus: result.finalStatus,
+      lastError: result.error ?? null,
+      reason,
+    })
+  }).catch(() => {
+    // DLQ push itself is best-effort; if even that fails the original
+    // failure is already logged by fireCallback.
+  })
 }

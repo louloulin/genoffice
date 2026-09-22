@@ -21,6 +21,7 @@ import { handleFilesList, handleFilesCreate, handleFilesGet, handleFilesDelete, 
 import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiImage, handleAiSkill } from './ai'
 import { handleKbSearch, handleKbEntries } from './kb'
 import { handleWebhooksUpsert, handleWebhooksDelete, handleCallbacksFire } from './webhooks'
+import { handleWebhooksDlq, handleWebhooksDlqEntry } from './webhooks-dlq'
 import { handleHealth, handleChangelog } from './meta'
 import { handleEmbedNonce, handleEmbedVerifyNonce, handleEmbedReleaseNonce } from './embed-nonce'
 
@@ -82,6 +83,12 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
   if (pathname === '/api/v1/webhooks' && method === 'POST') return handleWebhooksUpsert(ctx)
   if (pathname === '/api/v1/webhooks' && method === 'DELETE') return handleWebhooksDelete(ctx)
   if (pathname === '/api/v1/callbacks' && method === 'POST') return handleCallbacksFire(ctx)
+
+  // webhook dead-letter queue (sdk1.md §11.33)
+  if (handleWebhooksDlq(ctx)) return true
+  if (pathname.startsWith('/api/v1/webhooks/dlq/')) {
+    return handleWebhooksDlqEntry(ctx)
+  }
 
   // embed nonce session (§11.26 — server-side nonce ↔ session binding)
   if (pathname === '/api/v1/embed/nonce' && method === 'POST') return handleEmbedNonce(ctx)

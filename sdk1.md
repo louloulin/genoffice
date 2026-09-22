@@ -2266,6 +2266,61 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 - **真 iframe e2e**：happy-dom + createEditor IPC 链路（§11.21.5 #2）仍未做；本批不做
 - **bridge 入站 command 路径测试**：renderer createPushHub 端 `host.command` 订阅还没单测；下批
 
+### 11.33 本轮续作（v2 第 28 轮 commit，2026-09-22）
+
+§11.3 P1 webhook 死信队列。`fireCallback()` 早就 retry 3 次指数退避，但 maxAttempts 用尽后只 `console.warn` —— host 集成商拿不到任何信号说"我漏了 N 个 file.saved 事件"。本批闭合这个 gap：失败投递（含 caller-fault 4xx）写入进程内 ring buffer（LRU 1024），v1 endpoint `GET/POST/DELETE /api/v1/webhooks/dlq[/:id[/replay]]` 让 host list/replay/ack。命名沿用 WPS / Stripe / GitHub 的 `dead_letter_queue` 词汇（不是 `retry_queue` —— 重试是 fireCallback 的事，DLQ 是"重试都失败了"的兜底）。
+
+#### 11.33.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/common/webhooks-dlq.ts` | **新增 · 248 行**：进程内 ring buffer（`Map<id, DeadLetterEntry>`）+ LRU 1024 + `DeadLetterEntry` 类型（id / url / event / fileId / body / attempts / lastStatus / lastError / reason / droppedAt）+ `DeadLetterStore` interface；导出 `pushDeadLetter` / `listDeadLetters` / `getDeadLetter` / `deleteDeadLetter` / `replayDeadLetter` / `_resetDeadLetterForTests`。`replayDeadLetter` 单次投递：成功移除 entry，失败原地更新 `attempts` / `lastError`（id 保持稳定便于 host 跟踪）。reason 区分 `max_attempts`（server-side 故障，重试失败）vs `non_retryable_4xx`（caller-fault：URL/auth/payload 错误，retry 无用）。 |
+| `apps/web-server/src/common/webhooks-store.ts` | `notifyFileSaved` 末尾把 `fireCallback` 返回的 `delivered:false` 结果 push 到 DLQ（动态 `import('./webhooks-dlq')` 避免循环依赖）；推断 reason（attempts=1 + 4xx + ≠429 → `non_retryable_4xx`，否则 `max_attempts`）。 |
+| `apps/web-server/src/api/v1/webhooks-dlq.ts` | **新增 · 132 行**：v1 endpoint 4 个：`GET /api/v1/webhooks/dlq`（list, `?limit=N`，默认 50 / 上限 200）/ `GET /:id` / `POST /:id/replay` / `DELETE /:id`。scope gate：`webhooks:manage`。错误信封统一：`401 UNAUTHENTICATED` / `403 FORBIDDEN` / `400 INVALID_ARGUMENT` / `404 NOT_FOUND` / `405 METHOD_NOT_ALLOWED`。 |
+| `apps/web-server/src/api/v1/index.ts` | dispatcher 加 2 行路由（DLQ list 在 `/api/v1/webhooks` 之前注册避免 shadowing）。 |
+| `apps/web-server/tests/webhooks-dlq.test.ts` | **新增 · 438 行 · 23 测试**：ring-buffer store (6) + replayDeadLetter (4) + notifyFileSaved → DLQ 集成 (3，含 setTimeout shim 跳过 retry backoff 让测试 < 100ms 完成) + v1 endpoint (10：list/limit/401/403/single GET/404/DELETE/replay/400/cap 200)。 |
+| `apps/web-server/src/common/webhooks-dlq.ts` `DeadLetterStore.update()` | 新增 in-place 更新（保留 id 稳定）；replay 失败时用 update 而非 remove+add，避免 host 端的 entry-id tracking 失效。 |
+
+合计 5 文件 / +23 测试。
+
+#### 11.33.2 设计要点
+
+- **caller-fault 4xx 也进 DLQ**：虽然 `fireCallback` 不 retry 4xx（retry 无意义），但 host 仍需要看到这些事件（典型场景：URL 配错 / auth 头失效 / payload 格式坏）。原实现只 `console.warn`，silent failure；本批把 4xx 也入 DLQ 并标 `reason: non_retryable_4xx`，host 一眼看到 "这是我自己配错了，不是 server 挂了"。这是对原"§11.10 P1 webhook DLQ"计划的实质增强——计划原本只写 "DLQ 留 backlog"，本批实施时把"重试用尽 + caller-fault 4xx"都纳入。
+- **动态 import 解决循环依赖**：`webhooks-store.ts` 要 pushDeadLetter，`webhooks-dlq.ts` 要 `WebhookDeliveryOptions` type —— 静态 import 会形成 `webhooks-store ↔ webhooks-dlq` 循环。改用 `await import('./webhooks-dlq')` 在 `then` 回调里延迟加载，ESM 模块图保持 DAG。
+- **id 稳定 in-place update**：replay 失败时不重建 entry（remove+add 分配新 id），而是原地 `update(id, patch)`。这样 host 的 UI / alert 链路可以用同一 id 跨多次 replay，不会因为"刷新页面"就丢上下文。
+- **LRU 1024 / list default 50 / cap 200**：三层 cap 各管一摊——LRU 防 OOM（1024 entry × ~1 KB ≈ 1 MB 内存上限），list default 50 让 single-call payload 不会太大，cap 200 让大 list 也不会一次性 dump 全部（host 想清空 DLQ 应该用 DELETE 单条而不是 GET 全量）。
+- **`replayDeadLetter` 单次投递**：不复用 fireCallback 避免把原始 timestamp 重新生成（receiver 的 idempotency key 会失效）；自己 POST 同一 body，保持 event `ts` 与原 drop 时间一致。
+- **scope gate 复用 `webhooks:manage`**：与 §11.10 webhook upsert/delete 同一 scope，host 不用多申请 token。
+- **DLQ 不持久化**：与 nonce store、version-history 同款 in-memory 持久模型。要持久化得引入 Redis/Postgres，本批不做；restart 后 DLQ 清空是已知 trade-off。
+
+#### 11.33.3 验证
+
+- `npx vitest run apps/web-server/tests/webhooks-dlq.test.ts`：**23/23 通过**（1.27s）
+- `npx vitest run apps/web-server/tests/embed-bridge.test.ts apps/web-server/tests/webhooks-dlq.test.ts apps/web-server/tests/scope-gate.test.ts` 等 critical path：**8 文件 / 108 测试 全绿**
+- `npx vitest run apps/web-server/tests/ --exclude=…(4 LLM/timeout e2e)`：**66 文件 / 541 pass / 1 skip**
+- `npx tsc` (apps/web-server) 去预存噪音：**0 error**
+- `node scripts/bundle.mjs`：`dist/bundle/index.js 28.5mb ⚠️`（与 baseline 同大小）
+- live smoke（PORT=33002 + `GENOFFICE_JWT_SECRET`，tmux）：
+  - `GET /api/v1/webhooks/dlq` (empty) → `200 {entries:[], count:0, limit:50}` ✓
+  - `GET` no auth → `401 UNAUTHENTICATED` ✓
+  - `GET` wrong scope (files:read) → `403 FORBIDDEN` ✓
+  - `GET ?limit=abc` → `400 INVALID_ARGUMENT` ✓
+  - `GET /dlq/nonexistent` → `404 NOT_FOUND` ✓
+  - `DELETE /dlq/nonexistent` → `404 NOT_FOUND` ✓
+  - `POST /dlq/nonexistent/replay` → `404 NOT_FOUND` ✓
+  - `GET ?limit=9999` → `200` + `limit:200` cap ✓
+  → **8/8 live smoke**
+
+#### 11.33.4 后续观察
+
+- **§11.3 P1 DLQ backlog**：✅ 本轮闭合
+- **DLQ 持久化**：Redis/Postgres 后端留 §M4+；当前 in-memory + LRU 1024 够短期用
+- **DLQ + webhook upsert 联动**：当前 host 改 webhook URL 后**旧 DLQ entry 仍指旧 URL**——replay 会 POST 到旧 URL。可加"replay 时用最新 callback URL"选项，但会让 replay 语义复杂化；本批不做
+- **`notifyFileSaved` 之外的触发点**：`notifyFileCallback` / `notifyFileDeleted`（如果存在）也应接 DLQ；audit 后再决定
+- **host UI 面板**：当前只有 v1 endpoint 暴露 DLQ，renderer 还没"失败事件列表"面板调用；UI backlog
+- **DLQ metric**：可以加 `/metrics` 暴露 `dlq_size` / `dlq_total_dropped` 计数；当前 v1 list 即 metric
+- **§11.32.4 后续观察**：`destroy()` 自动 release 示例、typedoc-count 显式 step、bridge command 路径测试仍未做；下批
+
 ：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -2495,7 +2550,7 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
    - `@genoffice/provider-qwen-dashscope` + `@genoffice/provider-zhipu-glm`（同上，5+5 测试）
    - `@genoffice/provider-doubao`（同上，5 测试）
    - `docs/api/provider-capabilities.md`（EN+ZH）能力矩阵更新到 10 行
-15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。**§11.31 增补到 17 条**（embed bridge 独立模块 + 17 单元测试）。**§11.32 增补到 18 条**（SDK verifyEmbedSession 一体化 helper + createEditor sessionBinding 自动 release）。。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
+15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。**§11.31 增补到 17 条**（embed bridge 独立模块 + 17 单元测试）。**§11.32 增补到 18 条**（SDK verifyEmbedSession 一体化 helper + createEditor sessionBinding 自动 release）。**§11.33 增补到 19 条**（webhook DLQ + host 管理 endpoint）。。。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
 16. **§5.2 发布检查清单逐项落地**（✅ 已完成）：
    - **#1 JSDoc/TSDoc on public APIs** — `auth.ts` (handleAuthJwt / handleOAuthToken / hasScope) + `meta.ts` (handleHealth / handleChangelog) 现已具备 `@route` / `@scope` / `@errors` 标记；其他 5 个 v1 handler 文件（files / ai / kb / webhooks）已具备完整 TSDoc（`commit 8e3d3e8`）
    - **#2 typedoc 实际执行** — `docs/scripts/gen-typedoc.mjs` 重新生成 **221 个 MD 文件** 到 `docs/api/_generated/`（2026-09-22 实测）；新增 `typedoc-count.test.ts` 守住 200-400 范围防漂移
@@ -2509,6 +2564,8 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+33. **webhook 死信队列 + host 管理 endpoint**（✅ 本轮 §11.33）：闭合 §11.3 P1 "DLQ 留 backlog"。`apps/web-server/src/common/webhooks-dlq.ts` 新增进程内 ring buffer（LRU 1024，reason 区分 `max_attempts` / `non_retryable_4xx`）+ `replayDeadLetter`（原地 update 保 id 稳定）；`notifyFileSaved` 末尾 push 到 DLQ（动态 import 避循环依赖）；v1 endpoint 4 个（`GET/POST/DELETE /api/v1/webhooks/dlq[/:id[/replay]]`）+ `webhooks:manage` scope gate。caller-fault 4xx（URL 配错 / auth 失效）也入 DLQ，让 host 看到 "我自己配错" vs "server 挂" 的区分。5 文件 / +23 测试（web-server 70/558 → 71/581）。live smoke 8/8（empty list / 401 / 403 / 400 / 404 GET / 404 DELETE / 404 replay / limit cap 200）。
+
 32. **SDK `verifyEmbedSession()` 同义别名 + `createEditor({ sessionBinding })` 自动 release**（✅ 本轮 §11.32）：闭合 §11.29.4 #1 + §11.30.4 destroy 自动释放 backlog。① 新 helper `verifyEmbedSession(options)`：与 `verifyEmbedNonce` 同 protocol 别名（130 行复制，错误 code 集合相同），让 `mint → mount → audit → release` 调用链读起来顺；② `CreateEditorOptions.sessionBinding?: { sessionId, nonce, autoRelease? }`：eager-validate sessionId/nonce（任一缺失同步抛），`destroy()` 末尾 fire-and-forget `releaseEmbedNonce().catch(() => {})`，autoRelease 默认 true。`expectedNonce` 改为 `sessionBinding?.nonce ?? makeNonce()`（用 server-minted 替代 client-only 随机数）。8 文件 / +31 测试（10 文件 / 108 测试 = was 8/77）。README 双语更新（`createEditor({ sessionBinding })` 示例 + `autoRelease:false` 用法 + `verifyEmbedSession` 别名说明）。live smoke 5/5（verify valid / embed with session / autoRelease DELETE / verify after release / stale embed 401）。
 
 31. **embed bridge 独立模块 + 17 单元测试**（✅ 本轮 §11.31）：`apps/web-server/src/embed/bridge.ts` 新模块导出 `EMBED_BRIDGE_VERSION` ('0.1.0') + `EMBED_BRIDGE_SOURCE` 模板字面量（`${WEB_SERVER_VERSION}` 插值位）；`embed/index.ts` 单行替换原 inline 字符串（served HTML 字节等价）。17 测试覆盖 IIFE 形状 / `WEB_SERVER_VERSION` SOT / envelope v=1.0 / nonce echo / meta 缺省 / `__GENOFFICE_EMBED__.app` / EventSource URL / 单参 vs 多参 unwrap / SSE 转发 / 入站 command → CustomEvent / envelope version 守门 / readyState=loading 等 DOMContentLoaded。test harness 用 `new Function('window','document','EventSource','setTimeout','CustomEvent', source)(...)` + fake timer，无需 jsdom/happy-dom。**Side fix**：`EmbedQuery` interface 漏 `sessionId` 字段（`parseEmbedQuery` 早就返回），tsc 暴露后补 interface + TSDoc 注明 §11.27 链路。web-server 69/540 → 70/557。live smoke 8/8（valid embed / wrong nonce 401 / no nonce 400 / verify true / release true / verify after release false / stale sessionId 401 / no auth 401）。
@@ -2532,7 +2589,7 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler / embed-bridge）| 70 | 558 | ✅ |
+| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler / embed-bridge / webhooks-dlq）| 71 | 581 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -2551,12 +2608,12 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **184** | **4425** | ✅ |
+| **总计** | **185** | **4448** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、SDK verifyEmbedSession 同义别名（19）、SDK createEditor sessionBinding + autoRelease（12）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、SDK verifyEmbedSession 同义别名（19）、SDK createEditor sessionBinding + autoRelease（12）、webhook DLQ ring buffer + v1 endpoint（23）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 
