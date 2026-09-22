@@ -29,6 +29,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { stopServer } from './helpers/server-process'
+import { findPython } from './helpers/python'
 import JSZip from 'jszip'
 
 interface IpcResult<T = unknown> {
@@ -154,7 +155,10 @@ const TABLE_ROW = ['物料', '单价']
 /** What the dictionary has to reach: paragraphs and table cells, one by one. */
 const SEGMENTS = [...PARAGRAPHS, ...TABLE_ROW]
 
-describe('dictionary coverage + gap filling E2E', () => {
+/* openpyxl is only needed to mint the xlsx fixture; skip when absent. */
+const PY = findPython('openpyxl')
+
+describe.skipIf(!PY)('dictionary coverage + gap filling E2E', () => {
   let server: ChildProcess | undefined
   let fake: { server: Server; port: number; prompts: string[] }
   let base: string
@@ -190,8 +194,7 @@ ws2.append(["项目", "金额"])
 ws2.append(["样品费", "1200"])
 wb.save(${JSON.stringify(join(dataDir, 'verify-supplier.xlsx'))})
 `
-      const child = spawn('/Users/louloulin/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3',
-        ['-c', code], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(PY as string, ['-c', code], { stdio: ['ignore', 'pipe', 'pipe'] })
       let stderr = ''
       child.stderr.on('data', (chunk) => (stderr += chunk.toString('utf8')))
       child.on('error', reject)

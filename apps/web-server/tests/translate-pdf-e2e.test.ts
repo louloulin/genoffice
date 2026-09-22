@@ -20,6 +20,7 @@ import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { stopServer } from './helpers/server-process'
+import { findPython } from './helpers/python'
 
 interface IpcResult<T = unknown> {
   ok: boolean
@@ -64,6 +65,8 @@ function runSync(cmd: string, args: string[]): Promise<void> {
   })
 }
 
+const python = (): string => PY as string
+
 function buildChinesePdf(path: string): Promise<void> {
   const lines = [
     '供应商交付说明',
@@ -91,10 +94,14 @@ for line in ${JSON.stringify(lines)}:
 c.showPage()
 c.save()
 `
-  return runSync('/Users/louloulin/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3', ['-c', code])
+  return runSync(python(), ['-c', code])
 }
 
-describe('PDF translation E2E', () => {
+/* reportlab is only needed to mint the Chinese-PDF fixture. When no
+ * interpreter has it, skip: an environment gap must not read as a failure. */
+const PY = findPython('reportlab')
+
+describe.skipIf(!PY)('PDF translation E2E', () => {
   let server: ChildProcess | undefined
   let base: string
   let dataDir: string
