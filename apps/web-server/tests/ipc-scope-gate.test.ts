@@ -270,3 +270,102 @@ describe('IPC dispatcher scope gate — users + tenant (sdk1 §11.74)', () => {
     expect(registry.getHandlerEntry(channels[1])?.scope).toBe('tenant:write')
   })
 })
+
+describe('IPC dispatcher scope gate — enterprise permissions (sdk1 §11.74 ext)', () => {
+  it('permissions:get requires permissions:read', async () => {
+    const r = await callIpc('permissions:get', writeToken, [{ docId: 'doc-perm-read' }])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+    // Note: writeToken here is the audit:write token; it's not granted
+    // permissions:* so it must be denied on permissions:get.
+  })
+
+  it('permissions:get accepts a permissions:* wildcard', async () => {
+    const wildcardToken = await mint('perms-wild', ['permissions:*'])
+    const grantRes = await callIpc('permissions:grant', wildcardToken, [
+      { docId: 'doc-wild', userId: 'alice', permissions: ['read'] },
+    ])
+    expect(grantRes.status).toBe(200)
+    expect(grantRes.body.ok).toBe(true)
+
+    const getRes = await callIpc('permissions:get', wildcardToken, [{ docId: 'doc-wild' }])
+    expect(getRes.status).toBe(200)
+    expect(getRes.body.ok).toBe(true)
+    const result = getRes.body.result as Array<{ userId: string; permissions: string[] }>
+    expect(result).toEqual([{ userId: 'alice', permissions: ['read'] }])
+  })
+
+  it('permissions:grant rejects a read-only permissions:read token', async () => {
+    const readOnlyToken = await mint('perms-read', ['permissions:read'])
+    const r = await callIpc('permissions:grant', readOnlyToken, [
+      { docId: 'doc-grant-readonly', userId: 'bob', permissions: ['write'] },
+    ])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('permissions:grant accepts a permissions:write token', async () => {
+    const writePermToken = await mint('perms-write', ['permissions:write'])
+    const r = await callIpc('permissions:grant', writePermToken, [
+      { docId: 'doc-grant-write', userId: 'carol', permissions: ['edit', 'comment'] },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+
+    // Read back via permissions:check using a permissions:* token
+    // (write-only token correctly lacks permissions:read — that's the gate)
+    const wildcardToken = await mint('perms-wild-2', ['permissions:*'])
+    const checkRes = await callIpc('permissions:check', wildcardToken, [
+      { docId: 'doc-grant-write', userId: 'carol', permission: 'edit' },
+    ])
+    expect(checkRes.status).toBe(200)
+    const checkResult = checkRes.body.result as { allowed: boolean; reason: string }
+    expect(checkResult.allowed).toBe(true)
+  })
+
+  it('permissions:revoke rejects a permissions:read token', async () => {
+    const readOnlyToken = await mint('perms-read-2', ['permissions:read'])
+    const r = await callIpc('permissions:revoke', readOnlyToken, [
+      { docId: 'doc-revoke', userId: 'dave' },
+    ])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('permissions:check accepts a permissions:read token', async () => {
+    const readToken2 = await mint('perms-read-3', ['permissions:read'])
+    // First write with a write-capable token
+    const writeToken2 = await mint('perms-write-2', ['permissions:write'])
+    await callIpc('permissions:grant', writeToken2, [
+      { docId: 'doc-check', userId: 'eve', permissions: ['read', 'comment'] },
+    ])
+    // Now read with the read-only token
+    const r = await callIpc('permissions:check', readToken2, [
+      { docId: 'doc-check', userId: 'eve', permission: 'comment' },
+    ])
+    expect(r.status).toBe(200)
+    const result = r.body.result as { allowed: boolean; reason: string }
+    expect(result.allowed).toBe(true)
+  })
+
+  it('admin sub bypasses permissions scope gate', async () => {
+    // Admin sub bypasses via hasScope wildcard `*`. Mint with no scope and rely on sub.
+    const r = await callIpc('permissions:grant', adminToken, [
+      { docId: 'doc-admin', userId: 'frank', permissions: ['*'] },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+  })
+
+  it('handler registry round-trips permissions scopes via getHandlerEntry', async () => {
+    const registry = await import('../src/common/registry')
+    const channels = [
+      'test:perms-read-' + Math.random().toString(36).slice(2),
+      'test:perms-write-' + Math.random().toString(36).slice(2),
+    ]
+    registry.registerHandle(channels[0], () => ({ ok: true }), { scope: 'permissions:read' })
+    registry.registerHandle(channels[1], () => ({ ok: true }), { scope: 'permissions:write' })
+    expect(registry.getHandlerEntry(channels[0])?.scope).toBe('permissions:read')
+    expect(registry.getHandlerEntry(channels[1])?.scope).toBe('permissions:write')
+  })
+})

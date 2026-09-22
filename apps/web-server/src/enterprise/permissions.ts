@@ -16,7 +16,7 @@ export function registerEnterprisePermissionHandlers(): void {
       userId,
       permissions: perms,
     }))
-  })
+  }, { scope: 'permissions:read' })
 
   registerHandle('permissions:grant', (_event: unknown, args: unknown) => {
     const { docId, userId, permissions } = args as {
@@ -31,7 +31,7 @@ export function registerEnterprisePermissionHandlers(): void {
 
     PERMISSIONS.get(docId)!.set(userId, permissions)
     return { ok: true }
-  })
+  }, { scope: 'permissions:write' })
 
   registerHandle('permissions:revoke', (_event: unknown, args: unknown) => {
     const { docId, userId } = args as { docId: string; userId: string }
@@ -40,7 +40,7 @@ export function registerEnterprisePermissionHandlers(): void {
       docPerms.delete(userId)
     }
     return { ok: true }
-  })
+  }, { scope: 'permissions:write' })
 
   registerHandle('permissions:check', (_event: unknown, args: unknown) => {
     const { docId, userId, permission } = args as {
@@ -57,5 +57,5 @@ export function registerEnterprisePermissionHandlers(): void {
 
     const hasPermission = userPerms.includes(permission) || userPerms.includes('*')
     return { allowed: hasPermission, reason: hasPermission ? 'OK' : 'Permission denied' }
-  })
+  }, { scope: 'permissions:read' })
 }
