@@ -403,13 +403,18 @@ export function registerVersionHistoryHandlers(): void {
  * the dedupe behaviour without going through the save pipeline.
  */
 export function _resetForTests(): void {
-  if (existsSync(VERSIONS_DIR)) {
-    for (const entry of readdirSync(VERSIONS_DIR)) {
-      try {
-        unlinkSync(join(VERSIONS_DIR, entry))
-      } catch {
-        /* best effort */
-      }
+  // Wipe every docId subdirectory under VERSIONS_DIR. We must recurse
+  // because each subdirectory holds the actual `.bin` snapshots plus
+  // `.meta.json` sidecars; a bare `unlinkSync` on the subdirectory
+  // fails on POSIX (EPERM) and silently leaves the snapshots behind,
+  // which is exactly the bug versions-v1-endpoint.test.ts caught.
+  if (!existsSync(VERSIONS_DIR)) return
+  const { rmSync } = require('node:fs') as typeof import('node:fs')
+  for (const entry of readdirSync(VERSIONS_DIR)) {
+    try {
+      rmSync(join(VERSIONS_DIR, entry), { recursive: true, force: true })
+    } catch {
+      /* best effort — another test thread may have already removed it */
     }
   }
 }

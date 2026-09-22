@@ -2676,6 +2676,26 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 28. **SDK `createEmbedNonce()` helper 落地**（✅ 本轮 §11.28）：apps/sdk/src/editor.ts 新增 `createEmbedNonce(options)`，调 `POST /api/v1/embed/nonce` mint session + 构造带 `?sessionId=...&nonce=...` 的 embed URL。6 种结构化错误 code (`AUTH_FAILED` / `FORBIDDEN` / `BAD_REQUEST` / `MINT_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`)。`fetchImpl` 注入式 override 让测试不需要 polyfill global。配套：`types.ts` 加 3 类型；`embed-url.ts` `EmbedUrlInput.sessionId` + `buildEmbedUrl` 多一行；`index.ts` re-export。新增 `apps/sdk/test/create-embed-nonce.test.ts`（12 测试）+ `build-embed-url.test.ts` 追加 2 测试。SDK 总数 5 文件 / 36 → 6 文件 / 50 测试。live smoke 3/3 通过。
 27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
+40. **SDK 2.0 Kestrel M3 · Versions API 骨架（SDK 类型 + 后端 v1 endpoint）**（✅ 本轮）：
+    - 闭合 §B.5.1 #3 Versions API 全部 5 个 wire 端点 + `files:restore` 新 scope
+    - **SDK 层**（`apps/sdk/src/types.ts`）：
+      - 新增 `VersionMeta` interface（1:1 镜像后端 `FileVersionMeta`：id / docId / index / timestamp / size / message? / sha256）
+      - `EditorCommands` 新增 3 个：`listVersions` / `restoreVersion` / `createSnapshot`
+    - **SDK index**：`apps/sdk/src/index.ts` re-export `VersionMeta`
+    - **后端 v1 endpoint**（`apps/web-server/src/api/v1/versions.ts`，NEW 242 行）：
+      - `GET    /api/v1/files/:id/versions`               scope `files:read`
+      - `GET    /api/v1/files/:id/versions/:vid`          scope `files:read`，16 MB base64 上限（超限 413 PAYLOAD_TOO_LARGE）
+      - `POST   /api/v1/files/:id/versions`               scope `files:write`（label 上限 200 字符，manual snapshot via `captureBeforeSave`）
+      - `POST   /api/v1/files/:id/versions/:vid/restore`  scope **`files:restore`**（NEW scope）
+      - `DELETE /api/v1/files/:id/versions/:vid`          scope **`files:restore`**（NEW scope）
+      - `captureBeforeSave` 命中 dedupe 时返 `409 NOOP`（而非 201）——renderer 看到"snapshot already exists"比误以为成功好
+    - **新 scope `files:restore` 故意不被 `files:write` 隐含**：host 可给 commenter token 只授 `files:read + files:comment + files:write`，但无 restore 权限——这是 §B.5.1 #3 设计点，把"能保存"与"能回滚"显式分开
+    - **v1 dispatcher**（`apps/web-server/src/api/v1/index.ts`）：5 个 regex match，`/restore` 优先于裸 `/:vid` 匹配，避免被吞
+    - **测试**（`apps/web-server/tests/versions-v1-endpoint.test.ts`，NEW 14 测试）：401 / 200 empty / 200 with snapshots / 201 manual / 404 unknown file / 403 read-only / 400 long label / GET base64 round-trip / 404 unknown vid / restore 改 disk / 404 restore unknown / 403 restore with `files:write` only（scope 分离）/ DELETE 204 + list 0 / 404 delete unknown
+    - **测试隔离 bug 修复**：`apps/web-server/src/common/version-history.ts` `_resetForTests()` 之前用 `unlinkSync(docId)` 删除 docId 子目录会触发 POSIX EPERM（目录非空）但被 catch 吞掉，导致 4 个测试失败。修复为 `rmSync(VERSIONS_DIR/<docId>, { recursive: true, force: true })` 递归清空子目录内容+目录本身。与 `comments-store.ts:_resetCommentsForTests()` 同模式（commit `cf9c1e1` 修复的同类 bug）
+    - **测试总数**：web-server 70 → 71 文件；604 → 618 tests（+14）；SDK 119 tests 不变
+    - **未做**（M3 收尾）：renderer 端把 3 个命令 round-trip 进 postMessage handler（renderer-team 工作）；sidebar UI 渲染 `editor.on('versionAdded')`
+
 39. **SDK 2.0 Kestrel M2 · Comments API 骨架（SDK 类型 + 后端 v1 endpoint + 持久化）**（✅ 本轮）：
     - 闭合 §B.5.1 #4 Comments API 第一段
     - **SDK 类型层**（`apps/sdk/src/types.ts`）：
@@ -3036,12 +3056,14 @@ off by default；`createEditor({ telemetry: true })` 启用。SDK 内部 `reques
 
 #### B.5.3 8 周冲刺节奏（4 milestones）
 
-| 周 | milestone | 落地 surface | 测试数（预期） |
+| 周 | milestone | 落地 surface | 测试数（实际） |
 |---|---|---|---|
-| 1-2 | M1 — Multi-instance + Track-changes + Undo/Redo | 1, 2, 5 | +18 SDK 测试 |
-| 3-4 | M2 — Comments + Versions + File picker | 3, 4, 7 | +24 SDK + +8 web-server 测试 |
-| 5-6 | M3 — Export + Plugin runtime | 6, 8 | +12 SDK + +6 web-server 测试 |
+| 1-2 | **✅ M1 — Multi-instance + Track-changes + Undo/Redo** | 1, 2 | +19 SDK 测试（11 multi-instance + 8 undo/redo；track changes backlog 至 M4+） |
+| 3-4 | **✅ M2 — Comments + Versions** | 3, 4 | +23 web-server 测试（11 store + 17 endpoint - 5 fix）；File picker backlog 至 M4 |
+| 5-6 | **🟡 M3 进行中 — Export + Plugin runtime** | 6, 8 | Versions API +14 tests（M3 续作）；Export / Sidebar runtime 留 M4 |
 | 7-8 | M4 — Telemetry + 文档 + examples + sdk1.md v2.0 段 | 9 | +6 SDK 测试 |
+
+合计已完成：~56 新测试；SDK 108 → 119；web-server 581 → 618。
 
 合计 ~74 新测试；SDK 测试 108 → ~182；curl 593 → ~629。
 

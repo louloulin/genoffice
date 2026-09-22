@@ -313,6 +313,37 @@ export interface CommentAnchor {
   [key: string]: unknown
 }
 
+/**
+ * A file version / snapshot metadata record. Returned by
+ * `editor.command('listVersions')`. Hosts that want the actual bytes
+ * for preview / restore use the `id` to fetch via the v1 endpoint
+ * `GET /api/v1/files/:id/versions/:vid` (scope `files:read`).
+ *
+ * Field names mirror `FileVersionMeta` in
+ * `apps/web-server/src/common/version-history.ts` 1:1 — `timestamp`
+ * (not `createdAt`) and `message` (not `label`) are the canonical
+ * backend names. Renaming at the SDK boundary would force the v1
+ * endpoint to do a translation step for no benefit.
+ *
+ * (sdk1.md §B.5.1 #3 Versions API, SDK 2.0 Kestrel M3)
+ */
+export interface VersionMeta {
+  /** Stable version id (opaque, server-assigned). */
+  id: string
+  /** Document id this version belongs to. */
+  docId: string
+  /** Sequential 1-based index inside the doc's version directory. */
+  index: number
+  /** Epoch ms (UTC). */
+  timestamp: number
+  /** Snapshot size in bytes. */
+  size: number
+  /** Optional human-readable message (auto-generated or user label). */
+  message?: string
+  /** SHA-256 of the snapshot bytes; lets the renderer dedupe no-op saves. */
+  sha256: string
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Editor handle
 // ──────────────────────────────────────────────────────────────────────────────
@@ -406,6 +437,37 @@ export interface EditorCommands {
   resolveComment: { args: { id: string; resolved: boolean }; result: void }
   /** Delete a comment. Editors that soft-delete (keep in audit log) still resolve ok. */
   removeComment: { args: { id: string }; result: void }
+
+  /**
+   * List saved versions of the current document. Returns metadata
+   * only; to fetch a single version's bytes for preview / restore,
+   * use the v1 REST endpoint
+   * `GET /api/v1/files/:id/versions/:vid` (scope `files:read`).
+   *
+   * Editors that don't track versions return `{ versions: [] }`.
+   *
+   * (sdk1.md §B.5.1 #3 Versions API, SDK 2.0 Kestrel M3)
+   */
+  listVersions: { args?: Record<string, never>; result: { versions: VersionMeta[] } }
+  /**
+   * Restore the document to a previously captured version. The restore
+   * captures the CURRENT state as a new version (so the user can roll
+   * forward again) then swaps in the chosen version's bytes atomically.
+   *
+   * The `version` string in the result is the post-restore `VersionMeta.id`
+   * of the now-current document; pass it back to `listVersions()` to
+   * confirm the restore succeeded.
+   *
+   * Editors that don't support version restore reject with
+   * `code: 'UNSUPPORTED'`.
+   */
+  restoreVersion: { args: { versionId: string }; result: { version: string } }
+  /**
+   * Manually capture a snapshot of the current buffer. Useful before
+   * risky edits ("save point"). The optional `label` shows up in the
+   * `VersionMeta.label` field for human-readable history lists.
+   */
+  createSnapshot: { args: { label?: string }; result: { id: string } }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

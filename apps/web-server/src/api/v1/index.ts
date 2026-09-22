@@ -28,6 +28,13 @@ import {
   handleFilesCommentsPatch,
   handleFilesCommentsDelete,
 } from './comments'
+import {
+  handleFilesVersionsList,
+  handleFilesVersionsGet,
+  handleFilesVersionsCreate,
+  handleFilesVersionsRestore,
+  handleFilesVersionsDelete,
+} from './versions'
 import { handleWebhooksDlq, handleWebhooksDlqEntry } from './webhooks-dlq'
 import { handleHealth, handleChangelog, handleMetrics } from './meta'
 import { handleEmbedNonce, handleEmbedVerifyNonce, handleEmbedReleaseNonce } from './embed-nonce'
@@ -95,6 +102,30 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
   }
   if (fileCommentsItemMatch && method === 'DELETE') {
     return handleFilesCommentsDelete(ctx, decodeURIComponent(fileCommentsItemMatch[1]!), decodeURIComponent(fileCommentsItemMatch[2]!))
+  }
+
+  // Versions (Kestrel M3, sdk1.md §B.5.1 #3). Two patterns:
+  // /api/v1/files/:id/versions (list/create) and
+  // /api/v1/files/:id/versions/:vid[/restore] (get/restore/delete).
+  // The /restore suffix is matched FIRST so it doesn't get eaten by
+  // the bare /:vid route.
+  const fileVersionsRestoreMatch = /^\/api\/v1\/files\/([^/]+)\/versions\/([^/]+)\/restore$/.exec(pathname)
+  if (fileVersionsRestoreMatch && method === 'POST') {
+    return handleFilesVersionsRestore(ctx, decodeURIComponent(fileVersionsRestoreMatch[1]!), decodeURIComponent(fileVersionsRestoreMatch[2]!))
+  }
+  const fileVersionsListMatch = /^\/api\/v1\/files\/([^/]+)\/versions$/.exec(pathname)
+  if (fileVersionsListMatch && method === 'GET') {
+    return handleFilesVersionsList(ctx, decodeURIComponent(fileVersionsListMatch[1]!))
+  }
+  if (fileVersionsListMatch && method === 'POST') {
+    return handleFilesVersionsCreate(ctx, decodeURIComponent(fileVersionsListMatch[1]!))
+  }
+  const fileVersionsItemMatch = /^\/api\/v1\/files\/([^/]+)\/versions\/([^/]+)$/.exec(pathname)
+  if (fileVersionsItemMatch && method === 'GET') {
+    return handleFilesVersionsGet(ctx, decodeURIComponent(fileVersionsItemMatch[1]!), decodeURIComponent(fileVersionsItemMatch[2]!))
+  }
+  if (fileVersionsItemMatch && method === 'DELETE') {
+    return handleFilesVersionsDelete(ctx, decodeURIComponent(fileVersionsItemMatch[1]!), decodeURIComponent(fileVersionsItemMatch[2]!))
   }
 
   // ai

@@ -54,6 +54,7 @@ export type {
   CommentAnchor,
   CommentAddedEvent,
   CommentResolvedEvent,
+  VersionMeta,
 } from './types'
 
 /** UMD global name for `<script>` consumers — see `dist/index.umd.js`. */
