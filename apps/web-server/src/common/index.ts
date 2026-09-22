@@ -49,7 +49,6 @@ export {
   MAILS,
   CALENDARS,
   WORKFLOWS,
-  AUDIT_LOGS,
   NOTIFICATIONS,
   WEB_WINDOWS,
   TABS,
@@ -70,7 +69,6 @@ export type {
   MailRecord,
   CalendarEventRecord,
   WorkflowRecord,
-  AuditRecord,
   NotificationRecord,
   TabRecord,
 } from './state'
@@ -95,3 +93,15 @@ export { fileIndexStore, FILES_INDEX_FILE } from './file-index-store'
 export { recordRecentDoc } from './document-stores'
 export { readStorageOrManagedBytes } from './storage-read'
 export { storageKeyFromPath, isRemoteStorage } from './state'
+// Audit log (sdk1.md §M5 backlog) — disk-backed JSONL with bounded
+// in-memory mirror. Replaces the previous process-local Map.
+export {
+  recordAudit,
+  queryAudit,
+  auditSize,
+  snapshotAuditLog,
+  exportAudit,
+  _resetAuditForTests as _resetAuditLogForTests,
+} from './audit-log'
+export type { AuditRecord, RecordAuditInput, QueryAuditFilters, ExportAuditFilters } from './audit-log'
+

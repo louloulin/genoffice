@@ -561,21 +561,10 @@ export interface WorkflowRecord {
 
 export const WORKFLOWS: Map<string, WorkflowRecord> = new Map()
 
-export interface AuditRecord {
-  id: string
-  tenantId: string
-  userId: string
-  action: string
-  resource: string
-  resourceId: string
-  details: Record<string, unknown>
-  ip: string
-  userAgent: string
-  timestamp: number
-  status: 'success' | 'failure'
-}
-
-export const AUDIT_LOGS: Map<string, AuditRecord> = new Map()
+// AuditRecord and the AUDIT_LOGS Map moved to ./audit-log.ts (sdk1.md §M5)
+// so the log can be disk-backed across server restarts. The Map-based
+// representation in this file used to vanish on every restart, which is
+// wrong for compliance data.
 
 export interface NotificationRecord {
   id: string

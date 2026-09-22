@@ -123,6 +123,40 @@ function persist(): void {
   dirty = false
 }
 
+
+/**
+ * Fire a `comment.*` webhook (sdk1.md §M4 §C backlog). Lazy-imports
+ * `webhooks-store` so this module stays free of its dependency graph at
+ * boot time, mirroring the pattern `webhooks-store.ts` itself uses for
+ * the DLQ.
+ *
+ * Best-effort: a missing callback for `fileId`, a delivery failure, or
+ * even a missing `webhooks-store` module must not break the comment
+ * mutation path. The DLQ inside `webhooks-store` captures failures for
+ * later replay, so hosts can still observe drops.
+ */
+function notifyComment(fileId: string, event: string, comment: Comment): void {
+  // Fire-and-forget. We don't await because add/resolve/remove are
+  // synchronous IPC handlers and the network round-trip would block
+  // the renderer. The DLQ inside webhooks-store catches failures.
+  void import('./webhooks-store')
+    .then((mod) => mod.fireCallback(event, fileId, {
+      commentId: comment.id,
+      author: comment.author,
+      text: comment.text,
+      anchor: comment.anchor,
+      resolved: comment.resolved,
+      resolvedAt: comment.resolvedAt ?? null,
+      parentId: comment.parentId ?? null,
+      createdAt: comment.createdAt,
+    }))
+    .catch(() => {
+      // Lazy import failed (e.g. webhooks-store not initialized in
+      // an isolated test) — silently swallow so the comment mutation
+      // still succeeds.
+    })
+}
+
 /**
  * Add a new comment to a file. Returns the assigned id (stable, opaque).
  * Caller is responsible for OAuth scope gate (`files:comment`) before
@@ -150,6 +184,7 @@ export function addComment(fileId: string, input: AddCommentInput): Comment {
   commentsByFile.set(fileId, list)
   dirty = true
   persist()
+  notifyComment(fileId, 'comment.added', comment)
   return comment
 }
 
@@ -204,6 +239,7 @@ export function resolveComment(fileId: string, id: string, resolved: boolean): C
   commentsByFile.set(fileId, list)
   dirty = true
   persist()
+  notifyComment(fileId, 'comment.resolved', updated)
   return { ...updated }
 }
 
@@ -216,10 +252,12 @@ export function removeComment(fileId: string, id: string): boolean {
   const list = commentsByFile.get(fileId) ?? []
   const idx = list.findIndex((c) => c.id === id)
   if (idx < 0) return false
+  const removed = list[idx]!
   list.splice(idx, 1)
   commentsByFile.set(fileId, list)
   dirty = true
   persist()
+  notifyComment(fileId, 'comment.removed', removed)
   return true
 }
 

@@ -1,8 +1,18 @@
 /**
- * SSO/OIDC auth + audit log channels. Placeholder implementations; Phase 3
- * will introduce a real identity provider and persisted audit log.
+ * SSO/OIDC auth + audit log channels.
+ *
+ * The auth side (`auth:sso-login` / `auth:sso-callback` / `auth:logout`)
+ * is still a placeholder — a real implementation needs a state-vs-code
+ * CSRF check and an exchange against the IdP's token endpoint (M5
+ * backlog). The audit side, however, used to live in a process-local
+ * `AUDIT_LOGS` Map that vanished on every restart — disastrous for
+ * compliance data. As of sdk1.md §M5 / §11.36 the audit log is
+ * disk-backed (`apps/web-server/src/common/audit-log.ts`) and survives
+ * restarts, so this file now just wires the IPC handlers through to
+ * that store.
  */
-import { AUDIT_LOGS, registerHandle } from '../common/index'
+import { registerHandle } from '../common/index'
+import { exportAudit, queryAudit, recordAudit } from '../common/audit-log'
 
 export function registerAuthHandlers(): void {
   registerHandle('auth:sso-login', (_event: unknown, args: unknown) => {
@@ -44,26 +54,21 @@ export function registerAuthHandlers(): void {
 
 export function registerAuditHandlers(): void {
   registerHandle('audit:log', (_event: unknown, args: unknown) => {
-    const { action, resource, resourceId, details, status } = (args || {}) as {
+    const { action, resource, resourceId, details, status, userId } = (args || {}) as {
       action: string
       resource: string
       resourceId?: string
       details?: Record<string, unknown>
       status?: 'success' | 'failure'
+      userId?: string
     }
-    const id = `audit-${Date.now()}`
-    AUDIT_LOGS.set(id, {
-      id,
-      tenantId: 'default',
-      userId: 'system',
+    const id = recordAudit({
       action,
       resource,
-      resourceId: resourceId || '',
-      details: details || {},
-      ip: '0.0.0.0',
-      userAgent: 'GenOffice/1.0',
-      timestamp: Date.now(),
-      status: status || 'success',
+      ...(resourceId ? { resourceId } : {}),
+      ...(details ? { details } : {}),
+      ...(status ? { status } : {}),
+      ...(userId ? { userId } : {}),
     })
     return { ok: true, id }
   })
@@ -78,38 +83,27 @@ export function registerAuditHandlers(): void {
       limit?: number
       offset?: number
     }
-    const maxResults = limit || 100
-    const startOffset = offset || 0
-    let logs = [...AUDIT_LOGS.values()]
-    if (userId) logs = logs.filter(l => l.userId === userId)
-    if (action) logs = logs.filter(l => l.action.includes(action))
-    if (resource) logs = logs.filter(l => l.resource === resource)
-    if (startDate) logs = logs.filter(l => l.timestamp >= startDate)
-    if (endDate) logs = logs.filter(l => l.timestamp <= endDate)
-    return {
-      logs: logs
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(startOffset, startOffset + maxResults),
-      total: logs.length,
-    }
+    return queryAudit({
+      ...(userId ? { userId } : {}),
+      ...(action ? { action } : {}),
+      ...(resource ? { resource } : {}),
+      ...(typeof startDate === 'number' ? { startDate } : {}),
+      ...(typeof endDate === 'number' ? { endDate } : {}),
+      ...(typeof limit === 'number' ? { limit } : {}),
+      ...(typeof offset === 'number' ? { offset } : {}),
+    })
   })
 
   registerHandle('audit:export', (_event: unknown, args: unknown) => {
     const { format, startDate, endDate } = (args || {}) as {
-      format: 'csv' | 'json' | 'xlsx'
+      format?: 'csv' | 'json' | 'xlsx'
       startDate?: number
       endDate?: number
     }
-    let logs = [...AUDIT_LOGS.values()]
-    if (startDate) logs = logs.filter(l => l.timestamp >= startDate)
-    if (endDate) logs = logs.filter(l => l.timestamp <= endDate)
-
-    const exportId = `export-${Date.now()}`
-    return {
-      exportId,
-      format,
-      recordCount: logs.length,
-      downloadUrl: `/audit/exports/${exportId}.${format}`,
-    }
+    return exportAudit({
+      ...(format ? { format } : {}),
+      ...(typeof startDate === 'number' ? { startDate } : {}),
+      ...(typeof endDate === 'number' ? { endDate } : {}),
+    })
   })
 }

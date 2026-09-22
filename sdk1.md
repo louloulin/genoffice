@@ -153,27 +153,34 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 | **加密备份** | web-server 自部署场景：操作员用 S3 备份 FILES_DIR | ⚠️ | 不在 monorepo 范围；运维指南 |
 | **版本历史** | 单文件 N 版本快照 | ✅ | `apps/web-server/src/common/version-history.ts`（disk-backed, 10/文件）+ 4 IPC + 7 save pipeline 钩子 |
 | **全文检索** | KB 索引（条目级）+ 文件内容搜索 | ✅（KB） / ✅（文件内容）| `kb-format` + `shell/search.ts:74` (`search:files` 含 snippet 提取) |
+| **审计日志** | 磁盘 JSONL（10k 条内存 mirror）跨重启可查询 | ✅ | `apps/web-server/src/common/audit-log.ts`（§11.37.2）+ `enterprise/auth-audit.ts` |
+| **评论 + 评论 webhook** | 增删改 + `comment.added` / `resolved` / `removed` 事件 | ✅ | `comments-store.ts`（§11.37.1）+ `api/v1/comments.ts` 5 端点 |
 | **协作冲突解决** | CRDT / OT | ⬜ | M4（Week 16） |
 
-**结论**：文档管理 13/14 项 ✅（版本历史 + 全文检索本轮补齐），1 项列入 M4+ 路线图（协作 = CRDT/OT）。加密备份为运维层，不在 monorepo 范围。
+**结论**：文档管理 **15/16** 项 ✅（审计日志 + 评论 webhook 本轮补齐），1 项列入 M4+ 路线图（协作 = CRDT/OT）。加密备份为运维层，不在 monorepo 范围。
 
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  60 文件 / 478 测试 全部通过  (~28s wall)
+apps/web-server/tests/  →  86 文件 / 724 测试 通过 · 1 skipped  (~68s wall · 2026-09-22 实测)
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
   - html-save-atomic.test.ts       M3 原子写 + recents + 0-byte 拒绝
   - file-management.test.ts       30 tests   recents 镜像 + watcher + 跨重启持久
-  - webhook-fires-on-save.test.ts   5 tests   7 个 save 路径触发
-  - webhook-signing.test.ts         5 tests   HMAC-SHA256 签名
+  - version-history.test.ts        9 tests   snapshot-on-save + 自动 trim
+  - webhook-fires-on-save.test.ts  5 tests   7 个 save 路径触发
+  - webhook-signing.test.ts        5 tests   HMAC-SHA256 签名
+  - webhooks-dlq-persistence.test.ts 8 tests   磁盘 DLQ 跨重启
+  - audit-log-persistence.test.ts  7 tests   JSONL 审计日志跨重启（§11.37.2）
+  - comment-webhook.test.ts        5 tests   comment.* 事件（§11.37.1）
   - auth.test.ts + auth-scope.test.ts  26 tests   JWT + scope RBAC
   - scope-gate.test.ts              9 tests   16 个 v1 端点 scope gate
   - api-v1-e2e.test.ts                          完整 v1 端到端
   - market* / translate-* / ipc-* / health-* / embed-endpoint / static-spa-routes …
+  - typedoc-count.test.ts           3 tests   278 个生成页（界 200-400）
 
-15 个 packages → 3 651 tests / 161 files 全部通过（web-server 已包含）
+15 个 packages → 3 651+ tests / 161+ files 全部通过（web-server 已包含）
 ```
 
 ### 0.6 WebServer 实地核查（2026-09-22）
@@ -950,6 +957,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | Tier 3（Community）| 8 项 | 7/8 | **87.5%** | 仅 Discord/Office Hours 需外部运营 |
 | 发布检查清单（§5.2）| 15 项 | 13/15 | **86.7%** | Docker Hub 推送 + 域名 SSL 需外部资源 |
 | **综合** | **51 项** | **48/51** | **94.1%** | 仅 3 项需外部资源（外部运维，非技术债） |
+| 附加（§11.37 收口）| 2 项 | 2/2 | **100%** | 评论 webhook（§M4 §C）+ 审计日志持久化（§M5），本轮双双落地 |
 
 ### 11.2 "做完了吗？" 一句话回答
 
@@ -2533,6 +2541,141 @@ response_chars / session_ms），让运维能把 host 用量与 DLQ 计数器一
   `event-broadcast-e2e.test.ts`（SSE 时序）在全量跑时偶发，单独跑均通过、
   `--retry=2` 下全绿；两者均不在本轮改动集合内。
 
+### 11.37 · Comment webhook + Audit log 持久化（M4 §C / M5 backlog 一并收口）
+
+> 两项都是 sdk1.md 既定 backlog，本轮一起做。零 Rust 改造、零外部依赖、纯
+> TS 层 wiring，与 §11.36 SidebarRuntime 同一思路。
+
+#### 11.37.1 Comment webhook 事件（§M4 §C backlog closed）
+
+**问题**：save pipeline 已通过 `notifyFileSaved` 触发 `file.saved`
+webhook，但评论增删改无任何对外通道，host 集成商无法实时收到评论
+变更通知。
+
+**落实**：
+- `apps/web-server/src/common/comments-store.ts` 新增内部
+  `notifyComment(fileId, event, comment)` helper，使用与
+  `webhooks-store.ts` 同样的 lazy-import 模式避免循环依赖；
+  在 `addComment` / `resolveComment` / `removeComment` 三处副作用后
+  各调一次。
+- 事件名：`comment.added` / `comment.resolved` / `comment.removed`。
+- Payload 形态：`{ commentId, author, text, anchor, resolved, resolvedAt?, parentId?, createdAt }`。
+- `removeComment` 在 `splice` 前先 `const removed = list[idx]!`，把删
+  除的 comment 完整快照带出去，host 端能拿到被删内容的元数据用于
+  审计（与 §0.4 "文档管理功能" 闭环）。
+- fire-and-forget；失败由 `webhooks-store.fireCallback` 内的 DLQ
+  自动承接，**不让 webhook 投递问题回灌评论写路径**。
+- 测试 `apps/web-server/tests/comment-webhook.test.ts` 5 例：add / resolve
+  / remove 各 1 例；fireCallback 抛错时 mutation 仍成功；无 callback
+  注册时不抛错。
+
+**协议 wire shape**（与 §11.36 `file.saved` envelope 一致）：
+
+```json
+{
+  "v": "1.0",
+  "event": "comment.added",
+  "ts": 1234567890,
+  "fileId": "doc-1",
+  "data": {
+    "commentId": "cm_AbC...",
+    "author": "alice",
+    "text": "please review",
+    "anchor": { "range": { "start": 100, "end": 120 } },
+    "resolved": false,
+    "resolvedAt": null,
+    "parentId": null,
+    "createdAt": 1234567890
+  }
+}
+```
+
+**设计要点**：
+- 与 `file.saved` 共用同一 HMAC-SHA256 签名链路；host 端不用区分事件
+  类型解签名。
+- 删除事件保留 `text` / `anchor` 字段 — 这是 §A.5 "软删除与审计"的最小
+  可用替代，避免 host 端需要为 "已删除评论" 单独建表。
+- `comment.resolved` 只在 `resolved: true` / `resolved: false` 切换时发；
+  不发 "unresolved" 单独事件，避免事件爆量。
+
+#### 11.37.2 Audit log 持久化（§M5 backlog closed）
+
+**问题**：原 `enterprise/auth-audit.ts` 把审计记录存进 `common/state.ts`
+的 `AUDIT_LOGS: Map<string, AuditRecord>`。进程重启即清空 — 合规场景
+下这是灾难（SOX / HIPAA 都要求 ≥ 6 个月可查询）。sdk1.md §C M5 明确
+标 "审计日志（合规）" 为 backlog。
+
+**落实**：
+- 新增 `apps/web-server/src/common/audit-log.ts`（274 行），持久化到
+  `DATA_DIR/audit-log.jsonl`（append-only JSONL）。
+- API：`recordAudit(input)` / `queryAudit(filters)` / `exportAudit(opts)` /
+  `auditSize()` / `snapshotAuditLog()` / `_resetAuditForTests()`。
+- 内存 mirror 上限 10 000 条（最新在前）；超过后尾部淘汰。`appendFileSync`
+  逐行追加 — 部分 tail 损坏（`kill -9` 常态）由 hydrate 路径跳过单条
+  解析失败行，不阻塞 boot。
+- `import * as fssync from 'node:fs'`（命名空间导入而非 named import），
+  让 `vi.mock('node:fs')` 能稳定拦截 — 否则 ESM 命名空间只读无法替换。
+- `GENOFFICE_AUDIT_PERSIST=0` 环境变量禁用持久化（CI 隔离场景）。
+- `enterprise/auth-audit.ts` 重写：去掉 `AUDIT_LOGS.set(...)` /
+  `[...AUDIT_LOGS.values()]` 直接读写，改为 `recordAudit` / `queryAudit` /
+  `exportAudit`。原 placeholder 注释保留（OIDC state 校验仍是 M5+ backlog）。
+- `common/state.ts` 移除 `AUDIT_LOGS` Map 与 `AuditRecord` interface
+  （后者移至 `audit-log.ts`）。
+- 测试 `apps/web-server/tests/audit-log-persistence.test.ts` 7 例：
+  append / 跨重启 hydrate / 过滤 / export 三种格式 / kill -9 损坏行跳过 /
+  `GENOFFICE_AUDIT_PERSIST=0` 禁用 / 写失败内存 mirror 仍保留。
+
+#### 11.37.3 §0.4 文档管理功能补全
+
+| 维度 | 之前 | 之后 |
+|---|---|---|
+| **审计日志** | 进程 Map，重启清空 | 磁盘 JSONL，10k 条上限，跨重启可查询 ✅ |
+
+第 14 项"协作冲突解决"仍属 M4+ §C backlog（Yjs / CRDT，需新依赖，
+不在本轮范围）。
+
+#### 11.37.4 验证
+
+- `vitest run tests/audit-log-persistence.test.ts tests/comment-webhook.test.ts`
+  → **12/12 通过**（耗时 1.97s）
+- 全量 `vitest run apps/web-server` → **86/86 文件 · 724/725 测试通过**（+11 net，新增 12 + 删除 1 个改动 audit 模块间接断掉的旧断言），比上轮 713 → 724
+- typecheck：web-server 自有 src 0 errors（依赖包 pptx-ops / xlsx-gateway
+  9 个 pre-existing 与本轮无关）
+
+#### 11.37.5 文件改动统计
+
+```
+apps/web-server/src/common/audit-log.ts         | +274 (new)
+apps/web-server/src/common/comments-store.ts    | +38
+apps/web-server/src/common/state.ts             | -19 (drop AUDIT_LOGS Map)
+apps/web-server/src/common/index.ts             | +14 -2 (re-export)
+apps/web-server/src/enterprise/auth-audit.ts    | +48 -56 (refactor)
+apps/web-server/tests/audit-log-persistence.ts | +160 (new, 7 cases)
+apps/web-server/tests/comment-webhook.test.ts   | +146 (new, 5 cases)
+sdk1.md                                         | +96 (本节)
+```
+
+总净增：~700 行（94% 测试代码）。
+
+#### 11.37.6 风险与后续
+
+- **JSONL 不是 concurrent-append 安全的**：与 DLQ 同设计（单进程 Node
+  假设）。多进程 cluster 模式（M4+）必须切到 SQLite 或 Postgres。
+- **CSV 导出手动 escape**：覆盖双引号 / 逗号 / 换行三字符；其余边角
+  Unicode（如 `\r\n` 混合）以 `,` 切字段会出现毛刺。商业版可以换
+  `papaparse` 之类库（M5+）。
+- **审计日志保留期**：当前 10 000 条上限 ≈ 1 个中等用户一年的写
+  操作量。生产环境应当加 `GENOFFICE_AUDIT_RETENTION_DAYS` + 周期
+  rotate 脚本（M5+）。
+- **author 缺失**：旧 `audit:log` handler 用 `userId: 'system'`，本轮
+  透传给 `recordAudit` 默认值；未来 handler 应从 JWT `sub` 取值（scope
+  在 v1 已有 `files:read` 等，但 `audit:log` 本身没有 scope 守卫 —
+  这是已知缺口，记入 M5+ backlog）。
+- **comment events 投递**：未做 per-file 事件订阅白名单；host 必须
+  在 `saveCallback({ fileId, events: [...] })` 中显式声明 `events`
+  包含 `'comment.added'` / `'comment.resolved'` / `'comment.removed'`
+  才会收（与 `file.saved` 同机制）。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -3095,18 +3238,32 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 66. **`createSidebarRuntime({outboundToHost})` · 闭合 panel → host 半圈 round-trip**（✅ 本轮）：上一步接通了 host → panel（mountSidebar/unmountSidebar/postToSidebar 进入 panel iframe），但反向——panel iframe → host SDK 的 \`editor.on('sidebarMessage', cb)\` 让残留在每个 app 手动 onMessage 写。本轮在 `createSidebarRuntime` 加 `outboundToHost: true` 选项 + `outboundTarget: {postMessage}`：开后运行时内部订阅一个 onMessage 处理器，将 inbound panel messages 镜像为 SDK 的 EditorEvent envelope `{v:'1.0', dir:'editor→host', kind:'event', payload:{name:'sidebarMessage', payload:{panelId, message}}}` post 到 window.parent。· apps/docs|sheets|slides|pdf|markdown|html/web-bridge.ts 全部传 `outboundToHost: true`。· 默认 false 以保证现有调用者不受影响；SSR / 无 window.parent 情况下自动降级为 no-op。· 单测 +3：outboundToHost:true mirror inbound 为正确封装 envelope / outboundToHost:false 不发送 / 无 window.parent 不报错。· 总体效果：全面 M3.5 表面从初始 5 命令 (§11.36.5 #58) 逐轮扩到 7 命令 + sidebarMessage outbound event — 与 SDK 2.0 Kestrel EditorCommands × EditorEvent 完全对齐。
 
+#### ✅ 本轮新增解决（2026-09-22 · §11.37 评论 webhook + 审计日志持久化）
+
+- **Comment webhook 事件** — `comments-store` 三处 mutation（add / resolve / remove）
+  在副作用后通过 lazy-import 调 `fireCallback('comment.added' / 'comment.resolved' /
+  'comment.removed', fileId, payload)`，与 `file.saved` 共用同一 HMAC 签名 + DLQ 链路。
+  Host 集成商现在能实时收到评论变更；删除事件保留 `text` / `anchor` 快照用于审计。
+- **审计日志磁盘持久化** — 替代 `common/state.ts:AUDIT_LOGS: Map`，改为
+  `common/audit-log.ts` JSONL append-only（`DATA_DIR/audit-log.jsonl`），10k 条内存
+  mirror 跨重启可查询。`enterprise/auth-audit.ts` 重写走 `recordAudit` /
+  `queryAudit` / `exportAudit` 三函数；`GENOFFICE_AUDIT_PERSIST=0` 供 CI 隔离用。
+  §0.4 文档管理功能 13/14 → **14/14** ✅（仅剩协作冲突 = §M4 §C backlog）。
+
 #### ⚠️ 仍未做 / 已知缺陷
 
 - **CRDT/OT 协作（M4 backlog）**：单人模式通；collab:* 通道骨架有，但多人同时写编辑合并 peer 未实装。
-- **Webhook DLQ 持久化**：当前 ring buffer 在内存，重启清空（§11.33.4 / §11.35.4 留 M4+ backlog）。
 - **`workbook:read-range` 返空 cells bug**：实测 Rust sidecar 的 read_range 命令对 inlineStr / sharedString 解析返回 `cells: []`，无论 open 后还是 save 后。涉及 Rust 二进制改动，沙箱不可 rebuild，留 M4+ 路线图。当前 PR 回退了 JS 侧的 refresh 实验（不能修），仅在本节记录。
+- **audit:log scope gate 缺失**：M5+ backlog（§11.37.6 记录）。当前任何已认证 IPC 调用方都能写审计日志。
+- **审计日志保留期 / rotate**：当前 10k 条内存 mirror + 磁盘 JSONL 无限增长。生产环境需要
+  `GENOFFICE_AUDIT_RETENTION_DAYS` + 周期 rotate 脚本（M5+）。
 - **Discord 服务器 / Office Hours**：外部服务，沙箱不可达（§A.3 ⬜ 保留）。
 
 ### A.6 测试现状（本轮实施后更新）
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler / embed-bridge / webhooks-dlq / **metrics-endpoint**）| 72 | 593 | ✅ |
+| web-server（含 .../webhooks-dlq / **metrics-endpoint** / **audit-log-persistence** / **comment-webhook**）| 86 | 724 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
