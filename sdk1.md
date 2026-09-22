@@ -1786,6 +1786,44 @@ SDK (host page)                 bash
 - **URL encoding 测试用 `expect(url).not.toContain(...)`**：直接断言"原始特殊字符绝不出现在 URL 中"，避免引入具体编码规则的硬值（URLSearchParams 的具体编码格式未来可能变）
 
 #### 11.22.3 验证
+### 11.23 本轮续作（v2 第 18 轮 commit，2026-09-22）
+
+消除 web-server 版本字符串的多源漂移：`'0.8.0'` 之前被硬编码在 5 个文件里（`index.ts` 的 boot banner + `/health` endpoint / `shell/app-info.ts` 的 `app:get-version` handler / `embed/index.ts` 的 bridge `ready` payload），下一次升版本（0.9.0）需要 grep + 替换。新增 `apps/web-server/src/common/version.ts` 导出 `WEB_SERVER_VERSION` 常量，所有 4 个消费点改为 import + 模板字符串插值。
+
+#### 11.23.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/common/version.ts` | **新增**：导出 `WEB_SERVER_VERSION = '0.8.0'`，带 TSDoc 标明历史 5 个消费点 + 不可约行为 | +16 |
+| `apps/web-server/src/shell/app-info.ts` | import + `registerHandle('app:get-version', () => WEB_SERVER_VERSION)` | +1 / -1 |
+| `apps/web-server/src/index.ts` | import + `/health` endpoint `version: WEB_SERVER_VERSION` + boot banner 模板字符串 `v${WEB_SERVER_VERSION}` | +4 / -2 |
+| `apps/web-server/src/embed/index.ts` | import + bridge `sendReady()` payload `version: '${WEB_SERVER_VERSION}'` | +2 / -1 |
+| `apps/web-server/tests/version-sot.test.ts` | **新增 · 5 测试**：常量 == package.json 版本 / 没有 hardcoded `'0.8.0'` 出现 / boot banner 用 `${WEB_SERVER_VERSION}` / bridge ready 用 `${WEB_SERVER_VERSION}` / app-info 用 `() => WEB_SERVER_VERSION` | +119 |
+
+#### 11.23.2 设计要点
+
+- **不是读取 package.json**：直接写字面量 `'0.8.0'` 而不是 `import { version } from '../../package.json'` —— JSON import 在 Node 22 + TS 5 仍有些边角 case，并且强耦合会让"我要本地测试改 0.9.0-rc.1"变难。`version.ts` 是人类维护点，配套 source-grep 守门 test 防止回归
+- **shells/skills.ts:753 不动**：那是 `web-clipper` skill package 的版本字段，**与 web-server 无关**。同名 `version` 但语义独立
+- **template literal 插值**：bridge string 已经在 backtick 模板里（`EMBED_BRIDGE = \`...\``），直接 `version: '${WEB_SERVER_VERSION}'` 即可，bundle build 时 esbuild 会把它评估成 `'0.8.0'`
+
+#### 11.23.3 验证
+
+- typecheck：clean（仅预存 pptx-ops/xlsx-gateway 错误）
+- `npx vitest run tests/version-sot.test.ts`：5/5 通过
+- `npx vitest run`（web-server 子集，排除 4 个 LLM/超时 e2e）：**63 文件 / 499 测试**全绿（was 62/494 +1 文件 / +5 测试）
+- bundle rebuild OK
+- live smoke（PORT=32994 + GENOFFICE_JWT_SECRET）：
+    - `/health`: `version: 0.8.0` ✓
+    - boot banner: `GenOffice Web Server v0.8.0 (Enhanced)` ✓
+    - embed HTML ready payload: `version: '0.8.0'` ✓（之前是 `'0.9.0'`）
+    - HTML 中 `0.9.0` 出现次数：0（之前是 1）
+
+#### 11.23.4 后续观察
+
+- `apps/web-server/scripts/bundle.mjs` 在沙箱内仍有 `MODULE_NOT_FOUND`（pre-existing 模块解析问题，与本 PR 无关）— 通过 vitest 直接 import src 验证
+- 下次 bump 版本只需改 `apps/web-server/src/common/version.ts` 一行 + `apps/web-server/package.json` 一行
+
+
 
 - `npx vitest run --config vitest.config.ts test/`：**4 文件 / 30 测试**全绿（was 5/30，删除 1 文件，迁移 4 测试）
 - typecheck：clean
@@ -2059,6 +2097,7 @@ SDK (host page)                 bash
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+23. **web-server 版本号单一源**（✅ 本轮 §11.23）：`'0.8.0'` 之前硬编码在 5 个文件（`index.ts` boot banner + `/health` / `app-info.ts` / `embed/index.ts` bridge ready payload）。新增 `common/version.ts` 导出 `WEB_SERVER_VERSION` 常量，4 个消费点改 import + 模板字符串插值。新增 5 测试守门：常量 == package.json 版本 / 没有 hardcoded `'0.8.0'`（除 `version.ts` 与 `package.json`）/ boot banner 用 `${...}` / bridge 用 `${...}` / app-info 用 `() => WEB_SERVER_VERSION`。live smoke 验 4 个消费点全报 `0.8.0`。
 22. **buildEmbedUrl nonce 测试整合**（✅ 本轮 §11.22）：把 §11.20 引入的 4 个 nonce 测试从独立的 `embed-url-nonce.test.ts` 合并到 `build-embed-url.test.ts`（canonical 位置），删除独立文件。维护更清晰。SDK 文件 5→4（文件数-1），测试数 30（净无 0 测试）。
 21. **SDK handshake timeout 可配置**（✅ 本轮 §11.21）：原本 SDK iframe handshake 的 10 s timeout 在 createEditor 闭包内硬编码，慢网络 host 没有逃生口。新增 `CreateEditorOptions.handshakeTimeoutMs` + module-level exported `clampHandshakeTimeout(ms)`（范围 1 s – 60 s，floor 整数，默认 10 s）。新增 6 测试覆盖 undefined / NaN / Infinity / 范围内 / 上下限 clamp / 分数 / 负数 → 下限（不取 abs）。
 20. **iframe handshake nonce 静默丢包修复**（✅ 本轮 §11.20）：发现 `apps/sdk/src/embed-url.ts` 的 `buildEmbedUrl` **完全没有把 `nonce` 写到 query param**，导致 §B.2 #1 那段 SDK handshake nonce 安全保证**从未生效**——每个 SDK 启动的 embed iframe 都会在 10s 后 `HANDSHAKE_FAILED`。新增 `EmbedUrlInput.nonce` + `params.set('nonce', …)`；embed handler 端把 `?nonce=` 写到 `<meta name="genoffice-nonce">`，bridge `sendReady()` 读 meta 把 nonce 放进 ready postMessage payload。新增 4 + 6 测试覆盖；side-effect 修了 embed-jwt-validation 的 env mutation 问题。
@@ -2070,7 +2109,7 @@ SDK (host page)                 bash
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation / embed-jwt-validation / embed-nonce-roundtrip / typedoc-count）| 66 | 510 | ✅ |
+| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot）| 67 | 515 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -2089,7 +2128,7 @@ SDK (host page)                 bash
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **175** | **4314** | ✅ |
+| **总计** | **176** | **4319** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 

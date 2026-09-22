@@ -44,6 +44,7 @@ import {
 } from './common/index'
 import { fileIndexStore } from './common/file-index-store'
 import { flushFileManagementState } from './common/document-stores'
+import { WEB_SERVER_VERSION } from './common/version'
 import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from './common/read-body'
 import { registerAiHandlers, AI_STREAM_SESSIONS, runProviderStream } from './ai/index'
 import { loadMarketplace } from './common/marketplace-loader'
@@ -372,7 +373,7 @@ const server = createServer(async (request, response) => {
     const translation = translationStateSummary()
     sendJson(response, 200, {
       status: 'ok',
-      version: '0.8.0',
+      version: WEB_SERVER_VERSION,
       mode: 'web-server',
       implementedChannels: handlerCount(),
       features: ['ai', 'collab', 'files', 'projects'],
@@ -932,7 +933,7 @@ server.listen(PORT, HOST, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║   GenOffice Web Server v0.8.0 (Enhanced)                ║
+║   GenOffice Web Server v${WEB_SERVER_VERSION} (Enhanced)         ║
 ║                                                           ║
     URL: http://${HOST}:${PORT}
 ║   📁 Mode: Standalone (No Electron)                        ║

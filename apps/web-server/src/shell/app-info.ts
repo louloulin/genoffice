@@ -4,10 +4,11 @@
  * server build.
  */
 import { registerHandle } from '../common/index'
+import { WEB_SERVER_VERSION } from '../common/version'
 
 export function registerAppInfoHandlers(): void {
   registerHandle('app:get-language', () => 'zh')
-  registerHandle('app:get-version', () => '0.8.0')
+  registerHandle('app:get-version', () => WEB_SERVER_VERSION)
   registerHandle('app:get-platform', () => 'web')
   registerHandle('app:get-theme', () => 'light')
 }

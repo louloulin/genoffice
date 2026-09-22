@@ -33,6 +33,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { verifyJwtWithRevocation } from '../api/v1/auth'
+import { WEB_SERVER_VERSION } from '../common/version'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APPS } from '../common/index'
@@ -190,7 +191,7 @@ const EMBED_BRIDGE = `
     var readyPayload = {
       type: 'ready',
       app: window.__GENOFFICE_EMBED__ && window.__GENOFFICE_EMBED__.app,
-      version: '0.9.0'
+      version: '${WEB_SERVER_VERSION}'
     };
     if (nonce) readyPayload.nonce = nonce;
     post('ready', readyPayload);
