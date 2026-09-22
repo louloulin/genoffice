@@ -100,10 +100,21 @@ describe('auth: file JWT single-use revocation (sdk1.md §11.3 P1)', () => {
     })
 
     const token = signJwt(basePayload({ jti: 'jti-protected' }))
-    // Flip the last byte of the signature.
+    // Corrupt the FIRST character of the signature, not the last.
+    //
+    // The last character looks like the obvious choice, but it is not
+    // reliable: an HS256 signature is 32 bytes, which base64url-encodes to
+    // 43 characters, and the final character carries only the 2 leftover
+    // bits. Swapping `A` -> `B` there can therefore decode to the SAME 32
+    // bytes, leaving the signature valid and this assertion failing at
+    // random (~12% of runs; reproduced at HEAD with no source changes).
+    // Character 0 encodes bits 7..2 of byte 0, so changing it always
+    // changes the signature.
     const parts = token.split('.')
-    parts[2] = parts[2].slice(0, -1) + (parts[2].endsWith('A') ? 'B' : 'A')
+    const sig = parts[2]
+    parts[2] = (sig.startsWith('A') ? 'B' : 'A') + sig.slice(1)
     const tampered = parts.join('.')
+    expect(tampered).not.toBe(token)
 
     expect(verifyJwtWithRevocation(tampered)).toBeNull()
     expect(seen).toEqual([])

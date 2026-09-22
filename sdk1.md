@@ -212,12 +212,11 @@ apps/web-server/tests/  →  90 文件 / 775 测试 通过 · 1 skipped  (~31s w
 
 15 个 packages → 3 750+ tests / 190+ files 全部通过（web-server 已包含）
 
-> **已知 flake（非本轮引入）**：`files-jwt-revocation.test.ts` 的
-> "does not reach the revocation hook for a tampered signature" 约 12% 概率失败
-> （24 次单跑复现 3 次）。原因是测试把签名 base64url 的**最后一个字符**换成另一个
-> 合法字符 —— 但 base64url 末位字符的低 2 bit 在解码时被丢弃，换 `A`↔`B` 可能解出
-> **完全相同的字节**，签名依然有效。已在 HEAD（零源码改动）复现，与本轮无关；
-> 修法是翻转一个必定影响解码结果的字符。
+> **已修 flake（§11.43）**：`files-jwt-revocation.test.ts` 的 "does not reach the
+> revocation hook for a tampered signature" 曾约 12% 概率失败。根因：HS256 签名是
+> 32 字节 → base64url 43 字符，**末位字符只承载 2 个有效 bit**，把末位 `A`↔`B`
+> 互换可能解出**完全相同的 32 字节**，签名依然有效。改为篡改签名的**首字符**
+> （编码字节 0 的 bit 7..2，必定改变结果）；60 次单跑 0 失败（原 24 次 3 失败）。
 ```
 
 ### 0.6 WebServer 实地核查（2026-09-22）
