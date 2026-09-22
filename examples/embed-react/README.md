@@ -31,6 +31,7 @@ The Vite dev server proxies `/api` and `/embed` to the web-server on
 | `GenOfficeEditor.tsx` | The React component (the deliverable). |
 | `demo.tsx` | Basic single-instance demo app wiring the component to a form. |
 | `demo-kestrel.tsx` | **SDK 2.0 Kestrel end-to-end demo** — four surfaces in one page: multi-instance + comments + plugin runtime + telemetry. Open at `/kestrel.html`. |
+| `demo-auto-release.tsx` | **SDK 2.0 sessionBinding.autoRelease:false demo** — shows how to mint a server-bound nonce, mount with `autoRelease:false`, and call `releaseEmbedNonce()` yourself from a `pagehide` handler. Open at `/auto-release.html`. |
 | `panel-stub.html` | Static page used as the sidebar panel URL during the plugin-runtime demo. |
 | `index.html` | Vite entry — links to both Basic and Kestrel demos. |
 | `vite.config.ts` | Vite config with the `/api` and `/embed` proxy. |
@@ -52,3 +53,16 @@ The Vite dev server proxies `/api` and `/embed` to the web-server on
 4. **Telemetry** — `createEditor({ telemetry: true })` + `usage` event
    subscriber. The interval fires every 30 s; click the `insertText`
    button to bump the `docBytesWritten` counter before the next tick. |
+
+## SDK 2.0 sessionBinding.autoRelease:false demo
+
+`pnpm dev` then open <http://localhost:5173/auto-release.html>. The
+page walks the full `createEmbedNonce` → `createEditor({ sessionBinding: { autoRelease: false } })` → manual `releaseEmbedNonce` flow, plus a `pagehide` listener that mirrors what a real production wiring looks like.
+
+The default `autoRelease: true` is right for 95% of hosts, but `autoRelease: false` is what you want when:
+
+- You have a global page-unload handler that needs to call release AFTER `destroy()` (e.g. `Router.beforeunload` fires the release, then the SDK destroys the handle on component unmount).
+- You want to reuse a single `sessionId` across multiple mounts of the same editor (mount, destroy, mount again — the server slot stays reserved for you).
+- You're using a framework lifecycle that destroys the editor handle asynchronously after the user's actual teardown event.
+
+The server-side LRU + 5 min TTL means a missed release isn't catastrophic — the slot just sits unused until TTL expiry. But explicit release frees the slot the moment you're done. |

@@ -2261,8 +2261,8 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 
 - **§11.30.4 #1 `verifyEmbedSession()`**：✅ 本轮完成（同 protocol 别名）
 - **§11.30.4 `destroy()` 自动 release**：✅ 本轮完成（`sessionBinding.autoRelease` 默认 true）
-- **`destroy()` 自动 release 的开关示例**：`examples/embed-react/` 还没演示 `sessionBinding.autoRelease: false` 用例；下批跟进
-- **typedoc-count 显式 step**：5 min 改动（`docs.yml` typedoc step 加注释说明 `typedoc-count.test.ts` 已守门）；下批
+- **`destroy()` 自动 release 的开关示例**：✅ #46 闭合（`examples/embed-react/demo-auto-release.tsx` + `index-auto-release.html` 演示 createEmbedNonce → createEditor({autoRelease:false}) → 手动 releaseEmbedNonce + pagehide 监听器）
+- **typedoc-count 显式 step**：✅ commit `11f9cad` 已闭合（`.github/workflows/docs.yml` 加 "Assert typedoc output count is within bounds" step + bound 注释引用 `typedoc-count.test.ts`）
 - **真 iframe e2e**：happy-dom + createEditor IPC 链路（§11.21.5 #2）仍未做；本批不做
 - **bridge 入站 command 路径测试**：renderer createPushHub 端 `host.command` 订阅还没单测；下批
 
@@ -2361,8 +2361,8 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 #### 11.34.4 后续观察
 
 - **bridge 入站 command 路径 dead code**：✅ 本轮闭合（删 dead code + 负向守门）
-- **§11.32.4 后续观察 `destroy()` 自动 release 示例**：未做（5 min，examples/embed-react/ 加 autoRelease:false demo）
-- **typedoc-count 显式 step**：未做（5 min，docs.yml step 加注释引用 typedoc-count.test.ts）
+- **§11.32.4 后续观察 `destroy()` 自动 release 示例**：✅ #46 闭合（demo-auto-release.tsx + index-auto-release.html）
+- **typedoc-count 显式 step**：✅ commit `11f9cad` 已闭合（`.github/workflows/docs.yml` 加 "Assert typedoc output count is within bounds" step + bound 注释引用 typedoc-count.test.ts）
 - **§11.31.5 真 iframe e2e**：sandbox 内不可达，skip
 - **§11.33.4 DLQ 持久化 / DLQ metric**：留 M4+ 路线图
 - **host.command 替代路径**：若未来要支持 host → iframe 单向命令（如"host wants iframe to switch theme"），直接在 renderer 加 `window.addEventListener('message', ...)` 监听 host postMessage——这是 §11.34 之后 iframe 已有的行为
@@ -2682,6 +2682,19 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 43. **SDK 2.0 Kestrel 双语 README 升级到 v2.0**（✅ 本轮，闭合 §B.5.6 验收要求 "README + 双语更新到 v2.0"）：
 44. **SDK 2.0 Kestrel end-to-end demo（React + Vue 双端）**（✅ 本轮，闭合 §B.5.6 验收要求 #3 "examples/embed-react/ 与 examples/embed-vue/ 各增 1 个 demo：多实例 + sidebar mount + comments 完整链路"）：
 45. **SDK 2.0 Kestrel M5 · full-surface type contract + runtime guard 测试**（✅ 本轮，闭合 §B.5.6 验收要求 #1 "apps/sdk test: 182/182"）：
+46. **`examples/embed-react/` 加 `sessionBinding.autoRelease:false` demo**（✅ 本轮，闭合 §11.32.4 #2 backlog）：
+    - `examples/embed-react/demo-auto-release.tsx`（NEW ~145 行）：演示完整 3 步流程——`createEmbedNonce({host, documentId, app, jwt})` mint server-bound sessionId+nonce → `createEditor({ sessionBinding: { sessionId, nonce, autoRelease: false }, ... })` mount（SDK echo server-minted nonce 进 handshake 但 destroy 时不调 releaseEmbedNonce）→ 手动 `releaseEmbedNonce()` 释放 server slot
+    - 加 `useEffect` 注册 `pagehide` 监听器演示生产级 wiring（host 全局卸载处理器在 destroy 之后调 release，与 SDK 自带的 autoRelease 同模式但 host 主导）
+    - 暴露一个 "Manual release" 按钮：destroy handle → 显式调 releaseEmbedNonce，日志显示 `released=true` 或 `released=false`（false = race with TTL）
+    - 解释 3 个 `autoRelease: false` 适用场景：① host 全局 page-unload handler 要在 destroy 后调 release；② 跨多次 mount 复用同一 sessionId；③ 框架异步销毁场景
+    - tsc clean（demo-auto-release.tsx 0 errors；`GenOfficeEditor.tsx` 的 1 个 pre-existing `ErrorEvent` vs `onError` 类型错配未触碰）
+    - `examples/embed-react/index-auto-release.html`（NEW）：Vite 入口，nav 加 "autoRelease:false" 链接
+    - `examples/embed-react/{index.html,index-kestrel.html}`：nav 加 auto-release 链接
+    - `examples/embed-react/README.md`：文件表新增 demo-auto-release.tsx；新增 "SDK 2.0 sessionBinding.autoRelease:false demo" 段
+    - **未做**：在 sandbox 内不便跑 `pnpm dev` 实际渲染；用户在本地 `pnpm install && pnpm dev` 后访问 `/auto-release.html` 即可看到完整链路
+    - 顺便修一个 stale：§11.34.4 / §11.32.4 后续观察里 "typedoc-count 显式 step：未做" 实际已在 commit `11f9cad` 闭合（.github/workflows/docs.yml 加了 "Assert typedoc output count is within bounds" step + bound 注释），本轮 sdk1.md 同步更新为 ✅
+
+
     - **闭合 §B.5.6 Gate #1**：SDK 14 文件 / 179 测试 → 15 文件 / **195 测试**（+35 +16），超过 §B.5.6 期望的 182
     - **kestrel-m5-contracts.test.ts**（NEW 35 测试）：
       - M2 Comments 类型合同 7：Comment shape + CommentAnchor 开放扩展（range / cell / slideId / 任意 [k:v]）+ addComment / listComments / resolveComment / removeComment 各自的 args/result pin + CommentAddedEvent / CommentResolvedEvent 在 EditorEvent union + EditorEventMap
