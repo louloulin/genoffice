@@ -2422,7 +2422,103 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 - **histogram bucket 未来扩展**：`genoffice_dlq_oldest_dropped_at_ms` 当前只是 gauge，可以扩成 `genoffice_dlq_age_seconds_bucket` histogram 提供 p50/p95/p99 老化分布。本批只暴露瞬时 gauge。
 - **§11.33.4 残留 backlog**：`webhook DLQ + upsert` 双向耦合（删除 webhook 后自动 replay / drop 该 webhook 现有 DLQ 项）—— 当前实现里 webhook delete 仅删注册，不动 DLQ；M4+ 路线图。
 
-：实施状态（截至 2026-09-22，分支 `release0919`)
+### 11.36 · bridge 双向通道修复 + SDK 服务端命令 dispatch
+
+审 `apps/sdk` + `apps/web-server/src/embed` 双向通道时发现两个真实断点，本轮一并闭合。
+
+#### 11.36.1 断点 1 · bridge outbound `dir` 与 SDK `isEnvelope` 不兼容
+
+`apps/sdk/src/envelope.ts:76` 的 `isEnvelope` 严格比较
+`dir === 'editor→host' || dir === 'host→editor'`（U+2192 右向箭头）。
+bridge IIFE 里写的是 `'editor->host'`（ASCII 连字符 U+002D），
+`isEnvelope` 静默拒绝 —— 意味着**每一条 SSE relay 的生命周期事件**
+（`saved` / `dirtyChanged` / `selectionChange` / `error` / `closed`）在
+SDK 侧都被丢掉，host 的 `editor.on('saved', cb)` 永远不触发。
+
+（handshake 的 `ready` 事件不受影响：它的处理路径直接读
+`payload.name`，不走 `isEnvelope` + `dispatch`。）
+
+修复：`bridge.ts` 改一个字（`->` → `→`）；`embed-bridge.test.ts` 补
+2 条守门 —— ① source-grep 断言 bridge 源码不含 ASCII 形态、必含箭头；
+② live-runtime 断言 bridge 产出的每条 postMessage 的 `dir` 都是箭头。
+
+#### 11.36.2 断点 2 · inbound command 通道从未接通
+
+§11.34 判定 `host.command` CustomEvent 是 dead code 并删除，结论
+"inbound 由 editor bundle 自己的 postMessage listener 处理"。但审
+renderer 时发现 `apps/*/src/renderer` 里**没有任何 GenOffice envelope
+的 inbound listener**（现有 `addEventListener('message')` 全是
+Dataflare 自家协议）—— 也就是 SDK 的 `editor.command()` 发出去的
+envelope 从来没人接，30 s 后必然超时。
+
+修复分两层：
+
+| 层 | 改动 |
+|---|---|
+| bridge（`embed/bridge.ts`） | 新增 `onHostMessage`：只接 `v==='1.0' && dir==='host→editor'`，只 dispatch `kind==='command'`；新增 `replyCommand` 把结果镜像成 `command-result` envelope。dispatch 顺序：① `window.__GENOFFICE_COMMAND_SINK__`（renderer 装上时优先，避免双回复）；② `POST /api/ipc/sdk:command` + `x-ipc-session`。 |
+| 服务端（`embed/sdk-commands.ts`，NEW 349 行） | 单一 `sdk:command` 通道 + 显式 `SDK_COMMAND_TABLE`。SDK 命令名（`addComment`）与 renderer IPC 通道名（`comments:add`）是两套命名空间、两套 arg 形状，多路复用到一个通道避免契约冲突，也给"哪些 SDK 命令真的服务端承载"一个可审计清单。 |
+
+服务端承载面（8 条）：
+
+| 命令 | 后端 | 语义 |
+|---|---|---|
+| `addComment` / `listComments` / `resolveComment` / `removeComment` | `common/comments-store.ts` | durable，跨浏览器重启仍在 |
+| `listVersions` / `restoreVersion` / `createSnapshot` | `common/version-history.ts` | `createSnapshot` 读 live 文件落快照；`restoreVersion` 回报 restore 后的最新 version id |
+| `reportUsage` | 模块内聚合器 | 进程本地，durability 对齐 DLQ |
+
+其余命令（`setContent` / `insertText` / `undo` / `mountSidebar` /
+`openFileDialog` / `print` / …）返回结构化 `UNSUPPORTED` + 修复提示
+（"the renderer bundle services it via its own postMessage listener"）
+—— 明确失败优于静默悬挂或假 `{ok:true}`。
+
+`resolveDocPath()` 接受裸 basename 或 FILES_DIR 相对子路径，拒绝
+traversal，并以 `basename` 作为 store key（与全部 save pipeline 一致）。
+
+#### 11.36.3 §11.36.2 附带 · telemetry 闭环
+
+审 `apps/sdk/src/editor.ts` 发现 telemetry ticker **只 dispatch 本地
+`usage` 事件**，从不向服务端上报 —— 服务端聚合器永远拿不到样本。
+
+修复：`reportUsage` 加入 `EditorCommands` union；30 s ticker 在 dispatch
+本地事件的同时上报服务端；`destroy()` 在**翻转 `destroyed` 之前**（iframe
+还挂着、`command()` guard 还没生效）flush 最后一笔。自动路径 fire-and-forget
+（server 挂了不能拖垮编辑器），host 显式调用仍然 loudly reject。
+
+`GET /api/v1/metrics` 同步新增 7 条 `genoffice_sdk_*` 序列
+（samples / instances / doc_bytes_written / ai_calls / prompt_chars /
+response_chars / session_ms），让运维能把 host 用量与 DLQ 计数器一起抓。
+
+#### 11.36.4 验证
+
+| 门 | 结果 |
+|---|---|
+| `apps/sdk` 测试 | 15 文件 / 195 → **16 文件 / 201**（Gate #1 目标 182，已超） |
+| web-server 测试 | 71 文件 / 618 → **72 文件 / 656 + 1 skip**（Gate #2 目标 629，已超） |
+| `embed-bridge.test.ts` | 17 → 30（+2 dir 守门，+11 inbound dispatch/sink） |
+| `sdk-command-dispatch.test.ts` | **NEW 24**（docId 解析 3 / comments 5 / versions 5 / telemetry 2 / unsupported+malformed 4 / 形状不变量 1 / 注册 1 / surface 1 / 通道名 1 / INTERNAL 1） |
+| `report-usage.test.ts` | **NEW 6**（类型成员 / 显式调用 envelope / ticker 样本含 instanceId / telemetry 关时不上报 / destroy flush / fire-and-forget 韧性） |
+| `metrics-endpoint.test.ts` | 补 SDK usage 序列覆盖 + 1 条专用测试 |
+| typecheck | 双端 clean（pptx-ops / xlsx-gateway 的 9 行 pre-existing 未触碰） |
+| SDK bundle | UMD 26.3 kB（Gate #5 预算 30–50 kB 内） |
+| commit | `04eaf6e`（dir 修复）/ `7c7f878`（inbound dispatch）/ `25519f0`（服务端承载 + telemetry） |
+
+#### 11.36.5 后续观察
+
+- **命令面仍偏窄**：8 条服务端承载命令覆盖了需要 durable 状态的那部分；
+  `setContent` / `mountSidebar` / `openFileDialog` 这类必须有活模型的命令
+  仍等 renderer bundle 装 `__GENOFFICE_COMMAND_SINK__`。桥已经把
+  extension point 留好，renderer 接上即可，不需要再动 web-server。
+- **author 归属**：`addComment` 经 bridge 进来只能标 `embed-session`
+  （bridge 用 session header 而非 bearer token，服务端拿不到 `sub`）。
+  需要真实作者归属的 host 应走 `POST /api/v1/files/:id/comments`
+  （从验过的 JWT 里取 `sub`）。这条差异已写进 `sdk-commands.ts` 注释。
+- **usage 聚合是进程本地**：重启清零，与 DLQ 同 durability 模型；
+  持久化（Postgres / Redis / on-disk）仍属 M4+ backlog。
+- **pre-existing flake**：`plugin-e2e.test.ts`（外部连接超时）与
+  `event-broadcast-e2e.test.ts`（SSE 时序）在全量跑时偶发，单独跑均通过、
+  `--retry=2` 下全绿；两者均不在本轮改动集合内。
+
+## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
 
@@ -2500,6 +2596,31 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 2. **Webhook HMAC 签名** — `apps/web-server/src/common/webhooks-store.ts` 新增 `signWebhookBody()`（HMAC-SHA256，sha256= 前缀）+ `FileWebhook.secret` 字段 + 出站请求带 `X-GenOffice-Signature` 头。GitHub / Stripe 风格。5 个 `apps/web-server/tests/webhook-signing.test.ts` 测试覆盖 secret 缺失 / 存在 / 不同 body / 不同 secret / 端到端 header 注入。
 3. **JWT RBAC scope（OAuth scope claim）** — `apps/web-server/src/api/v1/auth.ts` 新增 `hasScope(payload, scope)` helper（exact / `*` 通配 / `ai:*` 前缀通配 / 默认只读 / admin 旁路）+ `JwtPayload.scope` 字段 + `/api/v1/auth/jwt` 接受 `scope` 输入并合并到 `scope` claim。9 个 `apps/web-server/tests/auth-scope.test.ts` 测试。
 4. **postMessage iframe 握手 + origin allowlist** — `apps/sdk/src/editor.ts` 新增：每会话随机 nonce 注入 `?nonce=`，`ready` event 必须 echo 同一 nonce 否则触发 `HANDSHAKE_FAILED`；可选 `allowedOrigins: string[]` 配置（含 `*.example.com` 单段通配）。8 个 `apps/sdk/test/handshake.test.ts` 测试。
+
+#### ✅ §11.36 已解决（3 项）
+
+**47. bridge outbound `dir` 用 ASCII 连字符导致 SDK 静默丢包**（✅ `04eaf6e`）：
+`apps/web-server/src/embed/bridge.ts` 的 `post()` 写的是
+`dir: 'editor->host'`（U+002D），而 `apps/sdk/src/envelope.ts:76` 的
+`isEnvelope` 只接受 `'editor→host'`（U+2192）。**全部 SSE relay 的
+生命周期事件（saved / dirtyChanged / selectionChange / error / closed）
+在 SDK 侧被静默丢弃**，host 的 `editor.on('saved', cb)` 从不触发。
+修一个字符 + 2 条守门测试（source-grep + live-runtime 都断言箭头形态）。
+
+**48. SDK `editor.command()` inbound 通道从未接通**（✅ `7c7f878` + `25519f0`）：
+§11.34 删掉 `host.command` CustomEvent 后，renderer 侧从未实现 GenOffice
+envelope 的 inbound listener（`apps/*/src/renderer` 里的
+`addEventListener('message')` 全是 Dataflare 协议），SDK 命令 30 s 必然超时。
+本轮 bridge 新增 `onHostMessage` + `replyCommand`；服务端新增
+`embed/sdk-commands.ts`（单一 `sdk:command` 通道 + 8 条服务端承载命令：
+comments×4 / versions×3 / reportUsage）；其余命令返结构化 `UNSUPPORTED`。
+bridge 优先走 `window.__GENOFFICE_COMMAND_SINK__`（renderer 装上时），
+否则 POST `sdk:command` —— 保证每条命令恰好一个回复。
+
+**49. telemetry 只本地 dispatch、从不向服务端上报**（✅ `25519f0`）：
+30 s ticker 现在同时上报服务端，`destroy()` 在翻转 `destroyed` 前 flush
+最后一笔；`reportUsage` 加入 `EditorCommands` union；
+`GET /api/v1/metrics` 新增 7 条 `genoffice_sdk_*` 序列。
 
 #### ✅ 本轮新增解决（1 项）
 
