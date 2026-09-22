@@ -90,6 +90,8 @@ export interface ExportAuditFilters {
   format?: 'csv' | 'json' | 'xlsx'
   startDate?: number
   endDate?: number
+  /** Filter to records with `tenantId === opts.tenantId`. Empty string matches the 'default' tenant. */
+  tenantId?: string
 }
 
 const FILE = join(DATA_DIR, 'audit-log.jsonl')
@@ -299,6 +301,10 @@ export function exportAudit(opts: ExportAuditFilters = {}): {
   downloadUrl?: string
 } {
   let logs = records
+  if (typeof opts.tenantId === 'string') {
+    const want = opts.tenantId === '' ? 'default' : opts.tenantId
+    logs = logs.filter((l) => l.tenantId === want)
+  }
   if (typeof opts.startDate === 'number') {
     logs = logs.filter((l) => l.timestamp >= opts.startDate!)
   }

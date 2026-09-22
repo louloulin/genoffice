@@ -115,4 +115,58 @@ describe('audit log tenant field (sdk1 §11.56)', () => {
     expect(none.logs).toEqual([])
     expect(none.total).toBe(0)
   })
+
+describe('audit log export tenant filter (sdk1 §11.56)', () => {
+  it('exportAudit() without tenantId returns records from all tenants', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'file.saved', resource: 'a.docx', tenantId: 'acme' })
+    recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'globex' })
+    const result = exportAudit({ format: 'json' })
+    expect(result.recordCount).toBe(2)
+  })
+
+  it('exportAudit() filters by tenantId (json)', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'file.saved', resource: 'a.docx', tenantId: 'acme' })
+    recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'globex' })
+    recordAudit({ action: 'file.saved', resource: 'c.docx' })
+    const acme = exportAudit({ format: 'json', tenantId: 'acme' })
+    expect(acme.recordCount).toBe(1)
+    const body = JSON.parse(acme.body!) as Array<{ resource: string; tenantId: string }>
+    expect(body[0].resource).toBe('a.docx')
+    expect(body[0].tenantId).toBe('acme')
+  })
+
+  it('exportAudit() filters by tenantId (csv)', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'file.saved', resource: 'a.docx', tenantId: 'acme' })
+    recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'globex' })
+    const result = exportAudit({ format: 'csv', tenantId: 'acme' })
+    expect(result.recordCount).toBe(1)
+    expect(result.body).toMatch(/^id,tenantId,userId,/)
+    // Only one data row (the header is also a line, so 2 lines total).
+    const lines = result.body!.split('\n').filter((l) => l.trim())
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toContain(',a.docx,')
+    expect(lines[1]).toContain(',acme,')
+  })
+
+  it('exportAudit() empty-string tenantId maps to default tenant', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'file.saved', resource: 'a.docx' }) // default
+    recordAudit({ action: 'file.saved', resource: 'b.docx', tenantId: 'acme' })
+    const result = exportAudit({ format: 'json', tenantId: '' })
+    expect(result.recordCount).toBe(1)
+    const body = JSON.parse(result.body!) as Array<{ resource: string }>
+    expect(body[0].resource).toBe('a.docx')
+  })
+
+  it('exportAudit() unknown tenantId returns empty (no false-positive default)', async () => {
+    const { recordAudit, exportAudit } = await loadModule()
+    recordAudit({ action: 'file.saved', resource: 'a.docx' })
+    const result = exportAudit({ format: 'json', tenantId: 'does-not-exist' })
+    expect(result.recordCount).toBe(0)
+  })
+})
+
 })

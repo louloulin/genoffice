@@ -120,15 +120,20 @@ export function registerAuditHandlers(): void {
   })
 
   registerHandle('audit:export', (_event: unknown, args: unknown) => {
-    const { format, startDate, endDate } = (args || {}) as {
+    const { format, startDate, endDate, tenantId } = (args || {}) as {
       format?: 'csv' | 'json' | 'xlsx'
       startDate?: number
       endDate?: number
+      tenantId?: string
+    }
+    if (tenantId !== undefined && typeof tenantId !== 'string') {
+      throw new InvalidArgumentError('audit:export', 'tenantId must be a string when provided')
     }
     return exportAudit({
       ...(format ? { format } : {}),
       ...(typeof startDate === 'number' ? { startDate } : {}),
       ...(typeof endDate === 'number' ? { endDate } : {}),
+      ...(tenantId ? { tenantId } : {}),
     })
   })
 }
