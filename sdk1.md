@@ -4470,6 +4470,157 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 - 与 docs / markdown / html / pdf 的"应用专属错误码"模式对齐
 - §A.5 backlog 第 1 项（workbook 错误码统一）正式完成
 
+### 11.70 · Slides engine 解析期 element id 稳定化（§A.5 #7 闭合）
+
+> 续 §11.42 把 slides legacy 通道清零 + 引擎 id 不稳定列入 P1 引擎工作
+> backlog（§11.42.3 引用，本轮闭合）。
+
+#### ✅ 落点
+
+1. **`packages/pptx-engine/src/parse.ts`**：
+   - `parseSlide()` 入口处 `uidCounter = 0`，把模块级单调计数器
+     限定在单次 parse 生命周期内。
+   - 同一字节第二次 parse 从 `sp_0` 起算，与第一次完全一致；counter
+     仍按原有节奏单调递增（sp_0 / sp_2 / sp_4 / ...），不影响测试和
+     已有调用方对 id 格式的预期。
+
+2. **`packages/pptx-engine/tests/parse.test.ts`**：在末尾新增
+   `describe('stable element ids across re-opens (sdk1 §A.5 #7)')` 块，
+   3 个回归测试：
+   - `re-opens 01_standard_business.pptx with identical element ids`
+   - `re-opens 05_unicode_cjk_emoji.pptx with identical element ids`
+   - `does not leak the counter across separate openPptx calls`（stress：
+     修复前 secondIds[0] 会是 `sp_<firstIds.length>` 而不是 `sp_0`）
+
+3. **sdk1.md** §A.5 #56 详细段标记 ✅ 闭合；§0.8 风险表第 4 行
+   （`sp_0 / sp_2 / sp_4`）从 ⚠️ 引擎层约束 → ✅；§E.4 风险表对应行
+   从 P1/M4+ → ✅。
+
+#### 🧪 验证
+
+- `packages/pptx-engine/tests/parse.test.ts`：**68 / 68 通过**
+- `packages/pptx-engine` 全量套件：**960 / 960 通过 + 1 skipped（91 文件）**
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 60 → **61**（+1：slides engine stable id）
+- §B.5.1 #5 / §C 后续工作可以安全加 "save-then-reparse" 模式，
+  不会破坏 renderer 持有的 id；先前 "live-session reuse" 绕开方案
+  保留作为 defense-in-depth。
+
+### 11.71 · IPC dispatcher scope middleware（§A.5 #10 闭合）
+
+> 续 §11.37.6 — `audit:log` scope gate 一直是 M5+ backlog，本轮闭合。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/common/registry.ts`**：
+   - `registerHandle(channel, handler, options?)` 第三参数接受
+     `{ scope?: string }`。handler entries 改为 `{ handler, scope? }`。
+   - 新增 `getHandlerEntry(channel)` 返回完整 entry（含 scope），
+     dispatcher 据此决定是否跑 scope 校验。
+
+2. **`apps/web-server/src/common/index.ts`**：re-export `getHandlerEntry` +
+   `promoteAcrossBackend` + `PromoteOptions` / `PromoteResult` 类型。
+
+3. **`apps/web-server/src/index.ts`** IPC dispatcher：
+   - 调用 handler 之前，若 `entry.scope` 非空则调
+     `requireScopeFromHeaders(request.headers, entry.scope)`。
+   - 失败短路返回与 v1 REST 同样的 `UNAUTHENTICATED` / `FORBIDDEN`
+     envelope（含 `channel` 字段，便于 renderer 分支）。
+
+4. **`apps/web-server/src/enterprise/auth-audit.ts`**：
+   - `audit:log` 注册 `{ scope: 'audit:write' }`
+   - `audit:query` / `audit:export` 注册 `{ scope: 'audit:read' }`
+   - 共享 `audit:*` 通配 + `sub === 'admin'` 旁路继续工作。
+
+#### 🧪 验证
+
+- `apps/web-server` typecheck：clean（9 处 pptx-ops / xlsx-gateway
+  pre-existing 错误已排除）
+- 新增 `apps/web-server/tests/ipc-scope-gate.test.ts`：**9 / 9 通过**
+  - audit:log 401/403/200 + audit:* 通配 + 旧 home:recents 不受影响
+  - audit:query / audit:export 各自的 scope 检查
+  - admin sub 旁路
+  - registry.getHandlerEntry round-trip
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 61 → **62**（+1：audit:log IPC scope gate）
+- IPC dispatcher 与 v1 REST 共享同一条 `requireScopeFromHeaders` 路径
+- 内部 `recordAudit()` / `queryAudit()` / `exportAudit()` 走函数调用不走
+  IPC，所以**不被 gate 影响**（故意）
+
+### 11.72 · Cross-backend atomic promote helper（§A.5 #9 闭合）
+
+> 续 §M5+ — `promoteFileAtomically` 只支持本地 fs，storage:// URI 没
+> 单条 promoted 路径，本轮闭合。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/common/promote-across-backend.ts`**（新）：
+   - `promoteAcrossBackend(stagingPath, targetPath, options?)` —
+     按 `storageKeyFromPath` 分支：storage:// URI 或 FILES_DIR 路径 →
+     `backend.put`（s3/minio/rustfs 对象级原子）；非 managed local 路径 →
+     委托 `xlsx-gateway.promoteFileAtomically`。
+   - 失败时 staging 文件**保留**供 caller 重试（已测）。
+   - 头部 doc 详述每个 backend 的原子语义：s3 PUT 本身原子；staging
+     文件只在 PUT resolve 后删除。
+
+2. **`apps/web-server/src/common/state.ts`**：新增 test-only hooks
+   `_setStorageBackendForTests` / `_resetStorageBackendForTests`，
+   **不**走 common/index 出口（保持 production 表面干净）。
+
+3. **`apps/web-server/src/common/index.ts`**：re-export
+   `promoteAcrossBackend` + `PromoteOptions` / `PromoteResult`。
+
+#### 🧪 验证
+
+- 新增 `apps/web-server/tests/promote-across-backend.test.ts`：**8 / 8 通过**
+  - empty / missing staging path 校验
+  - storage:// URI → backend.put with key + bytes + contentType
+  - FILES_DIR path → backend.put via `storageKeyFromPath`
+  - 非 managed local path → `promoteFileAtomically` 委托
+  - contentType passthrough / omission
+  - **staging 文件在 backend.put 失败时保留**（retry-safe）
+
+- 回归：4 文件 / 42 测试（ipc-scope-gate + promote-across-backend +
+  audit-log-tenant + audit-log-persistence）全绿
+- esbuild bundle 重建 29.3 MB，所有 553 通道仍注册
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 62 → **63**（+1：S3/minio cross-backend promote）
+- §0.7 风险表 storage backend 行 ✅；§E.4 风险表对应行 P2/M5 → ✅
+
+### 11.73 · §A.5 backlog 本轮（2026-09-23）总结
+
+| §Section | 主题 | 闭合数增量 | 累计 |
+|---|---|---|---|
+| §11.70 | slides engine stable id | +1 | 61 |
+| §11.71 | audit:log IPC scope gate | +1 | 62 |
+| §11.72 | cross-backend atomic promote | +1 | **63** |
+| §A.5 backlog 闭合总数 |  |  | **63** |
+
+**M4+ 路线图（不阻塞 v1.0 GA）**：
+
+| 项 | 工时 | 阻塞 |
+|---|---|---|
+| HTML ↔ DOCX round-trip | M6 Week 24 | 需 Playwright / LibreOffice |
+| DOCX → PDF | M6 Week 24 | 需 LibreOffice |
+| CRDT 协作（Yjs）| M4 Week 16 | 大功能 |
+| 移动端 H5 | M4 Week 16 | PWA + 触控 |
+| DLQ 持久化（Postgres / Redis / on-disk）| M4+ | 当前 in-memory + LRU 1024 够短期 |
+| Discord / Office Hours | 外部 | 沙箱不可达 |
+| audit-log rotate worker（调度 + 报警）| M5+ | 当前 24h worker 已落，调度迁移 systemd / k8s 留 backlog |
+
+**后续可立即接的 bounded P1（按工时排序）**：
+
+1. `audit:log` scope 扩展到 tenant-admin / key rotation / settings write（同 §11.71 模式）：1-2 天
+2. SDK Multi-instance renderer demo 扩展（commit `01be1396` 已落地类型 + 11 测试；e2e demo 是 §B.5.6 #2）：1 天
+3. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
+4. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
