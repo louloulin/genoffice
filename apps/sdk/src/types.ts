@@ -22,12 +22,15 @@ export type EditorApp = 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'htm
  *
  *   1. **`container` (iframe)**: mount the editor into a DOM element. The SDK
  *      creates an `<iframe>` pointing at `https://<host>/embed/:docId?token=…`
- *      and proxies commands / events via `postMessage`.
+ *      and proxies commands / events via `postMessage`. If `container` is
+ *      omitted, the SDK falls back to `document.body` (only valid in a real
+ *      browser environment; Node callers must supply `url` instead).
  *
  *   2. **`url` (deep link)**: build an embed URL the integrator drops into
  *      their own `<iframe>`. Use `buildEmbedUrl()` to construct it.
  *
- * Provide exactly one of `container`, `containerElement`, or `url`.
+ * Provide exactly one of `container` or `url`. There is no separate
+ * `containerElement` field; pass the element directly via `container`.
  */
 export interface CreateEditorOptions {
   /** Document id (the `:docId` path segment of `/embed/:docId`). */

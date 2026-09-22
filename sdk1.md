@@ -1854,6 +1854,36 @@ SDK (host page)                 bash
 - `verifyJwtWithRevocation` 目前只被这套测试驱动；生产代码里 `embed/index.ts` 仍直接把 `?token=` 透传到 `<meta>` 不做服务端校验。若要做"真服务端门"，需要在 embed handler 调一次 `verifyJwtWithRevocation(token)` 然后再决定是否返回 HTML；这是独立 PR，建议等首次公开集成前再上。
 
 
+### 11.24 本轮续作（v2 第 19 轮 commit，2026-09-22）
+
+修正 `CreateEditorOptions` JSDoc 里残留的 stale 字段描述：原 docstring 写着 "Provide exactly one of `container`, `containerElement`, or `url`."，但接口里**根本没有** `containerElement` 字段——这是早期迭代留下的笔误，宿主集成商按字面 join 后会在生产环境遇到 TS 编译报错。修正为"Provide exactly one of `container` or `url`." 并明确"没有独立的 `containerElement` 字段，直接通过 `container` 传元素"。新增 `apps/sdk/test/container-resolve.test.ts` 锁定真实契约。
+
+#### 11.24.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/sdk/src/types.ts` | 删除 `containerElement` 残留描述，明确"无 separate containerElement field"；补充 `document.body` fallback 注释（浏览器环境）| +4 / -2 |
+| `apps/sdk/test/container-resolve.test.ts` | **新增 · 6 测试**：source-grep 守门（`containerElement` 只允许出现 1 次在 denial comment）+ `createEditor()` no-opts 抛 `options required` + 缺 `documentId` / `jwt` / `host` 各抛结构化错误 + Node 环境无 container 抛 `container required when document is not available` | +113 |
+
+#### 11.24.2 设计要点
+
+- **私有函数暴露通过公共入口测试**：`resolveContainer` 是 `editor.ts` 内部闭包 helper（不导出），测试通过 public `createEditor()` 的 runtime guard 来验证行为，避免泄漏内部 API
+- **source-grep 守门而不是类型断言**：第 1 个测试用 `readFileSync` 读源码 grep `containerElement`，确保 doc typo 不会重新溜进 types.ts；类型系统对 docstring 没有约束
+- **跨文件 hack 假 `as unknown as Parameters<typeof createEditor>[0]`**：故意构造缺字段的对象（runtime guard 而非 TS 类型 guard），所以需要 cast past 编译；与 `files-jwt-revocation.test.ts` 的 `vi.hoisted` 模式一样
+- **Node 环境检测**：测试断言 `createEditor` 在无 `document` global + 无 `url` 时抛可识别错误（而非 silent fallback），让 SSR / build-time URL 生成路径可以明确 catch
+- **typecheck noise 风险**：4 处 `@ts-expect-error` / `as unknown as` cast 已审过，无新增 typecheck 报错
+
+#### 11.24.3 验证
+
+- typecheck：clean（仅预存 pptx-ops/xlsx-gateway 错误）
+- `npx vitest run test/container-resolve.test.ts`：6/6 通过（139ms）
+- `npx vitest run --config vitest.config.ts test/`：**5 文件 / 36 测试**全绿（was 4/30，+1 文件 / +6 测试）
+
+#### 11.24.4 后续观察
+
+- `apps/web-sdk` `package.json` 的 `"browser"` 条件出现在 `"import"` / `"require"` 之后，esbuild 警告 "will never be used as it comes after both"——pre-existing，与本 PR 无关；构建期统一走 import 路径所以无运行时影响
+- §11.20.5 backlog（server-side nonce ↔ SSE session 绑定）继续待做；本轮仅锁定 container contract 的运行时边界
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -2097,6 +2127,7 @@ SDK (host page)                 bash
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+24. **`CreateEditorOptions` doc typo 修复 + container contract 回归测试**（✅ 本轮 §11.24）：`apps/sdk/src/types.ts` 旧 JSDoc 提到 `containerElement` 字段，但接口里**根本没有**这个字段（早期迭代残留笔误），集成商按字面 join 后会在生产环境遇到 TS 编译报错。修正为"Provide exactly one of `container` or `url`"+ 明确"无 separate containerElement field，直接通过 `container` 传元素"。新增 `apps/sdk/test/container-resolve.test.ts`（6 测试）：source-grep 守门（`containerElement` 只允许出现 1 次在 denial comment）+`createEditor()` no-opts 抛 `options required` +缺 `documentId` / `jwt` / `host` 各抛结构化错误 +Node 环境无 container 抛 `container required when document is not available`。私有 helper `resolveContainer` 通过 public `createEditor` 的 runtime guard 间接验证，避免泄漏内部 API。
 23. **web-server 版本号单一源**（✅ 本轮 §11.23）：`'0.8.0'` 之前硬编码在 5 个文件（`index.ts` boot banner + `/health` / `app-info.ts` / `embed/index.ts` bridge ready payload）。新增 `common/version.ts` 导出 `WEB_SERVER_VERSION` 常量，4 个消费点改 import + 模板字符串插值。新增 5 测试守门：常量 == package.json 版本 / 没有 hardcoded `'0.8.0'`（除 `version.ts` 与 `package.json`）/ boot banner 用 `${...}` / bridge 用 `${...}` / app-info 用 `() => WEB_SERVER_VERSION`。live smoke 验 4 个消费点全报 `0.8.0`。
 22. **buildEmbedUrl nonce 测试整合**（✅ 本轮 §11.22）：把 §11.20 引入的 4 个 nonce 测试从独立的 `embed-url-nonce.test.ts` 合并到 `build-embed-url.test.ts`（canonical 位置），删除独立文件。维护更清晰。SDK 文件 5→4（文件数-1），测试数 30（净无 0 测试）。
 21. **SDK handshake timeout 可配置**（✅ 本轮 §11.21）：原本 SDK iframe handshake 的 10 s timeout 在 createEditor 闭包内硬编码，慢网络 host 没有逃生口。新增 `CreateEditorOptions.handshakeTimeoutMs` + module-level exported `clampHandshakeTimeout(ms)`（范围 1 s – 60 s，floor 整数，默认 10 s）。新增 6 测试覆盖 undefined / NaN / Infinity / 范围内 / 上下限 clamp / 分数 / 负数 → 下限（不取 abs）。
@@ -2123,17 +2154,17 @@ SDK (host page)                 bash
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout）| 4 | 30 | ✅ |
+| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve）| 5 | 36 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **176** | **4319** | ✅ |
+| **总计** | **177** | **4325** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 
