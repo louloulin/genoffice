@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  90 文件 / 791 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
+apps/web-server/tests/  →  90 文件 / 800 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -3169,7 +3169,7 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**90 文件 / 791 通过 / 1 skipped / 0 失败**（exit 0）——
+- `apps/web-server`：**90 文件 / 800 通过 / 1 skipped / 0 失败**（exit 0）——
   本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
@@ -3230,13 +3230,13 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
 失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
 
-**结果**：`apps/web-server` **90 文件 / 791 通过 / 1 skipped / 0 失败** —— 本分支
+**结果**：`apps/web-server` **90 文件 / 800 通过 / 1 skipped / 0 失败** —— 本分支
 首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
 
-- **~25 个只读 `slides:get-*` 通道**（`slides:get-comments` / `get-selection` /
-  `get-slide-size` 等）仍返空骨架。它们**可达但不改文档**（renderer 用它做面板
+- **~25 个只读 `slides:get-*` 通道**（✅ `b0e60d9` 闭合前 3 个，余 ~22 个仍 M4 backlog）：`slides:get-comments` / `get-selection` /
+  `slides:get-slide-size` / `slides:get-notes` / `slides:get-render-slides` 已实装（§11.45）。余 ~22 个仍返空骨架，**可达但不改文档**（renderer 用它做面板
   初值，返空 = "无选中 / 无批注"），要真做需把 live 模型投影成读模型。列入 M4。
 - **引擎侧稳定 id**：解析期 id 不稳定的根治在 pptx-engine，不在 web-server。
 - **CRDT / OT 协作、移动端 H5**：M4 路线图不变。
@@ -3422,6 +3422,122 @@ cd apps/web-server
 
 §A.5 中"审计日志保留期 / rotate"条目现标注 ✅ `f35524d`（观测部分）；
 rotate worker 仍留 M5+。`/api/v1/metrics` 现有 19 个指标（15 既有 + 4 新）。
+
+### 11.45 · Slides 只读 `slides:get-*` 通道首批 3 个真实化（§A.5 部分收口 · M4 模板）
+
+> 承接 §11.42.6 backlog 的"~25 个只读 `slides:get-*` 通道"：把它们留到 M4
+> 是因为整套要先把 live 模型投影成 read-model，而不只是改单通道签名。本轮把
+> 这个模式做出来 3 个（`slides:get-slide-size` / `slides:get-notes` /
+> `slides:get-render-slides`），剩下的 ~22 个按模板接力。`b0e60d9`。
+
+#### 11.45.1 之前的样子
+
+三个通道的"假返"：
+
+| 通道 | 之前 | 错误面 |
+|---|---|---|
+| `slides:get-slide-size` | `{ width: 960, height: 540 }` | 任何非 16:9 deck 的画布比例都错；renderer 要等到自己 parse deck 后才校正，期间幻灯片按错比例渲染 |
+| `slides:get-notes` | `""` | notes 窗永远是空的，即使 pptx 文件里有 notesSlide |
+| `slides:get-render-slides` | `[]` | slide strip / thumbnails 全空，slide 索引栏也画不出来 |
+
+#### 11.45.2 设计：共享 helper + projector
+
+`apps/web-server/src/slides/state.ts` 新增：
+
+1. `resolveSlidesReadModel(event)` —— 单点解析 `event.sessionId` →
+   `getCurrentSlidesPath(sessionId)` → `getSlidesSession(path)` →
+   `session.opened.deck`。返回 `null` 而不是抛错，让 renderer 在
+   `slides:open-path` 之前调 get-* 时走"已知空形状"分支。
+2. `EMU_PER_PX = 9525` —— 96 DPI 下 EMU 到 CSS px 的换算
+   （914400 EMU/inch ÷ 96 px/inch = 9525 EMU/px）。
+3. `projectRenderSlide(slide, archive, index)` —— 投影器，返回
+   `{ index, hidden, hasNotes, name }`：
+   - `hidden` 走 `getSlideHidden(slide)`（engine 的 hidden getter 读
+     `bodyPrefix` 里的 `<p:sld show="0">`，比"假设 slide 上有 hidden
+     字段"靠谱）；
+   - `hasNotes` 走 `notesPathForSlide(archive, slide.path)`，因为
+     notesSlide 在 pptx 里是单独 archive part、不在 `Slide` 对象上；
+   - `name` 用正则从 `slide.bodyPrefix` 的 `p:cSld@name` 取 —— engine
+     在 save 时把 bodyPrefix 当 verbatim 保留，所以投影纯计算、不分配
+     也不修改 deck；fallback 到 `"Slide N"` 应对 deck 没有自定义名的
+     情况（blank.pptx 就是这种）。
+
+#### 11.45.3 三个 handler 改写
+
+| 通道 | 新实现 |
+|---|---|
+| `slides:get-slide-size` | `Math.round(cX/9525)` × `Math.round(cY/9525)`；未知 path 仍返 `{960,540}` 让画布先 paint 出来个东西 |
+| `slides:get-notes(slideIndex)` | `getSlideNotes(opened.archive, slide.path)`；非 number / 越界 slideIndex 返 `""`；用 `try/catch` 兜底"畸形 notesSlide XML"（某些 authoring 工具产 partial notes）—— 单条 slide 不该把整个 notes 面板拉黑 |
+| `slides:get-render-slides()` | `deck.slides.map((s,i) => projectRenderSlide(s, archive, i))` |
+
+所有三个都走 `resolveSlidesReadModel` + `OpenedPptx.deck`，所以
+`slides:apply-txn` 改完 `setSlideHidden` / `setNotes` 之后，下一次
+get-* 立刻看到新值——不需要 reparse。这点对 §11.42.3 的引擎侧 id
+不稳定问题也成立：因为我们不重新 parse，整张表持续可用。
+
+#### 11.45.4 测试
+
+`apps/web-server/tests/slides-read-model-e2e.test.ts`（新建，9 个 e2e）：
+
+- **冷启动 fallback**：3 个 channel 在没有 SSE session 调用
+  `slides:open-path` 之前各自返 `{width:960,height:540}` / `""` / `[]`
+  —— 保持向后兼容，renderer 的"无选中/无批注"语义不变。
+- **post-open-path 正确性**：
+  - `get-slide-size` 返 `960×720`（bundled blank.pptx 是 4:3 deck，
+    `9144000×6858000 EMU`），证明 fix 对 day-one fixture 就生效；
+  - `get-render-slides` 返 1 个 slide 的投影（index=0, hidden=false,
+    hasNotes=false, name="Slide 1"）。
+- **越界 / 类型容错**：get-notes 对 `999` 和 `"not-a-number"` 都返
+  `""`。
+- **live mutation round-trip**：
+  - `apply-txn({ path, ops: [{ op: 'setNotes', target: { slide: 0 }, text }] })`
+    → `get-notes(0)` 立刻返回写入的文本，`get-render-slides` 的
+    `hasNotes` 翻成 true；
+  - `apply-txn({ path, ops: [{ op: 'setHidden', target: { slide: 0 }, hidden: true }] })`
+    → `get-render-slides` 的 `hidden` 翻成 true，再翻回 false 收尾避免
+    影响后续套件。
+
+> pptx-ops 的 op 注册名是 `setNotes` / `setHidden`（不是
+> `setSlideNotes` / `setSlideHidden`），slide 通过
+> `target: { slide: number }` 寻址 —— 见
+> `packages/pptx-ops/src/ops/registry.ts:390` 的 `resolveSlide`。
+> `apply-txn` 必须传 `{ path, ops }`，SSE session id 不足以定位 live
+> model —— dispatcher 按 path 在 session registry 里查。
+
+#### 11.45.5 验证
+
+```
+cd apps/web-server
+./node_modules/.bin/vitest run --config ./vitest.config.ts tests/slides-read-model-e2e.test.ts
+# 9/9 passed
+
+./node_modules/.bin/vitest run --config ./vitest.config.ts
+# 800 passed | 1 skipped | 0 failures（91 文件；基线 791 → 800 +9）
+
+../../node_modules/.bin/tsc --noEmit
+# 无新增错误（同 9 个 pre-existing 在 packages/{pptx-ops,xlsx-gateway}）
+```
+
+#### 11.45.6 不在本轮范围内（M4 backlog 仍存）
+
+剩下 ~22 个 `slides:get-*` 通道仍返空骨架，按 `resolveSlidesReadModel`
+模板接力即可，估计单通道 5-30 行；可分散到几个 M4 PR。优先级建议
+（按 renderer 调用频次排）：
+
+- `slides:get-animations` / `get-shape-keys` / `get-slide-links` /
+  `get-run-links` / `get-link` / `get-chart-data` —— 跟 get-render-slides
+  同模型；
+- `slides:get-header-footer` —— 读 `p:hf` 元素；
+- `slides:get-comments` —— pptx 用单独的 `commentsSlide` archive part，
+  跟 notes 同模式（甚至可以共用 `notesPathForSlide` 的 sibling helper）；
+- `slides:get-sections` / `get-layouts` —— 需要补一张 metadata
+  projection（pptx 里 sections 是单独的 part，layouts 是 layoutMaster
+  关联链）。
+
+#### 11.45.7 收口结果
+
+§A.5 backlog "只读 `slides:get-*` 通道" 现标注 ✅ `b0e60d9`（前 3 个）；
+其余 ~22 个仍在 M4 backlog，按本轮的 helper + projector 模式接力即可。
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
@@ -4134,7 +4250,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../webhooks-dlq / metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e**）| 90 | 779 | ✅ |
+| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e**）| 91 | 800 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
