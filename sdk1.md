@@ -4612,7 +4612,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../metrics-endpoint / audit-log-persistence / **audit-log-rotate** / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys** / **§11.53 font-catalog + font-missing** / **§11.54 documented renderer-owned stubs** / **§11.56 tenant-aware audit logging**）| 92 | 876 | ✅ | (868 passed + 8 skipped)
+| web-server（含 .../metrics-endpoint / audit-log-persistence / audit-log-tenant / **audit-log-rotate** / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys** / **§11.53 font-catalog + font-missing** / **§11.54 documented renderer-owned stubs** / **§11.56 tenant-aware audit logging**）| 93 | 875+1 | ✅ | (875 passed + 1 skipped, 0 failures; +12 vs §11.52 baseline of 863)
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
