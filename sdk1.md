@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  91 文件 / 841 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
+apps/web-server/tests/  →  91 文件 / 843 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -3169,7 +3169,7 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**91 文件 / 841 通过 / 1 skipped / 0 失败**（exit 0）——
+- `apps/web-server`：**91 文件 / 843 通过 / 1 skipped / 0 失败**（exit 0）——
   本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
@@ -3230,7 +3230,7 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
 失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
 
-**结果**：`apps/web-server` **91 文件 / 841 通过 / 1 skipped / 0 失败** —— 本分支
+**结果**：`apps/web-server` **91 文件 / 843 通过 / 1 skipped / 0 失败** —— 本分支
 首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
@@ -3827,9 +3827,10 @@ infrastructure 类（与 live deck 模型不同），按类型分：
   `[]`。
 - **`private-font-data`（2）**：未知 session → `null`；越界 id → `null`。
 - **`cloud-gen-status`（2）**：fresh → `idle`；session-bound → 仍 `idle`。
-- **documented stubs（3）**：`font-catalog` / `font-missing` /
-  `chart-color-schemes` 各 1 个空形状断言，列出来让未来 reader 知道
-  "不是回归"。（`slides:table-structure` §11.49 已闭合为空测试不再列）
+- **documented stubs（2）**：`font-catalog` / `font-missing` 各 1
+  个空形状断言，列出来让未来 reader 知道"不是回归"。
+  （`slides:table-structure` §11.49 已闭合为空测试不再列；
+  `slides:chart-color-schemes` §11.50 已闭合为真值化。）
 
 #### 11.48.6 验证
 
@@ -3839,7 +3840,7 @@ cd apps/web-server
 # 42/42 passed（9 §11.45 + 12 §11.46 + 10 §11.47 + 11 §11.48）
 
 ./node_modules/.bin/vitest run --config ./vitest.config.ts
-# 841 passed | 1 skipped | 0 failures（91 文件；基线 833 → 841 +8）
+# 843 passed | 1 skipped | 0 failures（91 文件；基线 841 → 843 +2）
 
 ../../node_modules/.bin/tsc --noEmit
 # 无新增错误（同 9 个 pre-existing 在 packages/{pptx-ops,xlsx-gateway}）
@@ -3853,14 +3854,19 @@ cd apps/web-server
   `font-install-local`）—— 引擎需补 `theme.fonts` enumeration
 - 媒体 / 剪贴板（`media-data` / `native-clipboard` /
   `clipboard-external` / `clipboard-probe`）—— 浏览器环境差异大
-- chart palette（`chart-color-schemes`）—— 引擎需补 chart model palette
+
+（`chart-color-schemes` 不在此列 —— §11.50 已闭合为真值化；
+端口来自 `apps/slides/src/main/slides-main.ts:1000`。）
 - cloud / font download —— 需要上游服务
 
 #### 11.48.8 收口结果
 
 §A.5 "只读 `slides:get-*` 通道" 现标注 ✅ `b0e60d9` + `1759c2b` +
-`486f749` + `5ccaeef`（共 15 个），余 ~10 个仍 M4 backlog；按"需引擎补充
-projection helper" / "需 host SDK 支持"两类细分。
+`486f749` + `5ccaeef`（共 15 个 read-only channels），§11.49 闭合
+`slides:table-structure`（mutation 路径），§11.50 闭合
+`slides:chart-color-schemes`（theme palette）。余 ~8 个仍 M4 backlog
+按"需引擎补充 `theme.fonts` enumeration" / "需浏览器 FontFace API" /
+"需 desktop clipboard 探测"三类细分。
 
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
@@ -4568,6 +4574,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
   `dropped_total` 是 rotate 紧急度的领先指标。rotate 脚本本身
   （`GENOFFICE_AUDIT_RETENTION_DAYS` + 周期 worker）仍 M5+。详见 §11.44。
 - **Discord 服务器 / Office Hours**：外部服务，沙箱不可达（§A.3 ⬜ 保留）。
+- **`slides:chart-color-schemes` 真值化** ✅ §11.50：本批将桩 (`() => []`) 替换为真实 theme-driven palette（9 个 scheme：default + colorful + colorful2 + 6 mono-accent 渐变）。端口来自 `apps/slides/src/main/slides-main.ts:1000` 的 `chartColorSchemes`，新增 `parseTheme` 导入（@genoffice/pptx-engine 已 export）+ `mixHex` / `deckAccents` / `FALLBACK_ACCENTS` 三个本地 helper。handler 仍走 `resolveSlidesReadModel`，session 缺时返 `null`（renderer `then(r => ...)` 把 `null` 读为"无 palette 可用"，避免空数组 `false-pass-through`）。测试 +2（替换 1 个 no-op 桩断言为 9-scheme + 6-color + 5-step gradient + #RRGGBB 格式断言，加 1 个 null 契约断言）。
 - **`slides:table-structure` 错形状桩闭合** ✅ §11.49：本批将桩 (`() => ({})`) 从 `apps/web-server/src/slides/state.ts` 移到 `apps/web-server/src/slides/elements.ts` 真 mutation handler 路径。新实现直接调用 `@genoffice/pptx-engine` 的 `editTableStructure` (已 export，签名 `(opened, slideIndex, elementId, op) => { slide, elementId } | null`)，通过 `legacySession(event)` 查 session，`pushSlidesHistory` 推快照，refused（merged cells / out-of-range / delete-of-last-row）时 `session.undoStack.pop()` 回滚；成功路径 `setSlidesDirty(path, true)` + 返回 `{ slide, sourceId: r.elementId }`。
 renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slide, sourceId } | null`，旧桩 `{}` 是 truthy object，会被 `if (r)` 误读成成功（§11.42 处理的同一类 bug 的 mutation 变种）。channel 名带 `slides:` 但本质是 mutation，因此 handler 放在 elements.ts 紧邻 `slides:table-merge` (line 1182)。测试 `apps/web-server/tests/slides-read-model-e2e.test.ts` 新增 describe `slides:table-structure real impl (sdk1 §11.49)` 共 9 e2e：(1) 无 table 时返 null；(2) 无 session 时返 null；(3) insert-row 后表 id 重新 material 化非空；(4) insert-col 同上；(5) delete-row refused at 1-row；(6) delete-col refused at 1-col；(7) insert-row 后 dirty=true + undo 后再 delete-row → delete-of-last refused（验证 undo 还原 row 数到 2）；(8) 未知 sourceId 返 null；(9) 4 类 bad args（缺 kind / 缺 index / 非法 kind / 非数 slideIndex）均返 null。
 全量 web-server 88 slides-related cases 通过；tsc 零新增错误。剩余 §11.46.7 / §11.47.7 / §11.48.7 backlog 更新：从 ~10 个只读通道里剔除 `table-structure`（它不是 read-model 而是 mutation），余 ~9 个真 M4 backlog（font-catalog / font-missing / chart-color-schemes / media-data / native-clipboard / clipboard-external / clipboard-probe / 各类 font 下载与 install）。
@@ -4577,7 +4584,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure**）| 91 | 841 | ✅ |
+| web-server（含 .../metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes**）| 91 | 843 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -4596,7 +4603,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **196** | **4652** | ✅ |
+| **总计** | **196** | **4654** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
