@@ -40,6 +40,13 @@ export interface RevisionRange {
     | 'blockDel'
   author: string
   date?: string
+  /**
+   * The revision's text content, when the range carries any. Insertions and
+   * deletions have a run of text; a formatting-only revision (`pPrChange` /
+   * `rPrChange`) or a row/cell mark does not, so this is optional and
+   * `revisionId` treats a missing value as an empty string.
+   */
+  text?: string
 }
 
 /** transactions carrying this meta are never recorded as revisions */

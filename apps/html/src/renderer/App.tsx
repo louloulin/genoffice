@@ -16,6 +16,8 @@ import { useI18n } from './i18n/locale'
 import { parseDocText, serializeDocText, type Envelope } from './document/envelope'
 import { SourceEditor, type CursorInfo, type SourceEditorHandle } from './source/SourceEditor'
 import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
+import { ExportFormatUnsupportedError, type DownloadAsResult } from '@genoffice/ipc-bridge/sdk-command-sink'
+import { createDownloadUrl, triggerDownload, webPrint } from '@genoffice/ipc-bridge/web-native'
 import { PreviewFrame, type PreviewFrameHandle } from './preview/PreviewFrame'
 import { instrumentForPreview } from './preview/instrument'
 import type { ComputedSnapshot, ElementRect, FromInspector } from './preview/inspector-protocol'
@@ -362,6 +364,47 @@ export default function App() {
     return () => window.clearTimeout(id)
   }, [notice])
 
+  /** Write an SDK export to managed storage when asked, else download it. */
+  const writeExportBytes = useCallback(
+    async (
+      request: { format: string; savePath: 'browser' | string },
+      name: string,
+      bytes: Uint8Array,
+      mime: string,
+    ): Promise<DownloadAsResult> => {
+      if (bytes.byteLength === 0) {
+        // A 0-byte export is a bug, not a file: downloading it would look
+        // like success to the host and its user.
+        throw new Error(`downloadAs: ${request.format} export produced no bytes`)
+      }
+      /* Copy out of the source buffer before it crosses postMessage: an
+       * offset view would carry trailing bytes from its parent, and the
+       * narrowed `ArrayBuffer` type is what the transport can clone. */
+      const payload: ArrayBuffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer
+      if (request.savePath !== 'browser') {
+        const written = await window.htmlApi.writeExportBytes(request.savePath, payload)
+        if (!written?.ok) throw new Error('downloadAs: the server refused to write the export')
+        return { path: written.path, size: written.size, format: request.format }
+      }
+      const blobUrl = createDownloadUrl(payload, mime)
+      if (!triggerDownload(name, blobUrl)) {
+        URL.revokeObjectURL(blobUrl)
+        throw new Error('downloadAs: no DOM available to start the download')
+      }
+      return { blobUrl, size: payload.byteLength, format: request.format }
+    },
+    [],
+  )
+
+  const writeExport = useCallback(
+    (request: { format: string; savePath: 'browser' | string }, name: string, text: string, mime: string) =>
+      writeExportBytes(request, name, new TextEncoder().encode(text), mime),
+    [writeExportBytes],
+  )
+
   const refreshHistory = useCallback(() => {
     const editor = editorRef.current
     if (editor) setHistoryState({ undo: editor.canUndo(), redo: editor.canRedo() })
@@ -399,6 +442,46 @@ export default function App() {
           length: (canUndo ? 1 : 0) + (canRedo ? 1 : 0),
           current: canUndo ? 1 : 0,
         }
+      },
+      /* §B.5.1 #6 Export. The HTML source is the document here, so `html`
+       * and `txt` are produced directly from the live buffer. `pdf` goes
+       * through the same print pipeline the File menu uses (the browser's
+       * own print-to-PDF), not a second implementation. `docx` is refused
+       * with a typed error because producing real OOXML needs a headless
+       * browser to rasterize the rendered page — see web-bridge.ts's
+       * exportDocx. */
+      downloadAs: async (request) => {
+        const source = textRef.current
+        if (typeof source !== 'string') throw new Error('downloadAs: the editor is not mounted yet')
+        const suggestedName =
+          pathRef.current?.replace(/^.*[/\\]/, '').replace(/\.html?$/i, '') ||
+          deriveAutoFileName(source) ||
+          'document'
+        if (request.format === 'html' || request.format === 'txt') {
+          const ext = request.format === 'html' ? 'html' : 'txt'
+          return writeExport(
+            request,
+            `${suggestedName}.${ext}`,
+            source,
+            request.format === 'html' ? 'text/html;charset=utf-8' : 'text/plain;charset=utf-8',
+          )
+        }
+        if (request.format === 'pdf') {
+          if (request.savePath !== 'browser') {
+            // The browser print dialog is the only PDF producer we have, and
+            // it always hands the file to the user rather than to a path.
+            throw new ExportFormatUnsupportedError('pdf (savePath requires a layout engine)')
+          }
+          // `window.print()` has no success signal: it resolves to void once
+          // the dialog is requested, and a blocked dialog is indistinguishable
+          // from an accepted one. There are also no bytes to report — the
+          // browser writes the PDF itself. Reporting a fabricated size here
+          // would be the exact lie the other exporters avoid, so the result
+          // carries 0 and the host is told to treat `pdf` as print-to-PDF.
+          webPrint()
+          return { size: 0, format: 'pdf' }
+        }
+        throw new ExportFormatUnsupportedError(request.format)
       },
     })
   }, [])

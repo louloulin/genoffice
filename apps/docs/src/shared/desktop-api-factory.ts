@@ -17,6 +17,7 @@ import type {
 } from './ipc'
 import type { ProjectApi } from '@genoffice/project-store'
 import type { IpcTransport } from '@genoffice/ipc-bridge/client'
+import { createDownloadUrl, triggerDownload } from '@genoffice/ipc-bridge/web-native'
 
 export interface DesktopApiOverrides {
   aiTranslate?: DesktopApi['aiTranslate']
@@ -335,11 +336,31 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
       // No Zotero host to reply to in the web build.
     },
     zoteroCommand: async () => ({ ok: false, error: 'zotero is desktop-only' }),
-    exportHtml: async () => {
-      // HTML export would render the document; web mode uses print-to-PDF
-      // for export instead. Surface an explicit unsupported result so the
-      // renderer's error handler can show a real reason.
-      return { ok: false, error: 'HTML export is not yet implemented in the web build' }
+    exportHtml: async (defaultName: string, html: string) => {
+      /* The renderer already produced the standalone HTML
+       * (`buildStandaloneHtml` over the live editor DOM) — this side only has
+       * to place the bytes. The desktop build opens a save dialog; the
+       * browser equivalent is a download, so no host filesystem is involved
+       * and `outPath` is intentionally ignored.
+       *
+       * This used to answer "not yet implemented", which was accurate when
+       * nothing produced the HTML — but the renderer has produced it all
+       * along, so the refusal discarded finished work. */
+      if (typeof html !== 'string' || html.length === 0) {
+        return { ok: false, error: 'HTML export produced no content' }
+      }
+      try {
+        const stem = String(defaultName || 'document').replace(/\.docx$/i, '') || 'document'
+        const encoded = new TextEncoder().encode(html)
+        const bytes: ArrayBuffer = encoded.buffer.slice(
+          encoded.byteOffset,
+          encoded.byteOffset + encoded.byteLength,
+        ) as ArrayBuffer
+        triggerDownload(`${stem}.html`, createDownloadUrl(bytes, 'text/html;charset=utf-8'))
+        return { ok: true, path: '' }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
     },
     convertAltChunkHtml: async () => null,
     consumeHeadlessExport: async () => null,

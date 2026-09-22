@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
  * uploaded documents.
  */
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
-import { basename, extname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   FILES_DIR,
@@ -74,6 +74,39 @@ export function registerWebHandlers(): void {
   registerHandle('web:make-temp-dir', async () =>
     mkdirSync(join(tmpdir(), `genoffice-dir-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`), { recursive: true }),
   )
+
+  /* `downloadAs` with an explicit `savePath` (§B.5.1 #6) needs a way to put
+   * renderer-produced bytes at a path the HOST chose. `web:save-file` cannot
+   * serve it: that channel names the file itself (a content-addressed key)
+   * and is for uploads. This one takes a managed destination and writes
+   * atomically, so an interrupted export never replaces a good file with a
+   * half-written one — the same guarantee every save pipeline gives.
+   *
+   * The path is run through `requireManagedPath`, so a hostile `savePath`
+   * cannot escape FILES_DIR even though the request comes from a renderer. */
+  registerHandle('web:write-file-bytes', async (_event: unknown, request: unknown) => {
+    const record = request as { path?: unknown; bytes?: unknown } | null
+    if (!record || typeof record.path !== 'string' || !(record.bytes instanceof ArrayBuffer)) {
+      throw new InvalidArgumentError('web:write-file-bytes', 'expects { path, bytes }')
+    }
+    if (record.bytes.byteLength === 0) {
+      // A 0-byte export is a bug upstream (an exporter that produced
+      // nothing), and accepting it would leave an unopenable file that the
+      // renderer reports as a successful export.
+      throw new InvalidArgumentError('web:write-file-bytes', 'refusing a 0-byte write')
+    }
+    if (record.bytes.byteLength > MAX_UPLOAD_BYTES) {
+      throw new InvalidArgumentError(
+        'web:write-file-bytes',
+        `write exceeds the ${MAX_UPLOAD_BYTES}-byte cap`,
+      )
+    }
+    const target = requireManagedPath('web:write-file-bytes', record.path)
+    mkdirSync(dirname(target), { recursive: true })
+    atomicWriteFile(target, Buffer.from(record.bytes))
+    await recordRecentDoc(target, { modified: true })
+    return { ok: true, path: target, size: record.bytes.byteLength }
+  })
 
   registerHandle('web:save-file', async (_event: unknown, request: unknown) => {
     const { name, bytes, projectId } = request as {

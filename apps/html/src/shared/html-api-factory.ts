@@ -51,6 +51,11 @@ export interface HtmlApiOverrides {
   exportDocx?: (request: ExportDocxRequest) => Promise<ExportResult>
   exportPdf?: (request: ExportPdfRequest) => Promise<ExportResult>
   exportHtml?: (request: ExportHtmlRequest) => Promise<ExportResult>
+  /** Web-native export-to-path (SDK `downloadAs` with a savePath). */
+  writeExportBytes?: (
+    path: string,
+    bytes: ArrayBuffer,
+  ) => Promise<{ ok: true; path: string; size: number } | null>
   /** Web-native file pick for chat attachments. */
   pickAttachments?: () => Promise<AttachmentAddResult | null>
   /** Web-native paste-image attachment (browser temp file + files:add-pasted-image). */
@@ -110,6 +115,19 @@ export function createHtmlApi(t: IpcTransport, overrides: HtmlApiOverrides = {})
     exportDocx: overrides.exportDocx ?? ((request) => t.invoke(HTML_CHANNELS.exportDocx, request) as Promise<ExportResult>),
     exportPdf: overrides.exportPdf ?? ((request) => t.invoke(HTML_CHANNELS.exportPdf, request) as Promise<ExportResult>),
     exportHtml: overrides.exportHtml ?? ((request) => t.invoke(HTML_CHANNELS.exportHtml, request) as Promise<ExportResult>),
+    writeExportBytes:
+      overrides.writeExportBytes ??
+      (async (path, bytes) => {
+        try {
+          const result: unknown = await t.invoke(HTML_CHANNELS.writeExportBytes, { path, bytes })
+          return (result ?? null) as { ok: true; path: string; size: number } | null
+        } catch {
+          // The server answers 4xx for a path outside managed storage or a
+          // 0-byte payload — a caller bug, not a transport fault. Null lets
+          // the SDK layer raise an error the host can act on.
+          return null
+        }
+      }),
     getLanguage: () => t.invoke(HTML_CHANNELS.getLanguage) as Promise<Lang>,
     onLanguageChanged: (handler) => t.on(HTML_CHANNELS.languageChanged, (lang) => handler(lang as Lang)),
     getTheme: () => t.invoke(HTML_CHANNELS.getTheme) as Promise<UiTheme>,

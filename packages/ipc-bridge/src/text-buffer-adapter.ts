@@ -315,6 +315,21 @@ export function installTextBufferSink(options?: {
         if (!fn) throw new UnsupportedCommandError('rejectChange')
         return fn(id)
       },
+      // §B.5.1 #6 Export. The mirror buffer has no notion of a file
+      // format, so exporting always needs the app's own pipeline
+      // (`exportPdf` / `exportDocx` / `exportHtml`, or the server's
+      // `anydoc:convert`). Throwing here rather than returning a fake
+      // tiny export is what keeps a host from downloading an empty file
+      // and reporting success to its user.
+      downloadAs: (request: {
+        format: string
+        savePath: 'browser' | string
+        options?: Record<string, unknown>
+      }) => {
+        const fn = native()?.downloadAs
+        if (!fn) throw new UnsupportedCommandError('downloadAs')
+        return fn.call(native(), request)
+      },
     },
   }
   if (options?.target !== undefined) base.target = options.target

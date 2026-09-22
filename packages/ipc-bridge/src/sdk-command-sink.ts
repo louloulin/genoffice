@@ -202,7 +202,7 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * `setContent` / `getContent` / `insertText` / `insertImage` / `undo` /
  * `redo` / `getUndoStack` / `setTheme` / `setLang` / `mountSidebar` /
  * `postToSidebar` / `unmountSidebar` / `setTrackChanges` /
- * `getTrackChanges` / `acceptChange` / `rejectChange`.
+ * `getTrackChanges` / `acceptChange` / `rejectChange` / `downloadAs`.
  *
  * `undo` / `redo` / `getUndoStack` are part of `SdkLiveModelAdapter` as
  * of sdk1.md §B.5.1 #2, so any app wiring `installLiveModelSink` (or
@@ -344,6 +344,46 @@ export interface SdkLiveModelAdapter {
   acceptChange?: (changeId: string) => boolean
   /** Reject one revision. Return `false` when the id is unknown. */
   rejectChange?: (changeId: string) => boolean
+  /**
+   * Export the live document (sdk1.md §B.5.1 #6). Each app decides which
+   * formats it can produce; the adapter reports the outcome so the sink
+   * can tell "this editor can't export that" (`UNSUPPORTED`) apart from
+   * "the export ran but failed" (a normal rejection).
+   *
+   * `savePath` is the host's request: `'browser'` means hand the bytes to
+   * the browser as a download, any other string means write into managed
+   * storage. The adapter is responsible for the actual mechanism.
+   */
+  downloadAs?: (request: {
+    format: string
+    savePath: 'browser' | string
+    options?: Record<string, unknown>
+  }) => Promise<DownloadAsResult> | DownloadAsResult
+}
+
+/** Result of a successful `downloadAs` export (§B.5.1 #6). */
+export interface DownloadAsResult {
+  /** Present for a browser download; revocable via `URL.revokeObjectURL`. */
+  blobUrl?: string
+  /** Present when the bytes landed in managed storage. */
+  path?: string
+  size: number
+  /** Echoed back so the host can confirm which format it actually got. */
+  format?: string
+}
+
+/**
+ * Thrown by an adapter's `downloadAs` when the editor has no exporter for
+ * the requested format. Distinct from a thrown `Error`, which the sink
+ * reports as a genuine failure: "this editor can't emit pptx" is a
+ * permanent answer, while "the export crashed" is not.
+ */
+export class ExportFormatUnsupportedError extends Error {
+  readonly code = 'UNSUPPORTED' as const
+  constructor(format: string) {
+    super(`this editor cannot export to "${format}"`)
+    this.name = 'ExportFormatUnsupportedError'
+  }
 }
 
 /**
@@ -508,6 +548,44 @@ export function makeLiveModelHandlers(
       }
       adapter.unmountSidebar!({ panelId: a.panelId })
       return undefined
+    }
+  }
+  if (adapter.downloadAs) {
+    handlers.downloadAs = async (args: unknown) => {
+      const a = (args ?? {}) as { format?: unknown; savePath?: unknown; options?: unknown }
+      if (typeof a.format !== 'string' || !a.format) {
+        throw new Error('downloadAs: args.format is required')
+      }
+      // `'browser'` is the documented default for a host that omits savePath.
+      const savePath = typeof a.savePath === 'string' && a.savePath ? a.savePath : 'browser'
+      const request: {
+        format: string
+        savePath: 'browser' | string
+        options?: Record<string, unknown>
+      } = { format: a.format, savePath }
+      if (a.options && typeof a.options === 'object') {
+        request.options = a.options as Record<string, unknown>
+      }
+      const result = await adapter.downloadAs!(request)
+      // Normalise: the SDK contract promises `{ok:true, size}` plus exactly
+      // one of `blobUrl` / `path`. An adapter that returns neither has not
+      // exported anything, and reporting success would be a silent lie.
+      if (!result || typeof result.size !== 'number') {
+        throw new Error('downloadAs: adapter must return {size:number}')
+      }
+      const hasTarget =
+        (typeof result.blobUrl === 'string' && result.blobUrl.length > 0) ||
+        (typeof result.path === 'string' && result.path.length > 0)
+      if (!hasTarget) {
+        throw new Error('downloadAs: adapter returned neither blobUrl nor path')
+      }
+      return {
+        ok: true as const,
+        ...(typeof result.blobUrl === 'string' && result.blobUrl ? { blobUrl: result.blobUrl } : {}),
+        ...(typeof result.path === 'string' && result.path ? { path: result.path } : {}),
+        size: result.size,
+        format: typeof result.format === 'string' && result.format ? result.format : request.format,
+      }
     }
   }
   if (adapter.postToSidebar) {

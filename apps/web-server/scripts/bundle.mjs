@@ -10,8 +10,9 @@
 // `const { Buffer } = require('buffer')`) keep working inside an ESM bundle.
 
 import { build } from 'esbuild'
-import { mkdirSync, readFileSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -57,3 +58,22 @@ await build({
   },
   logLevel: 'info',
 })
+
+// Copy `pdfium.wasm` next to the bundle.
+//
+// `anydoc:convert` (pdf -> docx) loads the wasm at runtime. The Docker
+// runtime stage copies ONLY `dist/bundle/` — no node_modules — so without
+// this copy the production image would answer WEB_UNSUPPORTED for a
+// conversion it can actually perform. Doing it here (rather than in the
+// Dockerfile) keeps `node dist/bundle/index.js` from the repo working too.
+// pdf2docx never touches the wasm itself; it receives the initialized
+// module, so this is the only wasm asset the server needs.
+{
+  const require = createRequire(join(root, 'package.json'))
+  const wasmSrc = require.resolve('@embedpdf/pdfium/pdfium.wasm')
+  if (!existsSync(wasmSrc)) {
+    throw new Error(`pdfium.wasm not found at ${wasmSrc}; anydoc pdf->docx would fail at runtime`)
+  }
+  copyFileSync(wasmSrc, resolve(outdir, 'pdfium.wasm'))
+  console.log(`[bundle] copied pdfium.wasm (${readFileSync(wasmSrc).byteLength} bytes) -> dist/bundle/`)
+}

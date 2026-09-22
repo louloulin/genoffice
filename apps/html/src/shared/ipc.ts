@@ -29,6 +29,7 @@ export const HTML_CHANNELS = {
   fetchImage: 'html:fetch-image',
   exportRequest: 'html:export-request',
   exportDocx: 'html:export-docx',
+  writeExportBytes: 'web:write-file-bytes',
   exportPdf: 'html:export-pdf',
   exportHtml: 'html:export-html',
   consumeHeadlessExport: 'html:consume-headless-export',
@@ -259,6 +260,19 @@ export interface HtmlApi {
   /** Shell menu Print → renderer builds the print HTML and opens the system print dialog */
   onPrintRequest(handler: () => void): () => void
   exportDocx(request: ExportDocxRequest): Promise<ExportResult>
+  /**
+   * SDK §B.5.1 #6 `downloadAs` with an explicit `savePath`: write export
+   * bytes to a managed path. Unlike `exportDocx` / `exportPdf` (dialog and
+   * print driven), the bytes already exist and the destination is already
+   * chosen, so this is a plain atomic write on the server.
+   *
+   * Resolves null when the server refuses (path outside managed storage,
+   * 0-byte payload).
+   */
+  writeExportBytes(
+    path: string,
+    bytes: ArrayBuffer,
+  ): Promise<{ ok: true; path: string; size: number } | null>
   exportPdf(request: ExportPdfRequest): Promise<ExportResult>
   exportHtml(request: ExportHtmlRequest): Promise<ExportResult>
   getLanguage(): Promise<Lang>

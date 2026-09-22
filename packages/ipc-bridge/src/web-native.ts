@@ -131,13 +131,41 @@ export function pickFileBytes(accept?: string, multiple = false): Promise<WebTem
 export function downloadBytes(name: string, bytes: ArrayBuffer): void {
   const blob = new Blob([bytes])
   const url = URL.createObjectURL(blob)
+  triggerDownload(name, url)
+  // Delay the revoke: Safari starts the download asynchronously and a URL
+  // revoked in the same tick produces a 0-byte file.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
+/**
+ * Hand an already-created object URL (or any URL) to the browser as a
+ * download. Split out from `downloadBytes` for the SDK's `downloadAs`,
+ * which must RETURN the blob URL to the host so it can revoke it on its
+ * own schedule rather than inside this helper's timer.
+ *
+ * Returns false when there is no DOM to click (SSR / a Web Worker), so
+ * callers can report an honest failure instead of a silent no-op.
+ */
+export function triggerDownload(name: string, url: string): boolean {
+  if (typeof document === 'undefined' || !document.body) return false
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = name
+  anchor.rel = 'noopener'
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  return true
+}
+
+/**
+ * Create an object URL for `bytes` and return it without triggering the
+ * download. The SDK's `downloadAs` uses this so the host owns the
+ * lifecycle: it receives `blobUrl` in the command result and revokes it
+ * when its own download UI is done.
+ */
+export function createDownloadUrl(bytes: ArrayBuffer, mime = 'application/octet-stream'): string {
+  return URL.createObjectURL(new Blob([bytes], { type: mime }))
 }
 
 /** Browser print dialog — the web equivalent of the desktop print pipeline. */

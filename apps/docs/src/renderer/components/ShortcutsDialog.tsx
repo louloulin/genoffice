@@ -21,7 +21,10 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   // added later (or loaded from the skill market) shows up here automatically
   // without editing shortcuts.ts. The skill table's `imageGenAvailable` flag
   // only affects row availability, not what the chip should be called.
-  const hintByShortcutId = new Map<string, { trigger: string; labelKey: string }>()
+  /* `labelKey` stays a `StringKey` rather than widening to `string`: the map
+   * is only ever fed to `t(...)`, and a plain string would let a typo reach
+   * the i18n lookup and render as a raw key. */
+  const hintByShortcutId = new Map<string, { trigger: string; labelKey: StringKey }>()
   for (const action of DOCS_QUICK_ACTIONS) {
     if (action.shortcutId)
       hintByShortcutId.set(action.shortcutId, { trigger: action.trigger, labelKey: action.labelKey })

@@ -180,12 +180,24 @@ if (!isElectronRuntime()) {
       }
       return await transport.invoke('files:add', paths)
     },
-    exportDocx: async (request: ExportDocxRequest) => {
-      downloadBytes(
-        `${sanitize(request.suggestedName) || 'document'}.docx`,
-        textToBytes(request.html),
-      )
-      return { ok: true, path: '' }
+    exportDocx: async (_request: ExportDocxRequest) => {
+      /* This used to write the *HTML source* to `<name>.docx` and report
+       * success. The download opened as a ZIP that Word rejects, and the UI
+       * told the user their Word export worked — the worst possible failure
+       * mode, because nothing surfaces until the file is opened elsewhere.
+       *
+       * The desktop build produces a real DOCX by rendering the document in a
+       * hidden BrowserWindow (`packages/html2docx` + ElectronBrowserDriver),
+       * which needs a browser the main process controls: the conversion
+       * screenshots image-like elements, and only a headless browser can
+       * rasterize the live page. The web build has no such process, so the
+       * honest answer is to refuse. Printing to PDF (below) already covers
+       * the "give me a shareable file" need. */
+      return {
+        ok: false,
+        error:
+          'html: Word export needs a headless browser to render the document; this web build does not ship one. Use Print → Save as PDF instead.',
+      }
     },
     exportPdf: async (request: ExportPdfRequest) => {
       if (typeof request?.html !== 'string' || !request.html) {

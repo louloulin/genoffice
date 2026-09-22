@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ExportFormatUnsupportedError,
   installLiveModelSink,
   installSdkCommandSink,
   makeLiveModelHandlers,
@@ -323,5 +324,96 @@ describe('sdk-command-sink · track changes (§B.5.1 #5)', () => {
     await expect(handle.dispatch('getTrackChanges', {})).rejects.toMatchObject({
       code: 'UNSUPPORTED',
     })
+  })
+})
+
+/**
+ * §B.5.1 #6 — `downloadAs`. The sink's job here is contract enforcement,
+ * not export mechanics: an adapter that claims success without producing
+ * a target (neither a blobUrl nor a path) must be reported as a failure,
+ * because a host that receives `{ok:true}` will tell its user the export
+ * succeeded and hand them nothing.
+ */
+describe('makeLiveModelHandlers — downloadAs', () => {
+  it('is absent when the adapter has no exporter, so the host gets UNSUPPORTED', () => {
+    // No handler is registered at all (the same shape as `undo` on an editor
+    // without history). The sink then reports the standard
+    // UnsupportedCommandError, which is the loud answer a host needs; an
+    // empty `{blobUrl}` would have looked like a successful export.
+    const h = makeLiveModelHandlers({ getText: () => 'x' })
+    expect(h.downloadAs).toBeUndefined()
+    const target = {}
+    installSdkCommandSink({ target, handlers: h })
+    const sink = (target as { __GENOFFICE_COMMAND_SINK__?: (n: string, a: unknown) => unknown })
+      .__GENOFFICE_COMMAND_SINK__
+    expect(() => sink!('downloadAs', { format: 'pdf' })).toThrow(UnsupportedCommandError)
+  })
+
+  it('defaults savePath to browser and normalises the result', async () => {
+    const calls: Array<{ format: string; savePath: string; options?: Record<string, unknown> }> = []
+    const h = makeLiveModelHandlers({
+      downloadAs: (request) => {
+        calls.push(request)
+        return { blobUrl: 'blob:abc', size: 128 }
+      },
+    })
+    const r = (await h.downloadAs!({ format: 'docx' })) as {
+      ok: true
+      blobUrl?: string
+      path?: string
+      size: number
+      format: string
+    }
+    expect(calls).toEqual([{ format: 'docx', savePath: 'browser' }])
+    expect(r).toEqual({ ok: true, blobUrl: 'blob:abc', size: 128, format: 'docx' })
+  })
+
+  it('passes a host-chosen path through and echoes it back', async () => {
+    let seen = ''
+    const h = makeLiveModelHandlers({
+      downloadAs: (request) => {
+        seen = request.savePath
+        return { path: '/data/files/out.pdf', size: 55, format: 'pdf' }
+      },
+    })
+    const r = (await h.downloadAs!({ format: 'pdf', savePath: '/data/files/out.pdf' })) as {
+      path?: string
+      blobUrl?: string
+    }
+    expect(seen).toBe('/data/files/out.pdf')
+    expect(r.path).toBe('/data/files/out.pdf')
+    // Exactly one target: a browser download and a written path are
+    // mutually exclusive, and returning both would leave the host
+    // guessing which one to advertise.
+    expect(r.blobUrl).toBeUndefined()
+  })
+
+  it('rejects a missing format', async () => {
+    const h = makeLiveModelHandlers({ downloadAs: () => ({ blobUrl: 'blob:x', size: 1 }) })
+    await expect(h.downloadAs!({})).rejects.toThrow(/format is required/)
+    await expect(h.downloadAs!({ format: '' })).rejects.toThrow(/format is required/)
+  })
+
+  it('rejects an adapter that reports success with no target', async () => {
+    const h = makeLiveModelHandlers({
+      downloadAs: () => ({ size: 42 }) as unknown as { blobUrl: string },
+    })
+    await expect(h.downloadAs!({ format: 'pdf' })).rejects.toThrow(/neither blobUrl nor path/)
+  })
+
+  it('rejects an adapter that omits the byte count', async () => {
+    const h = makeLiveModelHandlers({
+      downloadAs: () => ({ blobUrl: 'blob:x' }) as unknown as { blobUrl: string; size: number },
+    })
+    await expect(h.downloadAs!({ format: 'pdf' })).rejects.toThrow(/size:number/)
+  })
+
+  it('propagates a format-unsupported rejection without masking it', async () => {
+    const h = makeLiveModelHandlers({
+      downloadAs: () => {
+        throw new ExportFormatUnsupportedError('pptx')
+      },
+    })
+    await expect(h.downloadAs!({ format: 'pptx' })).rejects.toThrow(/cannot export to "pptx"/)
   })
 })

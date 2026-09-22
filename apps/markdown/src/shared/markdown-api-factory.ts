@@ -47,6 +47,13 @@ export interface MarkdownApiOverrides {
     canceled?: boolean
     error?: string
   }>
+  /** Web-native export-to-path (SDK `downloadAs` with a savePath). The base
+   * transport implements it (it is a plain IPC round-trip); the Electron
+   * preload has no such channel, so a desktop build answers null. */
+  writeExportBytes?: (
+    path: string,
+    bytes: ArrayBuffer,
+  ) => Promise<{ ok: true; path: string; size: number } | null>
   /** Save the document to its known location; the web bridge tracks the
    * current path from consumePending and injects it as `request.path`. The
    * shape mirrors `SaveMarkdownResult` exactly so the override flows back
@@ -85,6 +92,23 @@ export function createMarkdownApi(
     exportDocx:
       overrides.exportDocx ?? ((request) => t.invoke(MARKDOWN_CHANNELS.exportDocx, request)),
     exportPdf: overrides.exportPdf ?? ((request) => t.invoke(MARKDOWN_CHANNELS.exportPdf, request)),
+    writeExportBytes:
+      overrides.writeExportBytes ??
+      (async (path, bytes) => {
+        try {
+          const result: unknown = await t.invoke(MARKDOWN_CHANNELS.writeExportBytes, {
+            path,
+            bytes,
+          })
+          return (result ?? null) as { ok: true; path: string; size: number } | null
+        } catch {
+          // The web server refuses an out-of-storage path or a 0-byte
+          // payload with a 4xx; that is a caller bug, not a transport
+          // failure. Report null so the SDK layer raises its own error
+          // with a message the host can act on.
+          return null
+        }
+      }),
     consumeHeadlessExport:
       overrides.consumeHeadlessExport ?? (() => t.invoke(MARKDOWN_CHANNELS.consumeHeadlessExport)),
     headlessExportDone:

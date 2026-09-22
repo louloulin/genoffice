@@ -23,6 +23,7 @@ export const MARKDOWN_CHANNELS = {
   exportRequest: 'markdown:export-request',
   exportDocx: 'markdown:export-docx',
   exportPdf: 'markdown:export-pdf',
+  writeExportBytes: 'web:write-file-bytes',
   consumeHeadlessExport: 'markdown:consume-headless-export',
   headlessExportDone: 'markdown:headless-export-done',
   printRequest: 'markdown:print-request',
@@ -180,6 +181,20 @@ export interface MarkdownApi {
   onPrintRequest(handler: () => void): () => void
   exportDocx(request: ExportDocxRequest): Promise<ExportResult>
   exportPdf(request: ExportPdfRequest): Promise<ExportResult>
+  /**
+   * SDK §B.5.1 #6 `downloadAs` with an explicit `savePath`: write renderer-
+   * produced export bytes to a managed path. Distinct from `exportDocx` /
+   * `exportPdf`, which are dialog/print-driven: this one already has the
+   * bytes and already knows where they go.
+   *
+   * Rejects when the server refuses the path (outside managed storage, or a
+   * 0-byte payload). The web bridge implements it; the Electron preload
+   * resolves null (no such channel) so a desktop build degrades cleanly.
+   */
+  writeExportBytes(
+    path: string,
+    bytes: ArrayBuffer,
+  ): Promise<{ ok: true; path: string; size: number } | null>
   getLanguage(): Promise<Lang>
   onLanguageChanged(handler: (lang: Lang) => void): () => void
   getTheme(): Promise<UiTheme>

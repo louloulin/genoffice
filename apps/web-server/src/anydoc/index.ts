@@ -8,11 +8,13 @@
  * Honest gaps in the standalone web build:
  * - images have no OCR engine wired, so `anydoc:recognize` reports
  *   `ocrUnavailable` for them instead of inventing transcript text;
- * - `anydoc:extract-tables` / `anydoc:extract-images` need a structure-aware
- *   parser (pdf2docx's IR) and report `unsupported` until one is wired.
+ * - `anydoc:extract-tables` / `anydoc:extract-images` only serve .docx;
+ * - `anydoc:convert` serves pdf -> docx locally (pdfium wasm + pdf2docx).
+ *   docx -> pdf needs a layout engine the web build does not ship, so it
+ *   answers WEB_UNSUPPORTED rather than writing a mis-named copy.
  */
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, extname, join } from 'node:path'
 import {
   extractDocxImages,
   extractDocxTables,
@@ -27,6 +29,8 @@ import {
   requireManagedPath,
 } from '../common/index'
 import { NotFoundError } from '../ai/errors'
+import { atomicWriteFile } from '../common/atomic'
+import { convertPdfToDocxBytes } from './convert'
 
 interface AnyDocConfig {
   ocrEnabled: boolean
@@ -133,37 +137,91 @@ export function registerAnydocHandlers(): void {
   })
 
   registerHandle('anydoc:convert', async (_event: unknown, args: unknown) => {
-    const { filePath, targetFormat } = args as { filePath: string; targetFormat: string }
+    const { filePath, targetFormat, password, outPath } = args as {
+      filePath: string
+      targetFormat: string
+      password?: string
+      outPath?: string
+    }
     const path = requireManagedPath('anydoc:convert', filePath)
     if (!existsSync(path)) {
       throw new NotFoundError('anydoc:convert', `File not found: ${path}`)
     }
 
-    // Honest gate. The standalone web build has no LibreOffice / docx2pdf
-    // pipeline; the previous code wrote the source bytes to a path with the
-    // new extension and returned `success: true`, which silently produced a
-    // broken file the renderer would later try to open. Surface
-    // WEB_UNSUPPORTED instead so the renderer's existing fallback UI takes
-    // over.
     const sourceExt = extname(path).slice(1).toLowerCase()
     const target = targetFormat.toLowerCase().replace(/^\./, '')
-    const supported =
-      (sourceExt === 'docx' && target === 'pdf') || (sourceExt === 'pdf' && target === 'docx')
-    if (!supported) {
+
+    // Only the PDF → DOCX direction is wired: it is pure TypeScript
+    // (`@genoffice/pdf2docx` + an initialized pdfium wasm), no external
+    // process. DOCX → PDF needs a layout engine (the desktop build shells
+    // out to LibreOffice); without one there is no honest way to produce a
+    // PDF, so it stays WEB_UNSUPPORTED and the renderer's fallback UI takes
+    // over. Crucially: we never write the source bytes under the new
+    // extension — that produced an unopenable file that the renderer
+    // reported as success.
+    if (sourceExt !== 'pdf' || target !== 'docx') {
       return {
         success: false,
         sourceFormat: sourceExt,
         targetFormat: target,
-        error: `WEB_UNSUPPORTED: anydoc:convert only supports docx<->pdf in this build (got '${sourceExt}' -> '${target}')`,
+        error: `WEB_UNSUPPORTED: anydoc:convert supports pdf -> docx in this build (got '${sourceExt}' -> '${target}'); docx -> pdf needs a layout engine (LibreOffice) that the web build does not ship`,
       }
     }
-    // TODO(phase-3): wire packages/pdf2docx (pdf->docx) and packages/docx-engine's
-    // PDF export (docx->pdf). Until then, refuse rather than fabricate.
+
+    // A zero-byte / truncated upload has no pages to extract; fail with a
+    // clear message instead of handing pdfium a document it cannot open.
+    const sourceBytes = readFileSync(path)
+    if (sourceBytes.byteLength === 0) {
+      return {
+        success: false,
+        sourceFormat: sourceExt,
+        targetFormat: target,
+        error: 'source PDF is empty (0 bytes)',
+      }
+    }
+
+    const outcome = await convertPdfToDocxBytes(new Uint8Array(sourceBytes), {
+      ...(typeof password === 'string' && password.length > 0 ? { password } : {}),
+    })
+
+    if (!outcome.ok || !outcome.docx) {
+      // Map the converter's codes onto the renderer's vocabulary. The
+      // password case must be distinguishable: the UI prompts for a
+      // password and retries, it does not show "conversion failed".
+      if (outcome.code === 'PDF_PASSWORD_REQUIRED') {
+        return {
+          success: false,
+          sourceFormat: sourceExt,
+          targetFormat: target,
+          passwordRequired: true,
+          error: outcome.message ?? 'this PDF is password-protected',
+        }
+      }
+      return {
+        success: false,
+        sourceFormat: sourceExt,
+        targetFormat: target,
+        error: outcome.message ?? 'PDF conversion failed',
+      }
+    }
+
+    // Default sibling name: `<source>.docx` next to the source, unless the
+    // caller asked for a specific managed destination. `requireManagedPath`
+    // is what keeps a hostile `outPath` from writing outside FILES_DIR.
+    const requested = typeof outPath === 'string' && outPath.length > 0 ? outPath : `${path}.docx`
+    const destination = requireManagedPath('anydoc:convert', requested)
+    mkdirSync(dirname(destination), { recursive: true })
+    atomicWriteFile(destination, Buffer.from(outcome.docx))
+
     return {
-      success: false,
+      success: true,
       sourceFormat: sourceExt,
       targetFormat: target,
-      error: `WEB_UNSUPPORTED: ${sourceExt} -> ${target} conversion needs the pdf2docx / docx2pdf pipeline (not wired in web build)`,
+      path: destination,
+      size: outcome.docx.byteLength,
+      pages: outcome.pages ?? 0,
+      ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+      ...(outcome.scannedDocument ? { scannedDocument: true } : {}),
     }
   })
 

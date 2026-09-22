@@ -535,6 +535,47 @@ export interface EditorCommands {
   rejectChange: { args: { changeId: string }; result: { ok: true } }
 
   /**
+   * Export the current document to another format.
+   *
+   * `savePath: 'browser'` (the default) hands the bytes to the browser as
+   * a download — the host page sees a `downloadAs` result with a
+   * `blobUrl` it can revoke once the download starts. A string
+   * `savePath` writes into the host's managed storage instead and the
+   * server replies with the absolute path.
+   *
+   * Which formats a given editor can produce is editor-specific and
+   * deliberately not narrowed here: a Markdown buffer can emit `docx` /
+   * `pdf` / `html`, the HTML editor emits `docx` / `pdf` / `html`, and a
+   * PDF viewer emits `pdf`. Asking for a format the current editor
+   * cannot produce rejects with `code: 'UNSUPPORTED'` (a loud failure)
+   * rather than resolving with an empty blob.
+   *
+   * The server never invents an export: when no renderer-side exporter
+   * is wired for the requested pair, the command fails instead of
+   * writing the source bytes under a new extension.
+   *
+   * (sdk1.md §B.5.1 #6 Export, SDK 2.0 Kestrel)
+   */
+  downloadAs: {
+    args: {
+      format: 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'png' | 'html' | 'md' | 'txt'
+      /** `'browser'` (default) = download; a path = write to host storage. */
+      savePath?: 'browser' | string
+      /** Opaque per-editor options (page ranges, quality, …). */
+      options?: Record<string, unknown>
+    }
+    result: {
+      ok: true
+      /** Present for browser downloads; absent when written to a path. */
+      blobUrl?: string
+      /** Absolute managed-storage path when `savePath` was a path. */
+      path?: string
+      size: number
+      format: string
+    }
+  }
+
+  /**
    * Report an aggregated usage sample so the web-server can expose it
    * alongside its own metrics (`GET /api/v1/metrics`, sdk1.md §11.36).
    *

@@ -61,6 +61,16 @@
 
 **结论：所有 6 个编辑器的 save 路径都是"真保存"**，不再有 `{ ok: true }` 静默吃字节的桩。下面是具体实现链路。
 
+> **导出通道补充（§11.41，2026-09-22 复查）**：save 之外，**导出**路径本轮也做了
+> 同口径核查，发现并修掉两处"假成功"：
+> - `apps/html` 的 Word 导出把 **HTML 源码**写进 `.docx`（Word 打不开、UI 报成功）
+>   → 改为诚实拒绝并指向 Print → Save as PDF（真实实现需要 web 构建没有的
+>   无头浏览器）。
+> - `anydoc:convert` 的 pdf→docx 一直是全线 `WEB_UNSUPPORTED`，但它**不需要**
+>   LibreOffice——`@genoffice/pdf2docx` 是纯 TS + pdfium wasm，两者都在仓库里
+>   → 本轮真实实现（docx→pdf 仍诚实拒绝）。
+> 详细落点见 §11.41。
+
 #### ✅ Sheets — `workbook:save` 全家桶（M1 完成）
 
 ```typescript
@@ -219,8 +229,9 @@ Features: AI, Collab, Files, Projects, AnyDoc
 · sidebar: mountSidebar({panelUrl, width?, title?}) / unmountSidebar({panelId}) / postToSidebar({panelId, message})
 · collab: addComment / listComments / resolveComment / removeComment / listVersions / restoreVersion / createSnapshot
 · ai: aiChat / aiRewrite / aiTranslate / aiSummarize
+· export: downloadAs({format, savePath?}) → {blobUrl|path, size}（§11.41）
 · telem: reportUsage
-· 总计 19 个 EditorCommands + 7 个 EditorEvent（ready / saved / dirtyChanged / selectionChange / error / closed / sidebarMessage） | ✅ · mountSidebar/unmountSidebar/postToSidebar + sidebarMessage 本轮接通（#66）|
+· 总计 20 个 EditorCommands + 7 个 EditorEvent（ready / saved / dirtyChanged / selectionChange / error / closed / sidebarMessage） | ✅ · downloadAs 本轮接通（§11.41.3）；markdown/html/docs 三应用已接线，sheets/slides/pdf 抛 UNSUPPORTED |
 | TypeScript | 闭源 d.ts | d.ts + ESM/CJS 双产物 + 3 测试文件 | ✅ |
 
 **借鉴 WPS 而补强**（见附录 B.2）：
@@ -235,6 +246,8 @@ Features: AI, Collab, Files, Projects, AnyDoc
 | Gap | 影响 | 优先级 |
 |---|---|---|
 | Slides `apply-txn` 70+ element-level ops 真做 | ✅（63 ops via runTxn · `apps/web-server/tests/slides-apply-txn-ops-e2e.test.ts`）| — |
+| html: Word 导出（`html2docx`）真实实现 | 需无头浏览器；当前诚实拒绝 | P2（M4+） |
+| docx → pdf 转换（`anydoc:convert`） | 需 LibreOffice / print-to-PDF 服务 | P2（M4+） |
 | 移动端 H5 编辑器 | 缺移动生产力场景 | P1（M4） |
 | 实时协作（CRDT） | 缺多人场景 | P1（M4） |
 | Slides session LRU 上限（防止内存膨胀） | ✅（`MAX_SLIDES_SESSIONS = 32` in `apps/web-server/src/slides/state.ts`）| — |
@@ -2938,6 +2951,126 @@ cellIns / blockIns / moveTo）→ `insert`；删除类 → `delete`；其余（�
   `acceptAllRevisions` / `rejectAllRevisions`。host 目前只能逐个处理；批量
   变体留 follow-up（需要定义"all"在并发编辑下的语义）。
 
+### 11.41 · §B.5.1 #6 Export（`downloadAs`）+ AnyDoc PDF→DOCX 真实化
+
+> 本轮把 SDK 2.0 的**最后一个 surface**（#6 Export）接通，并把两个"假装成功"
+> 的导出/转换通道改成真实实现或诚实拒绝。至此 §B.5.1 的 9 个 surface 全部落地。
+
+#### 11.41.1 先修掉的三个"假成功"
+
+计划 §B.5.1 #6 的原描述（"复用 `apps/web-server/src/converters/`"）与事实不符：
+那个目录不存在。实地核查发现真正的缺口是另外三处，它们都属于**功能性虚假**
+——比"缺功能"更危险，因为 UI 会报成功：
+
+1. **HTML 应用的 Word 导出是假导出**（`apps/html/src/renderer/web-bridge.ts`）：
+   原实现是 `downloadBytes('<name>.docx', textToBytes(request.html))` —— 把
+   **HTML 源码**写进 `.docx` 扩展名。下载得到的文件 Word 拒绝打开，而
+   `runExport` 认为成功。桌面版走 `packages/html2docx` + `ElectronBrowserDriver`
+   （隐藏 BrowserWindow 渲染 + 截图 image-like 元素 → 真 OOXML），web 构建
+   没有主进程可控的浏览器，**无法真实实现**。现在返回结构化错误并指向
+   Print → Save as PDF。这次修改只把"假成功"换成"诚实的失败"，功能面并未变窄
+   （原本产出的是不可用文件）。
+2. **`anydoc:convert` 全线 WEB_UNSUPPORTED**：原注释写"待 phase-3 接
+   pdf2docx"。事实是 pdf→docx 方向**完全不需要** LibreOffice ——
+   `@genoffice/pdf2docx` 是纯 TS，只要一个初始化好的 pdfium wasm，两者都在
+   本仓库里。现在真做（见 11.41.2）；docx→pdf 仍拒绝（真的需要排版引擎）。
+3. **`web:save-file` 无法承载 `savePath`**：SDK 契约允许
+   `downloadAs({savePath: '/path'})` 写入宿主存储，但 web-server 原本没有
+   "把渲染进程产出的字节写到指定受管路径"的通道。新增 `web:write-file-bytes`。
+
+#### 11.41.2 AnyDoc PDF → DOCX（真实本地转换）
+
+- **新增** `apps/web-server/src/anydoc/convert.ts`：`ensurePdfium()`（惰性
+  初始化 + 缓存）+ `convertPdfToDocxBytes(pdf, {password?})` → 判别式结果
+  `PdfToDocxOutcome`（**从不抛异常**，让 IPC 层能把"需要密码"和"转换失败"
+  映射成不同 UI）。
+- **wasm 定位修正**：`@embedpdf/pdfium` 的导出映射是
+  `./pdfium.wasm` → `./dist/pdfium.wasm`，所以文件**不在**包根目录。三个
+  候选路径（bundle 同级 → `ROOT/node_modules` → cwd/node_modules）+ 环境变量
+  `WEB_PDFIUM_WASM` 覆盖 + 包导出映射兜底。用 `import.meta.url`（不是
+  `__dirname`，ESM 下不存在）—— 这正是首版实现的事故点。
+- **`scripts/bundle.mjs` 新增拷贝**：Docker 运行阶段**只**拷贝
+  `dist/bundle/`（无 node_modules），不拷贝 wasm 的话生产镜像会对一个它其实
+  能做的转换回答 WEB_UNSUPPORTED。bundle 时把 `pdfium.wasm` 复制到
+  `dist/bundle/`，并校验存在（否则构建失败）。
+- **`anydoc:convert` handler 重写**：
+  - pdf→docx 走真实转换；目标路径默认 `<source>.docx`，或调用方给的
+    `outPath`，两者都过 `requireManagedPath`（否则宿主给的 `outPath` 能写出
+    FILES_DIR）。
+  - 0 字节源文件直接拒绝（交给 pdfium 只会得到一次无意义的失败）。
+  - 加密 PDF → `passwordRequired: true` + `PDF_PASSWORD_REQUIRED`，让渲染层
+    弹密码框而不是报"转换失败"。
+  - **仅在 `outcome.ok` 后才写**，且用 `atomicWriteFile`：转换失败绝不留下一
+    个扩展名撒谎的文件。
+  - docx→pdf 仍 `WEB_UNSUPPORTED`（需要 LibreOffice / 无头浏览器）。
+
+#### 11.41.3 SDK `downloadAs`（§B.5.1 #6）
+
+- **契约**（`apps/sdk/src/types.ts`）：`downloadAs({format, savePath?, options?})`
+  → `{ok, blobUrl?|path?, size, format}`。格式白名单是 `pdf | docx | xlsx |
+  pptx | png | html | md | txt`，但**每个编辑器实际支持哪些由编辑器决定**：
+  不支持时抛 `UNSUPPORTED`（响亮失败），而不是回一个空 blob。
+- **适配器**（`packages/ipc-bridge/src/sdk-command-sink.ts`）：
+  - `SdkLiveModelAdapter.downloadAs?()` 新增；未实现的应用**不注册 handler**，
+    宿主收到标准 `UnsupportedCommandError`。
+  - sink 强制契约：必须有 `size`、必须**恰好一个**目标（`blobUrl` 或 `path`）。
+    只报成功不给目标 → 抛错。宿主拿到 `{ok:true}` 会告知用户"导出成功"，
+    所以这条校验防的是"静默空文件"。
+  - 新增 `ExportFormatUnsupportedError`（`code: 'UNSUPPORTED'`）区分"这个
+    编辑器不会导出这个格式"（永久答案）与"导出崩了"（可重试）。
+- **`text-buffer-adapter`**：透传到 native adapter；没有 native 实现时抛
+  `UnsupportedCommandError('downloadAs')`——镜像 buffer 没有文件格式概念，
+  编一个"小导出"比报错更糟。
+- **`web-native`**：把 `downloadBytes` 拆出 `triggerDownload(name, url)` 与
+  `createDownloadUrl(bytes, mime)`。原因：SDK 契约要求把 `blobUrl` **返回**给
+  宿主（宿主自己决定何时 revoke），而原来的实现 10 秒后自动 revoke，宿主拿到
+  的 URL 可能已经失效。同时 Safari 需要在下一 tick 才 revoke（同 tick 会得到
+  0 字节文件）。
+- **新通道** `web:write-file-bytes`：`{path, bytes}` → 受管路径校验 + 0 字节
+  拒绝 + `atomicWriteFile` + recents 镜像。`savePath` 的实现基础。
+- **应用接线**：
+  - **markdown**：`md` / `html` 直接从 live buffer 产；`docx` 复用 File 菜单
+    的 `exportDocxBytes`（同一条流水线，不会漂移）；`pdf` 抛
+    `ExportFormatUnsupportedError`（本构建没有排版引擎 / print-to-PDF 服务）。
+  - **html**：`html` / `txt` 直接产；`pdf` 走 `window.print()`（浏览器自带的
+    print-to-PDF，与 File 菜单同路径）——注意 `window.print()` 无成功信号、
+    也不产生字节，所以结果 `size: 0` 并如实说明；`docx` 抛 typed 错误。
+  - **docs**：`exportHtml` 从"未实现"改为真实——渲染进程**早就**在产
+    standalone HTML（`buildStandaloneHtml`），原来的拒绝是把已经做好的工作
+    丢掉。现在走浏览器下载。
+
+#### 11.41.4 顺带修掉的 3 个既有类型错误
+
+`9b42ec2`（上一轮 track changes）在 `apps/docs` 留下 3 个 tsc 错误，会让
+`pnpm typecheck` 和 docs 构建失败：
+
+- `revisions.ts`：`RevisionRange` 接口缺 `text?: string`，而 `revisionId` /
+  `collectRevisionsForSdk` 都读它（TS2339 ×2）。
+- `ShortcutsDialog.tsx`：`hintByShortcutId` 的 `labelKey` 标成 `string`，
+  传给 `t()` 时不满足 `StringKey`（TS2345）。改成 `StringKey` 而不是放宽
+  `t()`：放宽会让拼错的 key 悄悄渲染成裸 key。
+
+#### 11.41.5 测试
+
+- `apps/web-server/tests/anydoc-convert.test.ts`（8）：wasm 位于包 `dist/`、
+  文本 PDF → 真 DOCX（PK 魔数）、损坏 PDF → `PDF_LOAD_FAILED`、空输入不产
+  文件、wasm 复用、加密 fixture → `PDF_PASSWORD_REQUIRED`、失败时不写文件。
+- `apps/web-server/tests/anydoc-convert-handler.test.ts`（8）：源码级守门 ——
+  不把源字节写到目标扩展名、目标必过 `requireManagedPath`、必须原子写、
+  写入必须在成功判之后、密码映射、docx→pdf 拒绝、0 字节拒绝。
+- `packages/ipc-bridge/tests/sdk-command-sink-live-model.test.ts`（+7）：
+  无导出器 → `UNSUPPORTED`、`savePath` 默认 `browser`、path 透传、缺
+  `format` 拒绝、只报成功无目标拒绝、缺 `size` 拒绝、typed 拒绝透传。
+
+#### 11.41.6 本轮不做（明确范围）
+
+- **HTML → DOCX 的真实实现**：需要无头浏览器（渲染 + 元素截图），web 构建
+  没有。要么引入 Playwright（镜像 +300 MB，且需要 chromium 下载），要么让
+  宿主提供渲染服务。两者都不是本轮能安全落地的，已在 §A.5 记为 backlog。
+- **docx → pdf**：同上，需要 LibreOffice 或 print-to-PDF 服务。
+- **`savePath` 走 storage backend（S3/minio）**：当前只写本地 FILES_DIR。
+  跨后端的 promote 语义需先统一（详见风险 §4）。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -3009,6 +3142,35 @@ cellIns / blockIns / moveTo）→ `insert`；删除类 → `delete`；其余（�
 | 双语（中英）全覆盖 | ✅ | SDK README + 18 篇 Guide/API/Skills/About 全部双语；VitePress `sidebarZH` 已覆盖 Guide / API / Skills / About 四大分区 |
 
 ### A.5 已知未做（更新于本轮实施后）
+
+#### ✅ 本轮新增解决（§B.5.1 #6 Export + 2 处"假成功" + 1 个 wasm 事故）
+
+**50. `§B.5.1 #6 Export（downloadAs）** —— SDK 2.0 第 9 个（也是最后一个）
+surface 落地。至此 §B.5.1 的 9 项全部完成。契约在 `apps/sdk/src/types.ts`
+（`downloadAs`），适配器在 `packages/ipc-bridge/src/sdk-command-sink.ts`
+（含"必须恰好一个目标 + 必须有 size"的契约强制），应用接线在
+markdown / html / docs；sheets / slides / pdf 抛标准 `UNSUPPORTED`。新增
+`web:write-file-bytes` 通道承载 `savePath`。详见 §11.41.3。
+
+**51. `anydoc:convert` 的 pdf → docx 真实化**（✅ 本轮）：`@genoffice/pdf2docx`
+是纯 TS + pdfium wasm，web 构建完全能跑，原来的全线 `WEB_UNSUPPORTED` 低估了
+自己的能力。新增 `apps/web-server/src/anydoc/convert.ts` +
+`scripts/bundle.mjs` 拷贝 wasm（否则 Docker 运行阶段找不到）。docx → pdf 仍
+诚实拒绝。详见 §11.41.2。
+
+**52. `apps/html` 的 Word 导出是假导出**（✅ 本轮修为诚实拒绝）：原实现把
+HTML 源码写进 `.docx`，Word 打不开而 UI 报成功。真实实现需要无头浏览器
+（`packages/html2docx` + ElectronBrowserDriver 要渲染 + 元素截图），web 构建
+没有，故改为结构化错误 + 指引 PDF 打印。详见 §11.41.1。
+
+**53. `apps/docs` 的 `exportHtml` 在 web 构建从未实现**（✅ 本轮实现）：渲染
+进程一直在产 standalone HTML，desktop-api 却直接回"not yet implemented"，
+把已经做好的工作丢掉。现在走浏览器下载。详见 §11.41.3。
+
+**54. 首版 `convert.ts` 用 `__dirname`**（✅ 本轮修正）：ESM（tsx dev + esbuild
+bundle）下 `__dirname` 不存在，任何调用都会 `ReferenceError`。改用
+`import.meta.url` + 多候选路径。同时修正 wasm 位置认知：包导出映射是
+`./pdfium.wasm` → `./dist/pdfium.wasm`，文件不在包根。
 
 #### ✅ 本轮已解决（3 项）
 
@@ -3586,12 +3748,12 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../webhooks-dlq / **metrics-endpoint** / **audit-log-persistence** / **comment-webhook** / **renderer-alias-order**）| 87 | 742 | ✅ |
+| web-server（含 .../webhooks-dlq / metrics-endpoint / audit-log-persistence / comment-webhook / renderer-alias-order / **anydoc-convert** / **anydoc-convert-handler**）| 89 | 759 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
 | agent-core | 6 | 95 | ✅ |
-| ipc-bridge | 6 | 144 | ✅ |
+| ipc-bridge | 6 | 151 | ✅ |
 | file-parse | 1 | 38 | ✅ |
 | file-management | 1 | 219 | ✅ |
 | pptx-engine | 1 | 957 | ✅ |
@@ -3600,14 +3762,21 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce / verify-embed-session / release-embed-nonce / session-binding / multi-instance / plugin-runtime / kestrel-m4 / kestrel-m5-contracts / clamp-handshake-timeout）| 15 | 195 | ✅ |
+| web-sdk（含 handshake / origin allowlist / build-embed-url-nonce / handshake-timeout / container-resolve / create-embed-nonce / verify-embed-nonce / verify-embed-session / release-embed-nonce / session-binding / multi-instance / plugin-runtime / kestrel-m4 / kestrel-m5-contracts / clamp-handshake-timeout / report-usage）| 16 | 201 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **194** | **4625** | ✅ |
+| **总计** | **196** | **4644** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
+
+> **实测口径（2026-09-22 本轮复跑）**：`apps/web-server` 单包 **89 文件 /
+> 757 通过 / 1 skipped**（`translate-kerrits-pdf-e2e` 依赖外部 LLM 端点，
+> 单跑 60s 超时，属既知网络 flake，与代码无关）；全量串跑时
+> `translate-malformed-payloads-e2e` 也会因同一端点被拖垮而偶发失败，
+> 单独跑 16/16 通过。`packages/ipc-bridge` **6 文件 / 151**（+7 downloadAs）。
+> `apps/sdk` **16 文件 / 201**。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
 新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、SDK verifyEmbedSession 同义别名（19）、SDK createEditor sessionBinding + autoRelease（12）、webhook DLQ ring buffer + v1 endpoint（23）、bridge dead-code 清理（删 2 测加 2 测，净 0）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）、webhook DLQ metrics counters（5）、Prometheus `/api/v1/metrics` 端点（7）。
@@ -3845,12 +4014,15 @@ off by default；`createEditor({ telemetry: true })` 启用。SDK 内部 `reques
 |---|---|---|---|
 | 1-2 | **✅ M1 — Multi-instance + Track-changes + Undo/Redo** | 1, 2 | +19 SDK 测试（11 multi-instance + 8 undo/redo；track changes backlog 至 M4+） |
 | 3-4 | **✅ M2 — Comments + Versions** | 3, 4 | +23 web-server 测试（11 store + 17 endpoint - 5 fix）；File picker backlog 至 M4 |
-| 5-6 | **✅ M3+M3.5+M4 — Versions + Plugin Runtime + File Picker + Telemetry** | 3, 7, 8, 9 | +14 +10 +15 tests；Track Changes / Export 留 v3 backlog |
-| 7-8 | M4 — Telemetry + 文档 + examples + sdk1.md v2.0 段 | 9 | +6 SDK 测试 |
+| 5-6 | **✅ M3+M3.5+M4 — Versions + Plugin Runtime + File Picker + Telemetry** | 3, 7, 8, 9 | +14 +10 +15 tests |
+| 7-8 | **✅ M5 — Track Changes + Export（§11.40 / §11.41）** | 5, 6 | +19 SDK/web-server 测试；**9 个 surface 全部完成** |
+| 7-8 | **✅ M4 — Telemetry + 文档 + examples + sdk1.md v2.0 段** | 9 | +6 SDK 测试 |
 
-合计已完成：~81 新测试；SDK 108 → 144；web-server 581 → 618。
+**§B.5.1 收口状态（2026-09-22）**：9 / 9 完成 —— 多实例、undo/redo、版本、
+评论、track changes、export、file picker、sidebar、telemetry。
 
-合计 ~74 新测试；SDK 测试 108 → ~182；curl 593 → ~629。
+合计已完成测试：SDK `apps/sdk` **201**（16 文件）·  ipc-bridge **151**（6 文件）
+·  web-server **757 通过 / 1 skipped**（89 文件）。
 
 #### B.5.4 向后兼容与版本策略
 

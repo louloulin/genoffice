@@ -40,6 +40,10 @@ import { resolveImageSrc } from './editor/localImage'
 import type { ExportFormat, SaveMode } from '../shared/ipc'
 import { uiOp } from './editor/ops'
 import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
+import { ExportFormatUnsupportedError, type DownloadAsResult } from '@genoffice/ipc-bridge/sdk-command-sink'
+import { createDownloadUrl, triggerDownload } from '@genoffice/ipc-bridge/web-native'
+
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
@@ -217,12 +221,13 @@ export default function App() {
   filePathRef.current = filePath
   const findTarget = useMemo(() => (editor ? tiptapFindTarget(editor) : null), [editor])
 
-  // SDK 2.0 §B.5.1 #2 — publish the markdown editor's undo history to the
-  // embed host. `installTextBufferSink` runs in web-bridge.ts at renderer
-  // boot, before this tiptap instance exists; `registerNativeAdapter` is
-  // resolved lazily on every command, so registering on mount is enough.
-  // tiptap has no public history-depth accessor, so `getUndoStack` reports
-  // availability (see the docs adapter for the same tradeoff).
+  // SDK 2.0 §B.5.1 #2 / #6 — publish the markdown editor's undo history and
+  // its exporters to the embed host. `installTextBufferSink` runs in
+  // web-bridge.ts at renderer boot, before this tiptap instance exists;
+  // `registerNativeAdapter` is resolved lazily on every command, so
+  // registering on mount is enough. tiptap has no public history-depth
+  // accessor, so `getUndoStack` reports availability (see the docs adapter
+  // for the same tradeoff).
   useEffect(() => {
     if (!editor) return
     return registerNativeAdapter({
@@ -238,6 +243,47 @@ export default function App() {
         const canUndo = editor.can().undo()
         const canRedo = editor.can().redo()
         return { length: (canUndo ? 1 : 0) + (canRedo ? 1 : 0), current: canUndo ? 1 : 0 }
+      },
+      /* §B.5.1 #6 Export. `md` and `html` are produced here from the live
+       * buffer; `docx` runs the same pipeline the File menu's Word export
+       * uses, so a host gets the identical artifact rather than a second
+       * implementation that can drift. `pdf` cannot be produced in this
+       * build (no layout engine / print-to-PDF service), so it throws
+       * ExportFormatUnsupportedError — a loud, typed refusal instead of a
+       * file that opens to nothing. */
+      downloadAs: async (request) => {
+        const current = editorRef.current
+        if (!current) throw new Error('downloadAs: the editor is not mounted yet')
+        const suggestedName = deriveAutoFileName(current) || 'Untitled'
+        if (request.format === 'md' || request.format === 'markdown') {
+          const text = serializeDocText(envelopeRef.current, current.getMarkdown())
+          return writeExport(request, `${suggestedName}.md`, text, 'text/markdown;charset=utf-8')
+        }
+        if (request.format === 'html') {
+          const html = buildPrintHtml(current.view.dom, suggestedName)
+          return writeExport(request, `${suggestedName}.html`, html, 'text/html;charset=utf-8')
+        }
+        if (request.format === 'docx') {
+          const loadImage = async (src: string) => {
+            const data = await window.markdownApi.readImage(src)
+            if (!data) return null
+            const dims = await measureImage(resolveImageSrc(src))
+            let width = dims?.width || 400
+            let height = dims?.height || 300
+            if (width > DOCX_MAX_IMAGE_PX) {
+              height = Math.round((height * DOCX_MAX_IMAGE_PX) / width)
+              width = DOCX_MAX_IMAGE_PX
+            }
+            return { base64: data.base64, mime: data.mime, widthPx: width, heightPx: height }
+          }
+          const renderDiagram = async (source: string) => {
+            const result = await renderMermaid(source)
+            return result.ok ? mermaidSvgToPng(result.svg, DOCX_MAX_IMAGE_PX) : null
+          }
+          const bytes = await exportDocxBytes(current.getJSON(), loadImage, renderDiagram)
+          return writeExportBytes(request, `${suggestedName}.docx`, bytes, DOCX_MIME)
+        }
+        throw new ExportFormatUnsupportedError(request.format)
       },
     })
   }, [editor])
@@ -295,6 +341,61 @@ export default function App() {
       markDirty()
     },
     [markDirty],
+  )
+
+  /** Write an SDK export to managed storage when asked, else download it. */
+  const writeExport = useCallback(
+    async (
+      request: { format: string; savePath: 'browser' | string },
+      name: string,
+      data: string | Uint8Array,
+      mime: string,
+    ): Promise<DownloadAsResult> => {
+      const bytes =
+        typeof data === 'string'
+          ? new TextEncoder().encode(data)
+          : data
+      return writeExportBytes(request, name, bytes, mime)
+    },
+    [],
+  )
+
+  const writeExportBytes = useCallback(
+    async (
+      request: { format: string; savePath: 'browser' | string },
+      name: string,
+      bytes: Uint8Array,
+      mime: string,
+    ): Promise<DownloadAsResult> => {
+      if (bytes.byteLength === 0) {
+        // An empty export is a bug, not a file. Failing loudly keeps the host
+        // from downloading a 0-byte document and telling its user it worked.
+        throw new Error(`downloadAs: ${request.format} export produced no bytes`)
+      }
+      /* An offset view of a larger buffer must be copied out before it
+       * crosses postMessage, or the reader sees trailing bytes from the
+       * parent. `slice` also narrows the type: `bytes.buffer` is declared
+       * `ArrayBufferLike` (which includes SharedArrayBuffer), and only a real
+       * ArrayBuffer can be structured-cloned onto the wire. */
+      const payload: ArrayBuffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer
+      if (request.savePath !== 'browser') {
+        const written = (await window.markdownApi.writeExportBytes(request.savePath, payload)) as
+          | { ok: true; path: string; size: number }
+          | undefined
+        if (!written?.ok) throw new Error('downloadAs: the server refused to write the export')
+        return { path: written.path, size: written.size, format: request.format }
+      }
+      const blobUrl = createDownloadUrl(payload, mime)
+      if (!triggerDownload(name, blobUrl)) {
+        URL.revokeObjectURL(blobUrl)
+        throw new Error('downloadAs: no DOM available to start the download')
+      }
+      return { blobUrl, size: payload.byteLength, format: request.format }
+    },
+    [],
   )
 
   /** Serialize and write to disk; false when canceled/failed (caller keeps the tab open) */

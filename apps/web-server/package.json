@@ -25,6 +25,7 @@
     "dev:once": "tsx --import ./scripts/register-loaders.mjs src/index.ts"
   },
   "dependencies": {
+    "@embedpdf/pdfium": "^2.15.0",
     "@genoffice/agent-core": "*",
     "@genoffice/agent-runtime": "*",
     "@genoffice/agent-skills": "*",
@@ -33,6 +34,7 @@
     "@genoffice/file-management": "*",
     "@genoffice/file-parse": "*",
     "@genoffice/ipc-bridge": "*",
+    "@genoffice/pdf2docx": "*",
     "@genoffice/translation-core": "*"
   },
   "devDependencies": {
