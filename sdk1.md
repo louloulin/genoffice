@@ -3942,6 +3942,7 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 - **审计日志保留期 / rotate**：当前 10k 条内存 mirror + 磁盘 JSONL 无限增长。生产环境需要
   `GENOFFICE_AUDIT_RETENTION_DAYS` + 周期 rotate 脚本（M5+）。
 - **Discord 服务器 / Office Hours**：外部服务，沙箱不可达（§A.3 ⬜ 保留）。
+- **CSV 保存 round-trip on web**（§11.44 之后）：`.csv` 的 open 路径已用 `csvToXlsxBuffer(decodeCsvBuffer(...))` + `csvPath` 回填走完（§11.44）；但 renderer's `csv-export.ts` 通过 `desktopApi.exportCsv(...)` 把值写回 `.csv`，**web-bridge 和 web-server 都没注册该通道**。打开 .csv 后点 Save 会 console UNSUPPORTED。需要补：web-bridge 加 `exportCsv`，web-server 加 `workbook:export-csv` handler（targetPath 受管路径校验 + `atomicWriteFile(targetPath, Buffer.concat([BOM, content]))` 匹配桌面 §11.41.3 已有的 5MB 上限和 BOM 行为）。
 
 ### A.6 测试现状（本轮实施后更新）
 
