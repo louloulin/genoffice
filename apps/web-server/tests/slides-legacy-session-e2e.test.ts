@@ -10,8 +10,10 @@
  *   1. Resolve the active deck via the SSE session id (no path arg)
  *   2. Mutate the live `OpenedPptx` through `runTxn`
  *   3. Persist the mutation on `slides:save` (with no path arg)
- *   4. Return a structured error envelope (not `{ ok: true }`) when no
- *      session is open.
+ *   4. Answer `null` — not a fabricated `{ ok: true }` — when no session is
+ *      open. These channels declare `RenderSlide | null`; a `{ok:false}`
+ *      object would be TRUTHY and get handed to `applySlide()` as if it were
+ *      a page, which is the corruption this contract exists to prevent.
  *
  * Covers the 4 most-used legacy channels (per grep on apps/slides/src):
  *   slides:edit-text   (renderer call sites × 3)
@@ -165,13 +167,10 @@ describe.skipIf(skip)('slides legacy channels use SSE session path (M2 batch-2)'
       session,
     )
     expect(edit.status).toBe(200)
-    const result = unwrap<{ ok?: boolean; error?: string }>(edit.body.result)
-    // The behaviour must NOT be a silent { ok: true } — either success or a
-    // structured error proves the channel actually dispatched.
-    if (!result.ok) {
-      expect(typeof result.error).toBe('string')
-      expect(result.error?.length ?? 0).toBeGreaterThan(0)
-    }
+    // A bogus element id means setText cannot apply, so the channel answers
+    // `null` — the contract's failure value. The old stub answered `{ok:true}`,
+    // which the renderer accepted as a page and stored in place of the slide.
+    expect(edit.body.result).toBeNull()
   })
 
   it('slides:edit-fill with no path arg dispatches setFill (structured error envelope on missing element)', async () => {
@@ -185,10 +184,8 @@ describe.skipIf(skip)('slides legacy channels use SSE session path (M2 batch-2)'
       session,
     )
     expect(edit.status).toBe(200)
-    const result = unwrap<{ ok?: boolean; error?: string }>(edit.body.result)
-    if (!result.ok) {
-      expect(typeof result.error).toBe('string')
-    }
+    // Missing element → the op cannot apply → `null`, never `{ok:true}`.
+    expect(edit.body.result).toBeNull()
   })
 
   it('slides:edit-stroke with no path arg dispatches setStroke', async () => {
@@ -208,10 +205,7 @@ describe.skipIf(skip)('slides legacy channels use SSE session path (M2 batch-2)'
       session,
     )
     expect(edit.status).toBe(200)
-    const result = unwrap<{ ok?: boolean; error?: string }>(edit.body.result)
-    if (!result.ok) {
-      expect(typeof result.error).toBe('string')
-    }
+    expect(edit.body.result).toBeNull()
   })
 
   it('slides:add-element with no path arg dispatches addElement', async () => {
@@ -235,10 +229,14 @@ describe.skipIf(skip)('slides legacy channels use SSE session path (M2 batch-2)'
       session,
     )
     expect(add.status).toBe(200)
-    const result = unwrap<{ ok?: boolean; error?: string }>(add.body.result)
-    if (!result.ok) {
-      expect(typeof result.error).toBe('string')
-    }
+    // Contract: `{slide, sourceId} | null`. The old stub answered
+    // `{ok:true, elementId:'element-<now>'}` — a fabricated id the renderer
+    // then tried to select. `sourceId` must be the id the op actually minted.
+    const created = unwrap<{ slide?: { nodes?: unknown[] }; sourceId?: string }>(add.body.result)
+    expect(created).toBeTruthy()
+    expect(Array.isArray(created.slide?.nodes)).toBe(true)
+    expect(typeof created.sourceId).toBe('string')
+    expect(created.sourceId!.length).toBeGreaterThan(0)
   })
 
   it('slides:edit-text without an open session returns a structured error', async () => {
@@ -251,9 +249,9 @@ describe.skipIf(skip)('slides legacy channels use SSE session path (M2 batch-2)'
       stranger,
     )
     expect(edit.status).toBe(200)
-    const result = unwrap<{ ok?: boolean; error?: string }>(edit.body.result)
-    expect(result.ok).toBe(false)
-    expect(result.error).toMatch(/no current slides session|no live model/)
+    // No session → `null`. The renderer's `if (r)` guard then leaves the
+    // document alone instead of reporting a success that did not happen.
+    expect(edit.body.result).toBeNull()
   })
 
   it('slides:save-as with no sourcePath resolves the active session', async () => {

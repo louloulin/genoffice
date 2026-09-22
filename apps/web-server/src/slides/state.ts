@@ -14,11 +14,17 @@
  */
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
-import { openPptx, savePptx, type OpenedPptx } from '@genoffice/pptx-engine'
+import {
+  openPptx,
+  savePptx,
+  type ElementClipboardItem,
+  type OpenedPptx,
+  type Slide,
+} from '@genoffice/pptx-engine'
 
 const MAX_SLIDES_SESSIONS = 32
 
-interface SlidesSessionInfo {
+export interface SlidesSessionInfo {
   path: string
   opened: OpenedPptx
   dirty: boolean
@@ -30,6 +36,138 @@ interface SlidesSessionInfo {
    * width would make every slide jump on the next insert.
    */
   fitWidthPx: number
+  /**
+   * Undo / redo stacks. The desktop session keeps the same pair; without them
+   * `slides:undo` had nothing to restore and answered `{ok:true}`, so the
+   * renderer's Undo button appeared to work while the deck never changed.
+   * Snapshots are whole-deck copies (slides + archive entries + deck size),
+   * exactly like `takeSnapshot` in apps/slides/src/main/session-state.ts.
+   */
+  undoStack: SlidesHistorySnapshot[]
+  redoStack: SlidesHistorySnapshot[]
+  /** Pre-batch snapshot while a history batch is open (AI runs collapse many
+   *  edits into one undo step). Nested begins increment `depth`. */
+  historyBatch?: {
+    depth: number
+    undoStart: number
+    before: SlidesHistorySnapshot
+  }
+  /** Rollback points the AI panel lists, keyed by id. */
+  aiSnapshots?: Map<number, SlidesHistorySnapshot>
+}
+
+/** Whole-deck snapshot — mirrors the desktop `HistorySnapshot`. */
+export interface SlidesHistorySnapshot {
+  slides: Slide[]
+  entries: Map<string, Uint8Array>
+  size: { cx: number; cy: number }
+}
+
+/** Caps match the desktop (`MAX_HISTORY = 50`). */
+const MAX_HISTORY = 50
+
+function trimHistory(stack: SlidesHistorySnapshot[]): void {
+  while (stack.length > MAX_HISTORY) stack.shift()
+}
+
+export function takeSlidesSnapshot(info: SlidesSessionInfo): SlidesHistorySnapshot {
+  return {
+    slides: structuredClone(info.opened.deck.slides),
+    entries: new Map(info.opened.archive.entries),
+    size: { ...info.opened.deck.size },
+  }
+}
+
+/* Cloning on restore matters: the live deck mutates element objects in place,
+ * so handing a snapshot's own arrays over would let a later edit rewrite
+ * history the other stack still references — undo → edit → redo would replay
+ * mutated state. The desktop `restoreSnapshot` clones for the same reason. */
+function restoreSlidesSnapshot(info: SlidesSessionInfo, snap: SlidesHistorySnapshot): void {
+  info.opened.deck.slides = structuredClone(snap.slides)
+  info.opened.deck.size = { ...snap.size }
+  const entries = info.opened.archive.entries
+  entries.clear()
+  for (const [k, v] of snap.entries) entries.set(k, v)
+}
+
+/** Push a pre-edit snapshot and drop the redo branch (a new edit invalidates it). */
+export function pushSlidesHistory(info: SlidesSessionInfo): void {
+  info.undoStack.push(takeSlidesSnapshot(info))
+  trimHistory(info.undoStack)
+  info.redoStack = []
+}
+
+/** Undo one step. Returns false when there is nothing to undo. */
+export function undoSlidesHistory(info: SlidesSessionInfo): boolean {
+  settleStaleHistoryBatch(info)
+  if (info.undoStack.length === 0) return false
+  info.redoStack.push(takeSlidesSnapshot(info))
+  restoreSlidesSnapshot(info, info.undoStack.pop()!)
+  return true
+}
+
+/** Redo one step. Returns false when there is nothing to redo. */
+export function redoSlidesHistory(info: SlidesSessionInfo): boolean {
+  settleStaleHistoryBatch(info)
+  if (info.redoStack.length === 0) return false
+  info.undoStack.push(takeSlidesSnapshot(info))
+  restoreSlidesSnapshot(info, info.redoStack.pop()!)
+  return true
+}
+
+export function beginSlidesHistoryBatch(info: SlidesSessionInfo): void {
+  if (info.historyBatch) {
+    info.historyBatch.depth += 1
+    return
+  }
+  info.historyBatch = {
+    depth: 1,
+    undoStart: info.undoStack.length,
+    before: takeSlidesSnapshot(info),
+  }
+}
+
+/**
+ * Close a history batch, collapsing every successful edit since `begin` into
+ * the pre-batch snapshot. Returns the snapshot so the caller can register it as
+ * an AI rollback point — or null when the batch collapsed no real edit.
+ */
+export function endSlidesHistoryBatch(info: SlidesSessionInfo): SlidesHistorySnapshot | null {
+  const batch = info.historyBatch
+  if (!batch) return null
+  batch.depth -= 1
+  if (batch.depth > 0) return null
+  info.historyBatch = undefined
+  // Drop the per-edit snapshots the batch subsumes; the batch's own `before`
+  // becomes the single undo step for the whole run.
+  info.undoStack.length = Math.min(info.undoStack.length, batch.undoStart)
+  info.undoStack.push(batch.before)
+  trimHistory(info.undoStack)
+  info.redoStack = []
+  return batch.before
+}
+
+/** A batch that outlived its run must not swallow later edits — settle it. */
+function settleStaleHistoryBatch(info: SlidesSessionInfo): void {
+  if (info.historyBatch) endSlidesHistoryBatch(info)
+}
+
+export function registerSlidesAiSnapshot(
+  info: SlidesSessionInfo,
+  snap: SlidesHistorySnapshot,
+): number {
+  const map = (info.aiSnapshots ??= new Map())
+  const id = map.size + 1
+  map.set(id, snap)
+  return id
+}
+
+export function restoreSlidesAiSnapshot(info: SlidesSessionInfo, id: number): boolean {
+  const snap = info.aiSnapshots?.get(id)
+  if (!snap) return false
+  info.redoStack.push(takeSlidesSnapshot(info))
+  restoreSlidesSnapshot(info, snap)
+  return true
 }
 
 const sessions = new Map<string, SlidesSessionInfo>()
@@ -45,6 +183,23 @@ const sessions = new Map<string, SlidesSessionInfo>()
  * Cleared when `slides:close` or `forgetSlidesSessionForPath` runs.
  */
 const currentSlidesPathBySession = new Map<string, string>()
+
+/**
+ * App-wide element clipboard. The renderer copies in one deck and pastes into
+ * another, so this deliberately outlives any single session (the desktop keeps
+ * it on the app, not the window). `slides:copy-elements` used to answer
+ * `{ok:true}` — the shape the renderer compares against a number — while saving
+ * nothing, so Paste silently did nothing.
+ */
+let slidesElementClipboard: ElementClipboardItem[] = []
+
+export function setSlidesElementClipboard(items: ElementClipboardItem[]): void {
+  slidesElementClipboard = items
+}
+
+export function getSlidesElementClipboard(): ElementClipboardItem[] {
+  return slidesElementClipboard
+}
 
 export function setCurrentSlidesPath(sessionId: string | undefined, path: string): void {
   if (!sessionId) return
@@ -105,6 +260,8 @@ export function registerSlidesSession(
     dirty: false,
     lastTouchedAt: Date.now(),
     fitWidthPx: Number.isFinite(fitWidthPx) && fitWidthPx > 0 ? fitWidthPx : DEFAULT_SLIDES_FIT_WIDTH,
+    undoStack: [],
+    redoStack: [],
   })
   evictIfNeeded()
 }
@@ -151,12 +308,18 @@ export function getSlidesDirty(path: string): boolean {
  *  generated a fresh OpenedPptx on the next open). */
 export function replaceSlidesSession(path: string, opened: OpenedPptx): void {
   const previous = sessions.get(path)
+  /* A save does not invalidate history: the user can still undo past it, and
+   * the desktop keeps its stacks across a save for the same reason. */
   sessions.set(path, {
     path,
     opened,
     dirty: false,
     lastTouchedAt: Date.now(),
     fitWidthPx: previous?.fitWidthPx ?? DEFAULT_SLIDES_FIT_WIDTH,
+    undoStack: previous?.undoStack ?? [],
+    redoStack: previous?.redoStack ?? [],
+    ...(previous?.historyBatch ? { historyBatch: previous.historyBatch } : {}),
+    ...(previous?.aiSnapshots ? { aiSnapshots: previous.aiSnapshots } : {}),
   })
   evictIfNeeded()
 }

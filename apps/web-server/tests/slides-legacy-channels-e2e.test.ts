@@ -68,6 +68,23 @@ describe.skipIf(skip)('slides legacy lifecycle channels really mutate the deck',
   const unwrap = <T = Record<string, unknown>>(body: unknown): T | undefined =>
     (body as { result?: T })?.result
 
+  /* Serve each element test a FRESH copy of the template. Sharing one deck
+   * across cases made them order-dependent: elements accumulated, so
+   * `nodes[0]` was whatever an earlier case inserted (a rect, not the text box
+   * a later case needs). A per-test file also means one case's saved edits
+   * cannot mask another's. */
+  const freshDeck = async (label: string): Promise<string> => {
+    const path = join(dataDir, 'files', `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.pptx`)
+    copyFileSync(blankTemplate, path)
+    // Open it too: the legacy channels carry no path, so they act on whatever
+    // this SSE session last opened. Without the open every mutation answers
+    // `null` (correctly — there is no live model) and the test would be
+    // asserting on a channel that never ran.
+    const r = await invoke('slides:open-path', [path])
+    expect(r.status).toBe(200)
+    return path
+  }
+
   /** Slide count as the renderer sees it on open. */
   const slideCount = async (): Promise<number> => {
     const r = await invoke('slides:open-path', [deck])
@@ -180,18 +197,299 @@ describe.skipIf(skip)('slides legacy lifecycle channels really mutate the deck',
     expect(unwrap(r.body)).toBeNull()
   })
 
+  /* ── element channels ────────────────────────────────────────────────────
+   * The same bug class as the slide-lifecycle channels, and worse: these
+   * answer `RenderSlide | null`, and the renderer does
+   * `.then((r) => r && applySlide(current, r))`. The stub's `{ok:true}` is
+   * truthy, so the renderer replaced the page with an object that has no
+   * `nodes` — the canvas went blank and every later edit compounded from a
+   * corrupt page. Each case below proves the mutation reached the SAVED file,
+   * which is the only check the stub could not have passed.
+   */
+
+  it('slides:add-element really inserts and reports the id the op minted', async () => {
+    deck = await freshDeck('add-el')
+    const before = await slideCount()
+    const r = await invoke('slides:add-element', [
+      { slideIndex: 0, kind: 'rect', xPx: 10, yPx: 10, wPx: 200, hPx: 100, fitWidthPx: 1280 },
+    ])
+    expect(r.status).toBe(200)
+    const created = unwrap<{ slide?: { nodes?: unknown[] }; sourceId?: string }>(r.body)
+    // `{slide, sourceId}` — a fabricated `elementId: 'element-<now>'` made the
+    // renderer select something that did not exist.
+    expect(Array.isArray(created?.slide?.nodes)).toBe(true)
+    expect(created?.slide?.nodes?.length).toBe(1)
+    expect(typeof created?.sourceId).toBe('string')
+
+    // The element must survive a save+reopen, not just the in-memory response.
+    const save = await invoke('slides:save', [undefined, deck, undefined])
+    expect(unwrap<{ ok?: boolean }>(save.body)?.ok).toBe(true)
+    const reopened = await invoke('slides:open-path', [deck])
+    const nodes = unwrap<{ slides?: Array<{ nodes?: unknown[] }> }>(reopened.body)?.slides?.[0]
+      ?.nodes
+    expect(nodes?.length).toBe(1)
+    expect(await saveAndCount()).toBe(before)
+  })
+
+  it('slides:delete-element removes the element from the saved file', async () => {
+    deck = await freshDeck('del-el')
+    await invoke('slides:add-element', [
+      { slideIndex: 0, kind: 'rect', xPx: 10, yPx: 10, wPx: 120, hPx: 80, fitWidthPx: 1280 },
+    ])
+    await invoke('slides:save', [undefined, deck, undefined])
+    const opened = await invoke('slides:open-path', [deck])
+    const first = unwrap<{ slides?: Array<{ nodes?: Array<{ sourceId?: string }> }> }>(opened.body)
+      ?.slides?.[0]?.nodes?.[0]
+    expect(first?.sourceId).toBeTruthy()
+
+    const r = await invoke('slides:delete-element', [
+      { slideIndex: 0, sourceId: first!.sourceId },
+    ])
+    expect(r.status).toBe(200)
+    const slide = unwrap<{ nodes?: unknown[] }>(r.body)
+    expect(Array.isArray(slide?.nodes)).toBe(true)
+    expect(slide?.nodes?.length).toBe(0)
+
+    await invoke('slides:save', [undefined, deck, undefined])
+    const reopened = await invoke('slides:open-path', [deck])
+    const nodes = unwrap<{ slides?: Array<{ nodes?: unknown[] }> }>(reopened.body)?.slides?.[0]
+      ?.nodes
+    expect(nodes?.length).toBe(0)
+  })
+
+  it('slides:edit-transform moves the element and persists the new box', async () => {
+    deck = await freshDeck('transform')
+    await invoke('slides:add-element', [
+      { slideIndex: 0, kind: 'rect', xPx: 10, yPx: 10, wPx: 100, hPx: 60, fitWidthPx: 1280 },
+    ])
+    await invoke('slides:save', [undefined, deck, undefined])
+    const opened = await invoke('slides:open-path', [deck])
+    const node = unwrap<{
+      slides?: Array<{ nodes?: Array<{ sourceId?: string; box?: { x: number; y: number } }> }>
+    }>(opened.body)?.slides?.[0]?.nodes?.[0]
+    expect(node?.sourceId).toBeTruthy()
+
+    const r = await invoke('slides:edit-transform', [
+      {
+        slideIndex: 0,
+        sourceId: node!.sourceId,
+        xPx: 400,
+        yPx: 250,
+        wPx: 100,
+        hPx: 60,
+        rotationDeg: 0,
+        fitWidthPx: 1280,
+      },
+    ])
+    expect(r.status).toBe(200)
+    const moved = unwrap<{ nodes?: Array<{ box?: { x: number; y: number } }> }>(r.body)
+    expect(moved?.nodes?.[0]?.box?.x).toBe(400)
+
+    // Reopen: the op must have written through to the archive, not just moved
+    // the in-memory render tree.
+    await invoke('slides:save', [undefined, deck, undefined])
+    const again = await invoke('slides:open-path', [deck])
+    const persisted = unwrap<{
+      slides?: Array<{ nodes?: Array<{ box?: { x: number; y: number } }> }>
+    }>(again.body)?.slides?.[0]?.nodes?.[0]
+    expect(persisted?.box?.x).toBe(400)
+  })
+
+  it('slides:undo really reverts the deck, not just the response', async () => {
+    deck = await freshDeck('undo')
+    await invoke('slides:add-element', [
+      { slideIndex: 0, kind: 'rect', xPx: 5, yPx: 5, wPx: 90, hPx: 50, fitWidthPx: 1280 },
+    ])
+    await invoke('slides:save', [undefined, deck, undefined])
+    const withEl = await invoke('slides:open-path', [deck])
+    const count = unwrap<{ slides?: Array<{ nodes?: unknown[] }> }>(withEl.body)?.slides?.[0]?.nodes
+      ?.length
+    expect(count).toBe(1)
+
+    // Contract: `RenderSlide[] | null` — the renderer replaces every page.
+    const r = await invoke('slides:undo', [])
+    expect(r.status).toBe(200)
+    const after = unwrap<Array<{ nodes?: unknown[] }>>(r.body)
+    expect(Array.isArray(after)).toBe(true)
+    expect(after[0]?.nodes?.length).toBe(0)
+
+    await invoke('slides:save', [undefined, deck, undefined])
+    const reopened = await invoke('slides:open-path', [deck])
+    const persisted = unwrap<{ slides?: Array<{ nodes?: unknown[] }> }>(reopened.body)?.slides?.[0]
+      ?.nodes
+    expect(persisted?.length).toBe(0)
+  })
+
+  it('slides:undo with nothing to undo answers null (not a fake success)', async () => {
+    // Fresh session, freshly reopened deck: the history stack is empty.
+    const r = await invokeAs('undo-empty-session', 'slides:open-path', [deck])
+    expect(r.status).toBe(200)
+    const u = await invokeAs('undo-empty-session', 'slides:undo', [])
+    expect(u.status).toBe(200)
+    expect(unwrap(u.body)).toBeNull()
+  })
+
+  it('slides:copy-elements answers a count and paste really adds the copies', async () => {
+    deck = await freshDeck('copy-paste')
+    await invoke('slides:add-element', [
+      { slideIndex: 0, kind: 'rect', xPx: 20, yPx: 20, wPx: 80, hPx: 40, fitWidthPx: 1280 },
+    ])
+    await invoke('slides:save', [undefined, deck, undefined])
+    const opened = await invoke('slides:open-path', [deck])
+    const id = unwrap<{ slides?: Array<{ nodes?: Array<{ sourceId?: string }> }> }>(opened.body)
+      ?.slides?.[0]?.nodes?.[0]?.sourceId
+    expect(id).toBeTruthy()
+
+    // Contract: `Promise<number>` — the renderer tests `n > 0` before enabling
+    // Paste, so `{ok:true}` made the comparison always false.
+    const copied = await invoke('slides:copy-elements', [{ slideIndex: 0, sourceIds: [id] }])
+    expect(copied.status).toBe(200)
+    expect(unwrap<number>(copied.body)).toBe(1)
+
+    const pasted = await invoke('slides:paste-elements', [
+      { slideIndex: 0, dxPx: 40, dyPx: 40, fitWidthPx: 1280 },
+    ])
+    expect(pasted.status).toBe(200)
+    const res = unwrap<{ slide?: { nodes?: unknown[] }; sourceIds?: string[] }>(pasted.body)
+    expect(Array.isArray(res?.slide?.nodes)).toBe(true)
+    expect(res?.slide?.nodes?.length).toBe(2)
+    expect(res?.sourceIds?.length).toBe(1)
+    expect(res?.sourceIds?.[0]).not.toBe(id)
+  })
+
+  it('slides:group-elements returns the real group id the op created', async () => {
+    deck = await freshDeck('group')
+    await invoke('slides:add-element', [
+      { slideIndex: 0, kind: 'rect', xPx: 10, yPx: 10, wPx: 60, hPx: 40, fitWidthPx: 1280 },
+    ])
+    await invoke('slides:add-element', [
+      { slideIndex: 0, kind: 'rect', xPx: 100, yPx: 10, wPx: 60, hPx: 40, fitWidthPx: 1280 },
+    ])
+    await invoke('slides:save', [undefined, deck, undefined])
+    const opened = await invoke('slides:open-path', [deck])
+    const ids = unwrap<{ slides?: Array<{ nodes?: Array<{ sourceId?: string }> }> }>(opened.body)
+      ?.slides?.[0]?.nodes?.map((n) => n.sourceId)
+    expect(ids?.length).toBe(2)
+
+    const r = await invoke('slides:group-elements', [{ slideIndex: 0, sourceIds: ids }])
+    expect(r.status).toBe(200)
+    const grouped = unwrap<{ slide?: { nodes?: Array<{ sourceId?: string }> }; groupId?: string }>(
+      r.body,
+    )
+    expect(Array.isArray(grouped?.slide?.nodes)).toBe(true)
+    expect(typeof grouped?.groupId).toBe('string')
+    // The fabricated `group-<now>` never matched an element; this one must be
+    // the id the grouped node actually carries.
+    expect(grouped?.slide?.nodes?.[0]?.sourceId).toBe(grouped?.groupId)
+  })
+
+  it('slides:set-element-font answers the updated page (renderer feeds it to applySlide)', async () => {
+    deck = await freshDeck('font')
+    await invoke('slides:add-element', [
+      {
+        slideIndex: 0,
+        kind: 'textbox',
+        xPx: 10,
+        yPx: 10,
+        wPx: 300,
+        hPx: 80,
+        fitWidthPx: 1280,
+        text: 'hello',
+      },
+    ])
+    await invoke('slides:save', [undefined, deck, undefined])
+    const opened = await invoke('slides:open-path', [deck])
+    const id = unwrap<{ slides?: Array<{ nodes?: Array<{ sourceId?: string }> }> }>(opened.body)
+      ?.slides?.[0]?.nodes?.[0]?.sourceId
+
+    const r = await invoke('slides:set-element-font', [
+      { slideIndex: 0, sourceIds: [id], fontFamily: 'Arial', fontSizePt: 30 },
+    ])
+    expect(r.status).toBe(200)
+    const slide = unwrap<{ nodes?: unknown[] }>(r.body)
+    expect(Array.isArray(slide?.nodes)).toBe(true)
+    expect(slide?.nodes?.length).toBe(1)
+  })
+
+  it('slides:find-replace reports the real match count', async () => {
+    deck = await freshDeck('find-replace')
+    await invoke('slides:add-element', [
+      {
+        slideIndex: 0,
+        kind: 'textbox',
+        xPx: 10,
+        yPx: 10,
+        wPx: 300,
+        hPx: 80,
+        fitWidthPx: 1280,
+        text: 'alpha beta alpha',
+      },
+    ])
+    // `{count: 0}` unconditionally was how the stub made a successful replace
+    // report "0 replaced".
+    const r = await invoke('slides:find-replace', [{ find: 'alpha', replace: 'gamma' }])
+    expect(r.status).toBe(200)
+    const res = unwrap<{ count?: number; slides?: unknown[] }>(r.body)
+    expect(res?.count).toBe(2)
+    expect(Array.isArray(res?.slides)).toBe(true)
+  })
+
+  it('slides:edit-text really rewrites the run text in the saved file', async () => {
+    deck = await freshDeck('edit-text')
+    await invoke('slides:add-element', [
+      {
+        slideIndex: 0,
+        kind: 'textbox',
+        xPx: 10,
+        yPx: 10,
+        wPx: 300,
+        hPx: 80,
+        fitWidthPx: 1280,
+        text: 'before',
+      },
+    ])
+    await invoke('slides:save', [undefined, deck, undefined])
+    const opened = await invoke('slides:open-path', [deck])
+    const id = unwrap<{ slides?: Array<{ nodes?: Array<{ sourceId?: string }> }> }>(opened.body)
+      ?.slides?.[0]?.nodes?.[0]?.sourceId
+
+    const r = await invoke('slides:edit-text', [
+      { slideIndex: 0, sourceId: id, paragraphs: [{ runs: [{ text: 'after' }] }] },
+    ])
+    expect(r.status).toBe(200)
+    expect(Array.isArray(unwrap<{ nodes?: unknown[] }>(r.body)?.nodes)).toBe(true)
+
+    // Read the archive back and look for the new run text.
+    const save = await invoke('slides:save', [undefined, deck, undefined])
+    expect(unwrap<{ ok?: boolean }>(save.body)?.ok).toBe(true)
+    const slideXml = await invoke('slides:get-render-slides', [])
+    void slideXml
+    const reopened = await invoke('slides:open-path', [deck])
+    const text = JSON.stringify(unwrap<unknown>(reopened.body))
+    expect(text).toContain('after')
+    expect(text).not.toContain('before')
+  })
+
   it('the acknowledged-no-op set stays small and declared', async () => {
     // Guards against re-growing the stub surface: the only channels allowed to
-    // answer without mutating are the OS-clipboard ones, and they must send
+    // answer without mutating are the renderer-owned ones (OS clipboard,
+    // presenter window, fullscreen), and every one must send
     // `acknowledgedOnly` so a caller can tell the difference.
     const source = await import('node:fs').then((fs) =>
       fs.readFileSync(join(pkgRoot, 'src', 'slides', 'elements.ts'), 'utf8'),
     )
-    const declared = [...source.matchAll(/'([a-z:0-9-]+)': 'renderer owns/g)].map((m) => m[1])
+    const declared = [
+      ...source.matchAll(/'([a-z:0-9-]+)': '[^']*(?:renderer owns|renderer-owned|no server-side|no display)/g),
+    ].map((m) => m[1])
     expect(declared.sort()).toEqual([
+      'slides:audience-ready',
       'slides:copy-slide',
       'slides:paste-slide',
+      'slides:presenter-end',
+      'slides:presenter-start',
+      'slides:presenter-swap',
       'slides:repaste-slide',
+      'slides:show-fullscreen',
     ])
     expect(source).toContain('acknowledgedOnly: true')
   })

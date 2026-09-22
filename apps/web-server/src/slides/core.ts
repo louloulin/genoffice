@@ -14,6 +14,8 @@ import { openPptx, savePptxToFile } from '@genoffice/pptx-engine'
 import {
   registerSlidesSession,
   getSlidesSession,
+  getSlidesDirty,
+  setSlidesFitWidth,
   replaceSlidesSession,
   setSlidesDirty,
   forgetSlidesSession,
@@ -96,6 +98,30 @@ export function buildWebRenderSlides(opened: OpenedPptx, fitWidthPx: number) {
       slideNo: i + 1,
     }),
   )
+}
+
+/**
+ * Render exactly one page. The element channels answer `RenderSlide | null` and
+ * the renderer feeds that straight into `applySlide(index, slide)`, so
+ * rebuilding the whole deck per edit would be wasted work on a large file.
+ *
+ * `slideNo` is still `index + 1` (not omitted): a slide-number placeholder in
+ * the page content must render the same value a full rebuild would produce, or
+ * a single-page edit would silently renumber the page.
+ */
+export function buildWebRenderSlide(
+  opened: OpenedPptx,
+  fitWidthPx: number,
+  index: number,
+): ReturnType<typeof buildWebRenderSlides>[number] | null {
+  const s = opened.deck.slides[index]
+  if (!s) return null
+  return buildRenderSlide(s, opened.deck.size, {
+    fitWidthPx,
+    media: makeWebMediaResolver(opened, s.path),
+    metrics: webMetrics,
+    slideNo: index + 1,
+  })
 }
 
 /** Default slide canvas width used when the renderer doesn't pass `fitWidthPx`.
@@ -201,6 +227,15 @@ export function registerSlidesCoreHandlers(): void {
     const name = DOCS_RECENT.get(filePath)?.name ?? basename(path)
     const id = `slide-${Date.now()}`
 
+    /* The renderer passes its canvas width on open; remembering it here means
+     * the slide-lifecycle channels re-render at the same width. Rebuilding at
+     * a different width would make every slide resize on the next insert. */
+    const requestedFit = fitWidthArg
+    const fitWidthPx =
+      typeof requestedFit === 'number' && Number.isFinite(requestedFit) && requestedFit > 0
+        ? requestedFit
+        : DEFAULT_FIT_WIDTH
+
     // Match the desktop `slides:open-path` shape: parse the pptx via `@genoffice/pptx-engine`
     // and return the same `{path, slides, size, defaultFont}` the renderer expects. Without
     // this the web renderer keeps `slides` as `undefined` and the boot screen never goes
@@ -208,6 +243,33 @@ export function registerSlidesCoreHandlers(): void {
     // deps that the desktop `render-helpers.ts` transitively pulls in.
     // A file that is not a pptx is a client-side problem (422), not a server
     // fault: the parse used to throw out of the handler as an unhandled 500.
+    /* Parse-time element ids are assigned per parse and are NOT stable: parsing
+     * the same bytes twice yields `sp_0` then `sp_2`. The renderer holds ids
+     * from whatever parse produced its current tree, so a second parse of the
+     * same file would hand it a model whose ids match nothing it is holding —
+     * every id-addressed channel (`group-elements`, `delete-element`,
+     * `edit-transform`) would then answer `null` for elements the user can see.
+     *
+     * So a re-open of a path that is ALREADY live reuses that model. The file
+     * bytes are still read (and still fail loudly if the file is unreadable),
+     * but they only seed a model the first time. */
+    const live = getSlidesSession(path)
+    if (live) {
+      setSlidesFitWidth(path, fitWidthPx)
+      setCurrentSlidesPath((event as { sessionId?: string } | null)?.sessionId, path)
+      const recentLive = loadRecentSlides()
+      recentLive.unshift({ id, path, name, openedAt: Date.now() })
+      saveRecentSlides(recentLive)
+      return {
+        id,
+        path,
+        name,
+        slides: buildWebRenderSlides(live.opened, fitWidthPx),
+        size: live.opened.deck.size,
+        defaultFont: deckDefaultFont(live.opened),
+      }
+    }
+
     let opened: Awaited<ReturnType<typeof openPptx>>
     try {
       opened = await openPptx(new Uint8Array(bytes))
@@ -225,14 +287,6 @@ export function registerSlidesCoreHandlers(): void {
     recent.unshift({ id, path, name, openedAt: Date.now() })
     saveRecentSlides(recent)
 
-    /* The renderer passes its canvas width on open; remembering it here means
-     * the slide-lifecycle channels re-render at the same width. Rebuilding at
-     * a different width would make every slide resize on the next insert. */
-    const requestedFit = fitWidthArg
-    const fitWidthPx =
-      typeof requestedFit === 'number' && Number.isFinite(requestedFit) && requestedFit > 0
-        ? requestedFit
-        : DEFAULT_FIT_WIDTH
     const slides = buildWebRenderSlides(opened, fitWidthPx)
 
     // Register the live `OpenedPptx` so `slides:save` and `slides:apply-txn`
@@ -243,6 +297,7 @@ export function registerSlidesCoreHandlers(): void {
     // re-opens the same logical file with a different URI (e.g. after a
     // save-as) would otherwise see a stale model.
     registerSlidesSession(path, opened, fitWidthPx)
+
     // Record the active deck path against the SSE session id so legacy
     // channels (slides:save / slides:apply-txn / slides:edit-text /
     // slides:edit-fill / slides:edit-stroke / slides:add-element) can
@@ -377,7 +432,17 @@ export function registerSlidesCoreHandlers(): void {
           captureBeforeSave(basename(canonical), prev)
         } catch { /* new file, nothing to snapshot */ }
         await savePptxToFile(session.opened, canonical)
-        // Clear the dirty flag: the on-disk bytes now match the model.
+        /* Clear the dirty flag: the on-disk bytes now match the model.
+         *
+         * Deliberately NO reparse here. Parse-time element ids (`sp_0`,
+         * `spnew_1_…`) are assigned per parse and are NOT stable — parsing the
+         * same bytes twice yields different ids (`sp_0` then `sp_2`), which is
+         * why the op layer also accepts the durable `e_<guid8>` form. A reparse
+         * would therefore hand the renderer a model whose ids do not match the
+         * ones it is holding, and every id-addressed channel after a save
+         * (`group-elements`, `delete-element`, `edit-transform`) would start
+         * answering `null` for elements the user can see on screen. Keeping the
+         * live model is what keeps ids stable across a save. */
         setSlidesDirty(canonical, false)
         // Surface the save through SSE so embed consumers can update
         // their `dirty` UI state. Bytes comes from statSync because the

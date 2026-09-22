@@ -10,25 +10,31 @@
  * deck. Unknown ops still answer a structured `{ applied: false, failures }`
  * so a missing handler never silently no-ops a renderer-side edit.
  *
- * Channel-level handlers fall into two groups, and the split matters:
+ * ── Why this file is shaped the way it is ─────────────────────────────────
  *
- *   • **Real** — channels the renderer actually calls for a document
- *     mutation. They build the matching `Op` and run it through
- *     `applyLegacyOp` (same executor, same journal, same live model as
- *     `slides:apply-txn`). Every one of these used to answer the literal
- *     `{ ok: true }` below while mutating nothing, which the renderer
- *     believed: inserting a blank slide returned success, the slide list
- *     never changed, and `slides:save` then persisted a deck without it.
- *     Because the stub answered `{ok:true, slideId}`, the renderer took its
- *     success branch and never surfaced an error.
+ * These channels (`slides:edit-transform`, `slides:delete-element`,
+ * `slides:set-element-font`, `slides:undo`, …) are what the renderer calls
+ * from the UI — the toolbar, the context menu, the arrange panel, ⌘Z. They
+ * used to answer the literal `{ ok: true }` while touching nothing, and the
+ * response SHAPE did not match the contract either: the renderer does
  *
- *   • **Acknowledged no-ops** — channels whose op needs renderer-only state
- *     the shape does not carry (OS clipboard handles, animation preview
- *     plumbing, presenter-window coordination). These still answer
- *     `{ ok: true }` because the renderer's flow reads them as "accepted"
- *     while the real document change travels over a different channel
- *     (`slides:apply-txn`). Each is listed in STUBBED_CHANNELS below so the
- *     boundary is auditable rather than implied.
+ *     window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
+ *
+ * where `applySlide` takes a `RenderSlide`. `{ok:true}` is truthy, so the
+ * renderer took its success branch and stored an object with no `nodes`
+ * array in place of the page — the canvas went blank and every later edit
+ * compounded from corrupt state. That is strictly worse than an error: the
+ * user cannot tell the operation failed, and nothing surfaces anywhere.
+ *
+ * So each channel below answers the shape its counterpart in
+ * `apps/slides/src/shared/ipc.ts` declares (`RenderSlide | null`,
+ * `{slide, sourceId} | null`, `RenderSlide[] | null`, `number`, `boolean`),
+ * and returns `null` when there is no live session — matching the desktop
+ * handlers, so the renderer's `if (r)` guard leaves the document alone.
+ *
+ * `STUBBED_SLIDES_CHANNELS` lists the few channels that still only
+ * acknowledge, with the reason, so the boundary is auditable as data rather
+ * than implied by a comment.
  */
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
@@ -38,14 +44,29 @@ import {
   getSlidesSession,
   setSlidesDirty,
   getCurrentSlidesPath,
+  getSlidesElementClipboard,
+  setSlidesElementClipboard,
+  pushSlidesHistory,
+  undoSlidesHistory,
+  redoSlidesHistory,
+  beginSlidesHistoryBatch,
+  endSlidesHistoryBatch,
+  registerSlidesAiSnapshot,
+  restoreSlidesAiSnapshot,
+  type SlidesSessionInfo,
 } from './state'
-import { buildWebRenderSlides } from './core'
-import type { OpenedPptx } from '@genoffice/pptx-engine'
+import { buildWebRenderSlide, buildWebRenderSlides } from './core'
+import {
+  copyElementData,
+  getSections,
+  getSlideComments,
+  type OpenedPptx,
+} from '@genoffice/pptx-engine'
 import { runTxn, type Op } from '@genoffice/pptx-ops'
-
+import { EMU_PER_PX_96 } from '@genoffice/pptx-render'
 
 /**
- * Resolve the slides session path for a legacy IPC channel. Legacy channels
+ * Resolve the slides session for a legacy IPC channel. Legacy channels
  * (`slides:edit-text` / `slides:edit-fill` / `slides:edit-stroke` /
  * `slides:add-element`) don't carry the path in their args; the renderer
  * held it in renderer-side state instead. We track the equivalent on the
@@ -57,32 +78,137 @@ function legacySessionPath(event: unknown): string | undefined {
   return getCurrentSlidesPath(sessionId)
 }
 
-/**
- * Apply a single runTxn op using the legacy channel's args + the session
- * path resolved from event.sessionId. Returns the legacy `{ ok: true }`
- * shape on success or a structured `{ ok: false, error }` envelope on
- * failure so the renderer can branch correctly.
- */
-function applyLegacyOp(
-  event: unknown,
-  op: Op,
-  errorChannel: string,
-): { ok: true; applied?: true } | { ok: false; error: string } {
+/** The live session for a legacy channel, or null when none is open. */
+function legacySession(event: unknown): SlidesSessionInfo | undefined {
   const path = legacySessionPath(event)
-  if (!path) {
-    return { ok: false, error: `${errorChannel}: no current slides session — call slides:open-path first` }
-  }
-  const session = getSlidesSession(path)
+  return path ? getSlidesSession(path) : undefined
+}
+
+/** px → EMU at the viewport width the renderer is drawing at. Mirrors the
+ *  desktop `toEmu` closure: the op layer speaks EMU, the renderer speaks px. */
+function makeToEmu(opened: OpenedPptx, fitWidthPx: number) {
+  const baseWidthPx = opened.deck.size.cx / EMU_PER_PX_96
+  const scale = fitWidthPx / baseWidthPx
+  return (px: number) => Math.round((px / scale) * EMU_PER_PX_96)
+}
+
+/**
+ * Run one op for a renderer channel. Returns the `runTxn` result, or null when
+ * there is no live session (matching the desktop handlers' `if (!session)
+ * return null`, so the renderer's `if (r)` guard is a no-op rather than a
+ * false success).
+ *
+ * Every mutating channel goes through here, which is why history and the dirty
+ * flag cannot drift between them: one executor, one journal, one snapshot.
+ */
+function commit(
+  event: unknown,
+  channel: string,
+  build: (session: SlidesSessionInfo) => Op | Op[] | null,
+): { session: SlidesSessionInfo; applied: boolean } | null {
+  const session = legacySession(event)
   if (!session) {
-    return { ok: false, error: `${errorChannel}: no live model for current session` }
+    // The channel's declared type has no error variant, so the honest answer is
+    // `null` — the renderer's `if (r)` guard then leaves the document alone.
+    // (A `{ok:false}` object would be TRUTHY and get handed to applySlide as if
+    // it were a page.) Log so the cause is findable server-side: a renderer
+    // that forgot the session header is otherwise invisible here.
+    warnNoSession(channel)
+    return null
   }
-  const r = runTxn(session.opened, { ops: [op], isolation: 'atomic' })
+  const built = build(session)
+  if (!built) return null
+  const ops = Array.isArray(built) ? built : [built]
+  // snapshot BEFORE the mutation: it is the pre-edit state undo restores.
+  pushSlidesHistory(session)
+  const r = runTxn(session.opened, { ops, isolation: 'atomic' })
   if (!r.applied) {
+    // A failed op must not leave a snapshot behind, or Undo would appear to do
+    // nothing (it would restore the state the failure already left in place).
+    session.undoStack.pop()
     const first = r.failures?.[0]
-    return { ok: false, error: first?.error ?? `${errorChannel}: op failed` }
+    warnOpFailed(channel, first?.error ?? `${ops[0]?.op ?? 'op'} failed`)
+    return null
   }
-  if ((r.records ?? []).length > 0) setSlidesDirty(path, true)
-  return { ok: true, applied: true }
+  setSlidesDirty(session.path, true)
+  return { session, applied: true }
+}
+
+/* Failures answer `null` (see above), which is correct but quiet. These loggers
+ * are the server-side record: without them a renderer-side mistake looks
+ * identical to a legitimate no-op. */
+function warnNoSession(channel: string): void {
+  process.stderr.write(
+    `[slides] ${channel}: no open deck for this session — the renderer must call slides:open-path first (answering null)\n`,
+  )
+}
+
+function warnOpFailed(channel: string, reason: string): void {
+  process.stderr.write(`[slides] ${channel}: ${reason} (answering null)\n`)
+}
+
+/** The re-rendered page after a successful `commit`, or null. */
+function commitSlide(
+  event: unknown,
+  channel: string,
+  build: (session: SlidesSessionInfo) => Op | Op[] | null,
+  slideIndex: number,
+) {
+  const r = commit(event, channel, build)
+  if (!r) return null
+  return buildWebRenderSlide(r.session.opened, r.session.fitWidthPx, slideIndex)
+}
+
+/** The re-rendered whole deck after a successful `commit`, or null. */
+function commitAllSlides(
+  event: unknown,
+  channel: string,
+  build: (session: SlidesSessionInfo) => Op | Op[] | null,
+) {
+  const r = commit(event, channel, build)
+  if (!r) return null
+  return buildWebRenderSlides(r.session.opened, r.session.fitWidthPx)
+}
+
+/** `{slide, sourceId}` — the shape the insert/add channels declare. The id
+ *  comes from the op's own record (`created[0]`), not a timestamp: a
+ *  fabricated id made the renderer select an element that did not exist. */
+function commitCreated(
+  event: unknown,
+  channel: string,
+  build: (session: SlidesSessionInfo) => Op | Op[] | null,
+  slideIndex: number,
+) {
+  const session = legacySession(event)
+  if (!session) {
+    warnNoSession(channel)
+    return null
+  }
+  const built = build(session)
+  if (!built) return null
+  const ops = Array.isArray(built) ? built : [built]
+  pushSlidesHistory(session)
+  const r = runTxn(session.opened, { ops, isolation: 'atomic' })
+  const created = r.applied ? r.records?.[0]?.created?.[0] : undefined
+  if (!r.applied || !created) {
+    session.undoStack.pop()
+    warnOpFailed(channel, r.failures?.[0]?.error ?? `${ops[0]?.op ?? 'op'} created no element`)
+    return null
+  }
+  setSlidesDirty(session.path, true)
+  const slide = buildWebRenderSlide(session.opened, session.fitWidthPx, slideIndex)
+  return slide ? { slide, sourceId: created } : null
+}
+
+/** `boolean` — the shape the notes/transition/animation setters declare.
+ *  They used to answer `{ok:true}` (truthy object) where the renderer reads a
+ *  boolean, so "did it apply?" was always yes. */
+function commitBool(
+  event: unknown,
+  channel: string,
+  build: (session: SlidesSessionInfo) => Op | Op[] | null,
+): boolean {
+  return commit(event, channel, build) !== null
 }
 
 /**
@@ -100,17 +226,30 @@ export const STUBBED_SLIDES_CHANNELS: Record<string, string> = {
   'slides:copy-slide': 'renderer owns the OS clipboard; the deck change travels via slides:apply-txn',
   'slides:paste-slide': 'renderer owns the OS clipboard; the deck change travels via slides:apply-txn',
   'slides:repaste-slide': 'renderer owns the OS clipboard; the deck change travels via slides:apply-txn',
+  // Presenter view is a second browser window the renderer opens; there is no
+  // server-side projector to start, and answering a fabricated success would
+  // make the UI believe a presenter window exists.
+  'slides:presenter-start': 'presenter view is a renderer-owned window; no server-side projector exists',
+  'slides:presenter-end': 'presenter view is a renderer-owned window; no server-side projector exists',
+  'slides:presenter-swap': 'presenter view is a renderer-owned window; no server-side projector exists',
+  'slides:audience-ready': 'presenter view is a renderer-owned window; no server-side projector exists',
+  // Fullscreen is a browser API the renderer drives directly (webFullscreen in
+  // web-bridge.ts); the server has no display to switch.
+  'slides:show-fullscreen': 'renderer owns the browser fullscreen API; the server has no display',
 }
+
+/** EMU per typographic point (2.54 cm / 72 pt, inches × 914400). */
+const EMU_PER_PT = 12700
 
 /**
  * Run one op for a renderer channel and answer in the shape that channel's
  * caller expects.
  *
- * `applyLegacyOp` returns `{ok}`, which is enough for the element channels but
- * not for the slide-lifecycle ones: those return the re-rendered slide list
- * (and, for inserts, the new index) because the renderer calls `setSlides(...)`
- * with it. Answering `{ok:true}` there made the renderer keep its old array,
- * which is exactly how the stub hid the missing mutation.
+ * `commitSlide` returns a single page, which is enough for the element
+ * channels but not for the slide-lifecycle ones: those return the re-rendered
+ * slide list (and, for inserts, the new index) because the renderer calls
+ * `setSlides(...)` with it. Answering `{ok:true}` there made the renderer keep
+ * its old array, which is exactly how the stub hid the missing mutation.
  *
  * Returns `null` for "no live session", matching the desktop handlers — the
  * renderer's `if (r)` guard then leaves the document untouched instead of
@@ -120,17 +259,17 @@ function applyLegacyMutation(
   event: unknown,
   op: Op,
 ): { slides: unknown[]; index: number } | { ok: false; error: string } | null {
-  const path = legacySessionPath(event)
-  if (!path) return null
-  const session = getSlidesSession(path)
+  const session = legacySession(event)
   if (!session) return null
+  pushSlidesHistory(session)
   const r = runTxn(session.opened, { ops: [op], isolation: 'atomic' })
   if (!r.applied) {
+    session.undoStack.pop()
     const first = r.failures?.[0]
     return { ok: false, error: first?.error ?? `${op.op}: op failed` }
   }
-  setSlidesDirty(path, true)
-  const slides = buildWebRenderSlides(session.opened, getSlidesFitWidth(path))
+  setSlidesDirty(session.path, true)
+  const slides = buildWebRenderSlides(session.opened, session.fitWidthPx)
   // Insert ops put the new page immediately after the anchor; every other
   // op leaves the selection where it was. The renderer clamps this itself,
   // so a slightly-off index is survivable — a missing slide is not.
@@ -143,6 +282,60 @@ function applyLegacyMutation(
   // user just dragged away from.
   if (op.op === 'moveSlide' && typeof op.to === 'number') return { slides, index: op.to }
   return { slides, index: anchorIndex }
+}
+
+/**
+ * Paste-family channels (`pasteElements` / `duplicateElements`) answer
+ * `{ slide, sourceIds }` — the whole page plus every id the op minted, because
+ * a paste renumbers ids across the page and the renderer has to reselect the
+ * copies by their real ids.
+ */
+function commitPasted(
+  event: unknown,
+  channel: string,
+  slideIndex: number,
+  build: (session: SlidesSessionInfo) =>
+    | { items: unknown[]; dx: number; dy: number }
+    | null,
+) {
+  const session = legacySession(event)
+  if (!session) {
+    warnNoSession(channel)
+    return null
+  }
+  const built = build(session)
+  if (!built) return null
+  pushSlidesHistory(session)
+  const r = runTxn(session.opened, {
+    ops: [
+      {
+        op: 'pasteElements',
+        target: { slide: slideIndex },
+        items: built.items,
+        dx: built.dx,
+        dy: built.dy,
+      } as unknown as Op,
+    ],
+    isolation: 'atomic',
+  })
+  const sourceIds = r.applied ? (r.records?.[0]?.created ?? []) : []
+  if (!r.applied || sourceIds.length === 0) {
+    session.undoStack.pop()
+    warnOpFailed(channel, r.failures?.[0]?.error ?? 'pasteElements created no element')
+    return null
+  }
+  setSlidesDirty(session.path, true)
+  const slide = buildWebRenderSlide(session.opened, session.fitWidthPx, slideIndex)
+  return slide ? { slide, sourceIds } : null
+}
+
+/** First `target.slide` among a script's ops — `apply-edit-script` answers with
+ *  the page the script touched, and the renderer applies it to the current one. */
+function firstSlideIndex(ops: Op[]): number {
+  for (const op of ops) {
+    if (typeof op.target?.slide === 'number') return op.target.slide
+  }
+  return 0
 }
 
 export function registerSlidesElementHandlers(): void {
@@ -211,6 +404,1098 @@ export function registerSlidesElementHandlers(): void {
       to: o.toIndex,
     })
   })
+
+  // ----- element add --------------------------------------------------------
+  /* Contract: `{ slide: RenderSlide; sourceId: string } | null`. The id comes
+   * from the op's own record — a fabricated `text-<now>` would leave the
+   * renderer selecting an element that does not exist. */
+  registerHandle('slides:add-element', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown>
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-element requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-element',
+      (session) => {
+        const toEmu = makeToEmu(session.opened, (o.fitWidthPx as number) ?? session.fitWidthPx)
+        // `text` is the renderer's convenience form; the op layer speaks
+        // paragraphs. Splitting here keeps the op contract single-shaped
+        // (the desktop shim splits identically, slides-main.ts:1963).
+        const paragraphs =
+          Array.isArray(o.paragraphs) && o.paragraphs.length
+            ? o.paragraphs
+            : typeof o.text === 'string' && o.text
+              ? o.text.split('\n').map((line) => ({ runs: [{ text: line }] }))
+              : undefined
+        const stroke = o.stroke as { color: string; widthPt: number } | undefined
+        return {
+          op: 'addElement',
+          target: { slide: o.slideIndex as number },
+          kind: o.kind,
+          offset: {
+            x: toEmu((o.xPx as number) ?? 0),
+            y: toEmu((o.yPx as number) ?? 0),
+            cx: toEmu((o.wPx as number) ?? 0),
+            cy: toEmu((o.hPx as number) ?? 0),
+          },
+          ...(paragraphs ? { paragraphs } : {}),
+          ...(o.fillColor ? { fill: o.fillColor } : {}),
+          ...(stroke
+            ? { stroke: { color: stroke.color, widthEmu: Math.round(stroke.widthPt * EMU_PER_PT) } }
+            : {}),
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:add-table', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & {
+      slideIndex?: number
+      fitWidthPx?: number
+      xPx?: number
+      yPx?: number
+      wPx?: number
+      hPx?: number
+    }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-table requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-table',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'addTable',
+          target: { slide: o.slideIndex as number },
+          rows: o.rows,
+          cols: o.cols,
+          offset: {
+            x: toEmu(o.xPx ?? 0),
+            y: toEmu(o.yPx ?? 0),
+            cx: toEmu(o.wPx ?? 0),
+            cy: toEmu(o.hPx ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:add-chart', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & {
+      slideIndex?: number
+      fitWidthPx?: number
+      kind?: string
+      xPx?: number
+      yPx?: number
+      wPx?: number
+      hPx?: number
+    }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-chart requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-chart',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'addChart',
+          target: { slide: o.slideIndex as number },
+          // `barH` is a renderer-side name for the same bar chart with a
+          // horizontal direction — the desktop handler translates it too.
+          kind: o.kind === 'barH' ? 'bar' : o.kind,
+          ...(o.kind === 'barH' ? { barDir: 'bar' } : {}),
+          categories: o.categories,
+          series: o.series,
+          offset: {
+            x: toEmu(o.xPx ?? 0),
+            y: toEmu(o.yPx ?? 0),
+            cx: toEmu(o.wPx ?? 0),
+            cy: toEmu(o.hPx ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:add-smartart', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & {
+      slideIndex?: number
+      fitWidthPx?: number
+      xPx?: number
+      yPx?: number
+      wPx?: number
+      hPx?: number
+    }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-smartart requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-smartart',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'addSmartArt',
+          target: { slide: o.slideIndex as number },
+          layout: o.layout,
+          items: o.items,
+          offset: {
+            x: toEmu(o.xPx ?? 0),
+            y: toEmu(o.yPx ?? 0),
+            cx: toEmu(o.wPx ?? 0),
+            cy: toEmu(o.hPx ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:add-image-bytes', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & {
+      slideIndex?: number
+      fitWidthPx?: number
+      ext?: string
+      xPx?: number
+      yPx?: number
+      wPx?: number
+      hPx?: number
+    }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-image-bytes requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-image-bytes',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'addPicture',
+          target: { slide: o.slideIndex as number },
+          bytes: o.bytes,
+          ext: o.ext,
+          offset: {
+            x: toEmu(o.xPx ?? 0),
+            y: toEmu(o.yPx ?? 0),
+            cx: toEmu(o.wPx ?? 0),
+            cy: toEmu(o.hPx ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:add-media-bytes', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & {
+      slideIndex?: number
+      fitWidthPx?: number
+    }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-media-bytes requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-media-bytes',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'addMedia',
+          target: { slide: o.slideIndex as number },
+          ...o,
+          offset: {
+            x: toEmu((o.xPx as number) ?? 0),
+            y: toEmu((o.yPx as number) ?? 0),
+            cx: toEmu((o.wPx as number) ?? 0),
+            cy: toEmu((o.hPx as number) ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:add-ink', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & {
+      slideIndex?: number
+      fitWidthPx?: number
+      ext?: string
+      xPx?: number
+      yPx?: number
+      wPx?: number
+      hPx?: number
+    }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-ink requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-ink',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        // One transparent PNG per stroke, carried as a picture element — the
+        // desktop records the same shape (cNvPr name + descr JSON of the points).
+        return {
+          op: 'addPicture',
+          target: { slide: o.slideIndex as number },
+          bytes: o.bytes,
+          ext: o.ext,
+          name: o.name,
+          descr: o.descr,
+          offset: {
+            x: toEmu(o.xPx ?? 0),
+            y: toEmu(o.yPx ?? 0),
+            cx: toEmu(o.wPx ?? 0),
+            cy: toEmu(o.hPx ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  // `slides:add-text` is not reachable from the renderer (no factory method and
+  // no caller in apps/slides/src). It is kept answerable for API compatibility,
+  // and routes through the generic addElement op so an external caller that
+  // does use it gets a real element rather than a fabricated id.
+  registerHandle('slides:add-text', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-text requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:add-text',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, (o.fitWidthPx as number) ?? session.fitWidthPx)
+        return {
+          op: 'addElement',
+          target: { slide: o.slideIndex as number },
+          kind: 'text',
+          ...o,
+          xPx: undefined,
+          yPx: undefined,
+          wPx: undefined,
+          hPx: undefined,
+          offset: {
+            x: toEmu((o.xPx as number) ?? 0),
+            y: toEmu((o.yPx as number) ?? 0),
+            cx: toEmu((o.wPx as number) ?? 0),
+            cy: toEmu((o.hPx as number) ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+
+  // ----- element edit -------------------------------------------------------
+  registerHandle('slides:edit-text', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; paragraphs?: unknown; groupId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-text requires { slideIndex, sourceId, paragraphs }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-text',
+     () => ({
+        op: 'setText',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        paragraphs: o.paragraphs,
+        ...(o.groupId ? { group: o.groupId } : {}),
+      }),
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-fill', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; fill?: unknown; groupId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-fill requires { slideIndex, sourceId, fill }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-fill',
+     () => ({
+        op: 'setFill',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        fill: o.fill,
+        ...(o.groupId ? { group: o.groupId } : {}),
+      }),
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-stroke', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as {
+      slideIndex?: number
+      sourceId?: string
+      stroke?: { widthPt?: number } | null
+      groupId?: string
+    }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-stroke requires { slideIndex, sourceId, stroke }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-stroke',
+     () => ({
+        op: 'setStroke',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        // The renderer speaks points; the op layer speaks EMU. This pt→EMU
+        // conversion is surface translation and stays here (the desktop shim
+        // in slides-main.ts:2018 does exactly the same).
+        stroke: o.stroke
+          ? { ...o.stroke, widthEmu: Math.round((o.stroke.widthPt ?? 0) * EMU_PER_PT) }
+          : o.stroke,
+        ...(o.groupId ? { group: o.groupId } : {}),
+      }),
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-background', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; fitWidthPx?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:edit-background requires { slideIndex, ... }' }
+    }
+    return commitAllSlides(
+      event,
+      'slides:edit-background',
+      () => ({ op: 'setBackground', ...o, target: { slide: o.slideIndex as number } }) as unknown as Op)
+  })
+  registerHandle('slides:edit-chart', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-chart requires { slideIndex, sourceId, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:edit-chart',
+     () => ({
+        op: 'setChart',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        patch: o,
+      }),
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-connector-endpoints', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-connector-endpoints requires { slideIndex, sourceId, ... }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-connector-endpoints',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'setConnectorEndpoints',
+          target: { slide: o.slideIndex as number, el: o.sourceId },
+          p1: { x: toEmu((o.x1Px as number) ?? 0), y: toEmu((o.y1Px as number) ?? 0) },
+          p2: { x: toEmu((o.x2Px as number) ?? 0), y: toEmu((o.y2Px as number) ?? 0) },
+          start: o.start,
+          end: o.end,
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-image-fill', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; targets?: unknown }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:edit-image-fill requires { slideIndex, targets }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-image-fill',
+     () => ({ op: 'setImageFill', target: { slide: o.slideIndex as number }, ...o }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-picture-opacity', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-picture-opacity requires { slideIndex, sourceId, opacity }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-picture-opacity',
+     () => ({
+        op: 'setPictureOpacity',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        ...o,
+      }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-picture-src-rect', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-picture-src-rect requires { slideIndex, sourceId, srcRect }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-picture-src-rect',
+     (session) => {
+        const boxPx = o.boxPx as { x: number; y: number; w: number; h: number } | undefined
+        let box: Record<string, number> | undefined
+        if (boxPx) {
+          const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+          // Crop confirm shrinks the frame in the SAME undo step, so one undo
+          // restores both the crop and the box.
+          box = { x: toEmu(boxPx.x), y: toEmu(boxPx.y), cx: toEmu(boxPx.w), cy: toEmu(boxPx.h) }
+        }
+        return {
+          op: 'setPictureSrcRect',
+          target: { slide: o.slideIndex as number, el: o.sourceId },
+          srcRect: o.srcRect,
+          ...(box ? { box } : {}),
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-table-cell', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-table-cell requires { slideIndex, sourceId, row, col }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-table-cell',
+     () => ({
+        op: 'setTableCell',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        ...o,
+      }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-table-style', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-table-style requires { slideIndex, sourceId, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:edit-table-style',
+     () => ({
+        op: 'setTableStyle',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        ...o,
+      }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:edit-transform', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-transform requires { slideIndex, sourceId, ... }' }
+    }
+    return commitSlide(
+      event,
+      'slides:edit-transform',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'setTransform',
+          target: { slide: o.slideIndex as number, el: o.sourceId },
+          box: {
+            x: toEmu((o.xPx as number) ?? 0),
+            y: toEmu((o.yPx as number) ?? 0),
+            cx: toEmu((o.wPx as number) ?? 0),
+            cy: toEmu((o.hPx as number) ?? 0),
+          },
+          rotDeg: o.rotationDeg,
+          // Tables redistribute gridCol widths / tr heights so the file matches
+          // the frame — unless the edit targets a group child.
+          ...(o.groupId ? { group: o.groupId } : { resizeTableGrid: true }),
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:batch-edit-transform', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as {
+      slideIndex?: number
+      fitWidthPx?: number
+      items?: Array<{ sourceId: string; xPx: number; yPx: number; wPx: number; hPx: number; rotationDeg: number }>
+    }
+    if (typeof o.slideIndex !== 'number' || !Array.isArray(o.items)) {
+      return { ok: false, error: 'slides:batch-edit-transform requires { slideIndex, items }' }
+    }
+    // One atomic transaction for the whole selection: align/distribute is one
+    // undo step, and the executor's plan step reproduces the legacy
+    // "every element must exist" gate.
+    return commitSlide(
+      event,
+      'slides:batch-edit-transform',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return o.items!.map((item) => ({
+          op: 'setTransform',
+          target: { slide: o.slideIndex as number, el: item.sourceId },
+          box: {
+            x: toEmu(item.xPx),
+            y: toEmu(item.yPx),
+            cx: toEmu(item.wPx),
+            cy: toEmu(item.hPx),
+          },
+          rotDeg: item.rotationDeg,
+          resizeTableGrid: true,
+        })) as unknown as Op[]
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:delete-element', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:delete-element requires { slideIndex, sourceId }' }
+    }
+    return commitSlide(
+      event,
+      'slides:delete-element',
+     () => ({
+        op: 'deleteElement',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+      }),
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:duplicate-elements', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as {
+      slideIndex?: number
+      sourceIds?: string[]
+      dxPx?: number
+      dyPx?: number
+      fitWidthPx?: number
+    }
+    if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
+      return { ok: false, error: 'slides:duplicate-elements requires { slideIndex, sourceIds }' }
+    }
+    return commitPasted(
+      event,
+      'slides:duplicate-elements',
+      o.slideIndex,
+      (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        // Duplicate in place reads the live elements (not the app clipboard) so
+        // ⌘D never clobbers what the user copied earlier.
+        const slide = session.opened.deck.slides[o.slideIndex as number]
+        if (!slide) return null
+        const items = o.sourceIds!
+          .map((id) => slide.elements.find((el) => el.id === id))
+          .filter((el): el is NonNullable<typeof el> => !!el)
+          .map((el) => copyElementData(session.opened, slide, el))
+        if (!items.length) return null
+        return {
+          items,
+          dx: toEmu(o.dxPx ?? 0),
+          dy: toEmu(o.dyPx ?? 0),
+        }
+      },
+    )
+  })
+  registerHandle('slides:flip-elements', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceIds?: string[] }
+    if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
+      return { ok: false, error: 'slides:flip-elements requires { slideIndex, sourceIds, axis }' }
+    }
+    return commitSlide(
+      event,
+      'slides:flip-elements',
+     () => ({
+        op: 'flipElements',
+        target: { slide: o.slideIndex as number },
+        els: o.sourceIds,
+        axis: o.axis,
+        ...(o.groupId ? { group: o.groupId } : {}),
+      }),
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:reorder-element', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:reorder-element requires { slideIndex, sourceId, dir }' }
+    }
+    return commitSlide(
+      event,
+      'slides:reorder-element',
+     () => ({
+        op: 'reorderElement',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        dir: o.dir,
+      }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:insert-image', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; fitWidthPx?: number; ext?: string }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:insert-image requires { slideIndex, ... }' }
+    }
+    return commitCreated(
+      event,
+      'slides:insert-image',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'addPicture',
+          target: { slide: o.slideIndex as number },
+          bytes: o.bytes,
+          ext: o.ext,
+          offset: {
+            x: toEmu((o.xPx as number) ?? 0),
+            y: toEmu((o.yPx as number) ?? 0),
+            cx: toEmu((o.wPx as number) ?? 0),
+            cy: toEmu((o.hPx as number) ?? 0),
+          },
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-element-font', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceIds?: string[] }
+    if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
+      return { ok: false, error: 'slides:set-element-font requires { slideIndex, sourceIds, ... }' }
+    }
+    // One op per element, `per_op` isolation: an image in the selection has no
+    // text and is skipped, while the text elements still change (the desktop
+    // handler is explicit about this — "All non-text elements (images etc.):
+    // nothing happened").
+    return commitSlide(
+      event,
+      'slides:set-element-font',
+     () => {
+        const font = {
+          fontFamily: o.fontFamily,
+          fontSizePt: o.fontSizePt,
+          strike: o.strike,
+          bold: o.bold,
+          italic: o.italic,
+          underline: o.underline,
+          color: o.color,
+        }
+        return o.sourceIds!.map((id) => ({
+          op: 'setFont',
+          target: { slide: o.slideIndex as number, el: id },
+          font,
+          ...(o.groupId ? { group: o.groupId } : {}),
+        })) as unknown as Op[]
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-element-paragraph-format', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceIds?: string[] }
+    if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
+      return { ok: false, error: 'slides:set-element-paragraph-format requires { slideIndex, sourceIds, ... }' }
+    }
+    return commitSlide(
+      event,
+      'slides:set-element-paragraph-format',
+     () => {
+        const { slideIndex, sourceIds, ...format } = o
+        return sourceIds!.map((id) => ({
+          op: 'setParagraphFormat',
+          target: { slide: slideIndex as number, el: id },
+          format,
+        })) as unknown as Op[]
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-table-cell-anchor', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:set-table-cell-anchor requires { slideIndex, sourceId, row, col }' }
+    }
+    return commitSlide(
+      event,
+      'slides:set-table-cell-anchor',
+     () => ({
+        op: 'setTableCellAnchor',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        ...o,
+      }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-table-col-width', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:set-table-col-width requires { slideIndex, sourceId, col, wPx }' }
+    }
+    return commitSlide(
+      event,
+      'slides:set-table-col-width',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'setTableColWidth',
+          target: { slide: o.slideIndex as number, el: o.sourceId },
+          col: o.col,
+          wEmu: toEmu((o.wPx as number) ?? 0),
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-table-row-height', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string; fitWidthPx?: number }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:set-table-row-height requires { slideIndex, sourceId, row, hPx }' }
+    }
+    return commitSlide(
+      event,
+      'slides:set-table-row-height',
+     (session) => {
+        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        return {
+          op: 'setTableRowHeight',
+          target: { slide: o.slideIndex as number, el: o.sourceId },
+          row: o.row,
+          hEmu: toEmu((o.hPx as number) ?? 0),
+        } as unknown as Op
+      },
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:table-merge', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:table-merge requires { slideIndex, sourceId, kind, row, col }' }
+    }
+    return commitCreated(
+      event,
+      'slides:table-merge',
+     () => ({
+        op: 'tableMerge',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        ...o,
+      }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:replace-picture-bytes', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:replace-picture-bytes requires { slideIndex, sourceId, base64, ext }' }
+    }
+    return commitSlide(
+      event,
+      'slides:replace-picture-bytes',
+     () => ({
+        op: 'replacePicture',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+        ...o,
+      }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:apply-edit-script', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { ops?: unknown[] }
+    if (!Array.isArray(o.ops) || o.ops.length === 0) {
+      return { ok: false, error: 'slides:apply-edit-script requires a non-empty { ops } array' }
+    }
+    const r = commit(
+      event,
+      'slides:apply-edit-script',
+      () => o.ops as Op[])
+    if (!r) return null
+    const slideIndex = firstSlideIndex(o.ops as Op[])
+    const slide = buildWebRenderSlide(r.session.opened, r.session.fitWidthPx, slideIndex)
+    return slide ? { slide } : null
+  })
+  registerHandle('slides:apply-header-footer', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown>
+    return commitAllSlides(
+      event,
+      'slides:apply-header-footer',
+      () => ({ op: 'applyHeaderFooter', ...o }) as unknown as Op)
+  })
+  registerHandle('slides:apply-theme', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown>
+    return commitAllSlides(
+      event,
+      'slides:apply-theme',
+      () => ({ op: 'applyTheme', ...o }) as unknown as Op)
+  })
+  /* Contract: `{ count, slides } | null`. The count is the op's own
+   * `after.count` — answering a hardcoded `{count: 0}` was how the stub made
+   * Replace look like it matched nothing, so the renderer showed "0 replaced"
+   * after a successful replace. */
+  registerHandle('slides:find-replace', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown>
+    const session = legacySession(event)
+    if (!session) return null
+    pushSlidesHistory(session)
+    const r = runTxn(session.opened, {
+      ops: [{ op: 'findReplace', ...o } as unknown as Op],
+      isolation: 'atomic',
+    })
+    if (!r.applied) {
+      session.undoStack.pop()
+      // 0 matches is a normal outcome, not a failure — the renderer shows a
+      // "not found" toast off this shape rather than an error.
+      return { count: 0, slides: null }
+    }
+    setSlidesDirty(session.path, true)
+    const count = (r.records?.[0]?.after as { count?: number } | undefined)?.count ?? 0
+    return {
+      count,
+      slides: buildWebRenderSlides(session.opened, session.fitWidthPx),
+    }
+  })
+
+  // ----- element set / link / transition -----------------------------------
+  registerHandle('slides:set-advance-times', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { times?: Array<{ slideIndex: number; ms: number | null }> }
+    if (!Array.isArray(o.times)) {
+      return { ok: false, error: 'slides:set-advance-times requires { times }' }
+    }
+    return commitBool(
+      event,
+      'slides:set-advance-times',
+      () =>
+      o.times!.map((t) => ({
+        op: 'setAdvanceTime',
+        target: { slide: t.slideIndex },
+        ms: t.ms,
+      })) as unknown as Op[],
+    )
+  })
+  registerHandle('slides:set-animations', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:set-animations requires { slideIndex, items }' }
+    }
+    return commitBool(
+      event,
+      'slides:set-animations',
+     () =>
+        ({
+          op: 'setAnimations',
+          target: { slide: o.slideIndex as number },
+          items: o.items,
+        }) as unknown as Op,
+    )
+  })
+  registerHandle('slides:set-hidden', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:set-hidden requires { slideIndex, hidden }' }
+    }
+    return commitSlide(
+      event,
+      'slides:set-hidden',
+     () =>
+        ({
+          op: 'setHidden',
+          target: { slide: o.slideIndex as number },
+          hidden: o.hidden,
+        }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-link', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:set-link requires { slideIndex, sourceId, target }' }
+    }
+    return commitSlide(
+      event,
+      'slides:set-link',
+     () =>
+        ({
+          op: 'setLink',
+          target: { slide: o.slideIndex as number, el: o.sourceId },
+          link: o.target,
+        }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-notes', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:set-notes requires { slideIndex, text }' }
+    }
+    return commitBool(
+      event,
+      'slides:set-notes',
+     () =>
+        ({
+          op: 'setNotes',
+          target: { slide: o.slideIndex as number },
+          text: o.text,
+        }) as unknown as Op,
+    )
+  })
+  registerHandle('slides:set-slide-layout', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:set-slide-layout requires { slideIndex }' }
+    }
+    return commitSlide(
+      event,
+      'slides:set-slide-layout',
+     () =>
+        ({
+          op: 'setSlideLayout',
+          target: { slide: o.slideIndex as number },
+          layoutPath: o.layoutPath,
+        }) as unknown as Op,
+      o.slideIndex,
+    )
+  })
+  registerHandle('slides:set-slide-size', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { cx?: number; cy?: number }
+    if (typeof o.cx !== 'number' || typeof o.cy !== 'number') {
+      return { ok: false, error: 'slides:set-slide-size requires { cx, cy }' }
+    }
+    return commitAllSlides(
+      event,
+      'slides:set-slide-size',
+      () => ({ op: 'setSlideSize', cx: o.cx, cy: o.cy }) as unknown as Op)
+  })
+  registerHandle('slides:set-transition', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as Record<string, unknown> & { slideIndex?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:set-transition requires { slideIndex, kind }' }
+    }
+    return commitBool(
+      event,
+      'slides:set-transition',
+     () =>
+        ({
+          op: 'setTransition',
+          target: { slide: o.slideIndex as number },
+          kind: o.kind,
+        }) as unknown as Op,
+    )
+  })
+  registerHandle('slides:get-transition', (event: unknown, slideIndex: unknown) => {
+    const session = legacySession(event)
+    if (!session || typeof slideIndex !== 'number') return { type: 'none', duration: 0 }
+    const slide = session.opened.deck.slides[slideIndex]
+    const tr = (slide as { transition?: { kind?: string; durationMs?: number } } | undefined)?.transition
+    return {
+      type: tr?.kind ?? 'none',
+      duration: tr?.durationMs ?? 0,
+    }
+  })
+
+  // ----- clipboard ops ------------------------------------------------------
+  registerHandle('slides:copy-elements', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceIds?: string[] }
+    const session = legacySession(event)
+    // Contract: `Promise<number>` — the renderer tests `n > 0` before enabling
+    // Paste. `{ok:true}` is not a number, so the comparison was always false.
+    if (!session || typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) return 0
+    const slide = session.opened.deck.slides[o.slideIndex]
+    if (!slide) return 0
+    const items = o.sourceIds
+      .map((id) => slide.elements.find((el) => el.id === id))
+      .filter((el): el is NonNullable<typeof el> => !!el)
+      .map((el) => copyElementData(session.opened, slide, el))
+    setSlidesElementClipboard(items)
+    return items.length
+  })
+  registerHandle('slides:paste-elements', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; dxPx?: number; dyPx?: number; fitWidthPx?: number }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:paste-elements requires { slideIndex }' }
+    }
+    return commitPasted(event, 'slides:paste-elements', o.slideIndex, (session) => {
+      const items = getSlidesElementClipboard()
+      if (!items.length) return null
+      const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+      return { items, dx: toEmu(o.dxPx ?? 0), dy: toEmu(o.dyPx ?? 0) }
+    })
+  })
+  registerHandle('slides:group-elements', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceIds?: string[] }
+    if (typeof o.slideIndex !== 'number' || !Array.isArray(o.sourceIds)) {
+      return { ok: false, error: 'slides:group-elements requires { slideIndex, sourceIds }' }
+    }
+    const session = legacySession(event)
+    if (!session) {
+      warnNoSession('slides:group-elements')
+      return null
+    }
+    pushSlidesHistory(session)
+    const r = runTxn(session.opened, {
+      ops: [{ op: 'groupElements', target: { slide: o.slideIndex }, els: o.sourceIds }],
+      isolation: 'atomic',
+    })
+    const groupId = r.applied ? r.records?.[0]?.created?.[0] : undefined
+    if (!r.applied || !groupId) {
+      session.undoStack.pop()
+      warnOpFailed('slides:group-elements', r.failures?.[0]?.error ?? 'groupElements created no group')
+      return null
+    }
+    setSlidesDirty(session.path, true)
+    // Contract: `{ slide, groupId }` — the renderer selects the new group by
+    // this id, so a fabricated `group-<now>` selected nothing.
+    const slide = buildWebRenderSlide(session.opened, session.fitWidthPx, o.slideIndex)
+    return slide ? { slide, groupId } : null
+  })
+  registerHandle('slides:ungroup-element', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:ungroup-element requires { slideIndex, sourceId }' }
+    }
+    return commitSlide(
+      event,
+      'slides:ungroup-element',
+     () => ({
+        op: 'ungroupElement',
+        target: { slide: o.slideIndex as number, el: o.sourceId },
+      }),
+      o.slideIndex,
+    )
+  })
+
+  // ----- undo/redo ---------------------------------------------------------
+  /* Contract: `RenderSlide[] | null` — the renderer replaces every page, since
+   * a single edit can change deck-wide layout. `{ok:true}` here meant Undo
+   * appeared to work while the deck never changed. */
+  registerHandle('slides:undo', (event: unknown) => {
+    const session = legacySession(event)
+    if (!session) return null
+    if (!undoSlidesHistory(session)) return null
+    setSlidesDirty(session.path, true)
+    return buildWebRenderSlides(session.opened, session.fitWidthPx)
+  })
+  registerHandle('slides:redo', (event: unknown) => {
+    const session = legacySession(event)
+    if (!session) return null
+    if (!redoSlidesHistory(session)) return null
+    setSlidesDirty(session.path, true)
+    return buildWebRenderSlides(session.opened, session.fitWidthPx)
+  })
+  registerHandle('slides:history-batch-begin', (event: unknown) => {
+    const session = legacySession(event)
+    if (!session) return false
+    beginSlidesHistoryBatch(session)
+    return true
+  })
+  registerHandle('slides:history-batch-end', (event: unknown) => {
+    const session = legacySession(event)
+    if (!session) return null
+    const before = endSlidesHistoryBatch(session)
+    return before ? registerSlidesAiSnapshot(session, before) : null
+  })
+  registerHandle('slides:ai-snapshot-restore', (event: unknown, id: unknown) => {
+    const session = legacySession(event)
+    if (!session || typeof id !== 'number') return null
+    if (!restoreSlidesAiSnapshot(session, id)) return null
+    setSlidesDirty(session.path, true)
+    return buildWebRenderSlides(session.opened, session.fitWidthPx)
+  })
+
+  // ----- presenter / display ----------------------------------------------
   for (const [channel, reason] of Object.entries(STUBBED_SLIDES_CHANNELS)) {
     registerHandle(channel, () => {
       // Keep the channel answerable (the renderer treats a rejected promise as
@@ -221,114 +1506,116 @@ export function registerSlidesElementHandlers(): void {
     })
   }
 
-  // ----- element add / edit / delete ---------------------------------------
-  registerHandle('slides:add-chart', () => ({ ok: true, chartId: `chart-${Date.now()}` }))
-  registerHandle('slides:add-image-bytes', () => ({ ok: true, imageId: `image-${Date.now()}` }))
-  registerHandle('slides:add-table', () => ({ ok: true, tableId: `table-${Date.now()}` }))
-  registerHandle('slides:add-text', () => ({ ok: true, elementId: `text-${Date.now()}` }))
-  registerHandle('slides:add-element', (event: unknown, op: unknown) => {
-    const o = (op ?? {}) as { slideIndex?: number; kind?: string; xPx?: number; yPx?: number; wPx?: number; hPx?: number; fitWidthPx?: number; text?: string; paragraphs?: unknown; sourceId?: string }
-    if (typeof o.slideIndex !== 'number') {
-      return { ok: false, error: 'slides:add-element requires { slideIndex, ... }' }
+  // ----- sections ----------------------------------------------------------
+  /* Contract: `SectionInfo[] | null`. Sections live in presentation.xml, not on
+   * a slide, so the ops are part-addressed through the section ops' own
+   * resolvers; the response is always the full section list. */
+  registerHandle('slides:set-sections', (event: unknown, sections: unknown) => {
+    if (!Array.isArray(sections)) {
+      return { ok: false, error: 'slides:set-sections requires an array' }
     }
-    const r = applyLegacyOp(
+    const r = commit(
       event,
-      {
-        op: 'addElement',
-        target: { slide: o.slideIndex },
-        kind: o.kind,
-        xPx: o.xPx,
-        yPx: o.yPx,
-        wPx: o.wPx,
-        hPx: o.hPx,
-        fitWidthPx: o.fitWidthPx,
-        text: o.text,
-        paragraphs: o.paragraphs,
-        ...(o.sourceId ? { sourceId: o.sourceId } : {}),
-      },
-      'slides:add-element',
-    )
-    return r.ok
-      ? { ok: true, elementId: `element-${Date.now()}`, applied: true }
-      : r
+      'slides:set-sections',
+      () => ({ op: 'setSections', sections }) as unknown as Op)
+    return r ? getSections(r.session.opened) : null
   })
-  registerHandle('slides:add-media-bytes', () => ({ ok: true }))
-  registerHandle('slides:add-ink', () => ({ ok: true }))
-  registerHandle('slides:add-smartart', () => ({ ok: true }))
+  registerHandle('slides:add-section', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { atSlideIndex?: number; name?: string }
+    const r = commit(
+      event,
+      'slides:add-section',
+      () =>
+      ({
+        op: 'addSection',
+        atSlideIndex: o.atSlideIndex,
+        name: o.name,
+      }) as unknown as Op,
+    )
+    return r ? getSections(r.session.opened) : null
+  })
+  registerHandle('slides:rename-section', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { id?: string; name?: string }
+    const r = commit(
+      event,
+      'slides:rename-section',
+      () => ({ op: 'renameSection', id: o.id, name: o.name }) as unknown as Op)
+    return r ? getSections(r.session.opened) : null
+  })
+  registerHandle('slides:remove-section', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { id?: string }
+    const r = commit(
+      event,
+      'slides:remove-section',
+      () => ({ op: 'removeSection', id: o.id }) as unknown as Op)
+    return r ? getSections(r.session.opened) : null
+  })
+  registerHandle('slides:move-section', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { id?: string; dir?: 'up' | 'down' }
+    const r = commit(
+      event,
+      'slides:move-section',
+      () => ({ op: 'moveSection', id: o.id, dir: o.dir }) as unknown as Op)
+    // A whole section moving reorders the deck, so the renderer needs the full
+    // slide set as well as the new section list.
+    if (!r) return null
+    return {
+      slides: buildWebRenderSlides(r.session.opened, r.session.fitWidthPx),
+      sections: getSections(r.session.opened),
+    }
+  })
 
-  registerHandle('slides:edit-text', (event: unknown, op: unknown) => {
-    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; paragraphs?: unknown; groupId?: string }
-    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-text requires { slideIndex, sourceId, paragraphs }' }
+  // ----- comments ----------------------------------------------------------
+  /* Contract: `SlideComment[] | null` — the renderer replaces its comment list
+   * with the response. Comments go through the executor like everything else,
+   * so they share the undo stack and the dirty flag rather than being a second,
+   * subtly-different edit path. A delete is located by (authorId, idx), which
+   * is how the renderer identifies a comment (its `id` field).
+   */
+  registerHandle('slides:add-comment', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; text?: string; author?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.text !== 'string') {
+      return { ok: false, error: 'slides:add-comment requires { slideIndex, text }' }
     }
-    return applyLegacyOp(
+    const r = commit(
       event,
-      {
-        op: 'setText',
-        target: { slide: o.slideIndex, el: o.sourceId },
-        paragraphs: o.paragraphs,
-        ...(o.groupId ? { group: o.groupId } : {}),
-      },
-      'slides:edit-text',
+      'slides:add-comment',
+      () =>
+      ({
+        op: 'addComment',
+        target: { slide: o.slideIndex as number },
+        text: o.text,
+        author: o.author ?? 'GenOffice',
+      }) as unknown as Op,
     )
+    if (!r) return null
+    const slide = r.session.opened.deck.slides[o.slideIndex]
+    return slide ? getSlideComments(r.session.opened.archive, slide.path) : null
   })
-  registerHandle('slides:edit-background', () => ({ ok: true }))
-  registerHandle('slides:edit-chart', () => ({ ok: true }))
-  registerHandle('slides:edit-connector-endpoints', () => ({ ok: true }))
-  registerHandle('slides:edit-fill', (event: unknown, op: unknown) => {
-    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; fill?: unknown; groupId?: string }
-    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-fill requires { slideIndex, sourceId, fill }' }
+  registerHandle('slides:delete-comment', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; authorId?: number; idx?: number }
+    if (
+      typeof o.slideIndex !== 'number' ||
+      typeof o.authorId !== 'number' ||
+      typeof o.idx !== 'number'
+    ) {
+      return { ok: false, error: 'slides:delete-comment requires { slideIndex, authorId, idx }' }
     }
-    return applyLegacyOp(
+    const r = commit(
       event,
-      {
-        op: 'setFill',
-        target: { slide: o.slideIndex, el: o.sourceId },
-        fill: o.fill,
-        ...(o.groupId ? { group: o.groupId } : {}),
-      },
-      'slides:edit-fill',
+      'slides:delete-comment',
+      () =>
+      ({
+        op: 'deleteComment',
+        target: { slide: o.slideIndex as number },
+        authorId: o.authorId,
+        idx: o.idx,
+      }) as unknown as Op,
     )
+    if (!r) return null
+    const slide = r.session.opened.deck.slides[o.slideIndex]
+    return slide ? getSlideComments(r.session.opened.archive, slide.path) : null
   })
-  registerHandle('slides:edit-image-fill', () => ({ ok: true }))
-  registerHandle('slides:edit-picture-opacity', () => ({ ok: true }))
-  registerHandle('slides:edit-picture-src-rect', () => ({ ok: true }))
-  registerHandle('slides:edit-stroke', (event: unknown, op: unknown) => {
-    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; stroke?: unknown; groupId?: string }
-    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
-      return { ok: false, error: 'slides:edit-stroke requires { slideIndex, sourceId, stroke }' }
-    }
-    return applyLegacyOp(
-      event,
-      {
-        op: 'setStroke',
-        target: { slide: o.slideIndex, el: o.sourceId },
-        stroke: o.stroke,
-        ...(o.groupId ? { group: o.groupId } : {}),
-      },
-      'slides:edit-stroke',
-    )
-  })
-  registerHandle('slides:edit-table-cell', () => ({ ok: true }))
-  registerHandle('slides:edit-table-style', () => ({ ok: true }))
-  registerHandle('slides:edit-transform', () => ({ ok: true }))
-  registerHandle('slides:batch-edit-transform', () => ({ ok: true }))
-  registerHandle('slides:delete-element', () => ({ ok: true }))
-  registerHandle('slides:duplicate-elements', () => ({ ok: true }))
-  registerHandle('slides:flip-elements', () => ({ ok: true }))
-  registerHandle('slides:reorder-element', () => ({ ok: true }))
-  registerHandle('slides:insert-image', () => ({ ok: true }))
-  registerHandle('slides:set-element-font', () => ({ ok: true }))
-  registerHandle('slides:set-element-paragraph-format', () => ({ ok: true }))
-  registerHandle('slides:set-table-cell-anchor', () => ({ ok: true }))
-  registerHandle('slides:set-table-col-width', () => ({ ok: true }))
-  registerHandle('slides:set-table-row-height', () => ({ ok: true }))
-  registerHandle('slides:table-merge', () => ({ ok: true }))
-  registerHandle('slides:replace-picture-bytes', () => ({ ok: true }))
-  registerHandle('slides:apply-edit-script', () => ({ ok: true }))
-  registerHandle('slides:apply-header-footer', () => ({ ok: true }))
-  registerHandle('slides:apply-theme', () => ({ ok: true }))
 
   // ----- per-element transactions -----------------------------------------
   // The full transaction executor from `@genoffice/pptx-ops` (`runTxn`) —
@@ -397,9 +1684,11 @@ export function registerSlidesElementHandlers(): void {
         failures: (plan.failures ?? []).map((f) => ({ index: f.index, error: f.error })),
       }
     }
+    pushSlidesHistory(session)
     const r = runTxn(session.opened, { ops: typedOps, isolation })
     const failures = (r.failures ?? []).map((f) => ({ index: f.index, error: f.error }))
     if (!r.applied) {
+      session.undoStack.pop()
       return { applied: false, failures }
     }
     if ((r.records ?? []).length > 0) setSlidesDirty(path, true)
@@ -416,49 +1705,4 @@ export function registerSlidesElementHandlers(): void {
       index: idx,
     }))
   }
-
-  // ----- element set / link / transition -----------------------------------
-  registerHandle('slides:set-advance-times', () => ({ ok: true }))
-  registerHandle('slides:set-animations', () => ({ ok: true }))
-  registerHandle('slides:set-hidden', () => ({ ok: true }))
-  registerHandle('slides:set-link', () => ({ ok: true }))
-  registerHandle('slides:set-notes', () => ({ ok: true }))
-  registerHandle('slides:set-sections', () => ({ ok: true }))
-  registerHandle('slides:set-slide-layout', () => ({ ok: true }))
-  registerHandle('slides:set-slide-size', () => ({ ok: true }))
-  registerHandle('slides:set-transition', () => ({ ok: true }))
-  registerHandle('slides:get-transition', () => ({ type: 'none', duration: 0 }))
-
-  // ----- clipboard ops ------------------------------------------------------
-  registerHandle('slides:copy-elements', () => ({ ok: true }))
-  registerHandle('slides:paste-elements', () => ({ ok: true }))
-  registerHandle('slides:group-elements', () => ({ ok: true, groupId: `group-${Date.now()}` }))
-  registerHandle('slides:ungroup-element', () => ({ ok: true }))
-
-  // ----- undo/redo ---------------------------------------------------------
-  registerHandle('slides:undo', () => ({ ok: true }))
-  registerHandle('slides:redo', () => ({ ok: true }))
-  registerHandle('slides:history-batch-begin', () => ({ ok: true }))
-  registerHandle('slides:history-batch-end', () => ({ ok: true }))
-  registerHandle('slides:ai-snapshot-restore', () => ({ ok: true }))
-
-  // ----- find / replace ----------------------------------------------------
-  registerHandle('slides:find-replace', () => ({ ok: true, count: 0 }))
-
-  // ----- presenter / display ----------------------------------------------
-  registerHandle('slides:presenter-start', () => ({ ok: true }))
-  registerHandle('slides:presenter-end', () => ({ ok: true }))
-  registerHandle('slides:presenter-swap', () => ({ ok: true }))
-  registerHandle('slides:audience-ready', () => ({ ok: true }))
-  registerHandle('slides:show-fullscreen', () => ({ ok: true }))
-
-  // ----- sections ----------------------------------------------------------
-  registerHandle('slides:add-section', () => ({ ok: true, sectionId: `section-${Date.now()}` }))
-  registerHandle('slides:rename-section', () => ({ ok: true }))
-  registerHandle('slides:remove-section', () => ({ ok: true }))
-  registerHandle('slides:move-section', () => ({ ok: true }))
-
-  // ----- comments ----------------------------------------------------------
-  registerHandle('slides:add-comment', () => ({ ok: true, commentId: `comment-${Date.now()}` }))
-  registerHandle('slides:delete-comment', () => ({ ok: true }))
 }
