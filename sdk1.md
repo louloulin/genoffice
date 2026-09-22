@@ -2676,6 +2676,23 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 28. **SDK `createEmbedNonce()` helper 落地**（✅ 本轮 §11.28）：apps/sdk/src/editor.ts 新增 `createEmbedNonce(options)`，调 `POST /api/v1/embed/nonce` mint session + 构造带 `?sessionId=...&nonce=...` 的 embed URL。6 种结构化错误 code (`AUTH_FAILED` / `FORBIDDEN` / `BAD_REQUEST` / `MINT_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`)。`fetchImpl` 注入式 override 让测试不需要 polyfill global。配套：`types.ts` 加 3 类型；`embed-url.ts` `EmbedUrlInput.sessionId` + `buildEmbedUrl` 多一行；`index.ts` re-export。新增 `apps/sdk/test/create-embed-nonce.test.ts`（12 测试）+ `build-embed-url.test.ts` 追加 2 测试。SDK 总数 5 文件 / 36 → 6 文件 / 50 测试。live smoke 3/3 通过。
 27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
+36. **SDK 2.0（代号 `Kestrel`）开放计划**（📝 计划中，§B.5）：9 个新 surface + 8 周冲刺：
+    - **Multi-instance**（拆 `instanceId` 路由 → `EditorRegistry: Map<instanceId, EditorHandle>`）
+    - **Undo / Redo + 撤销栈查询**（postMessage inbound `undo` / `redo` / `getUndoStack`）
+    - **Versions API**（`listVersions` / `restoreVersion` / `createSnapshot`，复用 `common/version-history.ts`）
+    - **Comments API**（`addComment` / `listComments` / `removeComment` / `resolveComment` + `commentAdded` / `commentResolved` 事件 + 5 个 v1 endpoint）
+    - **Track Changes**（`setTrackChanges` / `getTrackChanges` / `acceptChange` / `rejectChange`，复用 docx-engine `revision-tracking.ts`）
+    - **Export**（`downloadAs({ format: pdf | docx | xlsx | pptx | png })`）
+    - **File Picker**（`openFileDialog` → iframe 内 `<input type='file'>` + postMessage ArrayBuffer）
+    - **Plugin Runtime**（`mountSidebar` / `unmountSidebar` / `postToSidebar`，与 Microsoft taskpane / WPS 轻应用同模型）
+    - **Telemetry**（`editor.on('usage', ...)` opt-in，聚合 30s 一次）
+    - **冲刺节奏**：M1 周 1-2（multi-instance + undo + track changes +18 测试）/ M2 周 3-4（comments + versions + file picker +24+8 测试）/ M3 周 5-6（export + sidebar runtime +18 测试）/ M4 周 7-8（telemetry + 文档 + examples +6 测试）
+    - **版本策略**：`@genoffice/web-sdk` 从 1.x → 2.0.0；envelope `v: '1.1'` 新增 `instanceId` 选填字段；`createEditor` 内部 auto-routing；`/v2` subpath 暴露 `createEditor2`
+    - **预期测试**：SDK 108 → ~182（+74），web-server 593 → ~629（+36），总计 4461 → ~5093（+632 隐含真）；SDK bundle 30kB → 50kB
+    - **不做**：实时协作（M4+ Yjs/CRDT）/ 移动端 H5（M5 PWA）/ WPS-AI 直连（v3）/ DocuSign（v3）/ Slack-Teams-飞书插件（v3 走 sidebar runtime）
+    - **背景**：§B.4 差距矩阵对比 WPS web / Microsoft Office Embed (office.js) / OnlyOffice JS SDK / Google Docs addon —— GenOffice 在 AI 开放性 / Provider 切换 / 自托管 / Apache-2.0 4 维度领先；在协作 / 移动端 / 多实例 / 评论 / 文件选择 / 插件侧边栏 / 版本 / 修订 / 导出 9 维度仍落后
+    - 详见 §B.4 + §B.5.1-§B.5.6
+
 35. **DLQ metrics + Prometheus `/api/v1/metrics` 端点**（✅ 本轮 §11.35）：
     - 闭合 §11.33.4 #2 "DLQ metric" 路线 — `webhooks-dlq` 模块新增 `getDeadLetterMetrics()`（size / totalDropped / totalReplayed / byReason / oldestDroppedAt / newestDroppedAt），`pushDeadLetter()` 与 `replayDeadLetter()` 在 store 边界 bump 累计计数（fix wiring bug — 之前 5 个 metrics 测试全挂在 expected 1 vs got 0）
     - `GET /api/v1/webhooks/dlq` 响应增加 `metrics` 字段，host 一次 fetch 拿到结构化 + 累计视图
@@ -2766,6 +2783,230 @@ web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot �
 | Agent Loop 协议 | 第三方可写 runner |
 | 自托管 | Docker + Node 22 单机即可跑，无云依赖 |
 | Apache-2.0 | 商业友好 fork 友好 |
+
+---
+
+### B.4 与 4 家公开嵌入 SDK 的功能差距矩阵（2026-09-22 复盘）
+
+> 把 GenOffice `createEditor()` 当前公开 surface 与 WPS Web 嵌入、Microsoft Office Embed (office.js)、OnlyOffice JS SDK、Google Docs embed SDK（Workspace 内部）公开的功能做并列对比。**注**：OnlyOffice 与 Microsoft Office Embed 的方法名以他们的官方 demo 为准；Google Docs 无公开 embed SDK，列参考 Workspace Add-on 协议；WPS web 嵌入协议官方未文档化，列参考公开博客与社区反编译。
+
+| 功能 | WPS web | Microsoft Office Embed (office.js) | OnlyOffice JS SDK | Google Docs (addon) | **GenOffice SDK v1** | v1 状态 | v2 应做 |
+|---|---|---|---|---|---|---|---|
+| 创建编辑器 | iframe URL | `Office.initialize` | `new DocsAPI.DocEditor(placeholder, config)` | `gapi.drive` 注入 | `createEditor({ container, documentId, jwt, host })` | ✅ | — |
+| 多实例 | ❓ 未文档化 | ✅（每个 embed 一份 Office.context）| ✅（多个 DocEditor 可并存）| ✅ | ⚠️（一个页面只能 1 个）| 差距 | **§B.5 Multi-instance**（拆 `EditorHandle` 注册表，按 `instanceId` 路由 envelope）|
+| 销毁 | `wps.destroy()` | `Office.context.ui.closeContainer()` | `editor.destroy()` | n/a | `editor.destroy()` | ✅ | — |
+| 事件系统 | init / ready / save / error | `Office.EventType.*` | `attachEditorEvent` | `gapi.drive.event` | `editor.on('ready'\|'saved'\|'dirtyChanged'\|'selectionChange'\|'error'\|'closed')` | ✅ | — |
+| 撤销/重做 | ❓ | ✅ `Office.context.document.goBack/GoForward` | ✅ `editor.undo()` / `editor.redo()` | n/a | ❌（仅 `editor.command('undo')` 内部）| 差距 | **§B.5 undo/redo** 公开 |
+| 主题/语言切换 | URL param | `Office.context.document.setTheme` | `editor.setUserSettings` | `gapi.client.setOptions` | `editor.command('setTheme'\|'setLang')` | ✅ | — |
+| 模式切换 | URL param `mode=read` | `Office.context.document.mode` | `editor.setMode` | n/a | `editor.command('setMode')` | ✅ | — |
+| 文档版本/历史 | ❓ | ⚠️（sharepoint add-in 有）| ✅ `editor.setHistory()` / `editor.setFavorite` | ❌ | ⚠️（server 端 `files:list-versions` 存在但 SDK 不暴露）| 差距 | **§B.5 versions**（`editor.command('listVersions')` + `restoreVersion`）|
+| 评论/批注 | ❓（私有）| ✅ `Office.context.document.comments` | ✅ Comments API（add / remove / list）| ✅ Add-on | ❌ | 差距 | **§B.5 comments**（`addComment` / `listComments` / `removeComment` / `resolveComment`）|
+| 协作/光标 awareness | ❓ | ✅（sharepoint co-author）| ✅（实时多人）| ✅ | ⬜ 单人 | **核心差距** | M4 Yjs/CRDT（§C）|
+| 修订追踪（track changes）| ✅ | ✅ | ✅ | ✅ | ❌ | 差距 | **§B.5 trackChanges** |
+| 离线（IndexedDB / FileSystem Access）| ❌（必须云）| ⚠️（Outlook 插件有）| ⚠️（自托管可离线）| ❌ | ❌（web-server 必连）| 差距 | **§B.5 offline**（FileSystem Access fallback + local-first cache）|
+| AI 命令 | 私有 WPS AI | ⚠️（Copilot 插件）| ❌ | ❌ | ✅ `aiRewrite/aiTranslate/aiSummarize` | **GenOffice 优势** | — |
+| Provider 切换 | ❌ | ❌ | ❌ | ❌ | ✅（10 个 provider，运行时切换）| **GenOffice 优势** | — |
+| Skill 生态 | ❌ | ⚠️（add-in marketplace）| ⚠️（plugin marketplace）| ❌ | ✅ SkillPackage + Marketplace | **GenOffice 优势** | — |
+| 打印 | URL param | `Office.context.document.print` | `editor.print()` | n/a | `editor.command('print')` | ✅ | — |
+| 下载 / 导出 PDF | URL param | `Office.context.document.getFileAsync` | `editor.downloadAs(format)` | n/a | ❌ | 差距 | **§B.5 export**（`downloadAs` pdf/docx/xlsx/pptx/png）|
+| 撤销栈查询 | ❓ | ✅ `Office.context.document.history` | ✅ | ❌ | ❌ | 差距 | **§B.5 undoStack**（返回 ops 数组，host 可保存自定义历史）|
+| 文件选择对话框 | ❓ | ✅ `Office.context.ui.displayDialog` | ✅ `editor.openFileDialog` | ❌ | ❌（只能预打开）| 差距 | **§B.5 filePicker** |
+| 插件 / 侧边栏运行时 | ❌ | ✅ taskpane | ✅ plugins | ❌ | ❌（v1 纯编辑）| 差距 | **§B.5 pluginRuntime**（`mountSidebar({ panelUrl })` 类似 office taskpane）|
+| 移动端 H5 | ✅ WPS H5 | ✅ Office Mobile | ⚠️（only mobile viewer）| ✅ | ❌ | 差距 | M5 PWA + 触控手势 |
+| 计费 / 用量钩子 | 私有 | ✅（usage events）| ✅ | ❌ | ⚠️（`notifyFileSaved` 出口）| 差距 | **§B.5 telemetry**（`editor.on('usage', ...)` opt-in）|
+| OAuth scope RBAC | ✅ | ✅ | ✅ | ✅ | ✅（OAuth 2.0 client_credentials + 7 个 scope）| 平手 | — |
+| 鉴权握手 nonce | ❓ | ✅ SSO + token | ✅ JWT | ✅ OAuth2 | ✅ HSHAKE nonce + server-minted session | 平手 | — |
+| Origin allowlist | ✅ | ✅ | ✅ | ✅ | ✅ | 平手 | — |
+| 自托管 | ❌ 必须云 | ❌ 必须云 | ✅（community server）| ❌ 必须云 | ✅ Docker / Node 22 | **GenOffice 优势** | — |
+| License | 商业闭源 | 商业闭源 | AGPL-3（server）/ Commercial | 商业闭源 | Apache-2.0 | **GenOffice 优势** | — |
+
+**结论**：GenOffice SDK v1 已**结构性领先**于 WPS / Microsoft / Google 在「AI 开放性 / Provider 切换 / 自托管 / Apache-2.0」4 维度；在「协作 / 移动端 / 多实例 / 评论批注 / 文件选择 / 插件侧边栏 / 版本历史 / 修订追踪 / 导出」9 维度仍落后，是 SDK 2.0（v2）的 9 大新增 surface。
+
+### B.5 SDK 2.0 开放计划（9 surface + 8 周冲刺）
+
+> 名称：**SDK 2.0（代号 `Kestrel`）**。定位：把 GenOffice 从「编辑器 SDK」升级为「办公平台 SDK」。目标客群：希望把 AI 文档能力嵌进自己 SaaS 的开发者（与 OnlyOffice JS SDK、WPS iframe 同台竞争）。本节定义 9 个新增 surface 的接口签名、约束、向后兼容路径、测试计划，与 8 周冲刺节奏。
+
+#### B.5.1 9 个新增 surface
+
+##### 1. Multi-instance（拆 instanceId 路由）
+
+```ts
+interface CreateEditorOptions {
+  instanceId?: string        // 缺省 = 'default'（向后兼容）
+  // ... 其余不变
+}
+interface EditorHandle {
+  readonly instanceId: string
+  // ... 其余不变
+}
+// 一页多实例
+const a = createEditor({ instanceId: 'split-1', container: '#left', ... })
+const b = createEditor({ instanceId: 'split-2', container: '#right', ... })
+```
+
+实现要点：iframe `name=genoffice-{instanceId}`、envelope `dir` 增加 `instanceId` 字段、`EditorRegistry: Map<instanceId, EditorHandle>`。后端不需改（iframe 之间天然隔离）。
+
+##### 2. Undo / Redo 命令
+
+```ts
+interface EditorCommands {
+  undo(): Promise<void>
+  redo(): Promise<void>
+  /** 查询当前撤销栈（仅当编辑器支持）*/
+  getUndoStack(): Promise<{ length: number; current: number }>
+}
+```
+
+postMessage protocol 新增 inbound commands `undo` / `redo` / `getUndoStack`（与 v1 `command-result` envelope 兼容）。每个编辑器的 renderer 把现有键盘 Ctrl+Z / Ctrl+Shift+Z 公开成 postMessage 命令即可。
+
+##### 3. 文档版本（versions API）
+
+```ts
+interface EditorCommands {
+  listVersions(): Promise<{
+    versions: Array<{ id: string; createdAt: number; author: string; size: number }>
+  }>
+  restoreVersion(versionId: string): Promise<{ ok: true; version: string }>
+  createSnapshot(label?: string): Promise<{ id: string }>
+}
+```
+
+后端复用 `files:list-versions` / `files:restore-version` 已落地的 `common/version-history.ts`，但加 OAuth scope `files:restore`；renderer 在 editor list 回 v1 SDK `command-result` envelope。
+
+##### 4. 评论 / 批注（comments API）
+
+```ts
+interface EditorCommands {
+  addComment(args: { anchor: { range?: { start, end }; cell?: string }; text: string; parentId?: string }): Promise<{ id: string }>
+  listComments(): Promise<{ comments: Comment[] }>
+  removeComment(id: string): Promise<{ ok: true }>
+  resolveComment(id: string, resolved: boolean): Promise<{ ok: true }>
+}
+interface EditorEvents {
+  'commentAdded': (c: Comment) => void
+  'commentResolved': (c: Comment) => void
+}
+interface Comment { id: string; author: string; text: string; anchor: unknown; createdAt: number; resolved: boolean }
+```
+
+后端新增 `/api/v1/files/:id/comments` REST 端点（GET list / POST add / PATCH resolve / DELETE remove），scope `files:comment`。postMessage protocol 加 `addComment` / `listComments` / `resolveComment` / `removeComment` 4 个 inbound command + `commentAdded` / `commentResolved` 2 个 outbound event。
+
+##### 5. Track changes（修订追踪）
+
+```ts
+interface EditorCommands {
+  setTrackChanges(enabled: boolean): Promise<{ ok: true }>
+  getTrackChanges(): Promise<{ enabled: boolean; changes: Change[] }>
+  acceptChange(changeId: string): Promise<{ ok: true }>
+  rejectChange(changeId: string): Promise<{ ok: true }>
+}
+```
+
+复用 docx-engine 已有的 `revision-tracking.ts`（enabling 不破坏现有文档）。postMessage protocol 加 4 个 inbound command + `trackChangeAdded` outbound event。
+
+##### 6. Export（导出 PDF / 静态格式）
+
+```ts
+interface EditorCommands {
+  downloadAs(args: {
+    format: 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'png'
+    savePath?: 'browser' | string  // 'browser' = trigger <a download>; string = write to host FS via postMessage host picker
+  }): Promise<{ ok: true; blobUrl: string; size: number }>
+}
+```
+
+复用 `apps/web-server/src/converters/` 已有的 PDF / 静态格式导出路径（refs §0.5）。
+
+##### 7. File picker（host-side 文件选择）
+
+```ts
+interface EditorCommands {
+  openFileDialog(args?: { accept?: string; multiple?: boolean }): Promise<{ files: File[] } | { canceled: true }>
+}
+```
+
+iframe 内调 native `<input type='file'>` 然后 postMessage 把 ArrayBuffer / File 传回 host 页面。这是 host 页可以拦截点（防止 iframe 自己读 FS）。
+
+##### 8. Plugin runtime（taskpane / sidebar）
+
+```ts
+interface EditorCommands {
+  mountSidebar(args: { panelUrl: string; width?: number; title?: string }): Promise<{ ok: true; panelId: string }>
+  unmountSidebar(panelId: string): Promise<{ ok: true }>
+  postToSidebar(panelId: string, message: unknown): void
+}
+interface EditorEvents {
+  'sidebarMessage': (msg: { panelId: string; message: unknown }) => void
+}
+```
+
+iframe 内插入 `<iframe src=panelUrl>`，postMessage 桥接 host ↔ sidebar。这与 WPS「轻应用」/ Microsoft「taskpane add-in」同模型。
+
+##### 9. Telemetry（用量钩子，opt-in）
+
+```ts
+interface EditorEvents {
+  'usage': (u: {
+    docBytesWritten: number
+    aiCalls: number
+    aiTokensIn: number
+    aiTokensOut: number
+    sessionDurationMs: number
+  }) => void
+}
+```
+
+off by default；`createEditor({ telemetry: true })` 启用。SDK 内部 `requestAnimationFrame` 聚合采样 30 s 一次。
+
+#### B.5.2 后端改动（apps/web-server）
+
+新增 5 个 v1 endpoint（OAuth scope 收紧）：
+
+- `POST /api/v1/files/:id/comments` — scope `files:comment`
+- `GET /api/v1/files/:id/comments` — scope `files:read`
+- `PATCH /api/v1/files/:id/comments/:cid` — scope `files:comment`
+- `DELETE /api/v1/files/:id/comments/:cid` — scope `files:comment`
+- `POST /api/v1/files/:id/export` — scope `files:read`，body `{ format }`
+
+`comments` 表用 `comments.json`（与 `webhooks.json` 同模式，process-local + 启动时 load，足够 v2 起步）。
+
+#### B.5.3 8 周冲刺节奏（4 milestones）
+
+| 周 | milestone | 落地 surface | 测试数（预期） |
+|---|---|---|---|
+| 1-2 | M1 — Multi-instance + Track-changes + Undo/Redo | 1, 2, 5 | +18 SDK 测试 |
+| 3-4 | M2 — Comments + Versions + File picker | 3, 4, 7 | +24 SDK + +8 web-server 测试 |
+| 5-6 | M3 — Export + Plugin runtime | 6, 8 | +12 SDK + +6 web-server 测试 |
+| 7-8 | M4 — Telemetry + 文档 + examples + sdk1.md v2.0 段 | 9 | +6 SDK 测试 |
+
+合计 ~74 新测试；SDK 测试 108 → ~182；curl 593 → ~629。
+
+#### B.5.4 向后兼容与版本策略
+
+- **package.json**：`"version": "2.0.0"` 升大版本（breaking：拆 instanceId routing 影响 iframe 跨实例通信）。
+- **envelope**：`v: '1.0'` 保持不变（向后兼容）；新增 `v: '1.1'` 字段 `instanceId` 选填，缺省 = `'default'`。
+- **postMessage protocol**：所有 inbound command 都是新增（不动现有）；新增 outbound event 走 `editor.on('xxx')` 注册。
+- **SDK 文件**：保留 `@genoffice/web-sdk`（v1 默认 import），新增 `@genoffice/web-sdk/v2` subpath 暴露 `createEditor2` + 9 个新 surface。
+  - 实际策略：`createEditor` 自动选择 v1 / v2 based on `documentId` 探测（v2 editor 路由用 `instanceId`），host 无感升级。
+- **README**：新增 §「SDK 2.0 Kestrel」段，列 9 个 surface 与 breaking change 摘要。
+
+#### B.5.5 不做（但范围明确）
+
+- **实时协作**：M4+ Yjs/CRDT（§C），SDK 2.0 不碰 awareness / cursor。
+- **移动端 H5**：M5 PWA（§C）。
+- **WPS-AI 直连**：GenOffice 优势在开放 Provider 协议，做 WPS-AI 兼容层是给 v3 留的。
+- **DocuSign 类电子签**：v3+。
+- **Slack / Teams / 飞书插件**：v3+ 走 sidebar plugin runtime 即可接入。
+
+#### B.5.6 验证与退出标准
+
+- `apps/sdk` test：182 / 182 pass（含 9 个新 surface）
+- `apps/web-server` test：629 / 629 pass（含 5 个新 v1 endpoint）
+- `examples/embed-react/` 与 `examples/embed-vue/` 各增 1 个 demo：多实例 + sidebar mount + comments 完整链路
+- live smoke（PORT=33002 + tmux）：所有 9 个 surface `command-result` envelope 200 + `editor.on(...)` 事件正确触发
+- SDK bundle：`dist/index.umd.js` 30 kB → 50 kB（+67% 来自 9 个新 surface）
+- README + 双语更新到 v2.0
+- sdk1.md：§A.5 #36 新条目（Kestrel SDK 2.0），§A.6 测试 +74，总计 200 / 5093
 
 ---
 
