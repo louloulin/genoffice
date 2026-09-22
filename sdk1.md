@@ -4247,6 +4247,71 @@ cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
 - `registerNativeAdapter` 是 docs 用的新接入点 —— 给 sheets / slides / pdf
   提供了清晰模板（live-model + composite dirty snapshot + unsubscribe on unmount）
 
+### 11.67 · Sheets renderer save 接线（§11.66 模式复用 · 第 4 个 app）
+
+> 续 §11.66。sheets 已经有 §11.36 的 `registerNativeAdapter({ undo, redo,
+> getUndoStack })` —— 本轮扩到包含 `save` 和 `isDirty`，复用现有的
+> `handleSave` pipeline（同 Ctrl+S / ⌘S 路径）和 `journalSize` 复合 dirty
+> 信号（同 autosave / crash-recovery tick）。
+
+#### ✅ 落点
+
+1. **`apps/sheets/src/renderer/App.tsx`**：现有 `registerNativeAdapter` useEffect
+   扩到 5 个方法：
+   ```ts
+   isDirty: () => {
+     const state = lazyWorkbookRef.current
+     if (!state) return false
+     return journalSize(state.editJournal) > 0
+   },
+   save: async () => {
+     const state = lazyWorkbookRef.current
+     if (!state) throw new Error('sheets:save — no workbook is open')
+     if (state.file.needsSaveAs || state.file.csvPath !== undefined) {
+       throw new Error(
+         state.file.csvPath !== undefined
+           ? 'sheets:save — CSV sessions must use saveAs to switch format'
+           : 'sheets:save — converted .xls imports must use saveAs first',
+       )
+     }
+     await handleSaveRef.current('save', true)
+     const path = workbookFile?.path
+     return {
+       ok: true as const,
+       ...(path !== undefined ? { savedPath: path } : {}),
+       savedAt: new Date().toISOString(),
+     }
+   },
+   ```
+   - `exactOptionalPropertyTypes` 兼容：spread `savedPath` 而不是
+     `?? undefined`，否则 strict TS 会拒绝
+   - `needsSaveAs` / `csvPath` 走结构化 throw，与 autosave guard
+     (line 521, 549) 同源 —— 拒绝让 SDK 把 converted `.xls` 或 CSV
+     session 静默存成 xlsx
+   - `useEffect` 依赖加 `[workbookFile?.path]` 让 save 始终拿到最新 path
+
+2. **`apps/sheets/tests/sdk-save-wiring.test.ts`**（新增 175 行 / 8 测试）：
+   - isDirty delegation 3 case：journalSize === 0 / > 0 / state === null
+   - save delegation 5 case：成功 / no workbook throw / needsSaveAs throw /
+     csvPath throw / savedPath undefined spread
+
+#### 🧪 验证
+
+- apps/sheets typecheck：clean（pre-existing 错误：i18n `appGroupFile` /
+  `appUploadFile` / `appUploadFileDetail` 缺键 + `web-bridge.ts:113`
+  `exportCsv` 不在 `SheetsApiOverrides` —— 经 `git stash` 前后一致，与本次改动无关）
+- 新增 `sdk-save-wiring.test.ts`：**8 / 8 通过**
+
+#### 📊 进度
+
+- §11.63 + §11.64 + §11.66 + §11.67 闭合 markdown + html + docs + sheets
+  四个 app 的 SDK save
+- 余 2 app：slides（live-model）/ pdf（live-model）
+- sheets 走的是 §11.66 的 `registerNativeAdapter` 模板 —— 但 dirty 信号
+  不是 `dirtyRef.current`，而是 `journalSize(state.editJournal) > 0`
+  （因为 sheets 没有 tiptap-style 的 ref-based dirty flag；所有 unsaved
+  ops 都流过 edit journal，autosave / recovery 已经用这个信号）
+
 ### 11.65 · Workbook 错误码统一收口（最后两处 + 测试同步）
 
 > 续 §11.59 + §11.61。workbook 通道的所有 throwable 已统一走

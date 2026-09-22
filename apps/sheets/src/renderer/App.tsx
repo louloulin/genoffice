@@ -3343,6 +3343,17 @@ export function App(): React.JSX.Element {
   // so we mirror it in a ref and report a true `{ length, current }`. The
   // `lazyWorkbook` path has no Univer history — it goes through `adapterRef`
   // and reports 0/0, so the host's buttons grey out honestly.
+  //
+  // sdk1 §11.67 — also publish `save` and `isDirty` so the host's
+  // `editor.command('save')` round-trip goes through the existing
+  // `handleSave` pipeline (same path as Ctrl+S / ⌘S), and `isDirty`
+  // reports true while the edit journal has any unsaved ops. The journal
+  // is the single source of truth — autosave (lines 521, 549) and
+  // crash-recovery both key on `journalSize(state.editJournal) === 0`,
+  // so this hook reads the same signal rather than re-deriving dirty
+  // from Univer's command stack. `workbookFile.path` mirrors the
+  // post-save path (the save swaps the session, so the React state
+  // already reflects where the file actually lives on disk).
   useEffect(() => {
     return registerNativeAdapter({
       undo: () => {
@@ -3359,8 +3370,41 @@ export function App(): React.JSX.Element {
         const { undos, redos } = histRef.current
         return { length: undos + redos, current: undos }
       },
+      isDirty: () => {
+        const state = lazyWorkbookRef.current
+        if (!state) return false
+        return journalSize(state.editJournal) > 0
+      },
+      save: async () => {
+        const state = lazyWorkbookRef.current
+        if (!state) {
+          throw new Error('sheets:save — no workbook is open')
+        }
+        if (state.file.needsSaveAs || state.file.csvPath !== undefined) {
+          // Converted .xls imports and CSV sessions cannot be saved
+          // through the regular `save` path — the autosave guard skips
+          // both for the same reason. Surface a structured failure so
+          // the host can fall back to `saveAs`.
+          throw new Error(
+            state.file.csvPath !== undefined
+              ? 'sheets:save — CSV sessions must use saveAs to switch format'
+              : 'sheets:save — converted .xls imports must use saveAs first',
+          )
+        }
+        // `quiet = true` mirrors the autosave / programmatic paths:
+        // no toast spam, no dialog. `handleSave` resolves on a clean
+        // save and rejects only on a transport-level failure, which
+        // is exactly the SDK's "thrown = failure" contract.
+        await handleSaveRef.current('save', true)
+        const path = workbookFile?.path
+        return {
+          ok: true as const,
+          ...(path !== undefined ? { savedPath: path } : {}),
+          savedAt: new Date().toISOString(),
+        }
+      },
     })
-  }, [])
+  }, [workbookFile?.path])
 
   function disposePageBreakLayers(sheetId: string): void {
     const layers = pageBreakLayersRef.current.get(sheetId) ?? []
