@@ -87,7 +87,7 @@ function makeWebMediaResolver(opened: OpenedPptx, _slidePath?: string) {
  *  Matches the desktop fallback when `createSystemFontMetrics` hasn't initialised. */
 const webMetrics = new HeuristicMetrics()
 
-function buildWebRenderSlides(opened: OpenedPptx, fitWidthPx: number) {
+export function buildWebRenderSlides(opened: OpenedPptx, fitWidthPx: number) {
   return opened.deck.slides.map((s: Slide, i: number) =>
     buildRenderSlide(s, opened.deck.size, {
       fitWidthPx,
@@ -159,7 +159,7 @@ export function registerSlidesCoreHandlers(): void {
     return { id, path: opts?.path || '', name }
   })
 
-  registerHandle('slides:open-path', async (event: unknown, filePath: unknown) => {
+  registerHandle('slides:open-path', async (event: unknown, filePath: unknown, fitWidthArg: unknown) => {
     // A non-string `filePath` is a renderer-side mistake (the channel
     // contract is "string path"), not a missing resource. Throwing
     // `InvalidArgumentError` (400) keeps the failure mode consistent with
@@ -225,7 +225,15 @@ export function registerSlidesCoreHandlers(): void {
     recent.unshift({ id, path, name, openedAt: Date.now() })
     saveRecentSlides(recent)
 
-    const slides = buildWebRenderSlides(opened, DEFAULT_FIT_WIDTH)
+    /* The renderer passes its canvas width on open; remembering it here means
+     * the slide-lifecycle channels re-render at the same width. Rebuilding at
+     * a different width would make every slide resize on the next insert. */
+    const requestedFit = fitWidthArg
+    const fitWidthPx =
+      typeof requestedFit === 'number' && Number.isFinite(requestedFit) && requestedFit > 0
+        ? requestedFit
+        : DEFAULT_FIT_WIDTH
+    const slides = buildWebRenderSlides(opened, fitWidthPx)
 
     // Register the live `OpenedPptx` so `slides:save` and `slides:apply-txn`
     // have something to mutate. Without this the save pipeline reads bytes
@@ -234,7 +242,7 @@ export function registerSlidesCoreHandlers(): void {
     // as the registry key, NOT `bytes`'s storage URI — a renderer that
     // re-opens the same logical file with a different URI (e.g. after a
     // save-as) would otherwise see a stale model.
-    registerSlidesSession(path, opened)
+    registerSlidesSession(path, opened, fitWidthPx)
     // Record the active deck path against the SSE session id so legacy
     // channels (slides:save / slides:apply-txn / slides:edit-text /
     // slides:edit-fill / slides:edit-stroke / slides:add-element) can

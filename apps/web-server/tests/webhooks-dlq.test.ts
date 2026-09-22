@@ -14,20 +14,41 @@
  *   3. v1 endpoint `/api/v1/webhooks/dlq[…]`: scope gate, list with
  *      limit, get one, replay, delete, error envelopes for unknown ids.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-// Set env BEFORE importing modules that read process.env at module init.
-vi.hoisted(() => {
+/* Env must be set inside `vi.hoisted`, not in the module body: Vitest hoists
+ * the `import` statements above everything else in the file, so a module-body
+ * `process.env.DATA_DIR = TMP` runs *after* `common/state.ts` has already
+ * resolved DATA_DIR at import time. That left this suite pointed at the real
+ * `/tmp/genoffice-data`, where it hydrated whatever dead letters another suite
+ * had leaked and failed its "exactly one entry" assertion at random. */
+const { TMP, RESTORE } = vi.hoisted(() => {
+  const fs = require('node:fs')
+  const os = require('node:os')
+  const path = require('node:path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'webhooks-dlq-'))
+  const KEYS = [
+    'GENOFFICE_JWT_SECRET',
+    'GENOFFICE_TEST_DATA_DIR',
+    'DATA_DIR',
+    'GENOFFICE_DATA_DIR',
+    'GENOFFICE_WEB_DATA_DIR',
+  ] as const
+  // Snapshot so `afterAll` can put the worker's env back. Vitest reuses worker
+  // processes across files, and `DATA_DIR` is read at module-init time, so a
+  // leaked value here becomes the next file's data directory — pointing at a
+  // temp dir this file has already deleted.
+  const restore = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
   process.env.GENOFFICE_JWT_SECRET = 'webhooks-dlq-test-secret'
+  process.env.GENOFFICE_TEST_DATA_DIR = dir
+  process.env.DATA_DIR = dir
+  process.env.GENOFFICE_DATA_DIR = dir
+  process.env.GENOFFICE_WEB_DATA_DIR = dir
+  return { TMP: dir, RESTORE: restore as Record<string, string | undefined> }
 })
-
-const TMP = mkdtempSync(join(tmpdir(), 'webhooks-dlq-'))
-process.env.GENOFFICE_TEST_DATA_DIR = TMP
-process.env.DATA_DIR = TMP
-vi.stubEnv('DATA_DIR', TMP)
 
 import {
   _resetDeadLetterForTests,
@@ -47,8 +68,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 afterEach(() => {
   rmSync(TMP, { recursive: true, force: true })
   vi.restoreAllMocks()
-  vi.unstubAllEnvs()
   _resetDeadLetterForTests()
+})
+
+afterAll(() => {
+  for (const [k, v] of Object.entries(RESTORE)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
 })
 
 function makeCtx(url: string, method: string, headers: Record<string, string> = {}): {

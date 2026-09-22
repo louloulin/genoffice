@@ -23,6 +23,13 @@ interface SlidesSessionInfo {
   opened: OpenedPptx
   dirty: boolean
   lastTouchedAt: number
+  /**
+   * Canvas width the renderer last asked for. The desktop session keeps the
+   * same field because the slide lifecycle channels return re-rendered slides
+   * and have to reuse whatever width the open used — rendering at a different
+   * width would make every slide jump on the next insert.
+   */
+  fitWidthPx: number
 }
 
 const sessions = new Map<string, SlidesSessionInfo>()
@@ -83,14 +90,37 @@ function evictIfNeeded(): void {
 
 /** Register an opened deck keyed by path. Subsequent `slides:save` /
  *  `slides:apply-txn` look it up by the same path. */
-export function registerSlidesSession(path: string, opened: OpenedPptx): void {
+/** Canvas width used when the renderer never supplied one. Matches the
+ *  desktop default (`FIT_WIDTH = 1280` in apps/slides). */
+export const DEFAULT_SLIDES_FIT_WIDTH = 1280
+
+export function registerSlidesSession(
+  path: string,
+  opened: OpenedPptx,
+  fitWidthPx: number = DEFAULT_SLIDES_FIT_WIDTH,
+): void {
   sessions.set(path, {
     path,
     opened,
     dirty: false,
     lastTouchedAt: Date.now(),
+    fitWidthPx: Number.isFinite(fitWidthPx) && fitWidthPx > 0 ? fitWidthPx : DEFAULT_SLIDES_FIT_WIDTH,
   })
   evictIfNeeded()
+}
+
+/** Update the canvas width for a live session (the renderer re-fits on zoom). */
+export function setSlidesFitWidth(path: string, fitWidthPx: number): void {
+  const info = sessions.get(path)
+  if (info && Number.isFinite(fitWidthPx) && fitWidthPx > 0) {
+    info.fitWidthPx = fitWidthPx
+    touch(info)
+  }
+}
+
+/** Canvas width the session was last rendered at. */
+export function getSlidesFitWidth(path: string): number {
+  return sessions.get(path)?.fitWidthPx ?? DEFAULT_SLIDES_FIT_WIDTH
 }
 
 export function getSlidesSession(path: string): SlidesSessionInfo | undefined {
@@ -120,11 +150,13 @@ export function getSlidesDirty(path: string): boolean {
  *  bytes match the in-memory model again, but the renderer may have
  *  generated a fresh OpenedPptx on the next open). */
 export function replaceSlidesSession(path: string, opened: OpenedPptx): void {
+  const previous = sessions.get(path)
   sessions.set(path, {
     path,
     opened,
     dirty: false,
     lastTouchedAt: Date.now(),
+    fitWidthPx: previous?.fitWidthPx ?? DEFAULT_SLIDES_FIT_WIDTH,
   })
   evictIfNeeded()
 }

@@ -6,8 +6,37 @@
  * test uses a unique `fileId` to stay isolated from siblings.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
+
+/* This suite drives the real `notifyFileSaved`, and the "target is down" case
+ * pushes a dead letter. Without an isolated DATA_DIR that entry landed in the
+ * shared default (`/tmp/genoffice-data`) and was then hydrated by
+ * `webhooks-dlq.test.ts`, which asserts its store holds exactly the entries it
+ * created — so this file's leftovers broke that one at random.
+ *
+ * `vi.hoisted` is required, not cosmetic: Vitest hoists `import` above the
+ * module body, so `common/state.ts` resolves DATA_DIR before any module-body
+ * assignment could run. */
+const RESTORE = vi.hoisted(() => {
+  const fs = require('node:fs')
+  const os = require('node:os')
+  const path = require('node:path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'webhook-fires-on-save-'))
+  const KEYS = ['DATA_DIR', 'GENOFFICE_DATA_DIR', 'GENOFFICE_WEB_DATA_DIR'] as const
+  const restore = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
+  process.env.DATA_DIR = dir
+  process.env.GENOFFICE_DATA_DIR = dir
+  process.env.GENOFFICE_WEB_DATA_DIR = dir
+  return restore as Record<string, string | undefined>
+})
+
+afterAll(() => {
+  for (const [k, v] of Object.entries(RESTORE)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+})
 
 import { saveCallback, deleteCallback, notifyFileSaved } from '../src/common/webhooks-store'
 
