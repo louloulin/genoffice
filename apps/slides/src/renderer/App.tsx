@@ -1028,6 +1028,14 @@ export function App() {
   undoRef.current = undo
   const redoRef = useRef(redo)
   redoRef.current = redo
+  // sdk1 §11.68 — publish `save` and `isDirty` alongside the existing
+  // undo/redo wiring. The deck's dirty signal already flows through
+  // `window.slidesApi.isDirty()` (called from line 897 on edits and from
+  // the autosave tick at line 924), and `save` reuses the same `save`
+  // useCallback the close-guard and Ctrl+S already call. `quiet = true`
+  // mirrors the autosave / programmatic paths: no toast spam, no dialog.
+  const saveRef = useRef(save)
+  saveRef.current = save
   useEffect(() => {
     return registerNativeAdapter({
       undo: () => {
@@ -1039,8 +1047,20 @@ export function App() {
         return true
       },
       getUndoStack: () => ({ length: 1, current: 1 }),
+      isDirty: () => dirty,
+      save: async () => {
+        const ok = await saveRef.current(true)
+        if (!ok) {
+          throw new Error('slides:save returned ok=false')
+        }
+        return {
+          ok: true as const,
+          ...(path !== null ? { savedPath: path } : {}),
+          savedAt: new Date().toISOString(),
+        }
+      },
     })
-  }, [])
+  }, [dirty, path])
 
   // Global shortcuts (keyboard-actions.ts): the handler reads the latest state via ctxRef, so attach once
   useEffect(() => {

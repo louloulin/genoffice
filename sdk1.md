@@ -4312,6 +4312,55 @@ cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
   （因为 sheets 没有 tiptap-style 的 ref-based dirty flag；所有 unsaved
   ops 都流过 edit journal，autosave / recovery 已经用这个信号）
 
+### 11.68 · Slides renderer save 接线（§11.66 模式复用 · 第 5 个 app）
+
+> 续 §11.66 + §11.67。slides 的 `registerNativeAdapter` 已经接了
+> undo/redo/getUndoStack（§11.36）—— 本轮扩到 5 个方法，加 `save` 和
+> `isDirty`。dirty 直接读 React 的 `dirty` state（autosave tick 已经
+> 通过 `window.slidesApi.isDirty()` 维护），save 走 `save(true)` 复用
+> Ctrl+S / close-guard 已经在用的 pipeline。
+
+#### ✅ 落点
+
+1. **`apps/slides/src/renderer/App.tsx`**：现有 registerNativeAdapter useEffect
+   扩到 5 个方法：
+   ```ts
+   isDirty: () => dirty,
+   save: async () => {
+     const ok = await saveRef.current(true)
+     if (!ok) throw new Error('slides:save returned ok=false')
+     return {
+       ok: true as const,
+       ...(path !== null ? { savedPath: path } : {}),
+       savedAt: new Date().toISOString(),
+     }
+   },
+   ```
+   - `saveRef.current` 是 useRef 包装，避免 effect 重跑时 closure 捕获 stale `save`
+   - `exactOptionalPropertyTypes` 兼容：spread `savedPath` 而不是 `?? undefined`
+   - 依赖加 `[dirty, path]` —— dirty state 翻转时 SDK isDirty 立即看见，
+     post-save 切换到新 path 时 SDK save 也立即拿到
+
+2. **`apps/slides/tests/sdk-save-wiring.test.ts`**（新增 91 行 / 5 测试）：
+   - isDirty delegation 2 case：clean deck / after edit
+   - save delegation 3 case：成功 / throw-on-false / savedPath undefined spread
+
+#### 🧪 验证
+
+- apps/slides typecheck：clean（pre-existing 错误：i18n `ribbonGroupFile` /
+  `ribbonUpload` / `ribbonUploadTip` 缺键 + pdfjs-dist 类型缺失 —— 与本次改动无关）
+- 新增 `sdk-save-wiring.test.ts`：**5 / 5 通过**
+
+#### 📊 进度
+
+- §11.63 + §11.64 + §11.66 + §11.67 + §11.68 闭合 markdown + html + docs
+  + sheets + slides 五个 app 的 SDK save
+- 余 1 app：pdf（live-model + EditSnapshot）
+- 引擎级约束（sdk1 §A.5 #56：slides parse-time 元素 id 不稳定）不在
+  本轮范围 —— 那需要引擎侧为元素发稳定 id（持久化的 `e_<guid8>` 形式）
+- 已知 follow-up：slides 应用第 78 个 legacy element 通道目前返桩（§11.42
+  处理了形状错配，但 renderer 真正发出的 op 集合覆盖还没完成）
+
 ### 11.65 · Workbook 错误码统一收口（最后两处 + 测试同步）
 
 > 续 §11.59 + §11.61。workbook 通道的所有 throwable 已统一走
