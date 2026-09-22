@@ -615,3 +615,109 @@ describe('IPC dispatcher scope gate — admin (sdk1 §11.77)', () => {
     expect(registry.getHandlerEntry(channels[1])?.scope).toBe('admin')
   })
 })
+
+describe('IPC dispatcher scope gate — soft scope (sdk1 §11.78)', () => {
+  it('soft scope: no Authorization header → legacy pass-through (200)', async () => {
+    // home:set-theme has scope: 'soft:preferences:write'. No JWT → no gate.
+    // This mirrors how the in-process renderer used to call IPC.
+    const r = await callIpc('home:set-theme', null, ['dark'])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+  })
+
+  it('soft scope: invalid Authorization header → 401 UNAUTHENTICATED', async () => {
+    // A bogus token is still an Authorization header, so the gate runs.
+    const r = await callIpc('home:set-theme', 'not-a-real-jwt', ['dark'])
+    expect(r.status).toBe(401)
+    expect(r.body.error?.code).toBe('UNAUTHENTICATED')
+  })
+
+  it('soft scope: valid JWT missing the scope → 403 FORBIDDEN', async () => {
+    // writeToken is audit:write; soft scope requires preferences:write.
+    const r = await callIpc('home:set-theme', writeToken, ['dark'])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('soft scope: valid JWT with matching scope → 200', async () => {
+    const prefToken = await mint('prefs-user', ['preferences:write'])
+    const r = await callIpc('home:set-theme', prefToken, ['dark'])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+  })
+
+  it('soft scope: admin sub still bypasses via hasScope wildcard *', async () => {
+    // adminToken's sub is 'admin' → hasScope returns true for every scope
+    const r = await callIpc('home:set-theme', adminToken, ['dark'])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+  })
+
+  it('soft scope: home:delete-files without auth → legacy pass-through (does not break renderer)', async () => {
+    // This is the regression sentinel for §11.78: the existing renderer-driven
+    // delete-files IPC must keep working for callers without a JWT. The
+    // handler may refuse the path or succeed depending on whether it lives
+    // under FILES_DIR; we only assert the gate did not pre-empt the handler
+    // (status 200, never 401/403).
+    const r = await callIpc('home:delete-files', null, [['__definitely_does_not_exist__.txt']])
+    expect(r.status).toBe(200)
+  })
+
+  it('soft scope: home:delete-files with wrong-scope JWT → 403', async () => {
+    const wrong = await mint('wrong-scope', ['files:read'])
+    const r = await callIpc('home:delete-files', wrong, [['__definitely_does_not_exist__.txt']])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('soft scope: home:delete-files with files:delete → handler runs', async () => {
+    const deleter = await mint('deleter', ['files:delete'])
+    const r = await callIpc('home:delete-files', deleter, [['__definitely_does_not_exist__.txt']])
+    expect(r.status).toBe(200)
+  })
+
+  it('soft scope: marketplace upload/upload-delete reject unauthorized callers', async () => {
+    // marketplace:upload is admin-only → wrong-scope JWT → 403
+    const reader = await mint('reader-only', ['files:read'])
+    const denied = await callIpc('home:marketplace-upload', reader, [{ name: 'x' }])
+    expect(denied.status).toBe(403)
+
+    // admin wildcard bypass
+    const ok = await callIpc('home:marketplace-upload', adminToken, [{ name: 'x' }])
+    expect(ok.status).toBe(200)
+  })
+
+  it('soft scope: update:download with no auth → legacy pass-through', async () => {
+    const r = await callIpc('update:download', null, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('soft scope: update:install with no auth → legacy pass-through', async () => {
+    const r = await callIpc('update:install', null, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('hard scope still rejects no-auth callers with 401 (audit:write has no soft prefix)', async () => {
+    // Sentinel: §11.78 added soft/hard distinction. Existing enterprise
+    // channels (no soft: prefix) MUST still 401 unauthenticated callers.
+    const r = await callIpc('audit:log', null, [{ action: 'x', resource: 'y' }])
+    expect(r.status).toBe(401)
+    expect(r.body.error?.code).toBe('UNAUTHENTICATED')
+  })
+
+  it('hard scope: tenant:create rejects no-auth with 401 (no soft prefix)', async () => {
+    const r = await callIpc('tenant:create', null, [{ name: 'x' }])
+    expect(r.status).toBe(401)
+    expect(r.body.error?.code).toBe('UNAUTHENTICATED')
+  })
+
+  it('soft scope registry round-trip: getHandlerEntry strips the soft: prefix', async () => {
+    const registry = await import('../src/common/registry')
+    const ch = 'test:soft-' + Math.random().toString(36).slice(2)
+    registry.registerHandle(ch, () => ({ ok: true }), { scope: 'soft:admin' })
+    const entry = registry.getHandlerEntry(ch)
+    // Note: registry stores the raw scope string. The dispatcher is the
+    // one that strips the soft: prefix when invoking the gate.
+    expect(entry?.scope).toBe('soft:admin')
+  })
+})

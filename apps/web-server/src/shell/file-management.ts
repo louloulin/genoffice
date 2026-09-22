@@ -53,7 +53,7 @@ export function registerFileManagementHandlers(): void {
   registerHandle('home:purge-trash-entry', async (_event: unknown, id: unknown) => {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'invalid trash id' }
     return { ok: await trash.purge(id) }
-  })
+  }, { scope: 'soft:files:delete' })
 
   /* ── Search & properties ───────────────────────────────────────────── */
 

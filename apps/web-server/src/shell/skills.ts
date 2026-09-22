@@ -1748,7 +1748,7 @@ export function registerSkillHandlers(): void {
     )
     saveSkills(skills)
     return { ok: true, skills }
-  })
+  }, { scope: 'soft:admin' })
 
   registerHandle('home:uninstall-skill', async (_event: unknown, args: unknown) => {
     await invalidateLivePiSession()
@@ -1781,14 +1781,14 @@ export function registerSkillHandlers(): void {
     // user had disabled lives in the parked root, so clear both.
     removeSkillFromPi(id)
     return { ok: true, skills: remaining, piRemoved: true }
-  })
+  }, { scope: 'soft:admin' })
 
   registerHandle('home:reset-skills', () => {    void invalidateLivePiSession()
 
     skillsCache = null
     saveSkills(DEFAULT_SKILLS.map((s) => ({ ...s })))
     return { ok: true, skills: loadSkills() }
-  })
+  }, { scope: 'soft:admin' })
 
   // ── PLUGINS ──
   registerHandle('home:list-plugins', () => {
@@ -1832,14 +1832,14 @@ export function registerSkillHandlers(): void {
     )
     savePlugins(plugins)
     return { ok: true, plugins }
-  })
+  }, { scope: 'soft:admin' })
 
   registerHandle('home:reset-plugins', () => {    void invalidateLivePiSession()
 
     pluginsCache = null
     savePlugins(DEFAULT_PLUGINS.map((p) => ({ ...p })))
     return { ok: true, plugins: loadPlugins() }
-  })
+  }, { scope: 'soft:admin' })
 
   // ── MARKETPLACE ──
   registerHandle('home:list-marketplace-skills', () => {
@@ -1906,7 +1906,7 @@ export function registerSkillHandlers(): void {
       piInstalled: piSkillPath !== null && existsSync(piSkillPath),
       piSkillPath,
     }
-  })
+  }, { scope: 'soft:marketplace:install' })
 
   registerHandle('home:install-plugin', async (_event: unknown, args: unknown) => {    await invalidateLivePiSession()
 
@@ -1978,7 +1978,7 @@ export function registerSkillHandlers(): void {
     savePlugins(next)
     bumpMarketplaceDownloads('plugin', id)
     return { ok: true, installed: installedEntry, plugins: next, pi: piInfo }
-  })
+  }, { scope: 'soft:marketplace:install' })
 
   registerHandle('home:uninstall-plugin', async (_event: unknown, args: unknown) => {    await invalidateLivePiSession()
 
@@ -1999,7 +1999,7 @@ export function registerSkillHandlers(): void {
     const plugins = loadPlugins().filter((p) => p.id !== id)
     savePlugins(plugins)
     return { ok: true, plugins, piRemoved: true }
-  })
+  }, { scope: 'soft:admin' })
 
   registerHandle('home:get-marketplace-and-installed', () => {
     return {
@@ -2368,7 +2368,7 @@ export function registerSkillHandlers(): void {
             : '已发布到本地 marketplace,上传的 SKILL.md 将原样安装到 pi。提交 GenOffice 团队审核后即可进入公共目录。'
           : '已发布到本地 marketplace(未包含扩展文件,安装后仅提供 agent 指导,不会注册任何工具)。提交 GenOffice 团队审核后即可进入公共目录。',
     }
-  })
+  }, { scope: 'soft:admin' })
 
   // Unpublish: remove the catalog entry, its artifact and (if installed) the
   // pi-side install. A published extension that has been withdrawn must not
@@ -2405,7 +2405,7 @@ export function registerSkillHandlers(): void {
     invalidateUploads()
     invalidateSkillMarket()
     return { ok: true, kind, id, uninstalled }
-  })
+  }, { scope: 'soft:admin' })
 
   registerHandle('home:marketplace-list-uploads', () => {
     try {
@@ -2476,7 +2476,7 @@ export function registerSkillHandlers(): void {
     })
     if (saved.ok === false) return saved
     return { ok: true, kind, id, ratingCount: next.length, averageRating: avg }
-  })
+  }, { scope: 'soft:marketplace:rate' })
 
   // ── pi's own view of what it would load ──
   // Installed SKILL.md files, parsed by pi's loader. Both the active and the

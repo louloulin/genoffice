@@ -76,6 +76,19 @@ import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 import { requireScopeFromHeaders } from './api/v1/auth'
+
+/**
+ * True when the request carries an `Authorization: Bearer …` header. Used
+ * by the IPC dispatcher to decide whether the soft scope gate (§11.78)
+ * should fire: callers that present a JWT get the full scope check;
+ * callers without a token (legacy web-renderer IPC, WEB_TOKEN-cookie
+ * sessions) fall through to the existing trust model.
+ */
+function hasAuthorizationHeader(headers: unknown): boolean {
+  const h = headers as { authorization?: unknown } | null | undefined
+  const raw = h?.authorization
+  return typeof raw === 'string' && raw.trim().toLowerCase().startsWith('bearer ')
+}
 import { handleApiV1 } from './api/v1/index'
 import { handleEmbed } from './embed/index'
 import { registerSdkCommandHandlers } from './embed/sdk-commands'
@@ -500,17 +513,47 @@ const server = createServer(async (request, response) => {
 
       const entry = getHandlerEntry(channel)
       if (entry) {
-        // Scope gate (sdk1 §A.5 #10 audit:log close): if the handler opted
-        // into a scope, enforce it via the same gate the v1 REST layer
-        // uses. Channels without a registered scope fall through to the
-        // legacy trust model (WEB_TOKEN-cookie or no-auth dev mode).
+        // Scope gate (sdk1 §A.5 #10 audit:log close, §11.78 expansion):
+        // if the handler opted into a scope and the caller presented an
+        // `Authorization: Bearer …` header, run the gate the v1 REST layer
+        // uses. Requests without an Authorization header fall through to
+        // the legacy trust model (WEB_TOKEN-cookie or no-auth dev mode) so
+        // the in-process renderer stack keeps working without minting a
+        // JWT for every UI-driven channel. Channels without scope metadata
+        // never gate, regardless of auth.
         if (entry.scope) {
-          const gate = requireScopeFromHeaders(request.headers, entry.scope)
-          if (!gate.ok) {
-            sendJson(response, gate.status, {
-              error: { code: gate.code, message: gate.message, channel },
-            })
-            return
+          // Scope gate policy (§11.78):
+          //   - "hard" scopes (any string NOT starting with `soft:`) require
+          //     an Authorization header. No header → 401 UNAUTHENTICATED.
+          //     This matches the v1 REST layer and protects enterprise /
+          //     admin-only channels that should never be reachable from
+          //     the unauthenticated renderer stack.
+          //   - "soft" scopes (prefixed `soft:`) are skipped when the
+          //     caller presents no Authorization header — the call falls
+          //     through to the legacy trust model (WEB_TOKEN-cookie or
+          //     no-auth dev mode) — but enforced normally when the caller
+          //     does present a token. This lets us add scope protection
+          //     to renderer-driven UI channels (marketplace / update /
+          //     user-prefs) without breaking the in-process web UI which
+          //     historically did not mint a JWT.
+          const isSoft = entry.scope.startsWith('soft:')
+          const effectiveScope = isSoft ? entry.scope.slice('soft:'.length) : entry.scope
+          if (!isSoft) {
+            const gate = requireScopeFromHeaders(request.headers, effectiveScope)
+            if (!gate.ok) {
+              sendJson(response, gate.status, {
+                error: { code: gate.code, message: gate.message, channel },
+              })
+              return
+            }
+          } else if (hasAuthorizationHeader(request.headers)) {
+            const gate = requireScopeFromHeaders(request.headers, effectiveScope)
+            if (!gate.ok) {
+              sendJson(response, gate.status, {
+                error: { code: gate.code, message: gate.message, channel },
+              })
+              return
+            }
           }
         }
         // Pass the SSE session id through to handlers via the event object so

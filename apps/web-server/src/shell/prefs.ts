@@ -53,7 +53,7 @@ export function registerPrefsHandlers(): void {
     if (!isAutoSaveDefault(value)) return { ok: false, error: 'invalid AutoSaveDefault payload' }
     autoSave = { ...value }
     return { ok: true }
-  })
+  }, { scope: 'soft:preferences:write' })
 
   registerHandle('app:get-ai-panel-prefs', () => ({ ...aiPanel }))
   registerHandle('app:set-ai-panel-prefs', (_event: unknown, patch: unknown) => {
@@ -64,7 +64,7 @@ export function registerPrefsHandlers(): void {
     if (!isAiPanelPrefs(next)) return { ok: false, error: 'invalid AiPanelPrefs payload' }
     aiPanel = next
     return { ok: true, prefs: { ...aiPanel } }
-  })
+  }, { scope: 'soft:preferences:write' })
 
   // Web-only aliases for the home:* channels used by the standalone renderer —
   // the Electron shell owns the persisted values in apps/shell/src/main/index.ts.
@@ -74,7 +74,7 @@ export function registerPrefsHandlers(): void {
     if (!isAutoSaveDefault(value)) return { ok: false, error: 'invalid AutoSaveDefault payload' }
     autoSave = { ...value }
     return { ok: true }
-  })
+  }, { scope: 'soft:preferences:write' })
   registerHandle('home:get-ai-panel-prefs', () => ({ ...aiPanel }))
   registerHandle('home:set-ai-panel-prefs', (_event: unknown, patch: unknown) => {
     if (!patch || typeof patch !== 'object') {
@@ -84,5 +84,5 @@ export function registerPrefsHandlers(): void {
     if (!isAiPanelPrefs(next)) return { ok: false, error: 'invalid AiPanelPrefs payload' }
     aiPanel = next
     return { ok: true, prefs: { ...aiPanel } }
-  })
+  }, { scope: 'soft:preferences:write' })
 }

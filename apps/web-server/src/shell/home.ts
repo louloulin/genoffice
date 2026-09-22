@@ -177,13 +177,13 @@ export function registerHomeHandlers(): void {
   registerHandle('home:get-data-paths', () => ({ dataDir: DATA_DIR, filesDir: FILES_DIR }))
 
   registerHandle('home:get-theme', () => 'light')
-  registerHandle('home:set-theme', (_event: unknown, theme: unknown) => ({ ok: true, theme }))
+  registerHandle('home:set-theme', (_event: unknown, theme: unknown) => ({ ok: true, theme }), { scope: 'soft:preferences:write' })
 
   registerHandle('home:get-language', () => 'zh-CN')
   registerHandle('home:set-language', (_event: unknown, lang: unknown) => ({
     ok: true,
     language: lang,
-  }))
+  }), { scope: 'soft:preferences:write' })
 
   registerHandle('home:recents', async (_event: unknown, args: unknown) => {
     const {
@@ -283,7 +283,7 @@ export function registerHomeHandlers(): void {
     if (!Array.isArray(paths)) return { ok: false, removed: 0 }
     paths.forEach((p) => DOCS_RECENT.delete(p))
     return { ok: true, removed: paths.length }
-  })
+  }, { scope: 'soft:files:write' })
 
   registerHandle('home:delete-files', async (_event: unknown, paths: unknown) => {
     const values = Array.isArray(paths)
@@ -319,7 +319,7 @@ export function registerHomeHandlers(): void {
     return refused.length > 0
       ? { ok: refused.length < values.length, deleted, refused }
       : { ok: true, deleted }
-  })
+  }, { scope: 'soft:files:delete' })
 
   registerHandle('home:duplicate-file', async (_event: unknown, path: unknown) => {
     if (typeof path !== 'string' || !isManagedPath(path))
@@ -548,7 +548,7 @@ export function registerHomeHandlers(): void {
     url: 'https://account.genspark.ai/login',
   }))
 
-  registerHandle('home:account-logout', () => ({ ok: true }))
+  registerHandle('home:account-logout', () => ({ ok: true }), { scope: 'soft:auth:write' })
 
   /* Real GitHub star count for the About pane. Returns null (not a
    * placeholder number) when the API is unreachable, so the UI stays honest. */
@@ -575,7 +575,7 @@ export function registerHomeHandlers(): void {
   registerHandle('home:set-analytics-enabled', (_event: unknown, enabled: unknown) => ({
     ok: true,
     enabled,
-  }))
+  }), { scope: 'soft:preferences:write' })
 
   registerHandle('home:get-default-save-dir', () => DATA_DIR)
   registerHandle('home:pick-default-save-dir', () => DATA_DIR)
@@ -584,7 +584,7 @@ export function registerHomeHandlers(): void {
   registerHandle('home:set-update-channel', (_event: unknown, channel: unknown) => ({
     ok: true,
     channel,
-  }))
+  }), { scope: 'soft:admin' })
 
   /* ── Onboarding flag ─────────────────────────────────────────────
    * The web build has no real login / first-run backend, but the renderer
@@ -612,7 +612,7 @@ export function registerHomeHandlers(): void {
       writeFileSync(ONBOARDING_FILE, JSON.stringify({ seen: value, setAt: Date.now() }, null, 2))
     } catch {}
     return value
-  })
+  }, { scope: 'soft:preferences:write' })
 
   registerHandle('home:star-prompt-should-show', () => ({ shouldShow: false }))
   registerHandle('home:star-prompt-action', (_event: unknown, action: unknown) => {

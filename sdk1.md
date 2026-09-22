@@ -4691,8 +4691,9 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 - IPC dispatcher 现在共 gate **16 个 channel**
   （3 audit + 5 users + 4 tenant + 4 permissions）
 - 下一批候选（按 §11.74 模式 1 行接入）：
-  - 剩余敏感通道（recents admin delete / key rotation / 自定义
-    admin scope channel）按同样 1 行 registerHandle option 接入
+  - §11.78 已完成 marketplace / update / preferences 三族 + soft/hard
+    分层。剩余敏感通道（如 key rotation）按同样 1 行 registerHandle
+    option 接入
 
 ### 11.77 · Workflow + Communications + admin IPC scope gate 扩展（§11.74 模式复用）
 
@@ -4776,6 +4777,106 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
   surface；剩余敏感通道（recents admin delete / key rotation 等）
   可按同样 1 行 registerHandle option 接入
 
+### 11.78 · Soft-scope gate + marketplace / update / preferences IPC scope 扩展（§11.71 模式 + hard/soft 分层）
+
+> 续 §11.71 / §11.74 / §11.76 / §11.77 — 把 scope gate 模式铺到
+> shell/marketplace / shell/update / shell/preferences 三个文件族的
+> 27 个 IPC handler。但本批扩展同时引入 **hard vs soft scope 分层**：
+> 让 renderer-driven UI（不持有 JWT）继续走 legacy trust，让
+> API/embed consumer（持有 JWT）走完整 scope gate。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/index.ts`** — IPC dispatcher 引入
+   `hasAuthorizationHeader(headers)` helper + scope 字符串前缀约定：
+   - `scope: 'audit:write'` （hard，无前缀）：必须 Authorization header，
+     无 → 401 UNAUTHENTICATED（与 v1 REST 一致，保护 enterprise / admin
+     channel）
+   - `scope: 'soft:admin'` / `soft:marketplace:install` /
+     `soft:preferences:write` / `soft:files:delete` / `soft:files:write` /
+     `soft:auth:write`（soft，前缀 `soft:`）：无 Authorization → legacy
+     trust pass-through（renderer 可继续工作）；有 Authorization 但 scope
+     不匹配 → 403 FORBIDDEN。
+
+2. **`apps/web-server/src/shell/skills.ts`** — 11 个 handler 加 soft scope：
+
+   | Channel | Scope |
+   |---|---|
+   | `home:reload-skill` | `soft:admin` |
+   | `home:reload-plugin` | `soft:admin` |
+   | `home:reset-skills` | `soft:admin` |
+   | `home:reset-plugins` | `soft:admin` |
+   | `home:uninstall-skill` | `soft:admin` |
+   | `home:uninstall-plugin` | `soft:admin` |
+   | `home:install-skill` | `soft:marketplace:install` |
+   | `home:install-plugin` | `soft:marketplace:install` |
+   | `home:marketplace-upload` | `soft:admin` |
+   | `home:marketplace-delete-upload` | `soft:admin` |
+   | `home:marketplace-rate` | `soft:marketplace:rate` |
+
+3. **`apps/web-server/src/shell/tabs.ts`** — 2 个 update handler：
+   - `update:download` → `soft:admin`
+   - `update:install` → `soft:admin`
+
+4. **`apps/web-server/src/shell/home.ts`** — 7 个 user-prefs + 凭证 handler：
+   - `home:set-theme` / `home:set-language` / `home:set-onboarding-seen`
+     / `home:set-analytics-enabled` → `soft:preferences:write`
+   - `home:set-update-channel` → `soft:admin`
+   - `home:remove-recent` → `soft:files:write`
+   - `home:delete-files` → `soft:files:delete`
+   - `home:account-logout` → `soft:auth:write`
+
+5. **`apps/web-server/src/shell/file-management.ts`** — 1 个 handler：
+   - `home:purge-trash-entry` → `soft:files:delete`
+
+6. **`apps/web-server/src/shell/prefs.ts`** — 4 个 prefs handler：
+   - `app:set-auto-save-default` / `app:set-ai-panel-prefs` /
+     `home:set-auto-save-default` / `home:set-ai-panel-prefs` →
+     `soft:preferences:write`
+
+7. **`apps/web-server/src/shell/modules.ts`** — 1 个 handler：
+   - `home:set-module-enabled` → `soft:admin`
+
+   `admin` sub 与 `*` scope 通配继续工作（继承 §11.5 `hasScope` 语义）。
+
+8. **`apps/web-server/tests/ipc-scope-gate.test.ts`** — 新增 14 个
+   soft-scope e2e 用例，覆盖：
+   - 5 类 lifecycle（no-auth legacy pass-through / bogus token 401 /
+     wrong-scope JWT 403 / matching-scope JWT 200 / admin sub bypass）
+   - 4 个真实 soft-scope channel（`home:set-theme` /
+     `home:delete-files` / `home:marketplace-upload` / `update:download`）
+   - 2 个 hard-scope regression sentinel（`audit:write` /
+     `tenant:create` 在无 Authorization 时仍 401）
+   - 1 个 registry round-trip（验证 `soft:` 前缀保留在 entry 中）
+
+#### 🧪 验证
+
+- `apps/web-server/tests/ipc-scope-gate.test.ts`：**58 / 58 通过**
+  （9 audit + 8 users/tenant + 8 permissions + 7 workflow + 7
+  communications + 5 admin + 14 soft-scope）
+- `apps/web-server` 全套件：**934 / 968 通过**（30 个 LLM-flake
+  与本批无关：translate-* + ai-capabilities + translate-pi-agent
+  三个 suite 依赖外部 API key，沙箱不可达）；本批新增 14 测试
+  全部通过，原有 920 个测试零回归（新增的 soft gate 让
+  `home:delete-files` 等 renderer-driven 测试在 no-auth 模式下
+  继续走 legacy trust）
+- `apps/web-server` typecheck：clean（9 处 pptx-ops / xlsx-gateway
+  pre-existing 错误已排除）
+- esbuild bundle 重建 29.3 MB，所有 562 通道仍注册
+  （27 个新加 soft scope metadata）
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 68 → **71**（+3：marketplace write /
+  preferences write / system update 三个 entry 同时闭合）
+- IPC dispatcher 现在共 gate **58 个 channel**
+  （3 audit + 5 users + 4 tenant + 4 permissions + 6 workflow +
+  7 communications + 2 admin + 27 soft-scope）
+- 设计扩展：scope gate 现在分 hard（无 Authorization 必拒）
+  / soft（无 Authorization 跳过）两层 — 后续接入仍按 1 行
+  registerHandle option 增加 `{ scope: 'category:action' }` 或
+  `{ scope: 'soft:category:action' }`
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -4785,8 +4886,9 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 | §11.72 | cross-backend atomic promote | +1 | 63 |
 | §11.74 | enterprise users/tenant scope gate | +1 | 64 |
 | §11.76 | enterprise permissions scope gate | +1 | 65 |
-| §11.77 | workflow + comms + admin scope gate | +3 | **68** |
-| §A.5 backlog 闭合总数 |  |  | **68** |
+| §11.77 | workflow + comms + admin scope gate | +3 | 68 |
+| §11.78 | soft-scope + marketplace / update / prefs | +3 | **71** |
+| §A.5 backlog 闭合总数 |  |  | **71** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -4809,7 +4911,7 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. recents admin delete / key rotation 等剩余敏感通道 scope gate（同 §11.74 模式 1 行接入）：1 天
+1. key rotation 等剩余敏感通道 scope gate（同 §11.74 模式 1 行接入）：1 天
 2. SDK Multi-instance renderer demo 扩展（commit `01be1396` 已落地类型 + 11 测试；e2e demo 是 §B.5.6 #2）：1 天
 3. recents-watcher 走 `promoteAcrossBackend` 对称化（与 §11.72 配套）：1 天
 4. `slides` engine parser 进一步稳定化（hash-based stable id 替代单调 counter；sdk1 §A.5 #7 follow-up）：3-5 天

@@ -71,7 +71,7 @@ export function registerModuleHandlers(): void {
     const modules = loadModules().map((m) => (m.id === id ? { ...m, enabled: !!enabled } : m))
     saveModules(modules)
     return { ok: true, modules }
-  })
+  }, { scope: 'soft:admin' })
 
   registerHandle('home:reorder-modules', (_event: unknown, args: unknown) => {
     const { order } = (args || {}) as { order: ModuleKind[] }
