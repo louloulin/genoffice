@@ -886,3 +886,190 @@ describe('IPC dispatcher scope gate — additional sensitive surfaces (sdk1 §11
     expect(r.status).not.toBe(403)
   })
 })
+
+describe('IPC dispatcher scope gate — collab + history + comments + templates (sdk1 §11.83)', () => {
+  it('collab:join (soft:collab:write) — no auth → 200 legacy pass-through', async () => {
+    const r = await callIpc('collab:join', null, [
+      { docId: 'doc-collab-1', userId: 'user-x' },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+  })
+
+  it('collab:join with wrong-scope JWT → 403 FORBIDDEN', async () => {
+    // noScopeToken has no scopes → not collab:write.
+    const r = await callIpc('collab:join', noScopeToken, [
+      { docId: 'doc-collab-1', userId: 'user-x' },
+    ])
+    expect(r.status).toBe(403)
+    expect(r.body.error?.code).toBe('FORBIDDEN')
+  })
+
+  it('collab:join with collab:write → 200', async () => {
+    const collabWrite = await mint('collab-writer', ['collab:write'])
+    const r = await callIpc('collab:join', collabWrite, [
+      { docId: 'doc-collab-1', userId: 'user-y' },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+  })
+
+  it('collab:join admin bypass (admin sub) → 200', async () => {
+    const r = await callIpc('collab:join', adminToken, [
+      { docId: 'doc-collab-1', userId: 'user-admin' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('collab:presence-list (soft:collab:read) — no auth → 200', async () => {
+    const r = await callIpc('collab:presence-list', null, [
+      { docId: 'doc-collab-1' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('collab:presence-list with collab:read → 200', async () => {
+    const collabRead = await mint('collab-reader', ['collab:read'])
+    const r = await callIpc('collab:presence-list', collabRead, [
+      { docId: 'doc-collab-1' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('collab:lock-status wrong-scope JWT → 403', async () => {
+    const wrong = await mint('wrong-scope', ['files:read'])
+    const r = await callIpc('collab:lock-status', wrong, [
+      { docId: 'doc-collab-1' },
+    ])
+    expect(r.status).toBe(403)
+  })
+
+  it('collab:lock-acquire with collab:write succeeds end-to-end', async () => {
+    const collabWrite = await mint('collab-writer', ['collab:write'])
+    const r = await callIpc('collab:lock-acquire', collabWrite, [
+      { docId: 'doc-collab-1', userId: 'user-y' },
+    ])
+    expect(r.status).toBe(200)
+    const result = r.body.result as { ok?: boolean; lockKey?: string } | undefined
+    expect(result?.ok).toBe(true)
+    expect(typeof result?.lockKey).toBe('string')
+  })
+
+  it('history:versions (soft:history:read) — no auth → 200', async () => {
+    const r = await callIpc('history:versions', null, [
+      { docId: 'doc-history-1' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('history:versions wrong-scope JWT → 403', async () => {
+    const wrong = await mint('wrong-scope-2', ['collab:write'])
+    const r = await callIpc('history:versions', wrong, [
+      { docId: 'doc-history-1' },
+    ])
+    expect(r.status).toBe(403)
+  })
+
+  it('history:create-version with history:write → 200', async () => {
+    const histWrite = await mint('history-writer', ['history:write'])
+    const r = await callIpc('history:create-version', histWrite, [
+      { docId: 'doc-history-1', content: 'hello world', userId: 'user-z' },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+    const result = r.body.result as { versionId?: string } | undefined
+    expect(typeof result?.versionId).toBe('string')
+  })
+
+  it('history:create-version no auth → 200 (renderer path kept working)', async () => {
+    const r = await callIpc('history:create-version', null, [
+      { docId: 'doc-history-2', content: 'plain text', userId: 'user-r' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('comments:list (soft:comments:read) — no auth → 200', async () => {
+    const r = await callIpc('comments:list', null, [
+      { docId: 'doc-comments-1' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('comments:add wrong-scope JWT → 403', async () => {
+    const wrong = await mint('wrong-scope-3', ['files:read'])
+    const r = await callIpc('comments:add', wrong, [
+      { docId: 'doc-comments-1', userId: 'u', userName: 'U', content: 'hi' },
+    ])
+    expect(r.status).toBe(403)
+  })
+
+  it('comments:add with comments:write succeeds', async () => {
+    const commWrite = await mint('comment-writer', ['comments:write'])
+    const r = await callIpc('comments:add', commWrite, [
+      { docId: 'doc-comments-1', userId: 'u1', userName: 'Alice', content: 'hello' },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+    const result = r.body.result as { commentId?: string } | undefined
+    expect(typeof result?.commentId).toBe('string')
+  })
+
+  it('comments:add admin bypass → 200', async () => {
+    const r = await callIpc('comments:add', adminToken, [
+      { docId: 'doc-comments-1', userId: 'admin', userName: 'Admin', content: 'admin hello' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('templates:list (soft:templates:read) — no auth → 200', async () => {
+    const r = await callIpc('templates:list', null, [])
+    expect(r.status).toBe(200)
+  })
+
+  it('templates:create wrong-scope JWT → 403', async () => {
+    const wrong = await mint('wrong-scope-4', ['files:write'])
+    const r = await callIpc('templates:create', wrong, [
+      { name: 'BadTpl', type: 'docs', content: '<x/>' },
+    ])
+    expect(r.status).toBe(403)
+  })
+
+  it('templates:create with templates:write → 200', async () => {
+    const tplWrite = await mint('tpl-writer', ['templates:write'])
+    const r = await callIpc('templates:create', tplWrite, [
+      { name: 'NewTpl', type: 'docs', content: '<x/>' },
+    ])
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+    const result = r.body.result as { id?: string } | undefined
+    expect(typeof result?.id).toBe('string')
+  })
+
+  it('templates:create admin bypass → 200', async () => {
+    const r = await callIpc('templates:create', adminToken, [
+      { name: 'AdminTpl', type: 'sheets', content: '<y/>' },
+    ])
+    expect(r.status).toBe(200)
+  })
+
+  it('handler registry round-trips collab/history/comments/templates scopes', async () => {
+    // Pin the registry contract: getHandlerEntry exposes the scope string
+    // (raw, including soft: prefix). The dispatcher strips the prefix
+    // when invoking the gate.
+    const registry = await import('../src/common/registry')
+    const channels = [
+      'test:collab-write-' + Math.random().toString(36).slice(2),
+      'test:history-read-' + Math.random().toString(36).slice(2),
+      'test:comments-write-' + Math.random().toString(36).slice(2),
+      'test:templates-read-' + Math.random().toString(36).slice(2),
+    ]
+    registry.registerHandle(channels[0], () => ({ ok: true }), { scope: 'soft:collab:write' })
+    registry.registerHandle(channels[1], () => ({ ok: true }), { scope: 'soft:history:read' })
+    registry.registerHandle(channels[2], () => ({ ok: true }), { scope: 'soft:comments:write' })
+    registry.registerHandle(channels[3], () => ({ ok: true }), { scope: 'soft:templates:read' })
+    expect(registry.getHandlerEntry(channels[0])?.scope).toBe('soft:collab:write')
+    expect(registry.getHandlerEntry(channels[1])?.scope).toBe('soft:history:read')
+    expect(registry.getHandlerEntry(channels[2])?.scope).toBe('soft:comments:write')
+    expect(registry.getHandlerEntry(channels[3])?.scope).toBe('soft:templates:read')
+  })
+})

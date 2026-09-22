@@ -5128,6 +5128,102 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 - 暂未让 web-server / apps/slides 默认启用 hash（避免破坏现有 renderer）；
   后续可逐步 opt-in（每个 `slides:open-path` 调用加 `{ useHashBasedIds: true }`）
 
+### 11.83 · Collab + history + comments + templates IPC scope gate（§11.78 模式复用）
+
+> §11.78 把 soft-scope 引入 marketplace / update / prefs 后，剩下的"敏感
+> surface"集中在协作域：collab sessions / locks / change tracking /
+> conflicts / permissions（11 通道）、collab sessions（5 通道）、history
+> / comments / templates（13 通道）。本批统一加 `soft:` scope，让
+> 无 Authorization header 的 renderer 路径继续工作，但 wrong-scope JWT
+> 会被 403 拒掉。
+>
+> §A.5 backlog **闭合数 +1**（collab 协作域 sensitive surface 收口）；
+> 累计 **73**。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/collab/locks.ts`**（11 个 handler）：
+   - `collab:lock-acquire` / `collab:lock-release` → `soft:collab:write`
+   - `collab:lock-status` / `collab:cursor-list` / `collab:change-since` /
+     `collab:conflict-detect` / `collab:permissions-get` → `soft:collab:read`
+   - `collab:cursor-update` / `collab:change-track` /
+     `collab:conflict-resolve` / `collab:permissions-set` → `soft:collab:write`
+   - 包括单行 arrow `collab:conflict-resolve`（`=> ({ ok: true, ... })`）—
+     scope 插在外层 registerHandle `)` 之前，不是内层 object `})` 之前
+     （避免 §11.71 / §11.74 引入的 TS2695 风险）
+
+2. **`apps/web-server/src/collab/sessions.ts`**（5 个 handler）：
+   - `collab:join` / `collab:leave` / `collab:sync` /
+     `collab:presence-update` → `soft:collab:write`
+   - `collab:presence-list` → `soft:collab:read`
+
+3. **`apps/web-server/src/collab/history-comments-templates.ts`**（13 个 handler）：
+   - `history:versions` / `history:get-version` → `soft:history:read`
+   - `history:create-version` / `history:restore-version` → `soft:history:write`
+   - `comments:list` → `soft:comments:read`
+   - `comments:add` / `comments:reply` / `comments:resolve` /
+     `comments:delete` → `soft:comments:write`
+   - `templates:list` / `templates:get` → `soft:templates:read`
+   - `templates:create` / `templates:delete` → `soft:templates:write`
+
+   总计 **29 个** registerHandle 调用注入 soft scope（11 + 5 + 13）。
+
+4. **`apps/web-server/tests/ipc-scope-gate.test.ts`** — 在 `§11.79`
+   describe 之后追加 **`describe('IPC dispatcher scope gate — collab
+   + history + comments + templates (sdk1 §11.83)', ...)`** 块：
+   - **21 个新测试**（77 → 98）：
+     - 4 个 collab:join / presence-list（no-auth / wrong-scope / matching /
+       admin bypass）
+     - 1 个 collab:lock-status wrong-scope
+     - 1 个 collab:lock-acquire 端到端（含返回的 lockKey shape）
+     - 4 个 history:versions / create-version（read / write / no-auth legacy /
+       wrong-scope）
+     - 5 个 comments:list / comments:add（read no-auth / write matching /
+       wrong-scope / admin bypass + add 端到端含 commentId shape）
+     - 6 个 templates:list / templates:create（read no-auth / write
+       matching / wrong-scope / admin bypass + create 端到端含 id shape）
+     - 1 个 registry round-trip（4 个 soft scope 字符串原样存进
+       `getHandlerEntry(ch).scope`）
+
+#### 🧪 验证
+
+- `apps/web-server/tests/ipc-scope-gate.test.ts`：**98 / 98 通过**
+  （77 baseline + 21 §11.83；先前 77 含 §11.79 末尾的 auth-jwt + sensitive
+  surfaces）
+- `apps/web-server` scope/audit/auth 子集：**144 / 144 通过**
+  （ipc-scope-gate + recents-watcher + audit-log-persistence +
+  audit-log-tenant + auth-jwt-rotation + promote-across-backend +
+  webhook-dlq）
+- `apps/sdk`：221 / 221 通过
+- `packages/pptx-engine`：968 / 969 通过 + 1 skipped
+- `apps/web-server` typecheck：clean（仅 9 个预存在 pptx-ops / xlsx-gateway
+  错误，与本批无关）
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 **72 → 73**（最后一批协作域 sensitive surface）
+- 至此 IPC scope gate 已经覆盖：enterprise (users / tenant / permissions
+  / audit) + workflow + communications + admin + marketplace + update +
+  preferences + auth-jwt + collab (sessions / locks / change tracking /
+  conflicts / permissions) + history + comments + templates — **共 7 个
+  sensitive surface 群组，~73 个 handler**
+- 剩余 IPC sensitive surface：只有显式 backend-only 通道（kernel /
+  process / 等），未渲染进 renderer 的不需 gate
+
+#### 🔍 关键设计点（保留做后续参考）
+
+- **soft scope prefix 语义**：所有 29 个本批通道都用 `soft:` 前缀，因为
+  历史 renderer 不带 JWT 直接调。无 `soft:` 时 dispatcher 走 hard 分支：
+  无 Authorization → 401 UNAUTHENTICATED，会破坏现有 home shell 的
+  `home:remove-recent` / `home:set-theme` 等自指调用（参考 §11.78）
+- **`admin` sub 旁路**：`hasScope({ sub: 'admin', scope: [] }, 'anything')`
+  返 true（见 `auth.ts:hasScope`）；本批 21 测试中 3 个直接验证 admin 旁路
+  （collab:join / comments:add / templates:create），其余通过 wildcard
+  scope 验证
+- **registry store 保留 `soft:` 前缀**：`getHandlerEntry(ch).scope` 返
+  `'soft:collab:write'`，dispatcher 才是剥离 prefix 的人。这样测试与生产
+  行为一致，不会被前缀处理埋雷
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -5139,8 +5235,9 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 | §11.76 | enterprise permissions scope gate | +1 | 65 |
 | §11.77 | workflow + comms + admin scope gate | +3 | 68 |
 | §11.78 | soft-scope + marketplace / update / prefs | +3 | 71 |
-| §11.79 | auth JWT rotation IPC + sensitive surfaces | +1 | **72** |
-| §A.5 backlog 闭合总数 |  |  | **72** |
+| §11.79 | auth JWT rotation IPC + sensitive surfaces | +1 | 72 |
+| §11.83 | collab + history + comments + templates scope gate | +1 | **73** |
+| §A.5 backlog 闭合总数 |  |  | **73** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -5163,10 +5260,9 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. collab:* 协作 / recents admin delete 等剩余 sensitive IPC scope gate（如 §11.78 模式）：1-2 天
-2. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
-3. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面）：3-5 天
-4. 让 web-server 默认对 slides:open-path 启用 useHashBasedIds（迁移现有 renderer）：1-2 天
+1. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
+2. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面）：3-5 天
+3. 让 web-server 默认对 slides:open-path 启用 useHashBasedIds（迁移现有 renderer）：1-2 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

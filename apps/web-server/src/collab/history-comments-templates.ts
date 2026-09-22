@@ -14,7 +14,7 @@ export function registerHistoryHandlers(): void {
       userId: v.userId,
       message: v.message || '自动保存',
     }))
-  })
+  }, { scope: 'soft:history:read' })
 
   registerHandle('history:create-version', (_event: unknown, args: unknown) => {
     const { docId, content, userId, message } = args as {
@@ -44,7 +44,7 @@ export function registerHistoryHandlers(): void {
     }
 
     return { ok: true, versionId, timestamp: Date.now() }
-  })
+  }, { scope: 'soft:history:write' })
 
   registerHandle('history:get-version', (_event: unknown, args: unknown) => {
     const { docId, versionId } = args as { docId: string; versionId: string }
@@ -53,7 +53,7 @@ export function registerHistoryHandlers(): void {
 
     const version = docVersions.versions.find(v => v.id === versionId)
     return version || null
-  })
+  }, { scope: 'soft:history:read' })
 
   registerHandle('history:restore-version', (_event: unknown, args: unknown) => {
     const { docId, versionId } = args as { docId: string; versionId: string }
@@ -64,14 +64,14 @@ export function registerHistoryHandlers(): void {
     if (!version) return { ok: false, error: 'Version not found' }
 
     return { ok: true, content: version.content }
-  })
+  }, { scope: 'soft:history:write' })
 }
 
 export function registerCommentHandlers(): void {
   registerHandle('comments:list', (_event: unknown, args: unknown) => {
     const { docId } = args as { docId: string }
     return DOC_COMMENTS.get(docId) || []
-  })
+  }, { scope: 'soft:comments:read' })
 
   registerHandle('comments:add', (_event: unknown, args: unknown) => {
     const { docId, userId, userName, content, selection } = args as {
@@ -101,7 +101,7 @@ export function registerCommentHandlers(): void {
     })
 
     return { ok: true, commentId }
-  })
+  }, { scope: 'soft:comments:write' })
 
   registerHandle('comments:reply', (_event: unknown, args: unknown) => {
     const { docId, commentId, userId, userName, content } = args as {
@@ -128,7 +128,7 @@ export function registerCommentHandlers(): void {
     })
 
     return { ok: true, replyId }
-  })
+  }, { scope: 'soft:comments:write' })
 
   registerHandle('comments:resolve', (_event: unknown, args: unknown) => {
     const { docId, commentId } = args as { docId: string; commentId: string }
@@ -140,7 +140,7 @@ export function registerCommentHandlers(): void {
 
     comment.resolved = true
     return { ok: true }
-  })
+  }, { scope: 'soft:comments:write' })
 
   registerHandle('comments:delete', (_event: unknown, args: unknown) => {
     const { docId, commentId } = args as { docId: string; commentId: string }
@@ -152,7 +152,7 @@ export function registerCommentHandlers(): void {
 
     comments.splice(index, 1)
     return { ok: true }
-  })
+  }, { scope: 'soft:comments:write' })
 }
 
 export function registerTemplateHandlers(): void {
@@ -187,12 +187,12 @@ export function registerTemplateHandlers(): void {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     }))
-  })
+  }, { scope: 'soft:templates:read' })
 
   registerHandle('templates:get', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     return TEMPLATES.get(id) || null
-  })
+  }, { scope: 'soft:templates:read' })
 
   registerHandle('templates:create', (_event: unknown, args: unknown) => {
     const { name, type, content, category, tags } = args as {
@@ -216,12 +216,12 @@ export function registerTemplateHandlers(): void {
     })
 
     return { ok: true, id }
-  })
+  }, { scope: 'soft:templates:write' })
 
   registerHandle('templates:delete', (_event: unknown, args: unknown) => {
     const { id } = args as { id: string }
     if (!TEMPLATES.has(id)) return { ok: false, error: 'Template not found' }
     TEMPLATES.delete(id)
     return { ok: true }
-  })
+  }, { scope: 'soft:templates:write' })
 }

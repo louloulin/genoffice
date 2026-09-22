@@ -29,7 +29,7 @@ export function registerCollabSessionHandlers(): void {
     session.lastActivity = Date.now()
 
     return { sessionId, users: [...session.users], docId, userCount: session.users.size }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:leave', (_event: unknown, args: unknown) => {
     const { docId, userId } = args as { docId: string; userId: string }
@@ -41,7 +41,7 @@ export function registerCollabSessionHandlers(): void {
       }
     }
     return { ok: true }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:sync', (_event: unknown, args: unknown) => {
     const { docId, userId: _userId } = args as { docId: string; changes: unknown; userId: string }
@@ -59,7 +59,7 @@ export function registerCollabSessionHandlers(): void {
       }
     }
     return { ok: false, error: 'Session not found' }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:presence-update', (_event: unknown, args: unknown) => {
     const { docId, userId, userName, status, cursor } = args as {
@@ -88,7 +88,7 @@ export function registerCollabSessionHandlers(): void {
     })
 
     return { ok: true }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:presence-list', (_event: unknown, args: unknown) => {
     const { docId } = args as { docId: string }
@@ -103,5 +103,5 @@ export function registerCollabSessionHandlers(): void {
     }
 
     return [...docPresence.values()]
-  })
+  }, { scope: 'soft:collab:read' })
 }

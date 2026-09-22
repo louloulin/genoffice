@@ -24,7 +24,7 @@ export function registerLockHandlers(): void {
 
     session.locks.set(lockKey, { userId, timestamp: Date.now() })
     return { ok: true, lockKey, acquiredAt: Date.now() }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:lock-release', (_event: unknown, args: unknown) => {
     const { docId, userId, sectionId } = args as { docId: string; userId: string; sectionId?: string }
@@ -39,7 +39,7 @@ export function registerLockHandlers(): void {
     }
 
     return { ok: true }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:lock-status', (_event: unknown, args: unknown) => {
     const { docId, sectionId } = args as { docId: string; sectionId?: string }
@@ -59,7 +59,7 @@ export function registerLockHandlers(): void {
         expired: Date.now() - lock.timestamp > 30000,
       }],
     }
-  })
+  }, { scope: 'soft:collab:read' })
 }
 
 export function registerCursorHandlers(): void {
@@ -81,7 +81,7 @@ export function registerCursorHandlers(): void {
     })
 
     return { ok: true }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:cursor-list', (_event: unknown, args: unknown) => {
     const { docId } = args as { docId: string }
@@ -96,7 +96,7 @@ export function registerCursorHandlers(): void {
       selection: cursor.selection,
       color: colors[idx % colors.length],
     }))
-  })
+  }, { scope: 'soft:collab:read' })
 }
 
 export function registerChangeTrackingHandlers(): void {
@@ -132,7 +132,7 @@ export function registerChangeTrackingHandlers(): void {
     }
 
     return { ok: true, changeId: changeRecord.id, version: changeRecord.version }
-  })
+  }, { scope: 'soft:collab:write' })
 
   registerHandle('collab:change-since', (_event: unknown, args: unknown) => {
     const { docId, sinceVersion } = args as { docId: string; sinceVersion: number }
@@ -151,7 +151,7 @@ export function registerChangeTrackingHandlers(): void {
       })),
       latestVersion: session.changes.length,
     }
-  })
+  }, { scope: 'soft:collab:read' })
 }
 
 export function registerConflictHandlers(): void {
@@ -180,14 +180,14 @@ export function registerConflictHandlers(): void {
     }
 
     return { hasConflicts: false }
-  })
+  }, { scope: 'soft:collab:read' })
 
   registerHandle('collab:conflict-resolve', (_event: unknown, _args: unknown) => ({
     ok: true,
     strategy: 'merge',
     resolvedAt: Date.now(),
     newVersion: Date.now(),
-  }))
+  }), { scope: 'soft:collab:write' })
 }
 
 export function registerPermissionHandlers(): void {
@@ -202,7 +202,7 @@ export function registerPermissionHandlers(): void {
       userId,
       permission: perm,
     }))
-  })
+  }, { scope: 'soft:collab:read' })
 
   registerHandle('collab:permissions-set', (_event: unknown, args: unknown) => {
     const { docId, userId, permission } = args as {
@@ -218,5 +218,5 @@ export function registerPermissionHandlers(): void {
     DOC_PERMISSIONS.get(docId)!.set(userId, permission)
 
     return { ok: true }
-  })
+  }, { scope: 'soft:collab:write' })
 }
