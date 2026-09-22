@@ -6,7 +6,7 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import {
   DATA_DIR,
   DOCS_RECENT,
@@ -512,6 +512,83 @@ export function registerDocsHandlers(): void {
       }
 
       return { ok: true, id, path, name: safeName }
+    },
+  )
+
+
+  registerHandle(
+    'docs:save-as',
+    async (event: unknown, sourcePath?: unknown, targetPath?: unknown, data?: unknown) => {
+      // Save-as: copy bytes from `sourcePath` (or honour `data` if the
+      // renderer already has fresh bytes) to `targetPath`. Mirrors the
+      // desktop signature so the renderer (docs/web-bridge.tsx) can use
+      // the same call shape across web / electron builds.
+      //
+      // The previous web build had no `docs:save-as` channel at all —
+      // sheet & slide had one — so the docs renderer's "save as" silently
+      // round-tripped through `docs:save` (which kept the original path
+      // and ignored the new name). Adding it here brings parity.
+      if (typeof sourcePath !== 'string' || !sourcePath) {
+        throw new InvalidArgumentError('docs:save-as', 'sourcePath must be a non-empty string')
+      }
+      if (typeof targetPath !== 'string' || !targetPath) {
+        throw new InvalidArgumentError('docs:save-as', 'targetPath must be a non-empty string')
+      }
+        // Prefer explicit `data` bytes; otherwise read them from `sourcePath`.
+      // Rethrow structured errors (NotFoundError / InvalidArgumentError)
+      // so the IPC layer translates them into 404 / 400 envelopes with the
+      // shared `{ error: { code, message } }` shape; only handle genuinely
+      // unexpected errors as soft `{ ok: false, error }`.
+      let bytes = bytesFrom(data)
+      if (!bytes || bytes.byteLength === 0) {
+        try {
+          bytes = await readDocxBytes('docs:save-as', sourcePath)
+        } catch (err) {
+          if (err instanceof NotFoundError || err instanceof InvalidArgumentError) throw err
+          return { ok: false, error: err instanceof Error ? err.message : String(err) }
+        }
+      }
+      const key = storageKeyFromPath(targetPath)
+      const canonical = canonicalDocxPath(targetPath)
+      if (!key && !isManagedDocPath(canonical)) {
+        return { ok: false, error: 'save-as target is outside the web storage area' }
+      }
+      if (!bytes || bytes.byteLength === 0) {
+        return { ok: false, error: 'save data is empty or invalid' }
+      }
+      try {
+        if (key) {
+          await getStorageBackend().put(key, new Uint8Array(bytes), {
+            contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          })
+        } else {
+          // Snapshot prior bytes (if the target already exists) BEFORE the
+          // atomic write so files:restore-version can roll back. New target:
+          // readFileSync throws and we move on.
+          try {
+            const prev = readFileSync(canonical)
+            captureBeforeSave(basename(canonical), prev)
+          } catch { /* new path, nothing to snapshot */ }
+          mkdirSync(dirname(canonical), { recursive: true })
+          atomicWriteFile(canonical, bytes)
+        }
+        const existingName = DOCS_RECENT.get(sourcePath)?.name
+        await recordRecentDoc(targetPath, {
+          id: basename(targetPath, extname(targetPath)),
+          name: existingName ?? basename(targetPath),
+          modified: true,
+        })
+        notifyFileSaved(targetPath, { size: bytes.byteLength, format: 'docx' })
+        sendIpcEvent(event, 'saved', {
+          path: targetPath,
+          version: Date.now(),
+          bytes: bytes.byteLength,
+          format: 'docx',
+        })
+        return { ok: true, path: targetPath }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
     },
   )
 
