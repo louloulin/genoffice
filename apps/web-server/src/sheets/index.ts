@@ -383,8 +383,10 @@ export function registerSheetsHandlers(): void {
   //   - Recents are recorded on successful save so the home grid shows
   //     `modified: true`, matching docs/markdown behaviour.
   //   - A renderer that never opened a workbook (calls `workbook:save`
-  //     with an unknown sessionId) gets a structured `NotFoundError` (legacy
-//     contract; new code should throw `WorkbookNotFoundError` from `./errors`)
+  //     with an unknown sessionId) gets a structured `WorkbookNotFoundError`
+//     from `./errors`. The generic `NotFoundError` import is still kept
+//     for non-workbook channels (`workbook:open-for-merge` is the only
+//     remaining caller as of §11.61).
   //     instead of the previous silently-accepted `{ok: false}`.
 
   type WorkbookFormat = 'xlsx' | 'xlsm' | 'csv' | 'xls'
@@ -438,7 +440,7 @@ export function registerSheetsHandlers(): void {
   }> {
     const req = input.request
     if (!req || typeof req.sessionId !== 'string' || !req.sessionId) {
-      throw new InvalidArgumentError(
+      throw new WorkbookInvalidArgumentError(
         'workbook:save',
         'expects { sessionId: string, ... }',
       )
@@ -447,7 +449,7 @@ export function registerSheetsHandlers(): void {
     if (!session) {
       // A renderer that lost track of its sessionId (e.g. after the server
       // restarted) sees a clear error rather than a silent save success.
-      throw new NotFoundError('workbook:save', `Unknown session: ${req.sessionId}`)
+      throw new WorkbookNotFoundError('workbook:save', `Unknown session: ${req.sessionId}`)
     }
 
     // Resolve the target: save-as overrides, otherwise stay on the open path.
@@ -566,7 +568,7 @@ export function registerSheetsHandlers(): void {
     }
     const session = getSession(req.sessionId)
     if (!session) {
-      throw new NotFoundError(
+      throw new WorkbookNotFoundError(
         'workbook:save-edits-begin',
         `Unknown session: ${req.sessionId}`,
       )
@@ -661,7 +663,7 @@ export function registerSheetsHandlers(): void {
    */
   registerHandle('workbook:export-csv', async (_event: unknown, request: unknown) => {
     if (typeof request !== 'object' || request === null) {
-      throw new InvalidArgumentError('workbook:export-csv', 'request must be an object')
+      throw new WorkbookInvalidArgumentError('workbook:export-csv', 'request must be an object')
     }
     const req = request as {
       fileName?: unknown
@@ -671,17 +673,17 @@ export function registerSheetsHandlers(): void {
       targetPath?: unknown
     }
     if (typeof req.fileName !== 'string' || req.fileName.length === 0 || req.fileName.length > 255) {
-      throw new InvalidArgumentError('workbook:export-csv', 'fileName must be a 1-255 character string')
+      throw new WorkbookInvalidArgumentError('workbook:export-csv', 'fileName must be a 1-255 character string')
     }
     if (typeof req.content !== 'string') {
-      throw new InvalidArgumentError('workbook:export-csv', 'content must be a string')
+      throw new WorkbookInvalidArgumentError('workbook:export-csv', 'content must be a string')
     }
     // Cap content at 64 MB worth of text — the same ceiling the desktop
     // uses (`MAX_CSV_EXPORT_CHARS`). A larger export is a client-side bug,
     // not a host we can sanely accept without bumping the bundle's
     // transitive caps.
     if (req.content.length > 64_000_000) {
-      throw new InvalidArgumentError('workbook:export-csv', 'content exceeds 64 MB ceiling')
+      throw new WorkbookInvalidArgumentError('workbook:export-csv', 'content exceeds 64 MB ceiling')
     }
     if (req.content.length === 0) {
       // The renderer's csv-export.ts serializes the active sheet before
@@ -689,16 +691,28 @@ export function registerSheetsHandlers(): void {
       // almost always a renderer bug, and a 3-byte BOM-only file would
       // confuse Excel and downstream tooling. Refuse with the standard
       // INVALID_ARGUMENT envelope rather than writing a meaningless file.
-      throw new InvalidArgumentError('workbook:export-csv', 'content must not be empty')
+      throw new WorkbookInvalidArgumentError('workbook:export-csv', 'content must not be empty')
     }
     if (req.targetPath !== undefined && typeof req.targetPath !== 'string') {
-      throw new InvalidArgumentError('workbook:export-csv', 'targetPath must be a string when provided')
+      throw new WorkbookInvalidArgumentError('workbook:export-csv', 'targetPath must be a string when provided')
     }
     if (req.targetPath === undefined) {
       // See the comment above — the web build has no native save dialog.
       return { canceled: true as const }
     }
-    const safeTarget = requireManagedPath('workbook:export-csv', req.targetPath)
+    let safeTarget: string
+    try {
+      safeTarget = requireManagedPath('workbook:export-csv', req.targetPath)
+    } catch (err) {
+      // requireManagedPath throws the generic `InvalidArgumentError`; we
+      // re-raise as `WorkbookInvalidArgumentError` so the renderer sees
+      // a workbook-specific code on every error path this channel can
+      // produce. Without this wrap, the path-outside-storage branch
+      // would answer `INVALID_ARGUMENT` while every other branch on the
+      // same channel answers `WORKBOOK_INVALID_ARGUMENT` — a mix the
+      // renderer would have to special-case.
+      throw new WorkbookInvalidArgumentError('workbook:export-csv', (err as Error)?.message ?? PATH_OUTSIDE_STORAGE)
+    }
     const targetPath = safeTarget.toLowerCase().endsWith('.csv') ? safeTarget : `${safeTarget}.csv`
     // UTF-8 BOM so Excel decodes the reopened file correctly — the same
     // magic bytes the desktop exportCsv uses, and the same as the

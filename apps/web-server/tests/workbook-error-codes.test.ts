@@ -219,3 +219,100 @@ describe.skipIf(skip)('WorkbookError class contract (unit)', () => {
     expect(b.cause).toBeUndefined()
   })
 })
+
+
+describe.skipIf(skip)('workbook:save + workbook:save-edits-begin error codes (sdk1 §11.61)', () => {
+  it('workbook:save with no args returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    const r = await invoke(base, 'workbook:save', [{}])
+    expect(r.status).toBe(400)
+    const err = (r.body as { error?: { code?: string; channel?: string } }).error
+    expect(err?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+    expect(err?.channel).toBe('workbook:save')
+  })
+
+  it('workbook:save with a non-string sessionId returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    const r = await invoke(base, 'workbook:save', [
+      { sessionId: 12345, edits: [], structuralOps: [] },
+    ])
+    expect(r.status).toBe(400)
+    const err = (r.body as { error?: { code?: string; channel?: string } }).error
+    expect(err?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+    expect(err?.channel).toBe('workbook:save')
+  })
+
+  it('workbook:save with an unknown sessionId returns WORKBOOK_NOT_FOUND (404)', async () => {
+    const r = await invoke(base, 'workbook:save', [
+      { sessionId: 'sheet-unknown-12345', edits: [], structuralOps: [] },
+    ])
+    expect(r.status).toBe(404)
+    const err = (r.body as { error?: { code?: string; channel?: string } }).error
+    expect(err?.code).toBe('WORKBOOK_NOT_FOUND')
+    expect(err?.channel).toBe('workbook:save')
+  })
+
+  it('workbook:save-edits-begin with an unknown sessionId returns WORKBOOK_NOT_FOUND (404)', async () => {
+    const r = await invoke(base, 'workbook:save-edits-begin', [
+      { sessionId: 'sheet-unknown-edits', editSetId: 'e1', editsJson: '[]' },
+    ])
+    expect(r.status).toBe(404)
+    const err = (r.body as { error?: { code?: string; channel?: string } }).error
+    expect(err?.code).toBe('WORKBOOK_NOT_FOUND')
+    expect(err?.channel).toBe('workbook:save-edits-begin')
+  })
+})
+
+describe.skipIf(skip)('workbook:export-csv error codes (sdk1 §11.61)', () => {
+  it('non-object request returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    const r = await invoke(base, 'workbook:export-csv', ['not-an-object'])
+    expect(r.status).toBe(400)
+    const err = (r.body as { error?: { code?: string; channel?: string } }).error
+    expect(err?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+    expect(err?.channel).toBe('workbook:export-csv')
+  })
+
+  it('missing fileName returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    const r = await invoke(base, 'workbook:export-csv', [
+      { content: 'a,b\n1,2\n', targetPath: '/managed/whatever.csv' },
+    ])
+    expect(r.status).toBe(400)
+    const err = (r.body as { error?: { code?: string; channel?: string } }).error
+    expect(err?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+  })
+
+  it('fileName longer than 255 chars returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    const longName = 'x'.repeat(256) + '.csv'
+    const r = await invoke(base, 'workbook:export-csv', [
+      { fileName: longName, content: 'a,b\n1,2\n', targetPath: '/managed/whatever.csv' },
+    ])
+    expect(r.status).toBe(400)
+    expect((r.body as { error?: { code?: string } }).error?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+  })
+
+  it('non-string content returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    const r = await invoke(base, 'workbook:export-csv', [
+      { fileName: 'x.csv', content: 12345, targetPath: '/managed/whatever.csv' },
+    ])
+    expect(r.status).toBe(400)
+    expect((r.body as { error?: { code?: string } }).error?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+  })
+
+  it('empty content returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    const r = await invoke(base, 'workbook:export-csv', [
+      { fileName: 'x.csv', content: '', targetPath: `${dataDir}/files/empty.csv` },
+    ])
+    expect(r.status).toBe(400)
+    expect((r.body as { error?: { code?: string } }).error?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+  })
+
+  it('path outside managed storage returns WORKBOOK_INVALID_ARGUMENT (400)', async () => {
+    // requireManagedPath is wrapped to surface WorkbookInvalidArgumentError
+    // (sdk1 §11.61) so the renderer sees the same code on every branch.
+    const r = await invoke(base, 'workbook:export-csv', [
+      { fileName: 'evil.csv', content: 'x\n', targetPath: '/etc/passwd.csv' },
+    ])
+    expect(r.status).toBe(400)
+    const err = (r.body as { error?: { code?: string; channel?: string } }).error
+    expect(err?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
+    expect(err?.channel).toBe('workbook:export-csv')
+  })
+})

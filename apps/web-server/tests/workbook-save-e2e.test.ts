@@ -252,20 +252,20 @@ describe.skipIf(skip)('workbook:save (M1 real save)', () => {
     expect(readFileSync(result!.path!, 'utf8')).toBe('RECOVERY-SNAPSHOT-9f7a2')
   })
 
-  it('workbook:save with an unknown sessionId surfaces a structured NOT_FOUND (404)', async () => {
+  it('workbook:save with an unknown sessionId surfaces a structured WORKBOOK_NOT_FOUND (404)', async () => {
     const r = await invoke(base, 'workbook:save', [
       { sessionId: 'sheet-nonexistent-deadbeef', edits: [], structuralOps: [] },
     ])
     expect(r.status).toBe(404)
-    expect((r.body as { error?: { code?: string } }).error?.code).toBe('NOT_FOUND')
+    expect((r.body as { error?: { code?: string } }).error?.code).toBe('WORKBOOK_NOT_FOUND')
   })
 
-  it('workbook:save with an empty payload still rejects (400 INVALID_ARGUMENT)', async () => {
+  it('workbook:save with an empty payload still rejects (400 WORKBOOK_INVALID_ARGUMENT)', async () => {
     // An empty editsJson / structuralOps array is legal; the rejection here
     // is for the malformed-request shape (no sessionId at all).
     const r = await invoke(base, 'workbook:save', [{}])
     expect(r.status).toBe(400)
-    expect((r.body as { error?: { code?: string } }).error?.code).toBe('INVALID_ARGUMENT')
+    expect((r.body as { error?: { code?: string } }).error?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
   })
 
   it('home:recents shows the saved workbook with modified: true', async () => {
@@ -486,17 +486,17 @@ describe.skipIf(skip)('workbook:export-csv (CSV save on web)', () => {
       targetPath: '/etc/passwd.csv',
     }])
     expect(r.status).toBe(400)
-    // requireManagedPath throws InvalidArgumentError (code INVALID_ARGUMENT),
-    // not a custom PATH_OUTSIDE_STORAGE code — the handler keeps the same
-    // envelope every other IPC channel uses for client errors.
-    expect(r.body?.error?.code).toBe('INVALID_ARGUMENT')
+    // requireManagedPath throws WorkbookInvalidArgumentError
+    // (code WORKBOOK_INVALID_ARGUMENT) — not a custom PATH_OUTSIDE_STORAGE
+    // code — the handler keeps the same envelope every other IPC channel
+    // uses for client errors.
+    expect(r.body?.error?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
   })
 
   it('rejects empty content (0 bytes does not represent CSV)', async () => {
     // The renderer's csv-export.ts serializes the active sheet first; an
     // empty string at the server boundary is almost always a renderer
-    // bug, so refuse with the same INVALID_ARGUMENT shape as the rest of
-    // the IPC error envelope.
+    // bug, so refuse with the WORKBOOK_INVALID_ARGUMENT envelope.
     const r = await invokeLocal('workbook:export-csv', [{
       fileName: 'x.csv',
       content: '',
@@ -504,7 +504,7 @@ describe.skipIf(skip)('workbook:export-csv (CSV save on web)', () => {
       targetPath: join(filesDir, 'empty.csv'),
     }])
     expect(r.status).toBe(400)
-    expect(r.body?.error?.code).toBe('INVALID_ARGUMENT')
+    expect(r.body?.error?.code).toBe('WORKBOOK_INVALID_ARGUMENT')
   })
 
   it('leaves no .tmp-* files in the storage area', async () => {

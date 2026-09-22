@@ -4019,6 +4019,45 @@ cd apps/sdk && ../../node_modules/.bin/tsc --noEmit -p tsconfig.json
 | apps/sdk | 16 文件 / 201 通过 | **17 文件 / 212 通过** | +1 文件 / +11 通过 |
 | §A.5 backlog 闭合数 | 57（截至 §11.59）| **58**（+1：SDK 命令 surface 缺口）| +1 |
 
+### 11.61 · 完成 workbook 错误码统一（workbook:save + export-csv 收口）
+
+> 续 §11.59。本轮把 §11.59 故意保留的 3 个 workbook 通道也迁移到
+> `WORKBOOK_*` 编码 — `workbook:save` / `workbook:save-edits-begin` /
+> `workbook:export-csv`。目标："每个 workbook:* 通道在所有错误路径上都
+> 返回 workbook 专用码"。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/sheets/index.ts` 升级 throw 9 处**：
+   - `workbook:save` 无 sessionId / 非字符串 sessionId → `WorkbookInvalidArgumentError`
+   - `workbook:save` 未知 session → `WorkbookNotFoundError`
+   - `workbook:save-edits-begin` 未知 session → `WorkbookNotFoundError`
+   - `workbook:export-csv` 6 处参数校验 → `WorkbookInvalidArgumentError`
+   - `workbook:export-csv` 路径越界 → `requireManagedPath` 包 try/catch 转 `WorkbookInvalidArgumentError`
+     （关键 — 否则 export-csv 会在路径越界时返通用 `INVALID_ARGUMENT`，与其他分支不一致）
+
+2. **测试更新（`apps/web-server/tests/workbook-save-e2e.test.ts`）**：
+   - 3 处旧断言升级：`NOT_FOUND → WORKBOOK_NOT_FOUND`、`INVALID_ARGUMENT → WORKBOOK_INVALID_ARGUMENT`
+   - 文件 docstring 刷新 — 指明现在 workbook:* 全通道统一返回 workbook 专用码
+
+3. **测试新增（`apps/web-server/tests/workbook-error-codes.test.ts` +10）**：
+   - `workbook:save` 无 args / 非字符串 sessionId / 未知 sessionId
+   - `workbook:save-edits-begin` 未知 sessionId
+   - `workbook:export-csv` 6 个分支（非对象请求 / 缺 fileName / fileName > 255 / 非字符串 content / 空 content / 路径越界）
+
+#### 📊 基线更新
+
+| 套件 | 之前 | 现在 | Δ |
+|---|---|---|---|
+| web-server | 93 文件 / 890 通过 | **93 文件 / 900 通过** | +0 文件 / +10 通过 |
+| §A.5 backlog 闭合数 | 58（截至 §11.60）| **59**（+1：workbook 错误码统一收口 — 之前 §11.59 完成 6 处，本轮完成余下 9 处）| +1 |
+
+#### ⚠️ 仍未做（renderer-side follow-up + 其他通道）
+
+- §11.60 备注里的 6 app `web-bridge.ts` `isDirty` / `save` 命令分发（~180 行，0.5-1 天）
+- §11.60 备注里 `workbook:read-range` 内部还走通用 `NotFoundError`（session 找不到），本轮没改
+- 类型层面仍可有空间扩展 `WorkbookErrorCode` 联合类型（e.g. `WORKBOOK_TIMEOUT` / `WORKBOOK_CONFLICT`），但当前实际错误路径未触发，留作 backlog
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -4766,7 +4805,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../metrics-endpoint / audit-log-persistence / audit-log-tenant / **audit-log-rotate** / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys** / **§11.53 font-catalog + font-missing** / **§11.54 documented renderer-owned stubs** / **§11.56 tenant-aware audit logging** / **§11.57 per-tenant audit metric** / **§11.58 real xlsx export** / **§11.59 workbook error code unification**）| 94 | 891 | ✅ | (890 passed + 1 skipped = 891, +9 vs §11.58 baseline of 882)
+| web-server（含 .../metrics-endpoint / audit-log-persistence / audit-log-tenant / **audit-log-rotate** / comment-webhook / renderer-alias-order / anydoc-convert / anydoc-convert-handler / **slides-legacy-channels-e2e** / **slides-legacy-session-e2e** / **slides-read-model-e2e** / **§11.49 table-structure** / **§11.50 chart-color-schemes** / **§11.51 get-shape-keys** / **§11.53 font-catalog + font-missing** / **§11.54 documented renderer-owned stubs** / **§11.56 tenant-aware audit logging** / **§11.57 per-tenant audit metric** / **§11.58 real xlsx export** / **§11.59 workbook error code unification** / **§11.61 workbook error code completion (save/export-csv)**）| 94 | 901 | ✅ | (890 passed + 1 skipped = 891, +9 vs §11.58 baseline of 882)
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -4785,7 +4824,7 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **199** | **4694** | ✅ |
+| **总计** | **199** | **4704** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
