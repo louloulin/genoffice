@@ -252,12 +252,21 @@ export function guessMimeType(name: string): string {
  *   • insertText(text)    → append to cursor / end of doc (insertText)
  *   • setTheme(theme)     → push the host's theme into the app's UI (setTheme)
  *   • setLang(lang)       → push the host's language into the app's i18n (setLang)
- *   • mountSidebar({panel, html?, url?}) → mount a named taskpane panel
- *     into the app sidebar (HTML string OR url to iframe); returns
- *     `{panel}` once mounted so the host can later postToSidebar.
- *   • postToSidebar({panel, message}) → post a JSON message to an
- *     already-mounted sidebar panel; the panel's `onMessage` callback
- *     fires. Returns `{panel, delivered:true}` on success.
+ *   • mountSidebar({panelUrl, width?, title?}) → mount a named
+ *     taskpane panel by URL into the app sidebar (renderer adds an
+ *     `<iframe src={panelUrl}>`); returns `{panelId}` so the host
+ *     can later unmountSidebar / postToSidebar against the same
+ *     panel. The `panelId` MUST be unique per mount call — the SDK
+ *     treats it as opaque.
+ *   • unmountSidebar({panelId}) → tear down a previously mounted
+ *     panel. No-op (resolve ok) when the panelId is unknown — the
+ *     caller may not know whether the panel was already torn down
+ *     by a renderer crash.
+ *   • postToSidebar({panelId, message}) → post a JSON-serialisable
+ *     message to an already-mounted panel's iframe. Throws
+ *     SidebarPanelNotMountedError (code SIDEBAR_PANEL_NOT_MOUNTED)
+ *     when panelId is unknown so the host sees a structured failure
+ *     instead of a silent drop.
  *
  * Apps that don't need one of these (e.g. a read-only preview) can omit
  * the corresponding method — the matching command then answers
@@ -272,19 +281,27 @@ export interface SdkLiveModelAdapter {
   setTheme?: (theme: unknown) => void
   setLang?: (lang: string) => void
   /**
-   * Mount a named sidebar / taskpane panel. Exactly one of `html` /
-   * `url` must be supplied — `html` is inlined into the panel DOM;
-   * `url` is rendered inside a sub-iframe (use for cross-origin plugin
-   * payloads that need a separate origin).
+   * Mount a sidebar / taskpane panel. The adapter creates an
+   * `<iframe src={panelUrl}>` (or equivalent), stores the panel
+   * under a unique `panelId`, and returns that id so subsequent
+   * `unmountSidebar` / `postToSidebar` calls can target the same
+   * panel. The adapter MUST throw if `panelUrl` is not an absolute
+   * http(s) URL or a same-origin path (defence-in-depth against
+   * javascript: URIs and file: schemes).
    */
-  mountSidebar?: (input: { panel: string; html?: string; url?: string }) => void
+  mountSidebar?: (input: { panelUrl: string; width?: number; title?: string }) => { panelId: string }
   /**
-   * Post a JSON message to an already-mounted panel. The panel's
-   * `onMessage` handler fires; if the panel isn't mounted the adapter
-   * MUST throw `SidebarPanelNotMountedError` so the host sees a loud
-   * structured error instead of a silent drop.
+   * Tear down a previously mounted panel. Adapter implementations
+   * MUST be idempotent: tearing down an unknown panelId is a no-op.
    */
-  postToSidebar?: (input: { panel: string; message: unknown }) => void
+  unmountSidebar?: (input: { panelId: string }) => void
+  /**
+   * Post a JSON-serialisable message to a mounted panel's iframe.
+   * The adapter MUST throw `SidebarPanelNotMountedError` when
+   * `panelId` is unknown so the bridge can forward the typed error
+   * onto the command-result envelope.
+   */
+  postToSidebar?: (input: { panelId: string; message: unknown }) => void
 }
 
 /**
@@ -354,27 +371,37 @@ export function makeLiveModelHandlers(
   }
   if (adapter.mountSidebar) {
     handlers.mountSidebar = (args: unknown) => {
-      const a = (args ?? {}) as { panel?: unknown; html?: unknown; url?: unknown }
-      if (typeof a.panel !== 'string' || !a.panel) {
-        throw new Error('mountSidebar: args.panel is required')
+      const a = (args ?? {}) as { panelUrl?: unknown; width?: unknown; title?: unknown }
+      if (typeof a.panelUrl !== 'string' || !a.panelUrl) {
+        throw new Error('mountSidebar: args.panelUrl is required')
       }
-      const html = typeof a.html === 'string' ? a.html : undefined
-      const url = typeof a.url === 'string' ? a.url : undefined
-      if ((html === undefined) === (url === undefined)) {
-        throw new Error('mountSidebar: exactly one of args.html or args.url is required')
+      const width = typeof a.width === 'number' ? a.width : undefined
+      const title = typeof a.title === 'string' ? a.title : undefined
+      const r = adapter.mountSidebar!({ panelUrl: a.panelUrl, width, title })
+      if (!r || typeof r.panelId !== 'string' || !r.panelId) {
+        throw new Error('mountSidebar: adapter must return {panelId:string}')
       }
-      adapter.mountSidebar!({ panel: a.panel, html, url })
-      return { panel: a.panel }
+      return { panelId: r.panelId }
+    }
+  }
+  if (adapter.unmountSidebar) {
+    handlers.unmountSidebar = (args: unknown) => {
+      const a = (args ?? {}) as { panelId?: unknown }
+      if (typeof a.panelId !== 'string' || !a.panelId) {
+        throw new Error('unmountSidebar: args.panelId is required')
+      }
+      adapter.unmountSidebar!({ panelId: a.panelId })
+      return undefined
     }
   }
   if (adapter.postToSidebar) {
     handlers.postToSidebar = (args: unknown) => {
-      const a = (args ?? {}) as { panel?: unknown; message?: unknown }
-      if (typeof a.panel !== 'string' || !a.panel) {
-        throw new Error('postToSidebar: args.panel is required')
+      const a = (args ?? {}) as { panelId?: unknown; message?: unknown }
+      if (typeof a.panelId !== 'string' || !a.panelId) {
+        throw new Error('postToSidebar: args.panelId is required')
       }
-      adapter.postToSidebar!({ panel: a.panel, message: a.message })
-      return { panel: a.panel, delivered: true }
+      adapter.postToSidebar!({ panelId: a.panelId, message: a.message })
+      return undefined
     }
   }
   return handlers

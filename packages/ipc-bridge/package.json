@@ -10,7 +10,8 @@
     "./web-native": "./src/web-native.ts",
     "./web-tabs": "./src/web-tabs.ts",
     "./sdk-command-sink": "./src/sdk-command-sink.ts",
-    "./text-buffer-adapter": "./src/text-buffer-adapter.ts"
+    "./text-buffer-adapter": "./src/text-buffer-adapter.ts",
+    "./sidebar-runtime": "./src/sidebar-runtime.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

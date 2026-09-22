@@ -113,32 +113,60 @@ describe('makeLiveModelHandlers / installLiveModelSink', () => {
     ])
   })
 
-  it('mountSidebar: html + url payloads are accepted, exactly-one is enforced', () => {
-    const calls: Array<{ panel: string; html?: string; url?: string }> = []
+  it('mountSidebar: forwards {panelUrl,width?,title?} and expects {panelId} from adapter', () => {
+    let counter = 0
+    const calls: Array<{ panelUrl: string; width?: number; title?: string }> = []
     const h = makeLiveModelHandlers({
-      mountSidebar: (i) => { calls.push(i) },
+      mountSidebar: (i) => { calls.push(i); counter += 1; return { panelId: 'panel-' + counter } },
     })
-    const r1 = h.mountSidebar!({ panel: 'spell-check', html: '<div>sc</div>' })
-    expect(r1).toEqual({ panel: 'spell-check' })
-    expect(calls).toEqual([{ panel: 'spell-check', html: '<div>sc</div>', url: undefined }])
-    const r2 = h.mountSidebar!({ panel: 'ai-panel', url: 'https://plugins.example/ai' })
-    expect(r2).toEqual({ panel: 'ai-panel' })
-    expect(calls[1]).toEqual({ panel: 'ai-panel', html: undefined, url: 'https://plugins.example/ai' })
-    expect(() => h.mountSidebar!({ panel: 'p' })).toThrow(/exactly one/)
-    expect(() => h.mountSidebar!({ panel: 'p', html: 'x', url: 'y' })).toThrow(/exactly one/)
-    expect(() => h.mountSidebar!({ html: 'x' })).toThrow(/panel is required/)
-    expect(() => h.mountSidebar!({ panel: '', html: 'x' })).toThrow(/panel is required/)
+    const r1 = h.mountSidebar!({ panelUrl: '/plugins/spell.html', width: 320, title: 'Spell' })
+    expect(r1).toEqual({ panelId: 'panel-1' })
+    expect(calls).toEqual([{ panelUrl: '/plugins/spell.html', width: 320, title: 'Spell' }])
+    const r2 = h.mountSidebar!({ panelUrl: 'https://plugins.example/ai' })
+    expect(r2).toEqual({ panelId: 'panel-2' })
+    expect(calls[1]).toEqual({ panelUrl: 'https://plugins.example/ai', width: undefined, title: undefined })
+    expect(() => h.mountSidebar!({})).toThrow(/panelUrl is required/)
+    expect(() => h.mountSidebar!({ panelUrl: '' })).toThrow(/panelUrl is required/)
+    expect(() => h.mountSidebar!({ panelUrl: '/x', width: 'no' as unknown as number })).not.toThrow()
+    // width/title are optional and silently dropped when wrong type — the SDK's
+    // EditorCommands types already constrain them; the runtime just needs to
+    // not blow up on a non-numeric width slipping through a misbehaving host.
   })
 
-  it('postToSidebar: returns {panel, delivered:true} and forwards message', () => {
-    const seen: Array<{ panel: string; message: unknown }> = []
+  it('mountSidebar: rejects adapters that fail to return a panelId', () => {
+    const h = makeLiveModelHandlers({
+      mountSidebar: () => undefined as unknown as { panelId: string },
+    })
+    expect(() => h.mountSidebar!({ panelUrl: '/x' })).toThrow(/panelId:string/)
+    const h2 = makeLiveModelHandlers({
+      mountSidebar: () => ({ panelId: '' }),
+    })
+    expect(() => h2.mountSidebar!({ panelUrl: '/x' })).toThrow(/panelId:string/)
+  })
+
+  it('unmountSidebar: forwards {panelId} to adapter', () => {
+    const seen: string[] = []
+    const h = makeLiveModelHandlers({
+      unmountSidebar: (i) => { seen.push(i.panelId) },
+    })
+    h.unmountSidebar!({ panelId: 'panel-7' })
+    expect(seen).toEqual(['panel-7'])
+    expect(() => h.unmountSidebar!({})).toThrow(/panelId is required/)
+    expect(() => h.unmountSidebar!({ panelId: '' })).toThrow(/panelId is required/)
+  })
+
+  it('postToSidebar: forwards {panelId,message} to adapter (no result wrapping)', () => {
+    const seen: Array<{ panelId: string; message: unknown }> = []
     const h = makeLiveModelHandlers({
       postToSidebar: (i) => { seen.push(i) },
     })
-    const r = h.postToSidebar!({ panel: 'spell-check', message: { type: 'progress', pct: 5 } })
-    expect(r).toEqual({ panel: 'spell-check', delivered: true })
-    expect(seen).toEqual([{ panel: 'spell-check', message: { type: 'progress', pct: 5 } }])
-    expect(() => h.postToSidebar!({ message: { type: 'x' } })).toThrow(/panel is required/)
+    // postToSidebar is fire-and-forget at the SDK layer (Promise<void>);
+    // the bridge must NOT wrap a synthetic {delivered:true} result — doing
+    // so would silently change the SDK EditorCommands type contract.
+    const r = h.postToSidebar!({ panelId: 'panel-7', message: { type: 'progress', pct: 5 } })
+    expect(r).toBeUndefined()
+    expect(seen).toEqual([{ panelId: 'panel-7', message: { type: 'progress', pct: 5 } }])
+    expect(() => h.postToSidebar!({ message: { type: 'x' } })).toThrow(/panelId is required/)
   })
 
   it('SidebarPanelNotMountedError carries the SIDEBAR_PANEL_NOT_MOUNTED code', () => {
@@ -148,34 +176,39 @@ describe('makeLiveModelHandlers / installLiveModelSink', () => {
     expect(err.message).toContain('ghost')
   })
 
-  it('adapter mountSidebar / postToSidebar absent => command falls through to UNSUPPORTED', () => {
+  it('adapter mountSidebar / unmountSidebar / postToSidebar absent => commands fall through to UNSUPPORTED', () => {
     const handle = installSdkCommandSink({
       handlers: makeLiveModelHandlers({}),
     })
     return Promise.all([
-      handle.dispatch('mountSidebar', { panel: 'p', html: 'x' }).then(
+      handle.dispatch('mountSidebar', { panelUrl: '/x' }).then(
         () => { throw new Error('expected reject for mountSidebar') },
         (err: unknown) => { expect(err).toBeInstanceOf(UnsupportedCommandError) },
       ),
-      handle.dispatch('postToSidebar', { panel: 'p', message: {} }).then(
+      handle.dispatch('unmountSidebar', { panelId: 'p' }).then(
+        () => { throw new Error('expected reject for unmountSidebar') },
+        (err: unknown) => { expect(err).toBeInstanceOf(UnsupportedCommandError) },
+      ),
+      handle.dispatch('postToSidebar', { panelId: 'p', message: {} }).then(
         () => { throw new Error('expected reject for postToSidebar') },
         (err: unknown) => { expect(err).toBeInstanceOf(UnsupportedCommandError) },
       ),
     ])
   })
 
-  it('installLiveModelSink lists mountSidebar / postToSidebar in supported when adapter exposes them', () => {
+  it('installLiveModelSink lists sidebar commands in supported when adapter exposes them', () => {
     const target: Record<string, unknown> = {}
     const handle = installLiveModelSink({
       target,
       adapter: {
         getText: () => 'x',
-        mountSidebar: () => undefined,
+        mountSidebar: () => ({ panelId: 'p1' }),
+        unmountSidebar: () => undefined,
         postToSidebar: () => undefined,
       },
     })
     expect(handle.supported).toEqual(
-      expect.arrayContaining(['getContent', 'mountSidebar', 'postToSidebar']),
+      expect.arrayContaining(['getContent', 'mountSidebar', 'unmountSidebar', 'postToSidebar']),
     )
   })
 })
