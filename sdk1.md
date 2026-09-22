@@ -185,7 +185,7 @@ apps/web-server/tests/  →  60 文件 / 478 测试 全部通过  (~28s wall)
 | `GET /api/v1/files` | 401 | — | OAuth envelope，无 token 返标准 401 |
 | `GET /api/v1/ai/capabilities` | 401 | — | 同上 |
 | `GET /embed/test?token=foo` | 200 | 2 351 | iframe 包装：postMessage + CSP + `<meta name="genoffice-token">` |
-| `GET /api/channels` | 200 | 11 927 | 546 通道清单 |
+| `GET /api/channels` | 200 | 11 927 | 553 通道清单 |
 | `POST /api/ai/stream` | 200 | — | Agent Loop SSE 兼容 |
 | `POST /api/v1/auth/jwt` | 503 | — | 缺 `GENOFFICE_JWT_SECRET` 环境变量（生产部署必设） |
 
@@ -208,7 +208,12 @@ Features: AI, Collab, Files, Projects, AnyDoc
 | 协议 | v1（init / ready / save / error）| v1 envelope + correlationId + nonce + origin allowlist | ✅ + 3 项增强 |
 | 握手 | 通常无 nonce | 每会话随机 nonce（128-bit） + 必须 echo，否则 `HANDSHAKE_FAILED` | ✅ 更安全 |
 | 事件 | saved / error | ready / saved / dirtyChanged / selectionChange / error / closed | ✅ |
-| 命令 | save / close | setTheme / setContent / getContent / insertImage / insertText / print / focus / aiRewrite / aiTranslate / aiSummarize | ✅ |
+| 命令 | save / close | · docs: setContent / getContent / insertText / print / openFileDialog / focus / undo / redo
+· sidebar: mountSidebar({panelUrl, width?, title?}) / unmountSidebar({panelId}) / postToSidebar({panelId, message})
+· collab: addComment / listComments / resolveComment / removeComment / listVersions / restoreVersion / createSnapshot
+· ai: aiChat / aiRewrite / aiTranslate / aiSummarize
+· telem: reportUsage
+· 总计 19 个 EditorCommands + 7 个 EditorEvent（ready / saved / dirtyChanged / selectionChange / error / closed / sidebarMessage） | ✅ · mountSidebar/unmountSidebar/postToSidebar + sidebarMessage 本轮接通（#66）|
 | TypeScript | 闭源 d.ts | d.ts + ESM/CJS 双产物 + 3 测试文件 | ✅ |
 
 **借鉴 WPS 而补强**（见附录 B.2）：
