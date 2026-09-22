@@ -212,7 +212,167 @@ const { length, current } = await editor.command('getUndoStack') // {length: num
 
 不支持撤销的编辑器（例如 read-only 模式）以 `{ code: 'UNSUPPORTED' }` 拒绝。
 
+## 评论 / 批注 API（Kestrel M2）
+
+> SDK 2.0 Kestrel 第二个里程碑已于 `release0919` 落地。详见 `sdk1.md` §B.5.1 #4 / §A.5 #39。
+
+四个命令 + 两个事件，覆盖评论 / 批注全流程。底层存储位于 web-server
+（`/api/v1/files/:id/comments` REST 端点，scope `files:comment`）；SDK
+通过与其他 surface 同一套 postMessage 协议 round-trip。
+
+```ts
+// 在当前选区添加一条评论。
+const { id } = await editor.command('addComment', {
+  anchor: { range: { start: 0, end: 5 } },
+  text: '审稿意见',
+})
+
+// 列出顶层（未解决）评论。
+const { comments } = await editor.command('listComments', { resolved: false })
+
+// 解决 / 取消解决（首次解决时打 sticky `resolvedAt`）。
+await editor.command('resolveComment', { id, resolved: true })
+
+// 硬删除。
+await editor.command('removeComment', { id })
+
+// 实时事件 —— 本用户与协作者触发的都会触发。
+editor.on('commentAdded',   (e) => console.log('新评论', e.comment))
+editor.on('commentResolved', (e) => console.log('已解决', e.comment))
+```
+
+## 版本 API（Kestrel M3）
+
+> SDK 2.0 Kestrel 第三个里程碑已于 `release0919` 落地。详见 `sdk1.md` §B.5.1 #3 / §A.5 #40。
+
+三个命令，覆盖快照 / 回滚全流程。底层存储是每个 save pipeline 都
+在用的 `common/version-history.ts`（10 版本上限、针对最新快照
+去重）；SDK 通过 `files:list-versions` / `files:restore-version` IPC
++ 带 OAuth scope `files:restore` 的 v1 端点 round-trip。
+
+```ts
+// 列出已捕获的版本（从旧到新）。
+const { versions } = await editor.command('listVersions')
+// versions: Array<{ id, docId, index, timestamp, size, sha256, message? }>
+
+// 在风险操作前手动打一个"存档点"。
+const { id } = await editor.command('createSnapshot', { label: '改写前' })
+
+// 回滚 —— 回滚前会先把当前状态捕获为一个新版本，所以用户仍可前滚回去。
+const { version } = await editor.command('restoreVersion', { versionId: id })
+```
+
+OAuth 区分：`files:restore` **故意不被 `files:write` 隐含**。只有
+`files:write` 的 token 能保存但不能回滚。需要"只评论"权限的宿主
+签发 `files:read + files:comment + files:write` 即可，无需 `files:restore`。
+
+## 插件运行时（Kestrel M3.5）
+
+> SDK 2.0 Kestrel 3.5 里程碑已于 `release0919` 落地。详见 `sdk1.md` §B.5.1 #8 / §A.5 #41。
+
+三个命令 + 一个事件，用于挂载 taskpane / 侧边栏插件（与 Microsoft
+Office taskpane / WPS 「轻应用」等价）。SDK 只负责在 host 与 panel
+iframe 之间桥接 postMessage，**不检查 panel 内容**。
+
+```ts
+// 挂载侧边栏插件（panelUrl 可以是你信任的任何 origin）。
+const { panelId } = await editor.command('mountSidebar', {
+  panelUrl: 'https://plugins.example.test/ai-assistant/',
+  width: 360,
+  title: 'AI 助手',
+})
+
+// 从 host 向 panel 推消息（fire-and-forget）。
+editor.command('postToSidebar', {
+  panelId,
+  message: { type: 'ASK', prompt: '总结本文档' },
+})
+
+// 接收 panel 回传的消息。
+editor.on('sidebarMessage', (e) => {
+  // e.panelId, e.message —— panel 协议保持开放
+  // （postToSidebar.message 设计上就是 unknown）
+})
+
+// 卸载。
+await editor.command('unmountSidebar', { panelId })
+```
+
+## 文件选择器（Kestrel M4）
+
+> SDK 2.0 Kestrel 第四个里程碑已于 `release0919` 落地。详见 `sdk1.md` §B.5.1 #7 / §A.5 #42。
+
+一个命令，弹出宿主侧的文件选择对话框。renderer 触发原生 `<input
+type='file'>`（或在可用时调 `showOpenFilePicker`），用 FileReader
+读每个 File，并通过 postMessage 把 base64 发回 host（File 对象本身
+无法穿越 structured-clone 边界）。
+
+```ts
+const result = await editor.command('openFileDialog', {
+  accept: 'image/*',
+  multiple: true,
+})
+
+if ('canceled' in result) {
+  console.log('用户取消了选择')
+} else {
+  for (const file of result.files) {
+    // file.name, file.size, file.type, file.lastModified, file.dataBase64
+    console.log(file.name, file.size, '字节')
+  }
+}
+```
+
+不支持文件选择的编辑器（如 PDF 只读视图）会以 `{ code: 'UNSUPPORTED' }` 拒绝。
+
+## 用量遥测（Kestrel M4）
+
+> SDK 2.0 Kestrel 第四个里程碑已于 `release0919` 落地。详见 `sdk1.md` §B.5.1 #9 / §A.5 #42。
+
+通过 `createEditor({ telemetry: true })` opt-in。SDK 聚合宿主页
+可见的信号（通过 setContent / insertText / insertImage 写入的字节
+数；aiRewrite / aiTranslate / aiSummarize 触发的 AI 调用次数 +
+字符总数；会话时长），每 30 秒通过 `editor.on('usage', cb)` 派发
+一次 `UsageEvent`。
+
+```ts
+const editor = createEditor({
+  // ...其他选项...
+  telemetry: true,
+})
+
+editor.on('usage', (e) => {
+  // e.instanceId, e.docBytesWritten, e.aiCalls,
+  // e.aiTokensIn, e.aiTokensOut, e.sessionDurationMs
+  analytics.track('editor_usage', e)
+})
+```
+
+`destroy()` 时清 interval，editor 销毁后不会再派发事件。默认关闭
+—— 用量遥测是宿主页可见的审计日志，而非线缆层 LLM 仪表。需要
+按秒速率的宿主可对相邻两次事件的 payload 做 diff。
+
+## SDK 2.0（Kestrel）—— surface 全景
+
+| # | Surface | 里程碑 | 新增命令 | 新增事件 |
+|---|---|---|---|---|
+| 1 | 多实例 | M1 | — | — |
+| 2 | Undo / Redo | M1 | `undo`, `redo`, `getUndoStack` | — |
+| 3 | 版本 API | M3 | `listVersions`, `restoreVersion`, `createSnapshot` | — |
+| 4 | 评论 API | M2 | `addComment`, `listComments`, `resolveComment`, `removeComment` | `commentAdded`, `commentResolved` |
+| 5 | 修订追踪 | _v3 backlog_ | （需要 `docx-engine/revision-tracking.ts`） | — |
+| 6 | 导出 | _v3 backlog_ | （需要 `converters/` 目录 + PDF/docx/xlsx/pptx/png 分发） | — |
+| 7 | 文件选择器 | M4 | `openFileDialog` | — |
+| 8 | 插件运行时 | M3.5 | `mountSidebar`, `unmountSidebar`, `postToSidebar` | `sidebarMessage` |
+| 9 | 用量遥测 | M4 | — | `usage` |
+
+所有新增命令都是**加性（additive）**的——不调用它们的 1.x 宿主
+看不到任何行为变化。向后兼容由 `envelope.v === '1.0'`（不升级）
++ `EditorCommands` / `EditorEventMap` 联合的 type-level 加性保证。
+完整规划见 `sdk1.md` §B.5。
+
 ## 类型化 API
+
 
 
 

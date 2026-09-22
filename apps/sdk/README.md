@@ -211,7 +211,176 @@ const { length, current } = await editor.command('getUndoStack') // {length: num
 
 Editors that don't support undo (e.g. read-only mode) reject with `{ code: 'UNSUPPORTED' }`.
 
+## Comments API (Kestrel M2)
+
+> SDK 2.0 Kestrel milestone 2 landed in `release0919`. See `sdk1.md` §B.5.1 #4 / §A.5 #39.
+
+Four commands + two events for comment / annotation workflows. The
+backing store is on the web-server (`/api/v1/files/:id/comments` REST
+endpoints, scope `files:comment`); the SDK round-trips through the
+same postMessage protocol as the rest of the surface.
+
+```ts
+// Add a comment anchored at the current selection.
+const { id } = await editor.command('addComment', {
+  anchor: { range: { start: 0, end: 5 } },
+  text: 'Reviewer note',
+})
+
+// List top-level (unresolved) comments.
+const { comments } = await editor.command('listComments', { resolved: false })
+
+// Resolve / unresolve (sticky `resolvedAt` on first resolve).
+await editor.command('resolveComment', { id, resolved: true })
+
+// Hard-delete.
+await editor.command('removeComment', { id })
+
+// Live updates — both events fire for the local user AND remote collaborators.
+editor.on('commentAdded',   (e) => console.log('new comment', e.comment))
+editor.on('commentResolved', (e) => console.log('resolved', e.comment))
+```
+
+## Versions API (Kestrel M3)
+
+> SDK 2.0 Kestrel milestone 3 landed in `release0919`. See `sdk1.md` §B.5.1 #3 / §A.5 #40.
+
+Three commands for snapshot / restore workflows. The backing store is
+the disk-based `common/version-history.ts` already used by every save
+pipeline (10-version cap, dedupe against the newest snapshot); the
+SDK round-trips through `files:list-versions` / `files:restore-version`
+IPC + the OAuth-scoped `files:restore` v1 endpoint.
+
+```ts
+// List captured versions (oldest first).
+const { versions } = await editor.command('listVersions')
+// versions: Array<{ id, docId, index, timestamp, size, sha256, message? }>
+
+// Manually capture a "save point" before risky edits.
+const { id } = await editor.command('createSnapshot', { label: 'pre-rewrite' })
+
+// Restore — current state is captured as a new version so the user can roll forward.
+const { version } = await editor.command('restoreVersion', { versionId: id })
+```
+
+OAuth separation: `files:restore` is intentionally NOT implied by
+`files:write`. A token with only `files:write` can save but cannot
+restore. Hosts that want commenter-only power mint a token with
+`files:read + files:comment + files:write` and leave out
+`files:restore`.
+
+## Plugin Runtime (Kestrel M3.5)
+
+> SDK 2.0 Kestrel milestone 3.5 landed in `release0919`. See `sdk1.md` §B.5.1 #8 / §A.5 #41.
+
+Three commands + one event for mounting taskpane / sidebar plugins
+(equivalent to Microsoft Office taskpane / WPS 「轻应用」). The SDK
+only brokers postMessage between the host and the panel iframe —
+it never inspects panel contents.
+
+```ts
+// Mount a sidebar plugin (panelUrl can be on any origin you trust).
+const { panelId } = await editor.command('mountSidebar', {
+  panelUrl: 'https://plugins.example.test/ai-assistant/',
+  width: 360,
+  title: 'AI Assistant',
+})
+
+// Push messages from the host to the panel (fire-and-forget).
+editor.command('postToSidebar', {
+  panelId,
+  message: { type: 'ASK', prompt: 'summarise this document' },
+})
+
+// Receive replies from the panel.
+editor.on('sidebarMessage', (e) => {
+  // e.panelId, e.message — the panel protocol stays open
+  // (postToSidebar.message is `unknown` by design)
+})
+
+// Tear down.
+await editor.command('unmountSidebar', { panelId })
+```
+
+## File Picker (Kestrel M4)
+
+> SDK 2.0 Kestrel milestone 4 landed in `release0919`. See `sdk1.md` §B.5.1 #7 / §A.5 #42.
+
+One command for opening a host-side file picker. The renderer fires a
+native `<input type='file'>` (or `showOpenFilePicker` when available),
+reads each File via FileReader, and ships it back to the host as
+base64 over postMessage (File objects don't cross the structured-clone
+boundary).
+
+```ts
+const result = await editor.command('openFileDialog', {
+  accept: 'image/*',
+  multiple: true,
+})
+
+if ('canceled' in result) {
+  console.log('user dismissed the picker')
+} else {
+  for (const file of result.files) {
+    // file.name, file.size, file.type, file.lastModified, file.dataBase64
+    console.log(file.name, file.size, 'bytes')
+  }
+}
+```
+
+Editors that don't support file picking (e.g. PDF view-only) reject
+with `{ code: 'UNSUPPORTED' }`.
+
+## Telemetry (Kestrel M4)
+
+> SDK 2.0 Kestrel milestone 4 landed in `release0919`. See `sdk1.md` §B.5.1 #9 / §A.5 #42.
+
+Opt-in via `createEditor({ telemetry: true })`. The SDK aggregates
+host-visible signals (bytes sent to the editor via setContent /
+insertText / insertImage; AI calls + character totals for
+aiRewrite / aiTranslate / aiSummarize; total session duration) and
+fires a `UsageEvent` every 30 seconds via `editor.on('usage', cb)`.
+
+```ts
+const editor = createEditor({
+  // ...other options...
+  telemetry: true,
+})
+
+editor.on('usage', (e) => {
+  // e.instanceId, e.docBytesWritten, e.aiCalls,
+  // e.aiTokensIn, e.aiTokensOut, e.sessionDurationMs
+  analytics.track('editor_usage', e)
+})
+```
+
+The interval is cleared on `destroy()` so a torn-down editor never
+fires another event. Default off — telemetry is a host-visible audit,
+not a wire-level LLM instrument. Hosts that want per-second rates
+should diff successive event payloads.
+
+## SDK 2.0 (Kestrel) — surface map
+
+| # | Surface | Milestone | New commands | New events |
+|---|---|---|---|---|
+| 1 | Multi-instance | M1 | — | — |
+| 2 | Undo / Redo | M1 | `undo`, `redo`, `getUndoStack` | — |
+| 3 | Versions API | M3 | `listVersions`, `restoreVersion`, `createSnapshot` | — |
+| 4 | Comments API | M2 | `addComment`, `listComments`, `resolveComment`, `removeComment` | `commentAdded`, `commentResolved` |
+| 5 | Track Changes | _v3 backlog_ | (needs `docx-engine/revision-tracking.ts`) | — |
+| 6 | Export | _v3 backlog_ | (needs `converters/` directory + PDF/docx/xlsx/pptx/png dispatch) | — |
+| 7 | File Picker | M4 | `openFileDialog` | — |
+| 8 | Plugin Runtime | M3.5 | `mountSidebar`, `unmountSidebar`, `postToSidebar` | `sidebarMessage` |
+| 9 | Telemetry | M4 | — | `usage` |
+
+All surface commands are **additive** — existing 1.x hosts that don't
+call them see zero behaviour change. Backward compat is enforced by
+`envelope.v === '1.0'` (no bump) and the `EditorCommands` /
+`EditorEventMap` unions being type-level additive. Full plan in
+`sdk1.md` §B.5.
+
 ## Typed Surface
+
 
 
 

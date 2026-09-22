@@ -2679,6 +2679,17 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 40. **SDK 2.0 Kestrel M3 · Versions API 骨架（SDK 类型 + 后端 v1 endpoint）**（✅ 本轮）：
 41. **SDK 2.0 Kestrel M3.5 · Plugin Runtime 骨架（mountSidebar / unmountSidebar / postToSidebar + sidebarMessage 事件）**（✅ 本轮）：
 42. **SDK 2.0 Kestrel M4 · File Picker + Telemetry 骨架**（✅ 本轮）：
+43. **SDK 2.0 Kestrel 双语 README 升级到 v2.0**（✅ 本轮，闭合 §B.5.6 验收要求 "README + 双语更新到 v2.0"）：
+    - **apps/sdk/README.md**（EN）：273 → 442 行（+169）
+      - 新增 6 个章节：Comments API (Kestrel M2) / Versions API (Kestrel M3) / Plugin Runtime (Kestrel M3.5) / File Picker (Kestrel M4) / Telemetry (Kestrel M4) / SDK 2.0 (Kestrel) — surface map
+      - 每个新章节含：概述段 + JSDoc 风格的 TypeScript 代码示例 + OAuth scope 注意点（Comments 的 `files:comment` / Versions 的 `files:restore` / File Picker 的 `code: UNSUPPORTED` 拒绝路径）
+      - 9 surface 全景表覆盖 #1-#9，#5/#6 标注 v3 backlog + 缺失模块
+    - **apps/sdk/README.zh-CN.md**（ZH）：268 → 428 行（+160）
+      - 同样 6 个章节双语同步，每个示例 + 表格 1:1 翻译
+    - **§B.5.6 验收要求 #6 "README + 双语更新到 v2.0"**：✅ 闭合。9 个 surface 中 7 个（M1/M2/M3/M3.5/M4）有完整双语文档，#5/#6 明确标注 v3 backlog 与缺失模块
+    - **未做**：live smoke PORT=33002 + tmux（sandbox 限制）；SDK bundle 30 → 50 kB（实测 bundle 在 SDK 内部代码增量下几乎不变 — 类型扩展对 bundle 体积影响忽略不计）
+
+
     - 闭合 §B.5.1 #7 File picker + §B.5.1 #9 Telemetry（最后 2 个 surface）
     - **SDK 类型层**（`apps/sdk/src/types.ts`）：
       - `CreateEditorOptions` 新增 `telemetry?: boolean`（默认 false，opt-in）
