@@ -75,22 +75,25 @@ if (!isElectronRuntime()) {
   // DOM cost when no host plugin is mounted.
   installTextBufferSink({
     sidebar: createSidebarRuntime({
-      // Real DOM host — the runtime only touches appendChild / removeChild
-      // and we trust those calls to operate on real elements. The runtime's
-      // narrow SidebarHostLike interface doesn't structurally match
-      // HTMLElement because SidebarIframeLike is a synthetic minimal shape
-      // (deliberately, so tests run under bare Node without jsdom), so we
-      // cast through unknown at the boundary.
-      host: (() => {
+      // `host` is a real DOM container, but we make it lazy via a getter
+      // so the aside is only created the first time `mountSidebar` runs.
+      // The runtime reads `options.host` inside mount(), so this getter
+      // fires then — not at boot. The runtime only touches
+      // appendChild / removeChild, and we trust those to operate on the
+      // real element; the narrow SidebarHostLike interface doesn't
+      // structurally match HTMLElement (SidebarIframeLike is a synthetic
+      // minimal shape so tests can run under bare Node without jsdom),
+      // so we cast through the function-parameter type at the boundary.
+      get host() {
         let el = document.getElementById('genoffice-sidebar')
         if (!el) {
           el = document.createElement('aside')
           el.id = 'genoffice-sidebar'
           el.setAttribute('aria-label', 'GenOffice plugin panels')
-          // Closed until mountSidebar is called; apps that want a
-          // visible sidebar can override via CSS in apps/docs/src/
-          // renderer/styles.css. The runtime toggles `data-mounted`
-          // for app-side styling hooks.
+          // Hidden until mountSidebar is called. Apps that want a
+          // different sidebar chrome can override these styles via
+          // apps/docs/src/renderer/styles.css — the runtime also sets
+          // data-* attributes on the inner iframe for app-side hooks.
           el.style.position = 'fixed'
           el.style.top = '0'
           el.style.right = '0'
@@ -103,7 +106,7 @@ if (!isElectronRuntime()) {
           document.body.appendChild(el)
         }
         return el as unknown as Parameters<typeof createSidebarRuntime>[0]['host']
-      })(),
+      },
     }),
   })
   const embeddedPathPrefix = window.location.pathname.startsWith('/office-engine/')
