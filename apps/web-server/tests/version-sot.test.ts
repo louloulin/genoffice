@@ -106,8 +106,10 @@ describe('web-server version single source of truth (sdk1.md §11.23)', () => {
   })
 
   it('embed bridge ready payload now interpolates WEB_SERVER_VERSION', () => {
-    const embedPath = join(REPO_ROOT, 'apps', 'web-server', 'src', 'embed', 'index.ts')
-    const text = readFileSync(embedPath, 'utf-8')
+    // As of sdk1.md §11.31 the bridge template literal lives in
+    // embed/bridge.ts (extracted from the inline index.ts template).
+    const bridgePath = join(REPO_ROOT, 'apps', 'web-server', 'src', 'embed', 'bridge.ts')
+    const text = readFileSync(bridgePath, 'utf-8')
     expect(text).toContain("version: '${WEB_SERVER_VERSION}'")
     expect(text).not.toContain("version: '0.9.0'")
     expect(text).not.toContain("version: '0.8.0'")

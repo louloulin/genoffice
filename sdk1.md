@@ -2158,6 +2158,60 @@ iframe destroy → 服务端主动清理 nonce session。`DELETE /api/v1/embed/n
 - **SDK 端 `createEmbedNonce()` helper**：可以加一个 SDK helper `await createEmbedNonce({docId, host, jwt})` 包 mint + buildEmbedUrl 调用，让集成商少写 5 行；本期不做（SDK 端 scope 是 v0.9.x work）
 - **server-side 持久化**：当前 store 是 process-local，restart 后所有 session 失效，host SDK 会看到 `valid:false` 但不影响 graceful degradation；要持久化得引入 Redis，本期不做
 
+### 11.31 本轮续作（v2 第 26 轮 commit，2026-09-22）
+
+iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅 / postMessage 转发）原本 inline 在 `apps/web-server/src/embed/index.ts` 的 `EMBED_BRIDGE` 模板字符串里，只在 live smoke 里肉眼验过。把它拆到独立模块 `bridge.ts` + 17 个单元测试：jsdom-free、单测覆盖所有真实运行行为。
+
+#### 11.31.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/embed/bridge.ts` | **新增 · 108 行**：导出 `EMBED_BRIDGE_VERSION` ('0.1.0') + `EMBED_BRIDGE_SOURCE` 字符串常量（ESM 兼容模板字符串，含 `${WEB_SERVER_VERSION}` 插值位）。Bridge 行为：1) 读 `<meta name="genoffice-nonce">` 并 echo 进 ready postMessage；2) 缺 meta 时不写 nonce 字段（向后兼容老 host）；3) `__GENOFFICE_EMBED__.app` 透传给 ready payload，缺时为 `null`；4) `<meta name="genoffice-session">` 拿 sessionId 拼 `EventSource('/api/ipc/events?session=...')`，无 sessionId 不开 SSE；5) SSE onmessage 转 `parent.postMessage`（envelope v1.0），单参对象解包 `args[0]`、多参数组保留；6) 无效 envelope 静默丢；7) `parent.postMessage({kind:'command'})` 入站 → `window.dispatchEvent(new CustomEvent('host.command', {detail}))`；8) `wrong envelope version` 直接 return；9) `document.readyState === 'loading'` 时挂 DOMContentLoaded，否则 `setTimeout(_,0)` 异步触发；10) IIFE wrapper 防止污染 global。|
+| `apps/web-server/src/embed/index.ts` | `const EMBED_BRIDGE = EMBED_BRIDGE_SOURCE` 单行替换原内联模板；served HTML 字节完全一致（esbuild 把 import 的模板字面量 inline 回 IIFE）。**额外 fix**：`EmbedQuery` interface 缺 `sessionId: string \| null` 字段（`parseEmbedQuery` 早就返回 `sessionId` 但 interface 没声明），tsc 报 `Property 'sessionId' does not exist on type 'EmbedQuery'`；补 interface + TSDoc 注明 §11.27 链路。|
+| `apps/web-server/tests/embed-bridge.test.ts` | **新增 · 323 行 · 17 测试**：用 `new Function('window', 'document', 'EventSource', 'setTimeout', 'CustomEvent', EMBED_BRIDGE_SOURCE)(...)` 把 bridge 在受控作用域 eval（无 jsdom/happy-dom），`vi.useFakeTimers()` + `vi.runAllTimers()` flush `setTimeout(_,0)` 让 postMessage 捕获能同步可观察。具体覆盖：IIFE wrapper 形状 / `WEB_SERVER_VERSION` SOT 烘焙 / envelope v=1.0 + dir='editor->host' + kind='event' + payload.name='ready' / nonce 从 meta echo / meta 缺时 nonce 字段省略 / `app` from `window.__GENOFFICE_EMBED__.app` / `__GENOFFICE_EMBED__` 为 null 时 app=null / EventSource URL 含 sessionId / 无 sessionId 不创建 EventSource / SSE onmessage 转发到 `parent.postMessage` / 单参对象解包 `args[0]` / 多参数组保留 / 无效 SSE 消息丢弃 / 入站 command → `host.command` CustomEvent / envelope version 不匹配忽略 / `readyState=loading` 等 DOMContentLoaded。|
+
+合计 3 文件 / +17 测试。
+
+#### 11.31.2 设计要点
+
+- **为什么不直接用 vitest + jsdom**：vitest jsdom 在 sandbox 里挂载 30MB+ DOM polyfill，启动 5s+；`new Function(...)` 把 bridge 当字符串 eval，自己 mock `window`/`document`/`EventSource`/`CustomEvent`/`setTimeout` 四个全局就够 bridge 工作，bundle 零依赖，test 启动 < 200ms。
+- **`vi.useFakeTimers()` + `vi.runAllTimers()` 是关键**：bridge 内部用 `setTimeout(sendReady, 0)` 避免 `document.body` 还没就绪就跑；fake timer 让 `runAllTimers()` 一次性同步触发所有 microtask，postMessage 断言才能在 `new Function()` 返回后立即看到 captures。
+- **bridge source 仍是字符串而非 build artifact**：保留为可读模板字面量 + 单元测试断言 `WEB_SERVER_VERSION` 替换位是 `${WEB_SERVER_VERSION}` 字面（保证 SOT 真正生效而非手写 '0.8.0'）；下游 `embed/index.ts` import 后 esbuild bundle 时插值，served HTML 含 `version: '0.8.0'` 与 `package.json` 严格一致。
+- **typecheck 守门 `EmbedQuery.sessionId`**：原 §11.27 加 `parsed.sessionId` 时只补了 parse 函数返回，漏了 interface 声明。tsc `npx tsc`（排除 pptx-ops/xlsx-gateway 预存噪音）暴露，加 interface 字段 + TSDoc 补全；今后改 parseEmbedQuery 返回值会被 tsc 立刻挡住。
+- **不动 SSE auth**：bridge 当前 EventSource 不带 `Authorization` 头，与 renderer createPushHub 行为一致；`/api/ipc/events` 是 session-bound（`?session=<sessionId>` 唯一鉴权），不需 token。本期不做 Authorization 注入。
+- **bridge 不缓存全局引用**：`window.parent` 每次重新读取——host 在 iframe 迁移到新窗口时（少见但有）仍能找到正确 parent。
+- **保留 IIFE wrapper**：bridge 顶层 IIFE `(function() { ... })()` 避免把 `ENVELOPE_VERSION` / `post()` / `subscribePush()` 泄漏到 iframe 全局，与原始 inline 版本字节等价。
+
+#### 11.31.3 验证
+
+- `npx vitest run apps/web-server/tests/embed-bridge.test.ts`：**17/17 通过**（132ms）
+- `npx vitest run apps/web-server/tests/{embed-bridge,embed-nonce-session,embed-nonce-handler,embed-jwt-validation,embed-nonce-roundtrip,atomic,scope-gate}.test.ts`：**7 文件 / 80 pass / 1 skip**（critical path 全绿）
+- `npx tsc` (apps/web-server)（排除 pptx-ops / xlsx-gateway 预存噪音）：**0 错误**
+- `node apps/web-server/scripts/bundle.mjs`：`dist/bundle/index.js 28.5mb` ⚠️（与 baseline 同大小）
+- live smoke（PORT=33002 + `GENOFFICE_JWT_SECRET=smoke-secret`，tmux session 隔离 sandbox 杀进程）：
+  1. mint nonce → `200 {sessionId, nonce, expiresAt}` ✓
+  2. embed with session+nonce → `200` + 4 KB HTML，含全部 6 token（`ENVELOPE_VERSION` x3 / `genoffice-nonce` x2 / `genoffice-token` x1 / `genoffice-session` x1 / `__GENOFFICE_EMBED__` x3 / `sendReady` x4）✓
+  3. bridge source 含 `version: '0.8.0'` 字面（SOT 插值生效）✓
+  4. embed wrong nonce → `401 NONCE_SESSION_INVALID` ✓
+  5. embed sessionId without nonce → `400 INVALID_ARGUMENT` ✓
+  6. verify nonce → `200 {valid:true, expiresAt}` ✓
+  7. DELETE release → `200 {released:true}` ✓
+  8. verify after release → `200 {valid:false, reason:'unknown'}` ✓
+  9. embed stale sessionId → `401 NONCE_SESSION_INVALID` ✓
+  10. mint no auth → `401 UNAUTHENTICATED` ✓
+  → **8/8 主断言 + 2/2 release 二次确认 = 10/10 live smoke 全过**
+
+#### 11.31.4 后续观察
+
+- **§11.21.5 backlog #2 · 真 iframe e2e**：happy-dom + createEditor 完整链路仍未做（`tests/` 全 node 环境）；bridge unit test 已覆盖 bridge 自身行为，createEditor ↔ bridge 之间的 IPC 端到端仍是 sandbox 内不可达
+- **typedoc-count 显式 step**：可以加 `apps/web-server/tests/typedoc-count.test.ts` 里 step 标注释 + 在 `docs.yml` typedoc step 加注释说明该测试已守门
+- **`scripts/bundle.mjs` MODULE_NOT_FOUND**：pre-existing sandbox 限制（无 `pnpm install` 触发），不阻塞
+- **bridge 入站 command 路径**：当前只把 `parent.postMessage({kind:'command'})` 转成 CustomEvent；renderer 端 createPushHub 是否真订阅 `host.command` 还没单测覆盖
+- **bridge 加 `Authorization` 头到 EventSource**：与 createPushHub 行为一致，但 `/api/ipc/events` 是 session-bound 不需 token，本期不做
+- **bridge bundle 大小**：108 行源 ≈ 3.5 KB minified，served HTML 增量可忽略
+- **`destroy()` 自动 release**：本批仍未接 createEditor.destroy() 自动调 `releaseEmbedNonce()`，理由同 §11.30.4
+- **SDK `verifyEmbedSession()` 一体化 helper**（§11.29.4 #1）：可加 helper 包装 ready + verify + release；下批做
+
 ：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -2387,7 +2441,7 @@ iframe destroy → 服务端主动清理 nonce session。`DELETE /api/v1/embed/n
    - `@genoffice/provider-qwen-dashscope` + `@genoffice/provider-zhipu-glm`（同上，5+5 测试）
    - `@genoffice/provider-doubao`（同上，5 测试）
    - `docs/api/provider-capabilities.md`（EN+ZH）能力矩阵更新到 10 行
-15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
+15. **本轮小结**：A.5 已完成的 ✅ 项目累计到 16 条。**§11.31 增补到 17 条**（embed bridge 独立模块 + 17 单元测试）。A.3 仍剩 Discord ⬜（外部服务，沙箱内不可达）。其它交付（SDK / REST / Skills / Providers / Docs / Examples / Webhook HMAC / JWT RBAC scope / Scope gate / iframe 握手 / §2.2 11 包可发布）均 ✅。
 16. **§5.2 发布检查清单逐项落地**（✅ 已完成）：
    - **#1 JSDoc/TSDoc on public APIs** — `auth.ts` (handleAuthJwt / handleOAuthToken / hasScope) + `meta.ts` (handleHealth / handleChangelog) 现已具备 `@route` / `@scope` / `@errors` 标记；其他 5 个 v1 handler 文件（files / ai / kb / webhooks）已具备完整 TSDoc（`commit 8e3d3e8`）
    - **#2 typedoc 实际执行** — `docs/scripts/gen-typedoc.mjs` 重新生成 **221 个 MD 文件** 到 `docs/api/_generated/`（2026-09-22 实测）；新增 `typedoc-count.test.ts` 守住 200-400 范围防漂移
@@ -2401,6 +2455,8 @@ iframe destroy → 服务端主动清理 nonce session。`DELETE /api/v1/embed/n
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+31. **embed bridge 独立模块 + 17 单元测试**（✅ 本轮 §11.31）：`apps/web-server/src/embed/bridge.ts` 新模块导出 `EMBED_BRIDGE_VERSION` ('0.1.0') + `EMBED_BRIDGE_SOURCE` 模板字面量（`${WEB_SERVER_VERSION}` 插值位）；`embed/index.ts` 单行替换原 inline 字符串（served HTML 字节等价）。17 测试覆盖 IIFE 形状 / `WEB_SERVER_VERSION` SOT / envelope v=1.0 / nonce echo / meta 缺省 / `__GENOFFICE_EMBED__.app` / EventSource URL / 单参 vs 多参 unwrap / SSE 转发 / 入站 command → CustomEvent / envelope version 守门 / readyState=loading 等 DOMContentLoaded。test harness 用 `new Function('window','document','EventSource','setTimeout','CustomEvent', source)(...)` + fake timer，无需 jsdom/happy-dom。**Side fix**：`EmbedQuery` interface 漏 `sessionId` 字段（`parseEmbedQuery` 早就返回），tsc 暴露后补 interface + TSDoc 注明 §11.27 链路。web-server 69/540 → 70/557。live smoke 8/8（valid embed / wrong nonce 401 / no nonce 400 / verify true / release true / verify after release false / stale sessionId 401 / no auth 401）。
+
 30. **`DELETE /api/v1/embed/nonce` endpoint + SDK `releaseEmbedNonce()` helper**（✅ 本轮 §11.30）：iframe destroy → 服务端主动清理 session。`nonce-store.ts` 加 `removeEmbedNonce(sessionId)`；`api/v1/embed-nonce.ts` 加 `handleEmbedReleaseNonce`（DELETE method + `files:read` scope gate）；SDK 加 `releaseEmbedNonce(options)`（`fetchImpl` 注入 + fire-and-forget 友好）。`released:true` 真移除 / `released:false` race with TTL（不是 throw）。web-server 测试 +6（19 total），SDK 测试 +12（77 total）。live smoke 6/6 通过。
 29. **SDK `verifyEmbedNonce()` helper 落地**（✅ 本轮 §11.29）：§11.28 `createEmbedNonce()` 的对称 counterpart，调 `POST /api/v1/embed/verify-nonce` audit。返 `{valid:true, expiresAt}` 或 `{valid:false, reason:'unknown'|'expired'}`——audit 失败不 throw。5 种错误 code（`AUTH_FAILED` / `FORBIDDEN` / `VERIFY_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`）。配套：types.ts 3 类型；editor.ts 重 re-export；README 双语 audit pattern example。新增 `apps/sdk/test/verify-embed-nonce.test.ts`（15 测试）。SDK 7 文件 / 65 测试。
 28. **SDK `createEmbedNonce()` helper 落地**（✅ 本轮 §11.28）：apps/sdk/src/editor.ts 新增 `createEmbedNonce(options)`，调 `POST /api/v1/embed/nonce` mint session + 构造带 `?sessionId=...&nonce=...` 的 embed URL。6 种结构化错误 code (`AUTH_FAILED` / `FORBIDDEN` / `BAD_REQUEST` / `MINT_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`)。`fetchImpl` 注入式 override 让测试不需要 polyfill global。配套：`types.ts` 加 3 类型；`embed-url.ts` `EmbedUrlInput.sessionId` + `buildEmbedUrl` 多一行；`index.ts` re-export。新增 `apps/sdk/test/create-embed-nonce.test.ts`（12 测试）+ `build-embed-url.test.ts` 追加 2 测试。SDK 总数 5 文件 / 36 → 6 文件 / 50 测试。live smoke 3/3 通过。
@@ -2420,7 +2476,7 @@ iframe destroy → 服务端主动清理 nonce session。`DELETE /api/v1/embed/n
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler）| 69 | 540 | ✅ |
+| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler / embed-bridge）| 70 | 558 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -2439,12 +2495,12 @@ iframe destroy → 服务端主动清理 nonce session。`DELETE /api/v1/embed/n
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **181** | **4379** | ✅ |
+| **总计** | **182** | **4394** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13+6 release=19）、embed handler session gate（6）、SDK createEmbedNonce helper（12）、SDK verifyEmbedNonce helper（15）、SDK releaseEmbedNonce helper（12）、embed bridge 独立模块 IIFE eval（17）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 

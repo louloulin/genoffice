@@ -35,6 +35,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { verifyJwtWithRevocation } from '../api/v1/auth'
 import { WEB_SERVER_VERSION } from '../common/version'
 import { verifyEmbedNonce } from './nonce-store'
+import { EMBED_BRIDGE_SOURCE } from './bridge'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APPS } from '../common/index'
@@ -114,6 +115,13 @@ interface EmbedQuery {
    * See sdk1.md §11.20.
    */
   nonce: string | null
+  /**
+   * Optional server-minted session id. When paired with `nonce`, the
+   * embed handler looks up the LRU session to confirm the nonce matches.
+   * This closes the §11.17.5 backlog: now every handshake is also
+   * server-side validated, not just client-side echoed. See sdk1.md §11.27.
+   */
+  sessionId: string | null
 }
 
 function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
@@ -168,80 +176,7 @@ function resolveAppIndex(app: string): string | null {
  * consumer on the same session; two parallel consumers is fine — the
  * server broadcasts to every connected socket in the session.
  */
-const EMBED_BRIDGE = `
-(function () {
-  var ENVELOPE_VERSION = '1.0';
-  function post(name, payload) {
-    try {
-      window.parent.postMessage({
-        v: ENVELOPE_VERSION,
-        dir: 'editor->host',
-        kind: 'event',
-        payload: { name: name, payload: payload }
-      }, '*');
-    } catch (e) { /* parent gone, swallow */ }
-  }
-  function sendReady() {
-    // Echo the handshake nonce (if any) so the host SDK can verify the
-    // iframe identity. The value comes from the <meta name="genoffice-nonce">
-    // tag we inject earlier in the document, which was sourced from the
-    // ?nonce= query param the host URL-builder passed in. The renderer
-    // bridge does NOT need to know how to generate a nonce — it just
-    // forwards whatever the server injected.
-    var nonceMeta = document.querySelector('meta[name="genoffice-nonce"]');
-    var nonce = nonceMeta ? nonceMeta.getAttribute('content') : null;
-    var readyPayload = {
-      type: 'ready',
-      app: window.__GENOFFICE_EMBED__ && window.__GENOFFICE_EMBED__.app,
-      version: '${WEB_SERVER_VERSION}'
-    };
-    if (nonce) readyPayload.nonce = nonce;
-    post('ready', readyPayload);
-  }
-  function subscribePush() {
-    var cfg = window.__GENOFFICE_EMBED__;
-    if (!cfg || !cfg.sessionId) return;
-    if (typeof EventSource === 'undefined') return;
-    try {
-      var es = new EventSource('/api/ipc/events?session=' + encodeURIComponent(cfg.sessionId));
-      es.onmessage = function (ev) {
-        var frame;
-        try { frame = JSON.parse(ev.data); } catch (e) { return; }
-        if (!frame || !frame.channel || !frame.args) return;
-        // Unwrap a single payload object from the args array so the host
-        // receives the same shape the renderer dispatches (e.g. {dirty:true}
-        // not [{dirty:true}]). Multi-arg events get forwarded as-is.
-        var p = frame.args.length === 1 ? frame.args[0] : frame.args;
-        post(frame.channel, p);
-      };
-      es.onerror = function () { /* SSE auto-reconnects; ignore transient */ };
-      window.addEventListener('beforeunload', function () {
-        try { es.close(); } catch (e) { /* ignore */ }
-      });
-    } catch (e) { /* EventSource construction failed; degrade to no-push */ }
-  }
-  window.addEventListener('message', function (event) {
-    var data = event.data;
-    if (!data || data.v !== ENVELOPE_VERSION) return;
-    if (data.kind === 'command') {
-      window.dispatchEvent(new CustomEvent('host.command', { detail: data }));
-    }
-  });
-  if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    setTimeout(sendReady, 0);
-    setTimeout(subscribePush, 0);
-  } else {
-    window.addEventListener('DOMContentLoaded', function () {
-      setTimeout(sendReady, 0);
-      setTimeout(subscribePush, 0);
-    });
-    window.addEventListener('load', function () {
-      setTimeout(sendReady, 0);
-      setTimeout(subscribePush, 0);
-    });
-  }
-})();
-`
+const EMBED_BRIDGE = EMBED_BRIDGE_SOURCE
 
 /**
  * Build the embed HTML by reading the editor app's `index.html` and injecting
@@ -372,4 +307,4 @@ export function handleEmbed(request: IncomingMessage, response: ServerResponse, 
   return true
 }
 
-export { EMBED_BRIDGE }
+export { EMBED_BRIDGE } // re-export for backwards compat (test consumers may import)
