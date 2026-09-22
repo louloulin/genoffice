@@ -81,11 +81,11 @@ export function AudienceView() {
   const [allAnims, setAllAnims] = useState<AnimationItem[][] | null>(null)
   const transRef = useRef<TransitionKind[]>([])
   const keysRef = useRef<ShapeKey[][]>([])
-  const [anim, setAnim] = useState<{ kind: TransitionKind; nonce: number }>({
+  const [anim, setAnim] = useState<{ kind: TransitionKind; revision: number }>({
     kind: 'none',
-    nonce: 0,
+    revision: 0,
   })
-  const [morph, setMorph] = useState<{ fromIdx: number; toIdx: number; nonce: number } | null>(null)
+  const [morph, setMorph] = useState<{ fromIdx: number; toIdx: number; revision: number } | null>(null)
   const [strokes, setStrokes] = useState<InkStroke[]>([])
   const [laser, setLaser] = useState<{ x: number; y: number } | null>(null)
 
@@ -216,12 +216,12 @@ export function AudienceView() {
         if (kind === 'random') kind = ANIMATED[Math.floor(Math.random() * ANIMATED.length)]!
       }
       if (kind === 'morph' && from >= 0 && from !== sync.idx) {
-        setMorph((m) => ({ fromIdx: from, toIdx: sync.idx, nonce: (m?.nonce ?? 0) + 1 }))
-        setAnim((a) => ({ kind: 'none', nonce: a.nonce + 1 }))
+        setMorph((m) => ({ fromIdx: from, toIdx: sync.idx, revision: (m?.revision ?? 0) + 1 }))
+        setAnim((a) => ({ kind: 'none', revision: a.revision + 1 }))
       } else {
         if (kind === 'morph') kind = 'fade'
         setMorph(null)
-        setAnim((a) => ({ kind, nonce: a.nonce + 1 }))
+        setAnim((a) => ({ kind, revision: a.revision + 1 }))
       }
       setStrokes([])
       setLaser(null)
@@ -251,7 +251,7 @@ export function AudienceView() {
       ) : (
         <div className="ss-stagebox" style={{ width: fitW, height: fitH }}>
           {morph && slides![morph.fromIdx] && slides![morph.toIdx] ? (
-            <div key={`morph-${morph.nonce}`} className="ss-frame">
+            <div key={`morph-${morph.revision}`} className="ss-frame">
               <MorphStage
                 from={slides![morph.fromIdx]!}
                 to={slides![morph.toIdx]!}
@@ -264,7 +264,7 @@ export function AudienceView() {
             </div>
           ) : (
             <div
-              key={anim.nonce}
+              key={anim.revision}
               className={`ss-frame${anim.kind !== 'none' ? ` ss-anim-${anim.kind}` : ''}`}
             >
               <AnimatedSlideStage

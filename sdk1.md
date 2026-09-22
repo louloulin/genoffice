@@ -1884,7 +1884,61 @@ SDK (host page)                 bash
 - `apps/web-sdk` `package.json` 的 `"browser"` 条件出现在 `"import"` / `"require"` 之后，esbuild 警告 "will never be used as it comes after both"——pre-existing，与本 PR 无关；构建期统一走 import 路径所以无运行时影响
 - §11.20.5 backlog（server-side nonce ↔ SSE session 绑定）继续待做；本轮仅锁定 container contract 的运行时边界
 
-## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）
+### 11.25 本轮续作（v2 第 20 轮 commit，2026-09-22）
+
+消除 renderer-internal `nonce` 字段名与 SDK handshake nonce 的语义混淆。renderer 里 `nonce: Date.now()` 的字段其实是 **React 状态 re-trigger 计数器**（每次 `setX({ ..., nonce: prev + 1 })` 触发 `useEffect` 重跑 / React `key` 重 mount CSS 动画），不是 crypto nonce。但因为与 SDK handshake nonce (`apps/sdk/src/editor.ts:79`) 同名，code review / grep 搜 nonce 时容易把两个无关概念搞混。把所有 renderer-internal `nonce` 字段重命名为 `revision`（更准确表达"第 N 次修订"），变量 `previewNonce` → `previewRevision`。SDK handshake nonce / web-bridge nonce / FindPanel 旧式 `focusReplaceNonce` prop 全部不动。
+
+#### 11.25.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `packages/ui/src/find-panel.tsx` | `FindFocusRequest.nonce: number` → `revision: number`；effect dep `focusRequest?.nonce` → `focusRequest?.revision` |
+| `apps/docs/src/renderer/App.tsx` | `ribbonTabRequest` + `aiPreset` 内联 useState 类型 + 7 个 `setAiPreset({ ..., nonce: Date.now() })` + 1 个 `setRibbonTabRequest` + 1 行注释 = 10 处 |
+| `apps/docs/src/renderer/ai/AiPanel.tsx` | `preset?: { ..., nonce: number }` + `[preset?.nonce]` = 2 处 |
+| `apps/docs/src/renderer/components/Ribbon.tsx` | `tabRequest?: { tab: string; nonce: number } \| null` = 1 处 |
+| `apps/html/src/renderer/App.tsx` | `findFocus` 初始 `nonce: 0` + 4 个 `setPreviewNonce((n) => n + 1)` → `setPreviewRevision((r) => r + 1)` + 变量 rename `previewNonce` → `previewRevision` + `setFindFocus` bump + 2 个 `setAiPreset` + `PreviewFrame` prop 调用 = 10 处 |
+| `apps/html/src/renderer/preview/PreviewFrame.tsx` | Props `nonce: number` → `revision: number`；`useMemo([url, nonce])` → `[url, revision]`；模板 `${url}?v=${nonce}` JS 变量 |
+| `apps/html/src/renderer/PresentView.tsx` | `<PreviewFrame ... nonce={0} ...>` → `revision={0}` |
+| `apps/html/src/renderer/ai/AiPanel.tsx` | `AiPreset` interface + draft/preset 两个 useRef + 4 个 useEffect dep + JSDoc = 6 处 |
+| `apps/pdf/src/renderer/App.tsx` | `aiPreset` 内联 useState 类型 + `setAiPreset` = 2 处 |
+| `apps/pdf/src/renderer/ai/AiPanel.tsx` | `preset?: { ..., nonce: number }` + useEffect dep + JSDoc + eslint-disable 注释 = 4 处 |
+| `apps/slides/src/renderer/App.tsx` | `aiPreset` 内联 useState 类型 + `hoverAnim` useState 类型 + `setHoverAnim` 调用 + animPreview 注释 + `key={\`hover-${...}\`}` = 5 处 |
+| `apps/slides/src/renderer/animation-actions.ts` | `setHoverAnim({ nonce: Date.now(), items })` = 1 处 |
+| `apps/slides/src/renderer/action-context.ts` | `setHoverAnim` 类型签名 = 1 处 |
+| `apps/slides/src/renderer/ai/AiPanel.tsx` | `AiPreset` interface + useEffect dep = 2 处 |
+| `apps/slides/src/renderer/components/AudienceView.tsx` | `anim` + `morph` useState 类型 + 初始 `nonce: 0` + 3 个 setter + 2 个 React key = 8 处 |
+| `apps/slides/src/renderer/components/SlideShowView.tsx` | 同 AudienceView 模式 = 8 处 |
+| `apps/markdown/src/renderer/App.tsx` | `findFocus` 初始 `nonce: 0` + setter + 2 个 `setAiPreset` = 4 处 |
+| `apps/markdown/src/renderer/ai/AiPanel.tsx` | `AiPreset` interface + useEffect dep + setter + JSDoc = 4 处 |
+
+合计 19 个文件 / ~78 处编辑（`git diff --stat` 报告 +78/-78 字符增量）。
+
+#### 11.25.2 设计要点
+
+- **严格限定范围**：所有改动都是 renderer-internal React state shape；不触碰 IPC envelope、不触碰 SDK postMessage 协议、不触碰 `embed/index.ts` 的 `nonce` 字段。SDK handshake nonce (`apps/sdk/src/editor.ts`) 和 web-bridge nonce (`apps/web-server/src/embed/index.ts`) 全部不动，postMessage envelope 的 `nonce` 字段保留向后兼容
+- **为什么是 `revision` 不是 `seq` / `tick` / `bumpKey`**：
+  - `revision`：与现有 file version history (`packages/.../version-history.ts`) 的语义一致；表达"第 N 次修订"
+  - `seq`：虽然常用，但太短且易与 SQLite auto-increment 列混淆
+  - `tick`：常用但偏 UI；不能准确表达"是同一对象的第 N 个版本"
+  - `bumpKey`：太冗长且 key 这个词已用于 React `key` 属性
+- **为什么变量 `previewNonce` 也一起改名**：内部命名一致性；`previewNonce: number` 与 `setPreviewNonce((n) => n + 1)` 是一体的，分开改会留半截语义混淆
+- **跳过 `apps/docs/src/renderer/components/FindPanel.tsx` 的 `focusReplaceNonce` prop**：那是 docs-internal 组件的 prop name，prop 本身是 number 而非 FindFocusRequest 对象，重命名会扩散到 docs/App.tsx 调用方并需要单独 JSDoc 公告，不在 §11.25 范围内；后续 §M-editor-refactor 再统一
+- **跳过 `coder` 风格的真正 CSP nonce**：HTML5 `<iframe nonce="...">` 才是严格意义的 CSP nonce，但本仓库 renderer 不直接发 CSP nonce（iframe 是 preview 自己的子代理），所以 `PreviewFrame` 的 `nonce` 实际是 cache-bust counter，不是 CSP nonce
+
+#### 11.25.3 验证
+
+- typecheck：5 个 app renderer (`apps/{docs,sheets,slides,pdf,markdown,html}`) 全部通过；唯一 typecheck noise 是预存的 i18n locale `ms.ts` 缺 3 个 key + pptx-ops `?raw` import + xlsx-gateway 3 行
+- SDK handshake 路径回归：`apps/sdk` vitest **5 文件 / 36 测试**全绿（handshake / handshake-timeout / build-embed-url / envelope / container-resolve 全部 ✅）
+- web-server 关键路径回归：7 文件 / 52 pass / 1 skip（atomic / files-jwt-revocation / embed-jwt-validation / scope-gate / version-sot / typedoc-count / embed-nonce-roundtrip 全部 ✅）
+- `grep -rn "\\bnonce\\b" apps/*/src/renderer packages/ui/src` → 仅剩法语 locale `annonce` 一词（= "announcement"，无关）+ SDK handshake + embed-bridge（设计保留）
+
+#### 11.25.4 后续观察
+
+- 本轮 §11.20.5 backlog（server-side nonce ↔ SSE session 绑定）尚未做；下个 commit 可以承接
+- `apps/docs/src/renderer/components/FindPanel.tsx` 的 `focusReplaceNonce` prop 是 docs-internal 命名，未在本轮统一（单独 PR 处理更干净，避免和 §11.25 语义混在一起）
+- 不再需要 `apps/docs/src/renderer/.../App.tsx:5318` 注释里"truthy nonce"表述——已改为 "truthy revision"，但保留了"bugbot"追溯来源
+
+：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
 
@@ -2127,6 +2181,7 @@ SDK (host page)                 bash
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+25. **renderer-internal `nonce` 字段统一重命名为 `revision`**（✅ 本轮 §11.25）：renderer 里 `nonce: Date.now()` 字段实际是 React re-trigger 计数器（useEffect deps / React key），不是 crypto nonce；与 SDK handshake nonce (`apps/sdk/src/editor.ts`) 同名造成 code review / grep 误判。改名范围严格限定在 renderer-internal React state shape：`packages/ui/src/find-panel.tsx` 的 `FindFocusRequest.nonce` + apps/{docs,html,pdf,slides,markdown}/src/renderer 下的 useState/setState/useEffect/key deps （AiPreset / hoverAnim / anim / morph / findFocus / previewVersion / ribbonTabRequest 8 种 shape）。SDK handshake nonce（`apps/sdk/src/editor.ts`）/ web-bridge nonce（`apps/web-server/src/embed/index.ts`）/ `<iframe>` CSP nonce / docs `FindPanel.focusReplaceNonce` prop 全部不动（向后兼容 / 公共 API）。19 文件 / ~78 处编辑；`grep -rn "nonce" apps/*/src/renderer packages/ui/src` 仅剩法语 `annonce` 一词。
 24. **`CreateEditorOptions` doc typo 修复 + container contract 回归测试**（✅ 本轮 §11.24）：`apps/sdk/src/types.ts` 旧 JSDoc 提到 `containerElement` 字段，但接口里**根本没有**这个字段（早期迭代残留笔误），集成商按字面 join 后会在生产环境遇到 TS 编译报错。修正为"Provide exactly one of `container` or `url`"+ 明确"无 separate containerElement field，直接通过 `container` 传元素"。新增 `apps/sdk/test/container-resolve.test.ts`（6 测试）：source-grep 守门（`containerElement` 只允许出现 1 次在 denial comment）+`createEditor()` no-opts 抛 `options required` +缺 `documentId` / `jwt` / `host` 各抛结构化错误 +Node 环境无 container 抛 `container required when document is not available`。私有 helper `resolveContainer` 通过 public `createEditor` 的 runtime guard 间接验证，避免泄漏内部 API。
 23. **web-server 版本号单一源**（✅ 本轮 §11.23）：`'0.8.0'` 之前硬编码在 5 个文件（`index.ts` boot banner + `/health` / `app-info.ts` / `embed/index.ts` bridge ready payload）。新增 `common/version.ts` 导出 `WEB_SERVER_VERSION` 常量，4 个消费点改 import + 模板字符串插值。新增 5 测试守门：常量 == package.json 版本 / 没有 hardcoded `'0.8.0'`（除 `version.ts` 与 `package.json`）/ boot banner 用 `${...}` / bridge 用 `${...}` / app-info 用 `() => WEB_SERVER_VERSION`。live smoke 验 4 个消费点全报 `0.8.0`。
 22. **buildEmbedUrl nonce 测试整合**（✅ 本轮 §11.22）：把 §11.20 引入的 4 个 nonce 测试从独立的 `embed-url-nonce.test.ts` 合并到 `build-embed-url.test.ts`（canonical 位置），删除独立文件。维护更清晰。SDK 文件 5→4（文件数-1），测试数 30（净无 0 测试）。

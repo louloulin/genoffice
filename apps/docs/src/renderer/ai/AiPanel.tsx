@@ -327,7 +327,7 @@ interface AiPanelProps {
   /** fallback numbering ids for documents created from the blank template */
   numIdFallback?: NumIds | null
   /** preset instruction pushed from the ribbon or start screen; autoRun sends it immediately */
-  preset?: { text: string; nonce: number; autoRun?: boolean } | null
+  preset?: { text: string; revision: number; autoRun?: boolean } | null
   /** false shows only the collapsed rail; the component stays mounted so panel state survives */
   open?: boolean
   /** expand from the collapsed rail */
@@ -1135,7 +1135,7 @@ export function AiPanel({
       inputRef.current?.focus()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset?.nonce])
+  }, [preset?.revision])
 
   // keep the scope hint & quick actions in sync with the editor selection
   useEffect(() => {

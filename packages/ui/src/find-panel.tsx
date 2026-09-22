@@ -35,7 +35,7 @@ export interface FindTarget {
 /** bumped by the host on every Ctrl+F / Ctrl+H so an already-open panel refocuses its field */
 export interface FindFocusRequest {
   field: 'find' | 'replace'
-  nonce: number
+  revision: number
 }
 
 interface FindPanelProps {
@@ -114,7 +114,7 @@ export function FindPanel({ target, strings, onClose, focusRequest }: FindPanelP
   // declared after the mount effect so opening straight into replace wins the focus
   // (replace falls back to find when read-only)
   useEffect(() => {
-    if (!focusRequest?.nonce) return
+    if (!focusRequest?.revision) return
     const el =
       (focusRequest.field === 'replace' ? replaceInputRef.current : null) ?? inputRef.current
     el?.focus()

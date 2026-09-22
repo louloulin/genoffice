@@ -438,7 +438,7 @@ export function App() {
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null)
   const [aiPreset, setAiPreset] = useState<{
     text: string
-    nonce: number
+    revision: number
     autoRun?: boolean
     displayText?: string
     attachments?: AttachmentMeta[]
@@ -465,10 +465,10 @@ export function App() {
   const [showAnimPane, setShowAnimPane] = useState(false)
   /** Animation pane selection (the timing controls bind to it first); -1 = none */
   const [selAnim, setSelAnim] = useState(-1)
-  /** Canvas animation preview (plays when nonce>0; re-entering +1) */
+  /** Canvas animation preview (plays when revision>0; re-entering +1) */
   const [animPreview, setAnimPreview] = useState(0)
   /** Ribbon hover preview: the hovered effect played on the selection without applying */
-  const [hoverAnim, setHoverAnim] = useState<{ nonce: number; items: AnimationItem[] } | null>(null)
+  const [hoverAnim, setHoverAnim] = useState<{ revision: number; items: AnimationItem[] } | null>(null)
   const [inkTool, setInkTool] = useState<InkTool>('select')
   const [inkPen, setInkPen] = useState<InkPenSettings>({ color: 'C00000', width: 2 })
   const [inkHighlighter, setInkHighlighter] = useState<InkPenSettings>({
@@ -1210,7 +1210,7 @@ export function App() {
       })
       setAiPreset({
         text,
-        nonce: Date.now(),
+        revision: Date.now(),
         autoRun,
         displayText,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
@@ -3902,7 +3902,7 @@ export function App() {
                             )}
                             {hoverAnim && animPreview === 0 && (
                               <AnimPreviewOverlay
-                                key={`hover-${hoverAnim.nonce}`}
+                                key={`hover-${hoverAnim.revision}`}
                                 slide={slide}
                                 images={images}
                                 items={hoverAnim.items}

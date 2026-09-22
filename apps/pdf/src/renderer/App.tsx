@@ -332,7 +332,7 @@ export default function App() {
     localStorage.setItem('genoffice-pdf-show-ai', aiCollapsed ? '0' : '1')
   }, [aiCollapsed])
   /** One-shot prompt pushed by the ribbon AI buttons; the panel auto-runs it (docs preset pattern) */
-  const [aiPreset, setAiPreset] = useState<{ text: string; nonce: number } | null>(null)
+  const [aiPreset, setAiPreset] = useState<{ text: string; revision: number } | null>(null)
   const [ribbonTab, setRibbonTab] = useState<RibbonTab>('home')
   const [spread, setSpread] = useState<1 | 2>(1)
   const [nightMode, setNightMode] = useState(false)
@@ -5546,7 +5546,7 @@ export default function App() {
   /** Ribbon AI buttons: expand the dock and auto-run the prompt in the assistant */
   const runAiPreset = (text: string): void => {
     setAiCollapsed(false)
-    setAiPreset({ text, nonce: Date.now() })
+    setAiPreset({ text, revision: Date.now() })
   }
 
   /** Converter dropdown → the shell's local conversion flows (save dialog, password prompt) */

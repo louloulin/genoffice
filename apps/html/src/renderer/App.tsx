@@ -126,10 +126,10 @@ export default function App() {
   const [zoom, setZoom] = useState(100)
   const [autoSave, setAutoSave] = useAutoSavePref('htmlapp.autoSave', window.htmlApi)
   const [findTarget, setFindTarget] = useState<FindTarget | null>(null)
-  const [findFocus, setFindFocus] = useState<FindFocusRequest>({ field: 'find', nonce: 0 })
+  const [findFocus, setFindFocus] = useState<FindFocusRequest>({ field: 'find', revision: 0 })
   const [cursor, setCursor] = useState<CursorInfo>({ line: 1, col: 1, pos: 0 })
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [previewNonce, setPreviewNonce] = useState(0)
+  const [previewRevision, setPreviewRevision] = useState(0)
   const [draftHtml, setDraftHtml] = useState<string | null>(null)
   const [historyState, setHistoryState] = useState({ undo: false, redo: false })
   const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('htmlapp.showAi') !== '0')
@@ -301,7 +301,7 @@ export default function App() {
       pushedVersionRef.current = map.version
       if (reload) {
         frameVersionsRef.current = new Set([map.version])
-        setPreviewNonce((n) => n + 1)
+        setPreviewRevision((r) => r + 1)
       } else frameVersionsRef.current.add(map.version)
     },
     [getMap],
@@ -321,7 +321,7 @@ export default function App() {
   useEffect(() => {
     // a presentation lets links navigate the frame; coming back reloads the instrumented document
     if (prevCanvasModeRef.current === 'present' && canvasMode !== 'present')
-      setPreviewNonce((n) => n + 1)
+      setPreviewRevision((r) => r + 1)
     prevCanvasModeRef.current = canvasMode
     previewRef.current?.post({ type: 'gx:setMode', mode: frameMode(canvasMode) })
   }, [canvasMode])
@@ -925,7 +925,7 @@ export default function App() {
     setAiPreset({
       text: buildSelectionInstruction(askTarget, instruction),
       displayText: instruction,
-      nonce: Date.now(),
+      revision: Date.now(),
       scope,
     })
   }
@@ -982,7 +982,7 @@ export default function App() {
     styleTimerRef.current = null
     pendingStylesRef.current = {}
     setPendingCount(0)
-    setPreviewNonce((n) => n + 1)
+    setPreviewRevision((r) => r + 1)
   }
 
   const setCanvasMode = useCallback(
@@ -1090,7 +1090,7 @@ export default function App() {
         if (result.ok && 'path' in result) {
           setPath((previous) => {
             // a new path changes the preview's <base>; relative assets only resolve after a reload
-            if (previous !== result.path) setPreviewNonce((n) => n + 1)
+            if (previous !== result.path) setPreviewRevision((r) => r + 1)
             return result.path
           })
           setSavedText(textAtSave)
@@ -1124,7 +1124,7 @@ export default function App() {
     const target = editorRef.current?.findTarget()
     if (!target) return
     setFindTarget(target)
-    setFindFocus((f) => ({ field: replace ? 'replace' : 'find', nonce: f.nonce + 1 }))
+    setFindFocus((f) => ({ field: replace ? 'replace' : 'find', revision: f.revision + 1 }))
     // hits live in the source pane, so it must be on screen
     setView((v) => (v === 'preview' ? 'split' : v))
   }, [])
@@ -1420,7 +1420,7 @@ export default function App() {
         onAiPreset={(text) => {
           flushPending()
           setAiOpen(true)
-          setAiPreset({ text, nonce: Date.now() })
+          setAiPreset({ text, revision: Date.now() })
         }}
         canvasMode={canvasMode}
         onPresent={startPresent}
@@ -1483,7 +1483,7 @@ export default function App() {
                 <PreviewFrame
                   ref={previewRef}
                   url={previewUrl}
-                  nonce={previewNonce}
+                  revision={previewRevision}
                   zoom={zoom}
                   onMessage={onInspectorMessage}
                   onLoad={onPreviewLoad}

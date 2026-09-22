@@ -50,7 +50,7 @@ export function hoverPreviewAnimation(
     delayMs: 0,
     ...(motionPath ? { motionPath } : {}),
   }))
-  ctx.setHoverAnim({ nonce: Date.now(), items })
+  ctx.setHoverAnim({ revision: Date.now(), items })
 }
 
 /** Commit the whole page's animation list overwrite-style, then read back on success (target names/stale items per the main process). */

@@ -109,10 +109,10 @@ interface Snapshot {
   doc: DocSnapshot
 }
 
-/** Ribbon preset instruction; a new nonce triggers one auto-send */
+/** Ribbon preset instruction; a new revision triggers one auto-send */
 export interface AiPreset {
   text: string
-  nonce: number
+  revision: number
 }
 
 export interface MarkdownAiDeps {
@@ -685,8 +685,8 @@ export function AiPanel({
   // ribbon presets auto-send; while a run is active they land in the composer instead
   const presetNonceRef = useRef(0)
   useEffect(() => {
-    if (!preset || preset.nonce === presetNonceRef.current) return
-    presetNonceRef.current = preset.nonce
+    if (!preset || preset.revision === presetNonceRef.current) return
+    presetNonceRef.current = preset.revision
     if (loopRef.current?.busy) setPrompt(preset.text)
     else send(preset.text)
     // eslint-disable-next-line react-hooks/exhaustive-deps

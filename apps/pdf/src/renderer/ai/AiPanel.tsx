@@ -134,8 +134,8 @@ export function AiPanel({
   /** Absolute path of the open PDF (chat history is keyed to it) */
   filePath?: string
   onCollapse: () => void
-  /** Ribbon AI buttons push a one-shot prompt; a new nonce triggers an auto-run */
-  preset?: { text: string; nonce: number } | null
+  /** Ribbon AI buttons push a one-shot prompt; a new revision triggers an auto-run */
+  preset?: { text: string; revision: number } | null
   /** Fired when a run that mutated the document finishes (drives the untitled-blank auto-save) */
   onRunDone?: () => void
   /** The × on the scope chip: drop the cached selection so runs target the whole document */
@@ -692,8 +692,8 @@ export function AiPanel({
     if (!preset) return
     if (loopRef.current?.busy) setPrompt(preset.text)
     else send(preset.text)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per nonce
-  }, [preset?.nonce])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per revision
+  }, [preset?.revision])
 
   // Re-derive the display width on window resize (max is 60% of the window);
   // growing the window back restores the preferred width

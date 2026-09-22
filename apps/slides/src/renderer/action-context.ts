@@ -142,7 +142,7 @@ export interface ActionCtx {
   setAnimations: Set<AnimationItem[]>
   selAnim: number
   setSelAnim: Set<number>
-  setHoverAnim: Set<{ nonce: number; items: AnimationItem[] } | null>
+  setHoverAnim: Set<{ revision: number; items: AnimationItem[] } | null>
   setTransition: Set<TransitionKind>
   animByParagraph: boolean
   timingIdx: number

@@ -225,10 +225,10 @@ interface Snapshot {
   doc: DocSnapshot
 }
 
-/** Preset instruction (ribbon / Ask AI "send now"); a new nonce triggers one auto-send */
+/** Preset instruction (ribbon / Ask AI "send now"); a new revision triggers one auto-send */
 export interface AiPreset {
   text: string
-  nonce: number
+  revision: number
   /** what the chat bubble shows when the instruction itself carries protocol text */
   displayText?: string
   scope?: AiScopeQuoteData
@@ -237,7 +237,7 @@ export interface AiPreset {
 /** Prefill the composer without sending (Ask AI about the selected element) */
 export interface AiDraft {
   text: string
-  nonce: number
+  revision: number
 }
 
 export interface HtmlAiDeps {
@@ -1019,8 +1019,8 @@ export function AiPanel({
 
   const draftNonceRef = useRef(0)
   useEffect(() => {
-    if (!draft || draft.nonce === draftNonceRef.current) return
-    draftNonceRef.current = draft.nonce
+    if (!draft || draft.revision === draftNonceRef.current) return
+    draftNonceRef.current = draft.revision
     setPrompt(draft.text)
     inputRef.current?.focus()
   }, [draft])
@@ -1028,8 +1028,8 @@ export function AiPanel({
   // ribbon presets auto-send; while a run is active they land in the composer instead
   const presetNonceRef = useRef(0)
   useEffect(() => {
-    if (!preset || preset.nonce === presetNonceRef.current) return
-    presetNonceRef.current = preset.nonce
+    if (!preset || preset.revision === presetNonceRef.current) return
+    presetNonceRef.current = preset.revision
     // while a run is active the request lands in the composer as the user phrased it, never as protocol text
     if (loopRef.current?.busy) setPrompt(preset.displayText ?? preset.text)
     else send(preset.text, preset.displayText, false, undefined, preset.scope)

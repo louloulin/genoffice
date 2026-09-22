@@ -10,7 +10,7 @@ interface Props {
   /** html-preview:// URL bound to this view; null until the main process reports it */
   url: string | null
   /** bump to reload the frame after the buffer was pushed to the main process */
-  nonce: number
+  revision: number
   zoom: number
   onMessage: (msg: FromInspector) => void
   /** fires for every document the frame loads, link navigations included */
@@ -26,13 +26,13 @@ interface Props {
  * cross-origin to us; the inspector talks back over postMessage.
  */
 export const PreviewFrame = forwardRef<PreviewFrameHandle, Props>(function PreviewFrame(
-  { url, nonce, zoom, onMessage, onLoad, draft },
+  { url, revision, zoom, onMessage, onLoad, draft },
   ref,
 ) {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
-  const src = useMemo(() => (url ? `${url}?v=${nonce}` : 'about:blank'), [url, nonce])
+  const src = useMemo(() => (url ? `${url}?v=${revision}` : 'about:blank'), [url, revision])
 
   useEffect(() => {
     const listener = (event: MessageEvent) => {

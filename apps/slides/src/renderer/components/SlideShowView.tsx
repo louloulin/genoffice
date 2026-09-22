@@ -69,10 +69,10 @@ export function SlideShowView({
   )
   const [pos, setPos] = useState(() => Math.max(0, order.indexOf(startAt)))
   const [ended, setEnded] = useState(false)
-  /** Current transition animation: kind + replay nonce (key change re-triggers the CSS animation) */
-  const [anim, setAnim] = useState<{ kind: TransitionKind; nonce: number }>({
+  /** Current transition animation: kind + replay revision (key change re-triggers the CSS animation) */
+  const [anim, setAnim] = useState<{ kind: TransitionKind; revision: number }>({
     kind: 'none',
-    nonce: 0,
+    revision: 0,
   })
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight })
   /** False until the window covers the screen: the black root paints alone first so
@@ -88,8 +88,8 @@ export function SlideShowView({
   const linksRef = useRef<Array<Map<string, LinkTargetOp>>>([])
   /** Per-page run hyperlinks: "sourceId:para:run" → target; hit-tested against layout glyph runs */
   const runLinksRef = useRef<Array<Map<string, LinkTargetOp>>>([])
-  /** Morph tween in progress: previous/target page original indexes + replay nonce */
-  const [morph, setMorph] = useState<{ fromIdx: number; toIdx: number; nonce: number } | null>(null)
+  /** Morph tween in progress: previous/target page original indexes + replay revision */
+  const [morph, setMorph] = useState<{ fromIdx: number; toIdx: number; revision: number } | null>(null)
   /** How the current page was entered: forward = initial state playing step by step, others = all-finished state */
   const navModeRef = useRef<'fresh' | 'all'>('fresh')
 
@@ -254,13 +254,13 @@ export function SlideShowView({
       }
       if (kind === 'morph' && current != null && current !== target) {
         // Morph: skips the CSS page transition; MorphStage tweens elements from the previous page to the target
-        setMorph((m) => ({ fromIdx: current, toIdx: target, nonce: (m?.nonce ?? 0) + 1 }))
-        setAnim((a) => ({ kind: 'none', nonce: a.nonce + 1 }))
+        setMorph((m) => ({ fromIdx: current, toIdx: target, revision: (m?.revision ?? 0) + 1 }))
+        setAnim((a) => ({ kind: 'none', revision: a.revision + 1 }))
       } else {
         // Morphs that can't tween (start page/same page) degrade to fade-in
         if (kind === 'morph') kind = 'fade'
         setMorph(null)
-        setAnim((a) => ({ kind, nonce: a.nonce + 1 }))
+        setAnim((a) => ({ kind, revision: a.revision + 1 }))
       }
       setPos(nextPos)
     },
@@ -382,7 +382,7 @@ export function SlideShowView({
       ) : (
         <>
           {morph && slides[morph.fromIdx] && slides[morph.toIdx] ? (
-            <div key={`morph-${morph.nonce}`} className="ss-frame">
+            <div key={`morph-${morph.revision}`} className="ss-frame">
               <MorphStage
                 from={slides[morph.fromIdx]!}
                 to={slides[morph.toIdx]!}
@@ -395,7 +395,7 @@ export function SlideShowView({
             </div>
           ) : (
             <div
-              key={anim.nonce}
+              key={anim.revision}
               className={`ss-frame${anim.kind !== 'none' ? ` ss-anim-${anim.kind}` : ''}`}
             >
               <div

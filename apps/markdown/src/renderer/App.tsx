@@ -140,7 +140,7 @@ export default function App() {
   const queueSeqRef = useRef(0)
   const [autoSave, setAutoSave] = useAutoSavePref('mdapp.autoSave', window.markdownApi)
   const [showFind, setShowFind] = useState(false)
-  const [findFocus, setFindFocus] = useState<FindFocusRequest>({ field: 'find', nonce: 0 })
+  const [findFocus, setFindFocus] = useState<FindFocusRequest>({ field: 'find', revision: 0 })
   const [outlineOpen, setOutlineOpen] = useState(false)
   const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([])
   const [zoom, setZoom] = useState(100)
@@ -452,7 +452,7 @@ export default function App() {
   const openFind = useCallback((replace: boolean) => {
     if (statusRef.current !== 'ready') return
     setShowFind(true)
-    setFindFocus((f) => ({ field: replace ? 'replace' : 'find', nonce: f.nonce + 1 }))
+    setFindFocus((f) => ({ field: replace ? 'replace' : 'find', revision: f.revision + 1 }))
   }, [])
 
   useEffect(() => {
@@ -604,7 +604,7 @@ export default function App() {
   }, [])
   const askSendNow = useCallback((text: string): void => {
     setAiOpen(true)
-    setAiPreset((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }))
+    setAiPreset((prev) => ({ text, revision: (prev?.revision ?? 0) + 1 }))
   }, [])
 
   const aiDeps: MarkdownAiDeps = {
@@ -696,7 +696,7 @@ export default function App() {
         onToggleAi={() => setAiOpen((v) => !v)}
         onAiPreset={(text) => {
           setAiOpen(true)
-          setAiPreset((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }))
+          setAiPreset((prev) => ({ text, revision: (prev?.revision ?? 0) + 1 }))
         }}
       />
       {status === 'loading' && <div className="center-note">{t('loading')}</div>}

@@ -27,7 +27,7 @@ export function PresentView({ title }: { title: string }) {
 
   return (
     <div className="present-view">
-      <PreviewFrame ref={frameRef} url={url} nonce={0} zoom={100} onMessage={onMessage} />
+      <PreviewFrame ref={frameRef} url={url} revision={0} zoom={100} onMessage={onMessage} />
     </div>
   )
 }

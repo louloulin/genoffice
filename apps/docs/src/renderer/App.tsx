@@ -596,7 +596,7 @@ export function App() {
   const [spellcheck, setSpellcheck] = useState(spellcheckEnabled)
   /** Increments on every open/new document: AiPanel remounts by key to reset the conversation and history (save path changes don't bump it, so the session continues) */
   const [aiPanelKey, setAiPanelKey] = useState(0)
-  const [ribbonTabRequest, setRibbonTabRequest] = useState<{ tab: string; nonce: number } | null>(
+  const [ribbonTabRequest, setRibbonTabRequest] = useState<{ tab: string; revision: number } | null>(
     null,
   )
   const [status, setStatus] = useState('')
@@ -878,7 +878,7 @@ export function App() {
   const [tornDown, setTornDown] = useState(false)
   const [aiPreset, setAiPreset] = useState<{
     text: string
-    nonce: number
+    revision: number
     autoRun?: boolean
   } | null>(null)
   // selection-scoped AI edit queue (anchors live as editor decorations)
@@ -1472,7 +1472,7 @@ export function App() {
         setHostReadonly(command.readonly)
       } else if (command.type === 'focus-ai') {
         setShowAi(true)
-        if (command.prompt?.trim()) setAiPreset({ text: command.prompt.trim(), nonce: Date.now(), autoRun: true })
+        if (command.prompt?.trim()) setAiPreset({ text: command.prompt.trim(), revision: Date.now(), autoRun: true })
       } else if (command.type === 'translate') {
         setShowAi(true)
         window.dispatchEvent(new CustomEvent('dataflare:open-translate', {
@@ -4228,7 +4228,7 @@ export function App() {
       return
     localStorage.setItem(AI_REWRITE_ACK_KEY, '1')
     setShowAi(true)
-    setAiPreset({ text: t('ribbonEditorPrompt'), nonce: Date.now(), autoRun: true })
+    setAiPreset({ text: t('ribbonEditorPrompt'), revision: Date.now(), autoRun: true })
   }, [])
 
   // ⌥⌘T / Ctrl+Alt+T shortcut → same prompt the Genspark AI Translate button
@@ -4236,7 +4236,7 @@ export function App() {
   // with explicit instructions to preserve the original formatting).
   const runAiTranslate = useCallback(() => {
     setShowAi(true)
-    setAiPreset({ text: t('aiTranslatePrompt'), nonce: Date.now(), autoRun: true })
+    setAiPreset({ text: t('aiTranslatePrompt'), revision: Date.now(), autoRun: true })
   }, [])
 
   // "has unsaved changes" check shared by the close guard and autosave; refreshed on every
@@ -4672,7 +4672,7 @@ export function App() {
           align('justify')
           break
         case 'page-setup':
-          setRibbonTabRequest({ tab: 'layout', nonce: Date.now() })
+          setRibbonTabRequest({ tab: 'layout', revision: Date.now() })
           break
         case 'find':
           if (doc) setShowFind(true)
@@ -4861,7 +4861,7 @@ export function App() {
   }
   const askSendNow = (text: string): void => {
     setShowAi(true)
-    setAiPreset({ text, nonce: Date.now(), autoRun: true })
+    setAiPreset({ text, revision: Date.now(), autoRun: true })
   }
 
   // AI comment tools run the same review-actions code paths as the comments pane
@@ -5006,7 +5006,7 @@ export function App() {
     onAiPreset: (text: string) => {
       // Word's Editor / Translate start working as soon as they're clicked
       setShowAi(true)
-      setAiPreset({ text, nonce: Date.now(), autoRun: true })
+      setAiPreset({ text, revision: Date.now(), autoRun: true })
     },
     onHeader: (next: HeaderFooter) => {
       setHeader(next)
@@ -5315,7 +5315,7 @@ export function App() {
                 editor={editor}
                 onClose={() => {
                   setShowFind(false)
-                  // else the next plain ⌘F remount would still see a truthy nonce
+                  // else the next plain ⌘F remount would still see a truthy revision
                   // and land focus on the replace field (bugbot)
                   setFindFocusReplace(0)
                 }}
@@ -5645,7 +5645,7 @@ export function App() {
           onNewComment={startNewComment}
           onAiPreset={(text) => {
             setShowAi(true)
-            setAiPreset({ text, nonce: Date.now(), autoRun: true })
+            setAiPreset({ text, revision: Date.now(), autoRun: true })
           }}
           onRestartNumbering={restartNumbering}
           onContinueNumbering={continueNumbering}

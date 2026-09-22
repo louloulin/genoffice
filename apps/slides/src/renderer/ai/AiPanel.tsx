@@ -283,7 +283,7 @@ interface AiPanelProps {
       slideShot attaches a rendering of the current slide so the model sees what it's editing (AI Beautify) */
   preset?: {
     text: string
-    nonce: number
+    revision: number
     autoRun?: boolean
     displayText?: string
     attachments?: AttachmentMeta[]
@@ -1552,7 +1552,7 @@ export function AiPanel({
       inputRef.current?.focus()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset?.nonce])
+  }, [preset?.revision])
 
   // `open` dep: re-expanding lands on messages streamed while collapsed
   useEffect(() => {

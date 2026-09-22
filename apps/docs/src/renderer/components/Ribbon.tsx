@@ -213,7 +213,7 @@ interface RibbonProps {
   onDarkPage: (v: boolean) => void
   onAiPreset: (instruction: string) => void
   /** external request (e.g. native menu Page Setup) to switch to a specific tab */
-  tabRequest?: { tab: string; nonce: number } | null
+  tabRequest?: { tab: string; revision: number } | null
   header: HeaderFooter | null
   onHeader: (next: HeaderFooter) => void
   onPageNumFormat: () => void
