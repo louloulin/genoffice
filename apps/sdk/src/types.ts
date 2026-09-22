@@ -210,6 +210,23 @@ export interface CommentResolvedEvent {
   comment: Comment
 }
 
+/**
+ * Fired when a mounted sidebar panel sends a postMessage back to the
+ * editor iframe. The renderer forwards the raw `message` payload
+ * (any JSON-serialisable value the panel's JavaScript emitted).
+ *
+ * Hosts typically type-narrow on the `type` field of `message` (or
+ * whatever discriminator the panel convention uses) — the SDK does
+ * not impose a schema on the payload.
+ *
+ * (sdk1.md §B.5.1 #8 Plugin Runtime, SDK 2.0 Kestrel M3.5)
+ */
+export interface SidebarMessageEvent {
+  type: 'sidebarMessage'
+  panelId: string
+  message: unknown
+}
+
 export type EditorEvent =
   | ReadyEvent
   | SavedEvent
@@ -219,6 +236,7 @@ export type EditorEvent =
   | ClosedEvent
   | CommentAddedEvent
   | CommentResolvedEvent
+  | SidebarMessageEvent
 
 export type EditorEventName = EditorEvent['type']
 
@@ -231,6 +249,7 @@ export type EditorEventMap = {
   closed: ClosedEvent
   commentAdded: CommentAddedEvent
   commentResolved: CommentResolvedEvent
+  sidebarMessage: SidebarMessageEvent
 }
 
 export interface EditorError {
@@ -468,6 +487,43 @@ export interface EditorCommands {
    * `VersionMeta.label` field for human-readable history lists.
    */
   createSnapshot: { args: { label?: string }; result: { id: string } }
+
+  /**
+   * Mount a sidebar / taskpane plugin. The editor iframe renders an
+   * inner `<iframe src={panelUrl}>` next to the document and bridges
+   * postMessage between host ↔ panel. Returns a stable `panelId` for
+   * later unmount + postToSidebar calls.
+   *
+   * The plugin model is the same as Microsoft Office `taskpane` /
+   * WPS 「轻应用」 — the panel is just a URL the host trusts (or
+   * the user accepts). The SDK only brokers messages; it does NOT
+   * inspect panel contents.
+   *
+   * Editors that don't support taskpanes (e.g. PDF read-only viewer)
+   * reject with `code: 'UNSUPPORTED'`.
+   *
+   * (sdk1.md §B.5.1 #8 Plugin Runtime, SDK 2.0 Kestrel M3.5)
+   */
+  mountSidebar: {
+    args: { panelUrl: string; width?: number; title?: string }
+    result: { panelId: string }
+  }
+  /**
+   * Tear down a previously mounted sidebar. No-op (resolves ok) when
+   * the panelId is unknown — caller may not know whether the panel
+   * already unmounted due to a renderer crash.
+   */
+  unmountSidebar: { args: { panelId: string }; result: void }
+  /**
+   * Push a message from the host into a mounted sidebar's panel
+   * iframe. Fire-and-forget; the SDK does not wait for a reply.
+   * To receive replies, subscribe to `editor.on('sidebarMessage', …)`
+   * — the renderer forwards any postMessage the panel sends back.
+   *
+   * `message` must be JSON-serialisable; non-serialisable values
+   * throw a synchronous `DataCloneError`.
+   */
+  postToSidebar: { args: { panelId: string; message: unknown }; result: void }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

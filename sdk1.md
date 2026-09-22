@@ -2677,6 +2677,24 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
 40. **SDK 2.0 Kestrel M3 · Versions API 骨架（SDK 类型 + 后端 v1 endpoint）**（✅ 本轮）：
+41. **SDK 2.0 Kestrel M3.5 · Plugin Runtime 骨架（mountSidebar / unmountSidebar / postToSidebar + sidebarMessage 事件）**（✅ 本轮）：
+    - 闭合 §B.5.1 #8 Plugin Runtime 的 SDK 类型层 + EditorHandle wiring
+    - **SDK 类型层**（`apps/sdk/src/types.ts`）：
+      - `EditorCommands` 新增 3 个：`mountSidebar({ panelUrl, width?, title? }) → { panelId }` / `unmountSidebar({ panelId }) → void` / `postToSidebar({ panelId, message }) → void`
+      - `postToSidebar.message` 类型是 `unknown` —— 故意不锁 schema，panel 协议由 host/plugin 作者自行协商（与 WPS 轻应用 / Office taskpane 同模式）
+      - 新增 `SidebarMessageEvent` interface（type / panelId / message），加入 `EditorEvent` union + `EditorEventMap['sidebarMessage']`
+    - **SDK index**：`apps/sdk/src/index.ts` re-export `SidebarMessageEvent`
+    - **不需要 editor.ts 改代码**：`command()` 已经通过 `EditorCommands` 泛型分发，新加 3 个 command 自动可用；`on('sidebarMessage', cb)` 通过 `EditorEventMap` 自动 type-check
+    - **renderer-side follow-up**：在 apps/{docs,sheets,slides,pdf,markdown,html}/dist 各自的 postMessage listener 里实现 `mountSidebar`（iframe 内嵌 `<iframe src=panelUrl>` + postMessage 桥）/ `unmountSidebar` / `postToSidebar` / `sidebarMessage` event 转发——这是 renderer-team 工作，本轮只交付 SDK contract
+    - **测试**（`apps/sdk/test/plugin-runtime.test.ts`，NEW 10 测试）：
+      - 类型层 5 测试：mountSidebar / unmountSidebar / postToSidebar 在 EditorCommands 上的 args/result 形状 pin；SidebarMessageEvent 在 EditorEvent union + EditorEventMap 中的形状 pin
+      - 运行时 wiring 3 测试：handle.command('mountSidebar', ...) / ('postToSidebar', ...) 类型正确 + 同步拒绝（skipIframe 模式）；handle.on('sidebarMessage', cb) 注册并返回 unsubscribe
+      - 隔离 1 测试：M1（listVersions）/ M2（addComment）类型合同未被本 PR regress
+      - 用 `.rejects.toThrow()` 而不是 `.catch()` 包裹同步 reject promise —— 避免 unhandled-rejection warning
+      - SDK 11 文件 → 12 文件；119 → 129 测试（+10）
+    - **未做**（M3.5 收尾）：renderer 端实现 3 个 command handler + sidebarMessage 事件 outbound；live smoke（PORT=33002 + tmux mount/unmount/postToSidebar round-trip）；§B.5 计划里 §B.5.2 后端改动 "POST /api/v1/files/:id/export" 仍归 M4（File picker 入口未做，File Picker 留 M4）
+
+
     - 闭合 §B.5.1 #3 Versions API 全部 5 个 wire 端点 + `files:restore` 新 scope
     - **SDK 层**（`apps/sdk/src/types.ts`）：
       - 新增 `VersionMeta` interface（1:1 镜像后端 `FileVersionMeta`：id / docId / index / timestamp / size / message? / sha256）
@@ -3060,10 +3078,10 @@ off by default；`createEditor({ telemetry: true })` 启用。SDK 内部 `reques
 |---|---|---|---|
 | 1-2 | **✅ M1 — Multi-instance + Track-changes + Undo/Redo** | 1, 2 | +19 SDK 测试（11 multi-instance + 8 undo/redo；track changes backlog 至 M4+） |
 | 3-4 | **✅ M2 — Comments + Versions** | 3, 4 | +23 web-server 测试（11 store + 17 endpoint - 5 fix）；File picker backlog 至 M4 |
-| 5-6 | **🟡 M3 进行中 — Export + Plugin runtime** | 6, 8 | Versions API +14 tests（M3 续作）；Export / Sidebar runtime 留 M4 |
+| 5-6 | **🟡 M3 部分完成 — Versions + Plugin Runtime** | 8 | Versions +14 + Plugin Runtime +10 tests（M3.5 续作）；Export 留 M4 |
 | 7-8 | M4 — Telemetry + 文档 + examples + sdk1.md v2.0 段 | 9 | +6 SDK 测试 |
 
-合计已完成：~56 新测试；SDK 108 → 119；web-server 581 → 618。
+合计已完成：~66 新测试；SDK 108 → 129；web-server 581 → 618。
 
 合计 ~74 新测试；SDK 测试 108 → ~182；curl 593 → ~629。
 

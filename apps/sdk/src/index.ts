@@ -54,6 +54,7 @@ export type {
   CommentAnchor,
   CommentAddedEvent,
   CommentResolvedEvent,
+  SidebarMessageEvent,
   VersionMeta,
 } from './types'
 
