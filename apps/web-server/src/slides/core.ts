@@ -566,6 +566,25 @@ export function registerSlidesCoreHandlers(): void {
   registerHandle('slides:consume-pending-open', () => null)
   registerHandle('slides:autosave-pref', () => undefined)
 
+  // Documented renderer-owned stubs (sdk1 §11.55): these two channels
+  // are inherently desktop/browser-environment features that the server
+  // can't usefully implement.
+  //
+  //   - font-download: pulls OFL files from a CDN with sha256 verification,
+  //       writes them into the user font store. Desktop goes through the
+  //       OS font cache; web has no equivalent — the browser doesn't
+  //       expose a FontFace download path. The renderer's font-manager
+  //       detects this and uses Google Fonts CDN directly with its own
+  //       sha256 verification (same pattern as the desktop path).
+  //
+  //   - font-install-local: pulls files from a native file picker dialog
+  //       and registers them as FontFaces. The desktop has the file
+  //       dialog; the web has `<input type="file">` which the renderer
+  //       handles locally. The server has no file picker.
+  //
+  // Returning `{ ok: true }` keeps these channels registered (the
+  // renderer's font-manager checks the response and falls back to the
+  // local path; a thrown error here would break the menu even on web).
   registerHandle('slides:font-download', () => ({
     ok: true,
     message: 'Web 版本不支持字体下载',
