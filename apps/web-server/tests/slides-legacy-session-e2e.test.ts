@@ -45,7 +45,11 @@ const haveBundle = existsSync(bundlePath)
 const haveFixture = existsSync(blankTemplate)
 const skip = !haveBundle || !haveFixture
 
-const PORT = 32993
+// Random port range 32900-33999 mirrors the other e2e suites (was hardcoded
+// 32993 pre-session — root cause of the port-collision flake when any
+// other suite leaves a server listening on that exact port). The test still
+// uses a stable base URL because the suite owns the lifecycle.
+const PORT = 32993 + Math.floor(Math.random() * 1000)
 
 interface InvokeResp {
   status: number
