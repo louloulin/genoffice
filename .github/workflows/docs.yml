@@ -32,6 +32,24 @@ jobs:
       - run: npm ci
       - run: npm run docs:build
         working-directory: docs
+      # Typedoc-count explicit step (sdk1.md §11.34.4 + §A.5 backlog).
+      # `docs:build` already runs gen-typedoc.mjs; this step surfaces
+      # the count + asserts the bounds [200, 400] from
+      # apps/web-server/tests/typedoc-count.test.ts as visible CI log
+      # output rather than relying on the embedded vitest assertion.
+      # The drift between printed value and the [200, 400] window is
+      # what reviewers should watch — see §A.5 typedoc-count note.
+      - name: Assert typedoc output count is within bounds
+        working-directory: .
+        run: |
+          set -euo pipefail
+          node docs/scripts/gen-typedoc.mjs
+          count=$(find docs/api/_generated -name '*.md' | wc -l | tr -d ' ')
+          echo "[typedoc-count] generated $count .md files (bounds: 200-400)"
+          if [ "$count" -lt 200 ] || [ "$count" -gt 400 ]; then
+            echo "::error::typedoc output count $count is outside [200, 400]"
+            exit 1
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
