@@ -84,6 +84,23 @@ const editor = createEditor({
 ```
 
 web-server 会拒绝渲染编辑器，除非 URL 里的 `?nonce=` 与 `?sessionId=` 对应的服务端签发值一致。被篡改或重放的 URL 会拿到 `401 NONCE_SESSION_INVALID` 而不是编辑器 HTML。详见 `sdk1.md §11.26 / §11.27 / §11.28`。
+
+iframe **挂载后**要审计，把 `createEmbedNonce()` 和 `verifyEmbedNonce()` 配对使用：
+
+```ts
+import { verifyEmbedNonce } from '@genoffice/web-sdk'
+
+const audit = await verifyEmbedNonce({
+  sessionId, nonce, host: 'https://genoffice.app', jwt: 'eyJ…',
+})
+if (!audit.valid) {
+  // iframe 被篡改 / proxy 重放 / session 已过期
+  editor.destroy()
+  showBanner('编辑器完整性校验失败')
+}
+```
+
+`verifyEmbedNonce()` 成功返 `{valid:true, expiresAt}`，失败返 `{valid:false, reason:'unknown'|'expired'}`——失败不抛错，只有 HTTP / 网络 / 解析错误才抛。详见 `sdk1.md §11.29`。
 | `<script src=…>` | 没有构建管线（CMS / 无打包工具的老项目）。 |
 
 ## 类型化 API

@@ -311,3 +311,63 @@ export interface CreateEmbedNonceError {
   /** HTTP status code when the failure was HTTP-driven. */
   status?: number
 }
+
+/**
+ * Result of `verifyEmbedNonce()`. `valid: true` means the server knew
+ * the nonce when the iframe was opened AND the URL nonce matches the
+ * minted value; `valid: false` means either the sessionId is unknown
+ * (reason: 'unknown') or the session has expired (reason: 'expired').
+ *
+ * This is the symmetric counterpart to `createEmbedNonce()`. The
+ * recommended lifecycle:
+ *   1. `await createEmbedNonce({...})` — mint a session, get embedUrl
+ *   2. Mount the iframe with the embedUrl
+ *   3. Wait for the iframe's `ready` postMessage event
+ *   4. `await verifyEmbedNonce({...same args as step 1, plus the
+ *      sessionId/nonce from step 1})` — audit that the server knew
+ *      the nonce (defense-in-depth: even if the SDK's client-side
+ *      nonce check is bypassed, the server confirms).
+ */
+export interface VerifyEmbedNonceResult {
+  valid: boolean
+  /** Present only when `valid: false`. */
+  reason?: 'unknown' | 'expired'
+  /** Epoch milliseconds (UTC). Present only when `valid: true`. */
+  expiresAt?: number
+}
+
+/**
+ * Error envelope thrown by `verifyEmbedNonce()`. Same vocabulary as
+ * `CreateEmbedNonceError` for the 401/403/5xx/network/parse cases;
+ * a verification failure is a normal `valid: false` result, not an
+ * error.
+ */
+export interface VerifyEmbedNonceError {
+  code:
+    | 'AUTH_FAILED'
+    | 'FORBIDDEN'
+    | 'VERIFY_FAILED'
+    | 'NETWORK_ERROR'
+    | 'INVALID_RESPONSE'
+  message: string
+  /** HTTP status code when the failure was HTTP-driven. */
+  status?: number
+}
+
+/**
+ * Arguments to `verifyEmbedNonce()`. Most fields are required so a
+ * caller can't accidentally pass nothing — that would defeat the
+ * audit purpose.
+ */
+export interface VerifyEmbedNonceOptions {
+  /** Session id from a previous `createEmbedNonce()` call. */
+  sessionId: string
+  /** Nonce from the same `createEmbedNonce()` call. */
+  nonce: string
+  /** GenOffice web-server origin. e.g. `https://genoffice.app`. */
+  host: string
+  /** JWT with `files:read` scope. */
+  jwt: string
+  /** Override the fetch implementation (used in tests). */
+  fetchImpl?: typeof fetch
+}

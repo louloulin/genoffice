@@ -86,6 +86,23 @@ const editor = createEditor({
 
 The web-server will refuse to render the editor unless the URL `?nonce=` matches the server-minted one for `?sessionId=`. Tampered or replayed URLs get `401 NONCE_SESSION_INVALID` instead of the editor HTML. See `sdk1.md §11.26 / §11.27 / §11.28` for the protocol details.
 
+To audit the iframe **after** it's mounted, pair `createEmbedNonce()` with `verifyEmbedNonce()`:
+
+```ts
+import { verifyEmbedNonce } from '@genoffice/web-sdk'
+
+const audit = await verifyEmbedNonce({
+  sessionId, nonce, host: 'https://genoffice.app', jwt: 'eyJ…',
+})
+if (!audit.valid) {
+  // iframe was tampered / proxy-replayed / session expired
+  editor.destroy()
+  showBanner('Editor integrity check failed')
+}
+```
+
+`verifyEmbedNonce()` returns `{valid:true, expiresAt}` on success or `{valid:false, reason:'unknown'|'expired'}` on failure — failures are not throws, only HTTP / network / parse errors are. See `sdk1.md §11.29`.
+
 ## Typed Surface
 
 | Event | Fires when |

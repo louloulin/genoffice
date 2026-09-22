@@ -34,6 +34,9 @@ import type {
   CreateEmbedNonceOptions,
   CreateEmbedNonceResult,
   CreateEmbedNonceError,
+  VerifyEmbedNonceOptions,
+  VerifyEmbedNonceResult,
+  VerifyEmbedNonceError,
 } from './types'
 import { buildEmbedUrl } from './embed-url'
 // crypto.getRandomValues is in scope for both browser and modern Node;
@@ -459,5 +462,103 @@ function makeNonceError(
   message: string,
   status?: number,
 ): CreateEmbedNonceError {
+  return status !== undefined ? { code, message, status } : { code, message }
+}
+
+/**
+ * Audit that the web-server knew the (sessionId, nonce) pair when the
+ * iframe was opened. The server only retains nonces it issued itself
+ * via `createEmbedNonce()` (or directly via `POST /api/v1/embed/nonce`),
+ * so a tampered iframe — even one whose bridge successfully echoed the
+ * right nonce — will fail this check because its sessionId was never
+ * minted by the server.
+ *
+ * Typical lifecycle:
+ *   1. `await createEmbedNonce({...})`  → get `{embedUrl, sessionId, nonce}`
+ *   2. Mount `<iframe src={embedUrl}>` and wait for `ready` postMessage
+ *   3. `await verifyEmbedNonce({sessionId, nonce, host, jwt})`
+ *      → if `valid: true`, the iframe is trustworthy
+ *      → if `valid: false`, treat the iframe as suspicious (e.g.
+ *        destroy it, dispatch an error event, surface a banner)
+ *
+ * This helper only returns `true` / `false` from the server's
+ * perspective; it does NOT inspect the iframe's postMessage itself —
+ * that responsibility still lives in `createEditor()` (the
+ * §11.20 client-side nonce check).
+ *
+ * Throws a `VerifyEmbedNonceError` on HTTP / network / parse failures.
+ * A verification failure (`valid: false`) is a normal successful return,
+ * NOT a throw.
+ */
+export async function verifyEmbedNonce(
+  options: VerifyEmbedNonceOptions,
+): Promise<VerifyEmbedNonceResult> {
+  if (!options) throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: options required')
+  if (!options.sessionId) throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: sessionId required')
+  if (!options.nonce) throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: nonce required')
+  if (!options.host) throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: host required')
+  if (!options.jwt) throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: jwt required')
+
+  const f = options.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : null)
+  if (!f) throw makeVerifyError('NETWORK_ERROR', 'verifyEmbedNonce: no fetch implementation available')
+
+  const url = `${options.host.replace(/\/$/, '')}/api/v1/embed/verify-nonce`
+  let res: Response
+  try {
+    res = await f(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${options.jwt}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ sessionId: options.sessionId, nonce: options.nonce }),
+    })
+  } catch (err) {
+    throw makeVerifyError(
+      'NETWORK_ERROR',
+      `verifyEmbedNonce: network error — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  if (res.status === 401) {
+    throw makeVerifyError('AUTH_FAILED', 'verifyEmbedNonce: 401 Unauthorized', 401)
+  }
+  if (res.status === 403) {
+    throw makeVerifyError('FORBIDDEN', 'verifyEmbedNonce: 403 Forbidden', 403)
+  }
+  if (!res.ok) {
+    throw makeVerifyError('VERIFY_FAILED', `verifyEmbedNonce: ${res.status} ${res.statusText}`, res.status)
+  }
+
+  let body: { valid?: unknown; reason?: unknown; expiresAt?: unknown }
+  try {
+    body = (await res.json()) as typeof body
+  } catch (err) {
+    throw makeVerifyError(
+      'INVALID_RESPONSE',
+      `verifyEmbedNonce: response not JSON — ${err instanceof Error ? err.message : String(err)}`,
+      res.status,
+    )
+  }
+  if (body.valid !== true && body.valid !== false) {
+    throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: response missing valid:true|false', res.status)
+  }
+  if (body.valid === false) {
+    if (body.reason !== 'unknown' && body.reason !== 'expired') {
+      throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: invalid reason field', res.status)
+    }
+    return { valid: false, reason: body.reason }
+  }
+  if (typeof body.expiresAt !== 'number') {
+    throw makeVerifyError('INVALID_RESPONSE', 'verifyEmbedNonce: response missing expiresAt', res.status)
+  }
+  return { valid: true, expiresAt: body.expiresAt }
+}
+
+function makeVerifyError(
+  code: VerifyEmbedNonceError['code'],
+  message: string,
+  status?: number,
+): VerifyEmbedNonceError {
   return status !== undefined ? { code, message, status } : { code, message }
 }
