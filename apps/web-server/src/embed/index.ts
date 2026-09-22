@@ -34,6 +34,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { verifyJwtWithRevocation } from '../api/v1/auth'
 import { WEB_SERVER_VERSION } from '../common/version'
+import { verifyEmbedNonce } from './nonce-store'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APPS } from '../common/index'
@@ -132,6 +133,7 @@ function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
     toolbar: url.searchParams.get('toolbar'),
     title: url.searchParams.get('title'),
     nonce: url.searchParams.get('nonce'),
+    sessionId: url.searchParams.get('sessionId'),
   }
 }
 
@@ -317,6 +319,34 @@ export function handleEmbed(request: IncomingMessage, response: ServerResponse, 
       },
     }))
     return true
+  }
+
+  // Optional server-side nonce session binding (sdk1.md §11.27). When
+  // the host supplied a sessionId, confirm the URL nonce matches the
+  // server-minted one. Absent sessionId keeps the legacy client-only
+  // check from §11.20 — backwards compatible.
+  if (parsed.sessionId) {
+    if (!parsed.nonce) {
+      response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({
+        error: {
+          message: 'sessionId present without nonce',
+          code: 'INVALID_ARGUMENT',
+        },
+      }))
+      return true
+    }
+    const session = verifyEmbedNonce(parsed.sessionId, parsed.nonce)
+    if (!session.found) {
+      response.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({
+        error: {
+          message: `nonce session ${session.reason}`,
+          code: 'NONCE_SESSION_INVALID',
+        },
+      }))
+      return true
+    }
   }
 
   const docId = decodeURIComponent(url.pathname.replace(/^\/embed\//, '').split('/')[0] ?? '')

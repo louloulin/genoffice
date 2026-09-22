@@ -1976,6 +1976,48 @@ SDK (host page)                 bash
 #### 11.26.4 后续观察
 
 - **真正接入 embed handler**（§M）：让 `/embed/:docId` 在 `?sessionId=` 存在时校验 `?nonce=` 与 store 一致，否则 401。这是真正的端到端 defense-in-depth，但会引入新 breaking change，留给 M 阶段
+
+### 11.27 本轮续作（v2 第 22 轮 commit，2026-09-22）
+
+把 §11.26 server-side nonce session binding **真接入 embed handler**：当 host URL 携带 `?sessionId=` 时，handler 主动查 store 校验 `?nonce=` 匹配，否则 401。这把 v1 endpoints 从"audit 工具"升级成"主动 gate"——攻击者 patched SDK 或 proxy 了 iframe，server 仍然拒绝渲染。
+
+#### 11.27.1 落实
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/embed/index.ts` | `EmbedQuery` 加 `sessionId: string \| null` 字段 + JSDoc；`parseEmbedQuery` 多一行 `sessionId: url.searchParams.get('sessionId')`；`handleEmbed` 在 `verifyEmbedToken` 通过后、`resolveAppIndex` 之前插入 3 段守卫：`sessionId` 存在但无 `nonce` → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found === false` → 401 NONCE_SESSION_INVALID（含 `reason: 'unknown'` 或 `'expired'` 文案）|
+| `apps/web-server/tests/embed-nonce-handler.test.ts` | **新增 · 203 行 · 6 测试**：valid sessionId+nonce 走 200 / mismatched nonce 401 / unknown sessionId 401 / expired session 401（message 含 `expired`）/ sessionId 无 nonce 400 / legacy 无 sessionId 仍走 200（向后兼容）|
+
+#### 11.27.2 设计要点
+
+- **Opt-in 设计**：只有当 URL 含 `?sessionId=` 时才校验；老集成（不带 sessionId）继续走 §11.20 client-only 路径，不破 backward compat。这是真正的 zero-migration upgrade
+- **错误码三档**：
+  - `400 INVALID_ARGUMENT`：sessionId 存在但缺 nonce（host SDK bug）
+  - `401 NONCE_SESSION_INVALID reason:unknown`：sessionId 不在 store（未 mint / 已 LRU 淘汰 / forged）
+  - `401 NONCE_SESSION_INVALID reason:expired`：sessionId 存在但 ttl 到期（host SDK mint 后太久才用）
+- **失败也是 200 的 verify-nonce vs 真 401 的 embed handler**：v1 `/verify-nonce` endpoint 失败返 `200 {valid:false}`（SDK branch 用），但 embed handler 失败返 401（HTTP gate 用）。语义不同，不要混
+- **test 中的 `[200, 503]` 容差**：handler 成功路径可能是 200（dist 已构建）或 503（dist 缺失）；本测试只关心**不应该是 401 / 400**，所以接受 [200, 503]
+- **`vi.mock('../src/common/index', () => ({ APPS: APPS_MOCK }))`**：和 embed-jwt-validation.test.ts 同样的 mock 模式，让 handler 不会因为 APPS 模块未挂载而炸
+
+#### 11.27.3 验证
+
+- `npx vitest run apps/web-server/tests/embed-nonce-handler.test.ts`：6/6 通过（664ms）
+- 关键路径回归 6 文件 / 57 pass / 1 skip（embed-jwt-validation + embed-nonce-roundtrip + embed-nonce-session + embed-nonce-handler + atomic + scope-gate）
+- live smoke（PORT=32998 + GENOFFICE_JWT_SECRET）：
+  - valid sessionId+nonce → `200` ✓
+  - mismatched nonce → `401 {"error":{"message":"nonce session unknown","code":"NONCE_SESSION_INVALID"}}` ✓
+  - unknown sessionId → 同上 ✓
+  - sessionId 无 nonce → `400 {"error":{"message":"sessionId present without nonce","code":"INVALID_ARGUMENT"}}` ✓
+  - legacy 无 sessionId → `200`（向后兼容）✓
+
+#### 11.27.4 后续观察
+
+- **SDK 端 `createEmbedNonce()` helper**（§M）：让集成商少写 5 行；本期不做
+- **§M 阶段候选工作**：
+  - SDK `createEmbedNonce()` + 自动注入 sessionId 到 URL
+  - v1 `/embed/nonce` 加 rate limit（防单 IP 大量 mint 撑爆 LRU）
+  - embed handler 在 store hit 时把 nonce TTL 续期（"active session" 语义）
+- **真正的 attack drill**：当前没造 e2e fuzz 测试（forge URL 各种 sessionId 组合）；本期覆盖 happy + 4 个 rejection case 已足够
 - **SDK 端 `createEmbedNonce()` helper**：可以加一个 SDK helper `await createEmbedNonce({docId, host, jwt})` 包 mint + buildEmbedUrl 调用，让集成商少写 5 行；本期不做（SDK 端 scope 是 v0.9.x work）
 - **server-side 持久化**：当前 store 是 process-local，restart 后所有 session 失效，host SDK 会看到 `valid:false` 但不影响 graceful degradation；要持久化得引入 Redis，本期不做
 
@@ -2222,6 +2264,7 @@ SDK (host page)                 bash
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
 25. **renderer-internal `nonce` 字段统一重命名为 `revision`**（✅ 本轮 §11.25）：renderer 里 `nonce: Date.now()` 字段实际是 React re-trigger 计数器（useEffect deps / React key），不是 crypto nonce；与 SDK handshake nonce (`apps/sdk/src/editor.ts`) 同名造成 code review / grep 误判。改名范围严格限定在 renderer-internal React state shape：`packages/ui/src/find-panel.tsx` 的 `FindFocusRequest.nonce` + apps/{docs,html,pdf,slides,markdown}/src/renderer 下的 useState/setState/useEffect/key deps （AiPreset / hoverAnim / anim / morph / findFocus / previewVersion / ribbonTabRequest 8 种 shape）。SDK handshake nonce（`apps/sdk/src/editor.ts`）/ web-bridge nonce（`apps/web-server/src/embed/index.ts`）/ `<iframe>` CSP nonce / docs `FindPanel.focusReplaceNonce` prop 全部不动（向后兼容 / 公共 API）。19 文件 / ~78 处编辑；`grep -rn "nonce" apps/*/src/renderer packages/ui/src` 仅剩法语 `annonce` 一词。
 24. **`CreateEditorOptions` doc typo 修复 + container contract 回归测试**（✅ 本轮 §11.24）：`apps/sdk/src/types.ts` 旧 JSDoc 提到 `containerElement` 字段，但接口里**根本没有**这个字段（早期迭代残留笔误），集成商按字面 join 后会在生产环境遇到 TS 编译报错。修正为"Provide exactly one of `container` or `url`"+ 明确"无 separate containerElement field，直接通过 `container` 传元素"。新增 `apps/sdk/test/container-resolve.test.ts`（6 测试）：source-grep 守门（`containerElement` 只允许出现 1 次在 denial comment）+`createEditor()` no-opts 抛 `options required` +缺 `documentId` / `jwt` / `host` 各抛结构化错误 +Node 环境无 container 抛 `container required when document is not available`。私有 helper `resolveContainer` 通过 public `createEditor` 的 runtime guard 间接验证，避免泄漏内部 API。
@@ -2237,7 +2280,7 @@ SDK (host page)                 bash
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session）| 68 | 528 | ✅ |
+| web-server（含 .../embed-nonce-roundtrip / typedoc-count / version-sot / embed-nonce-session / embed-nonce-handler）| 69 | 534 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -2256,12 +2299,12 @@ SDK (host page)                 bash
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **178** | **4338** | ✅ |
+| **总计** | **179** | **4344** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
 web-server bundle 28.5 MB / `health` 200 / 551 IPC channels / marketplace boot 日志 OK。
-新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
+新增测试覆盖：plugin-fallback 路由（6）、marketplace → registry → chat/stream e2e（2）、webhook HMAC 签名（5）、JWT RBAC scope（9）、SDK iframe handshake + origin allowlist（20）、SDK container contract + createEditor runtime guards（6）、embed server-side nonce ↔ session binding（13）、embed handler session gate（6）、文件版本历史（9）、saved/dirtyChanged SSE 广播（6）、@public typedoc 标注 source-grep（3）。
 
 ---
 
