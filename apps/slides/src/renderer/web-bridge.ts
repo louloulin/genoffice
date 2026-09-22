@@ -20,6 +20,7 @@ import {
 } from '@genoffice/ipc-bridge/web-native'
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
+import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import {
   createSlidesApi,
   createSlidesFilesApi,
@@ -42,7 +43,7 @@ if (!isElectronRuntime()) {
    * commands that are pure browser operations — `openFileDialog` (file
    * input → base64 PickedFile[]) and `print`. App-specific commands that
    * need the live editor model are added here as the renderer wires them. */
-  installSdkCommandSink({ handlers: defaultSdkCommandHandlers() })
+  installTextBufferSink()
   const transport = createHttpIpcTransport()
   const files = createWebFileBridge(transport)
   // SAFETY: lib.dom's `window` has no `slidesApi` / `slidesFilesApi` /

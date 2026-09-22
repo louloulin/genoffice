@@ -129,14 +129,21 @@ export function installTextBufferSink(options?: {
   extraHandlers?: Record<string, (args: unknown) => unknown>
 }): SdkCommandSinkHandle {
   const buffer = resolveBuffer(options?.target)
-  return installLiveModelSink({
-    target: options?.target,
+  // exactOptionalPropertyTypes: true — strip undefined optional props
+  // before delegating so monorepo tsconfigs don't trip TS2379.
+  const base: {
+    adapter: import('./sdk-command-sink').SdkLiveModelAdapter
+    extraHandlers?: Record<string, (args: unknown) => unknown>
+    target?: BufferTarget
+  } = {
     adapter: {
       getText: () => buffer.getText(),
       getBytes: () => buffer.getBytes(),
       setText: (t) => buffer.replaceAll(t),
       insertText: (t) => buffer.insertAt(buffer.getCursor(), t),
     },
-    extraHandlers: options?.extraHandlers,
-  })
+  }
+  if (options?.target !== undefined) base.target = options.target
+  if (options?.extraHandlers !== undefined) base.extraHandlers = options.extraHandlers
+  return installLiveModelSink(base)
 }

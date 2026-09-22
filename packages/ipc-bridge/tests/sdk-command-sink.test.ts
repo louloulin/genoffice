@@ -262,6 +262,21 @@ describe('all six renderers wire the sink (sdk1.md §11.36)', () => {
   const APPS = ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html'] as const
   const repoRoot = resolve(__dirname, '..', '..', '..')
 
+  // Each renderer's web-bridge must (a) import the installer from this
+  // package (or its sibling `text-buffer-adapter`) and (b) install the
+  // sink inside the non-Electron bootstrap. Either wiring is valid:
+  //
+  //   installSdkCommandSink({ handlers: defaultSdkCommandHandlers() })
+  //     -- ship the SDK defaults only (openFileDialog + print); host's
+  //        commands that need the live editor model return UNSUPPORTED.
+  //
+  //   installTextBufferSink()
+  //     -- ship SDK defaults + a text-buffer adapter that fulfils
+  //        setContent / getContent / insertText (sdk1.md §11.36.5).
+  //
+  // Either pattern satisfies §11.36 — the test only asserts that *one*
+  // of them is present so a future agent cannot silently regress all
+  // six editors to a non-installing state.
   for (const app of APPS) {
     it(`${app}/src/renderer/web-bridge.ts installs the sink inside the web-only branch`, () => {
       const source = readFileSync(
@@ -269,11 +284,12 @@ describe('all six renderers wire the sink (sdk1.md §11.36)', () => {
         'utf8',
       )
       expect(source).toContain("from '@genoffice/ipc-bridge/sdk-command-sink'")
-      expect(source).toContain(
-        'installSdkCommandSink({ handlers: defaultSdkCommandHandlers() })',
-      )
+      const usesBufferSink = source.includes('installTextBufferSink(')
+      const usesLegacySink = source.includes('installSdkCommandSink({ handlers: defaultSdkCommandHandlers() })')
+      expect(usesBufferSink || usesLegacySink).toBe(true)
       const guardIdx = source.indexOf('if (!isElectronRuntime())')
-      const installIdx = source.indexOf('installSdkCommandSink({')
+      const installToken = usesBufferSink ? 'installTextBufferSink(' : 'installSdkCommandSink({'
+      const installIdx = source.indexOf(installToken)
       expect(guardIdx).toBeGreaterThan(-1)
       expect(installIdx).toBeGreaterThan(guardIdx)
     })

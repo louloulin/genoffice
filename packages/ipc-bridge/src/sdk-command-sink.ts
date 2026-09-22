@@ -346,12 +346,17 @@ export function installLiveModelSink(options: {
   extraHandlers?: Record<string, SdkCommandHandler>
   target?: SdkCommandSinkTarget
 }): SdkCommandSinkHandle {
-  return installSdkCommandSink({
-    target: options.target,
+  // exactOptionalPropertyTypes: true treats `key: undefined` differently
+  // from a missing key. Strip undefineds before delegating so apps with
+  // `tsconfig.compilerOptions.exactOptionalPropertyTypes: true` (the
+  // monorepo default) don't trip TS2379 here.
+  const base: InstallSdkCommandSinkOptions = {
     handlers: {
       ...defaultSdkCommandHandlers(),
       ...makeLiveModelHandlers(options.adapter),
       ...(options.extraHandlers ?? {}),
     },
-  })
+  }
+  if (options.target !== undefined) base.target = options.target
+  return installSdkCommandSink(base)
 }
