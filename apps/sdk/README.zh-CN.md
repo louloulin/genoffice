@@ -115,6 +115,66 @@ editor.on('closed', () => {
 ```
 
 详见 `sdk1.md §11.30` 的 DELETE-style endpoint 契约。
+
+### 一体化：`createEditor({ sessionBinding })`（v2 §11.32）
+
+不想手动在 unmount handler 里调 `releaseEmbedNonce()` 时，把 `(sessionId, nonce)` 通过 `sessionBinding` 回传给 `createEditor()`。SDK 会：
+
+1. 把 `?sessionId=…&nonce=…` 拼到 iframe URL（SDK 自己拼 URL 时）；
+2. 把 server-minted nonce 当作 handshake nonce（不再生成第二个随机数）；
+3. `destroy()` 自动调 `releaseEmbedNonce()`（fire-and-forget——失败被吞掉，5 min TTL 是兜底）。
+
+```ts
+import { createEmbedNonce, createEditor } from '@genoffice/web-sdk'
+
+const { embedUrl, sessionId, nonce } = await createEmbedNonce({
+  documentId: 'doc_abc',
+  app: 'docs',
+  jwt: 'eyJ…',
+  host: 'https://genoffice.app',
+})
+
+const editor = createEditor({
+  documentId: 'doc_abc',
+  app: 'docs',
+  jwt: 'eyJ…',
+  host: 'https://genoffice.app',
+  url: embedUrl,
+  container: '#genoffice-mount',
+  // 把 mint 出来的 session 传回来；destroy() 自动释放
+  sessionBinding: { sessionId, nonce },
+})
+
+// 不需要再手动调 releaseEmbedNonce——destroy() 已经做了
+editor.destroy()
+```
+
+如果想自己管理 release（比如从在 `destroy()` 之后才触发的 page-unload handler 里释放），传 `autoRelease: false`：
+
+```ts
+sessionBinding: { sessionId, nonce, autoRelease: false }
+```
+
+### 挂载后审计：`verifyEmbedSession()`（v2 §11.32）
+
+`verifyEmbedNonce()` 的同义别名——同样的协议、同样的返回值；换个名字让它在 `mint → mount → audit → release` 这条调用链里读起来更顺：
+
+```ts
+import { verifyEmbedSession } from '@genoffice/web-sdk'
+
+editor.on('ready', async () => {
+  const audit = await verifyEmbedSession({
+    sessionId, nonce, host: 'https://genoffice.app', jwt: 'eyJ…',
+  })
+  if (!audit.valid) {
+    editor.destroy()
+    showBanner('编辑器完整性校验失败')
+  }
+})
+```
+
+`verifyEmbedNonce()` 与 `verifyEmbedSession()` 走的是同一个 `POST /api/v1/embed/verify-nonce` endpoint；按调用现场读起来顺手的那个名字选。
+
 | `<script src=…>` | 没有构建管线（CMS / 无打包工具的老项目）。 |
 
 ## 类型化 API

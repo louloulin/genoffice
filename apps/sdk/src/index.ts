@@ -8,7 +8,7 @@
  * REST API; the SDK only consumes the resulting token.
  */
 
-export { createEditor, createEmbedNonce, verifyEmbedNonce, releaseEmbedNonce } from './editor'
+export { createEditor, createEmbedNonce, verifyEmbedNonce, verifyEmbedSession, releaseEmbedNonce } from './editor'
 export { buildEmbedUrl } from './embed-url'
 export type { EmbedUrlInput } from './embed-url'
 
@@ -32,6 +32,18 @@ export type {
   AiRewriteArgs,
   AiTranslateArgs,
   AiSummarizeArgs,
+  CreateEmbedNonceError,
+  CreateEmbedNonceOptions,
+  CreateEmbedNonceResult,
+  VerifyEmbedNonceError,
+  VerifyEmbedNonceOptions,
+  VerifyEmbedNonceResult,
+  VerifyEmbedSessionError,
+  VerifyEmbedSessionOptions,
+  VerifyEmbedSessionResult,
+  ReleaseEmbedNonceError,
+  ReleaseEmbedNonceOptions,
+  ReleaseEmbedNonceResult,
   ReadyEvent,
   SavedEvent,
   DirtyChangedEvent,

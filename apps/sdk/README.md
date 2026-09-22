@@ -117,6 +117,65 @@ editor.on('closed', () => {
 
 See `sdk1.md §11.30` for the DELETE-style endpoint contract.
 
+### All-in-one: `createEditor({ sessionBinding })` (v2 §11.32)
+
+If you don't want to wire `releaseEmbedNonce()` into your unmount handler by hand, pass the `(sessionId, nonce)` pair back into `createEditor()` via `sessionBinding`. The SDK will:
+
+1. Stamp `?sessionId=…&nonce=…` onto the iframe URL (when it builds the URL itself).
+2. Reuse the server-minted nonce as the handshake nonce (no second random generation).
+3. Auto-call `releaseEmbedNonce()` from `destroy()` (fire-and-forget — failures are swallowed because the 5-min TTL is the safety net).
+
+```ts
+import { createEmbedNonce, createEditor } from '@genoffice/web-sdk'
+
+const { embedUrl, sessionId, nonce } = await createEmbedNonce({
+  documentId: 'doc_abc',
+  app: 'docs',
+  jwt: 'eyJ…',
+  host: 'https://genoffice.app',
+})
+
+const editor = createEditor({
+  documentId: 'doc_abc',
+  app: 'docs',
+  jwt: 'eyJ…',
+  host: 'https://genoffice.app',
+  url: embedUrl,
+  container: '#genoffice-mount',
+  // Pass the minted session back in; destroy() will release it.
+  sessionBinding: { sessionId, nonce },
+})
+
+// No need to manually wire releaseEmbedNonce — destroy() does it.
+editor.destroy()
+```
+
+Pass `autoRelease: false` if you want to manage release yourself (e.g. release from a global page-unload handler that fires after `destroy()`):
+
+```ts
+sessionBinding: { sessionId, nonce, autoRelease: false }
+```
+
+### Auditing after mount: `verifyEmbedSession()` (v2 §11.32)
+
+A more lifecycle-friendly alias for `verifyEmbedNonce()`. Same wire protocol, same return shape; the distinct name reads better in the `mint → mount → audit → release` flow:
+
+```ts
+import { verifyEmbedSession } from '@genoffice/web-sdk'
+
+editor.on('ready', async () => {
+  const audit = await verifyEmbedSession({
+    sessionId, nonce, host: 'https://genoffice.app', jwt: 'eyJ…',
+  })
+  if (!audit.valid) {
+    editor.destroy()
+    showBanner('Editor integrity check failed')
+  }
+})
+```
+
+Use either `verifyEmbedNonce()` or `verifyEmbedSession()` — they're aliases over the same `POST /api/v1/embed/verify-nonce` endpoint. Pick the one that reads better at your call site.
+
 ## Typed Surface
 
 | Event | Fires when |

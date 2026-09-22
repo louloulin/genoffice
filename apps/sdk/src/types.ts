@@ -102,6 +102,43 @@ export interface CreateEditorOptions {
    * Has no effect when `handshake: false`.
    */
   handshakeTimeoutMs?: number
+
+  /**
+   * Optional server-side nonce session binding (sdk1.md §11.32).
+   *
+   * Pass a `(sessionId, nonce)` pair minted by `createEmbedNonce()` (or
+   * any equivalent `POST /api/v1/embed/nonce` consumer) to enable the
+   * defense-in-depth handshake: the web-server's embed handler will
+   * refuse to render the editor unless the URL nonce matches the
+   * server-minted one (sdk1.md §11.27). When set, the iframe URL is
+   * automatically extended with `?sessionId=…&nonce=…`.
+   *
+   * If `autoRelease` is true (default), the SDK will automatically call
+   * `releaseEmbedNonce()` when `destroy()` is invoked (fire-and-forget
+   * — release failures don't surface to the host). Set `autoRelease:
+   * false` if the host manages its own release lifecycle (e.g. to call
+   * release from an unmount handler that runs after destroy).
+   *
+   * The SDK does NOT mint the session for you — call `createEmbedNonce()`
+   * first, then pass the result here. This keeps `createEditor()` free of
+   * async setup work and lets the host decide whether to opt into the
+   * server-side path at all.
+   *
+   *   const { embedUrl, sessionId, nonce } = await createEmbedNonce({...})
+   *   const editor = createEditor({
+   *     url: embedUrl,
+   *     sessionBinding: { sessionId, nonce, autoRelease: true },
+   *     ...rest
+   *   })
+   *
+   * See sdk1.md §11.28 + §11.29 + §11.32 for the underlying helpers.
+   */
+  sessionBinding?: {
+    sessionId: string
+    nonce: string
+    /** Default true — release on destroy. */
+    autoRelease?: boolean
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -370,6 +407,47 @@ export interface VerifyEmbedNonceOptions {
   jwt: string
   /** Override the fetch implementation (used in tests). */
   fetchImpl?: typeof fetch
+}
+
+/**
+ * Symmetric counterpart to `verifyEmbedNonce()` (sdk1.md §11.32). Kept as
+ * a separate name for clarity in host code:
+ *
+ *   const ok = await verifyEmbedSession({ sessionId, nonce, host, jwt })
+ *
+ * `verifyEmbedSession()` and `verifyEmbedNonce()` share the same wire
+ * protocol (`POST /api/v1/embed/verify-nonce`) and return shape; the
+ * distinct name signals that this is the audit step in the
+ * `createEmbedNonce → mount iframe → audit → destroy` lifecycle, while
+ * `verifyEmbedNonce()` is the lower-level check you can call anytime
+ * given any (sessionId, nonce) pair.
+ *
+ * Returns `{ valid: true, expiresAt }` or `{ valid: false, reason }`;
+ * transport-level failures throw a `VerifyEmbedSessionError`.
+ */
+export interface VerifyEmbedSessionOptions {
+  sessionId: string
+  nonce: string
+  host: string
+  jwt: string
+  fetchImpl?: typeof fetch
+}
+
+export interface VerifyEmbedSessionResult {
+  valid: boolean
+  reason?: 'unknown' | 'expired'
+  expiresAt?: number
+}
+
+export interface VerifyEmbedSessionError {
+  code:
+    | 'AUTH_FAILED'
+    | 'FORBIDDEN'
+    | 'VERIFY_FAILED'
+    | 'NETWORK_ERROR'
+    | 'INVALID_RESPONSE'
+  message: string
+  status?: number
 }
 
 /**

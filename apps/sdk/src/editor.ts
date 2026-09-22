@@ -37,6 +37,9 @@ import type {
   VerifyEmbedNonceOptions,
   VerifyEmbedNonceResult,
   VerifyEmbedNonceError,
+  VerifyEmbedSessionOptions,
+  VerifyEmbedSessionResult,
+  VerifyEmbedSessionError,
   ReleaseEmbedNonceOptions,
   ReleaseEmbedNonceResult,
   ReleaseEmbedNonceError,
@@ -121,8 +124,29 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   if (!options.jwt) throw new Error('createEditor: jwt required')
   if (!options.host) throw new Error('createEditor: host required')
 
+  // Validate sessionBinding eagerly (sdk1.md §11.32). Surface the error
+  // synchronously so a typo doesn't manifest later as a 401 from the
+  // embed handler.
+  const sessionBinding = options.sessionBinding
+  if (sessionBinding) {
+    if (!sessionBinding.sessionId) {
+      throw new Error('createEditor: sessionBinding.sessionId required when sessionBinding is set')
+    }
+    if (!sessionBinding.nonce) {
+      throw new Error('createEditor: sessionBinding.nonce required when sessionBinding is set')
+    }
+  }
+  // Auto-release defaults to true so the host doesn't have to wire up
+  // an explicit release from its unmount handler.
+  const autoRelease = sessionBinding?.autoRelease !== false
+
   const handshakeEnabled = options.handshake !== false // default true
-  const expectedNonce = handshakeEnabled ? makeNonce() : null
+  // When a sessionBinding is supplied we use the server-minted nonce as
+  // the handshake expected value — there's no point generating a fresh
+  // client nonce, the server already knows the one we're echoing.
+  const expectedNonce = handshakeEnabled
+    ? (sessionBinding?.nonce ?? makeNonce())
+    : null
   const embedUrl = options.url ?? buildEmbedUrl({
     host: options.host,
     documentId: options.documentId,
@@ -134,6 +158,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     toolbar: options.toolbar,
     features: options.features,
     ...(expectedNonce ? { nonce: expectedNonce } : {}),
+    ...(sessionBinding?.sessionId ? { sessionId: sessionBinding.sessionId } : {}),
   })
 
   let iframe: HTMLIFrameElement | null = null
@@ -290,6 +315,29 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     listeners.clear()
     if (iframe?.parentNode) iframe.parentNode.removeChild(iframe)
     iframe = null
+    // Auto-release the server-side nonce session (sdk1.md §11.32). Fire
+    // and forget — destroy() must stay synchronous; release failures
+    // are observable only via the returned promise from `releaseEmbedNonce`
+    // which is intentionally dropped here. The LRU + 5-min TTL guarantees
+    // the slot is freed eventually even if release itself fails (network
+    // outage, server down, etc.).
+    if (autoRelease && sessionBinding?.sessionId) {
+      // Fire-and-forget: a `.catch(() => {})` is mandatory so a transient
+      // network failure on destroy() doesn't surface as an unhandled
+      // rejection in the host page. The LRU + 5-min TTL guarantees the
+      // slot is freed eventually even if release itself fails (network
+      // outage, server down, etc.).
+      try {
+        releaseEmbedNonce({
+          sessionId: sessionBinding.sessionId,
+          host: options.host,
+          jwt: options.jwt,
+        }).catch(() => {})
+      } catch {
+        // releaseEmbedNonce is sync-throw only when options is missing;
+        // sessionBinding is validated above so this branch is defensive.
+      }
+    }
   }
 
   window.addEventListener('message', onMessage)
@@ -563,6 +611,100 @@ function makeVerifyError(
   message: string,
   status?: number,
 ): VerifyEmbedNonceError {
+  return status !== undefined ? { code, message, status } : { code, message }
+}
+
+/**
+ * Audit that the web-server knows the `(sessionId, nonce)` pair right
+ * now (sdk1.md §11.32). Symmetric counterpart to `verifyEmbedNonce()`
+ * with a more lifecycle-friendly name: host code calls this right
+ * after the iframe's `ready` event to confirm the iframe's session is
+ * one the server minted.
+ *
+ * Wire protocol is identical to `verifyEmbedNonce()`
+ * (`POST /api/v1/embed/verify-nonce`); the distinct name exists so
+ * the call site reads naturally in the `mint → mount → audit →
+ * release` lifecycle. Both helpers accept the same input shape and
+ * produce the same output; choose based on which verb reads better in
+ * the call site.
+ *
+ *   const ok = await verifyEmbedSession({ sessionId, nonce, host, jwt })
+ *
+ * `ok.valid === true` means the server currently knows the session;
+ * `ok.valid === false` with `reason` is a normal result (not an
+ * error) — the session expired or was evicted. Transport-level
+ * failures throw a `VerifyEmbedSessionError`.
+ */
+export async function verifyEmbedSession(
+  options: VerifyEmbedSessionOptions,
+): Promise<VerifyEmbedSessionResult> {
+  if (!options) throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: options required')
+  if (!options.sessionId) throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: sessionId required')
+  if (!options.nonce) throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: nonce required')
+  if (!options.host) throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: host required')
+  if (!options.jwt) throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: jwt required')
+
+  const f = options.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : null)
+  if (!f) throw makeVerifySessionError('NETWORK_ERROR', 'verifyEmbedSession: no fetch implementation available')
+
+  const url = `${options.host.replace(/\/$/, '')}/api/v1/embed/verify-nonce`
+  let res: Response
+  try {
+    res = await f(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${options.jwt}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ sessionId: options.sessionId, nonce: options.nonce }),
+    })
+  } catch (err) {
+    throw makeVerifySessionError(
+      'NETWORK_ERROR',
+      `verifyEmbedSession: network error — ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  if (res.status === 401) {
+    throw makeVerifySessionError('AUTH_FAILED', 'verifyEmbedSession: 401 Unauthorized', 401)
+  }
+  if (res.status === 403) {
+    throw makeVerifySessionError('FORBIDDEN', 'verifyEmbedSession: 403 Forbidden', 403)
+  }
+  if (!res.ok) {
+    throw makeVerifySessionError('VERIFY_FAILED', `verifyEmbedSession: ${res.status} ${res.statusText}`, res.status)
+  }
+
+  let body: { valid?: unknown; reason?: unknown; expiresAt?: unknown }
+  try {
+    body = (await res.json()) as typeof body
+  } catch (err) {
+    throw makeVerifySessionError(
+      'INVALID_RESPONSE',
+      `verifyEmbedSession: response not JSON — ${err instanceof Error ? err.message : String(err)}`,
+      res.status,
+    )
+  }
+  if (body.valid !== true && body.valid !== false) {
+    throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: response missing valid:true|false', res.status)
+  }
+  if (body.valid === false) {
+    if (body.reason !== 'unknown' && body.reason !== 'expired') {
+      throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: invalid reason field', res.status)
+    }
+    return { valid: false, reason: body.reason }
+  }
+  if (typeof body.expiresAt !== 'number') {
+    throw makeVerifySessionError('INVALID_RESPONSE', 'verifyEmbedSession: response missing expiresAt', res.status)
+  }
+  return { valid: true, expiresAt: body.expiresAt }
+}
+
+function makeVerifySessionError(
+  code: VerifyEmbedSessionError['code'],
+  message: string,
+  status?: number,
+): VerifyEmbedSessionError {
   return status !== undefined ? { code, message, status } : { code, message }
 }
 
