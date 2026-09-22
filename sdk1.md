@@ -3032,6 +3032,53 @@ bridge 优先走 `window.__GENOFFICE_COMMAND_SINK__`（renderer 装上时），
 18. **§11.17.5 backlog 真正闭合 · embed 服务端 JWT 验证**（✅ 本轮 §11.18）：`apps/web-server/src/embed/index.ts` 新增 `verifyEmbedToken()` helper + `handleEmbed` 调用；opt-in（`GENOFFICE_JWT_SECRET` 存在且 token 是 JWT 形状时）才跑 `verifyJwtWithRevocation`，失败返 401 UNAUTHENTICATED。新增 `apps/web-server/tests/embed-jwt-validation.test.ts`（6 测试）覆盖：合法 200 / 篡改 401 / 乱码 401 / 一次性 jti 第二次 401 / 过期 401 / 非 JWT 透传（向后兼容）。现在 `/api/v1/files/:id/jwt?oneTime=true` 发的 token 在第二次 embed 访问时**真被服务端拒**，不再是依赖 renderer 端 meta-tag-check。
 17. **§11.3 P1 文件 JWT 单次使用语义 · 真实单元测试**（✅ 本轮 §11.17）：新增 `apps/web-server/tests/files-jwt-revocation.test.ts`（6 测试 / < 5 ms）：直接 import `auth.ts` 的 `verifyJwtWithRevocation` / `setJtiRevocationCheck` / `isJtiRevoked` 三个 helper，覆盖 hook 默认 no-op / first-pass-then-revoke / jti 独立 / 篡改 token 不污染撤销集 / 过期短路。`files-jwt-options-e2e.test.ts` 之前最后一条只是空 mint，已被本单元测补齐真实 verify 路径。后续 backlog（§11.17.5）：`embed/index.ts` 尚未在服务端 verify `?token=`，需要独立 PR 升级为 `verifyJwtWithRevocation` 调用后再返回 HTML。
 
+#### ✅ 本轮新增解决（2026-09-22 · §0.4 + §11.36.5 收尾）
+
+55. **dev-mode boot `?raw` markdown 崩溃修复**（✅ P0）：`npm run dev -w @genoffice/web-server` 在 `tsx watch src/index.ts` 加载 `pptx-ops/src/op-docs.ts:25-30` 的 `import x from './text.md?raw'` 时立即 `ERR_UNKNOWN_FILE_EXTENSION`（tsx 4.x 不处理 Vite 风格的 `?raw`，esbuild 路径走 `scripts/bundle.mjs` 的 `md-raw-loader` 插件所以 OK）。新增 `apps/web-server/scripts/{raw-md-loader,register-loaders}.mjs` + `apps/web-server/package.json` dev 脚本改为 `tsx --import ./scripts/register-loaders.mjs watch src/index.ts`。3 个测试覆盖：① subprocess `?raw` import 圆环（无 ERR + default export 等于文件内容）；② 纯 `.md` import 仍抛 Node 默认 `ERR_UNKNOWN_FILE_EXTENSION`（suffixed-scoped）；③ `register-loaders.mjs` 作 entry 注册成功。**首次让 `npm run dev -w @genoffice/web-server` 真能跑起来**。
+
+56. **GET /api/v1/meta 公开元数据端点**（✅ P2 一致性）：之前 GET 此路径穿过 SPA 兜底返 HTML smoke 探针发现。返回 `apiVersion / serverVersion / protocolVersion / minClientVersion / sdkVersion / capabilities[] / integrations{} / storage.backend / sdk.{usageSamples, instances, uptimeSeconds} / timestamp`（< 400 B），无 auth。2 个单元测 + 现场 curl 200 + regression check `/api/v1/changelog` 仍 200。
+
+57. **`docs:save-as` 通道补齐 · 与 sheets / slides 对齐**（✅ P2 一致性）：web-server 暴露了 `workbook:save-as` 和 `slides:save-as` 但 docs 没有——docs renderer 的「Save As」静默走 `docs:save`（保持原路径、忽略新文件名）。新 handler `(sourcePath, targetPath, data?)` 镜像桌面签名：① 显式 `data` bytes 写 `targetPath`；② 缺 `data` 从 `sourcePath` 走 `readDocxBytes` 读（含 storage URI + 遗留 FILES_DIR 路径）；④ 结构化 `NotFoundError` / `InvalidArgumentError` **rethrow** 让 IPC 层返 404 / 400 envelope。4 个 e2e：explicit bytes / source copy / empty path 400 / missing source 404。
+
+58. **`installLiveModelSink` + adapter · sdk1.md §11.36.5 收尾**（✅）：embed bridge 在 `window.__GENOFFICE_COMMAND_SINK__` 存在时调 renderer sink（否则回退到 server-backed `sdk:command`）。`defaultSdkCommandHandlers` 只包了 `openFileDialog` + `print`（纯浏览器操作）；§11.36.5 列了 7 个需 live editor 模型的命令：`setContent` / `getContent` / `insertText` / `setTheme` / `setLang` / `mountSidebar` / `postToSidebar`。新增 `SdkLiveModelAdapter` 接口 + `makeLiveModelHandlers(adapter)` / `installLiveModelSink({adapter})` 让 app 一处接入：
+
+```ts
+installLiveModelSink({
+  adapter: {
+    getText: () => editorView.getText(),
+    setText: (t) => editorView.replace(t),
+    insertText: (t) => editorView.insertAtCursor(t),
+    setTheme: (t) => applyTheme(t),
+    setLang: (l) => applyLocale(l),
+  },
+})
+```
+
+缺方法自动从 sink 摘除对应命令 → host 拿到 `UnsupportedCommandError('UNSUPPORTED')`（不是 30s timeout）。`setContent` 优先 `args.text` / 回退 `args.html`。`extraHandlers` 最后合并让 app 可覆盖 `setTheme` 而不丢 SDK defaults。6 测试覆盖：只注册实际暴露的方法 / sink 返 `UNSUPPORTED` / setContent 双模式 / insertText 校验 / setTheme setLang pass-through / 合并优先级。
+
+59. **`installTextBufferSink` + docs renderer 接入**（✅ §11.36.5 stop-gap）：`installLiveModelSink` 要求每个 app 把自己的 tiptap / prosemirror / monaco 状态接到 adapter——集成深度大。新增 `@genoffice/ipc-bridge/text-buffer-adapter` 子路径提供"shared text buffer + 4 个 setter/getter"的脚手架：
+
+```ts
+import {
+  installTextBufferSink,
+  onBufferChange,
+  updateTextBuffer,
+} from '@genoffice/ipc-bridge/text-buffer-adapter'
+
+installTextBufferSink()                       // 注册 sink
+onBufferChange((s) => editor.replace(s.text)) // host → renderer
+updateTextBuffer({ text, bytes })             // renderer → host
+```
+
+Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `target` 入参）。`onBufferChange` 在每次 `setContent` / `insertText` / `updateTextBuffer` 后 fire 让 renderer 把 buffer 同步回自己的编辑器。apps/docs/src/renderer/web-bridge.ts 从 `installSdkCommandSink({handlers: defaultSdkCommandHandlers()})` 切到 `installTextBufferSink()`——docs 渲染器的 tiptap 集成（独立 PR）后续调 `updateTextBuffer` + `onBufferChange` 即可。4 个测试覆盖：setContent + listener fire / insertText 光标推进 / updateTextBuffer local-edit / sink dispatch 'getContent' 圆环。
+
+#### ⚠️ 仍未做 / 已知缺陷
+
+- **CRDT/OT 协作（M4 backlog）**：单人模式通；collab:* 通道骨架有，但多人同时写编辑合并 peer 未实装。
+- **Webhook DLQ 持久化**：当前 ring buffer 在内存，重启清空（§11.33.4 / §11.35.4 留 M4+ backlog）。
+- **`workbook:read-range` 返空 cells bug**：实测 Rust sidecar 的 read_range 命令对 inlineStr / sharedString 解析返回 `cells: []`，无论 open 后还是 save 后。涉及 Rust 二进制改动，沙箱不可 rebuild，留 M4+ 路线图。当前 PR 回退了 JS 侧的 refresh 实验（不能修），仅在本节记录。
+- **Discord 服务器 / Office Hours**：外部服务，沙箱不可达（§A.3 ⬜ 保留）。
+
 ### A.6 测试现状（本轮实施后更新）
 
 | 套件 | 文件 | 用例 | 状态 |
