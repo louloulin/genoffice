@@ -23,12 +23,14 @@ import {
   getSlideHidden,
   getSlideLinks,
   getSlideNotes,
+  listEmbeddedFonts,
   listSlideLayouts,
   notesPathForSlide,
   openPptx,
   readHeaderFooter,
   savePptx,
   type ElementClipboardItem,
+  type EmbeddedFontFace,
   type LinkTarget,
   type OpenedPptx,
   type SectionInfo,
@@ -605,7 +607,17 @@ export function registerSlidesStateHandlers(): void {
     if (!rm || typeof slideIndex !== 'number') return []
     return projectRunLinks(getRunLinks(rm.opened, slideIndex))
   })
-  registerHandle('slides:has-slide-clipboard', () => false)
+  // Real has-slide-clipboard: the engine element clipboard lives on
+  // the app (not the session, since the renderer copies in one deck
+  // and pastes into another — see §11.42.3 / state.ts comment block).
+  // This handler reports whether anything is currently sitting in that
+  // clipboard, so the Paste menu item can grey itself out instead of
+  // silently doing nothing on an empty clipboard. Returns false for
+  // unknown sessions too (legacy fallback — there's nothing in the
+  // clipboard from the server's perspective if no session bound).
+  registerHandle('slides:has-slide-clipboard', () => {
+    return getSlidesElementClipboard().length > 0
+  })
   registerHandle('slides:font-catalog', () => [])
   registerHandle('slides:font-missing', () => [])
   registerHandle('slides:chart-color-schemes', () => [])
@@ -614,9 +626,45 @@ export function registerSlidesStateHandlers(): void {
   registerHandle('slides:media-data', () => ({}))
   registerHandle('slides:native-clipboard', () => ({}))
   registerHandle('slides:table-structure', () => ({}))
-  registerHandle('slides:private-font-data', () => ({}))
-  registerHandle('slides:private-font-faces', () => [])
-  registerHandle('slides:cloud-gen-status', () => ({ status: 'idle' }))
+  // Real private-font-data: re-walk listEmbeddedFonts(archive) so the
+  // renderer can fetch one face's sfnt bytes by index. Each face is
+  // typically 100-300 KB (TTF/OTF) so we never broadcast the whole
+  // list — the renderer pulls one face at a time when it actually
+  // needs to render glyphs. The bytes travel as a plain Uint8Array;
+  // the IPC transport handles Buffer/Uint8Array natively.
+  // Returns null for unknown session / out-of-range id so the
+  // renderer doesn't render with a silently-empty font.
+  registerHandle('slides:private-font-data', (event: unknown, id: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof id !== 'number' || id < 0) return null
+    const faces = listEmbeddedFonts(rm.opened.archive)
+    const face = faces[id]
+    if (!face) return null
+    return { data: face.sfnt, typeface: face.typeface, style: face.style }
+  })
+  // Real private-font-faces: walk presentation.xml's p:embeddedFontLst
+  // via listEmbeddedFonts(archive) (sdk1 §11.48 tier-3 batch). The
+  // engine returns EmbeddedFontFace { typeface, style, sfnt } — the
+  // sfnt bytes are intentionally NOT shipped over IPC (a single face
+  // can be 100+ KB and the renderer fetches its own bytes via
+  // slides:private-font-data(id) only when it needs to render). We
+  // project to { typeface, style } so the Font Picker can show the
+  // list and demand-load individual faces on demand.
+  registerHandle('slides:private-font-faces', (event: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm) return [] as Array<Pick<EmbeddedFontFace, 'typeface' | 'style'>>
+    return listEmbeddedFonts(rm.opened.archive).map((f) => ({
+      typeface: f.typeface,
+      style: f.style,
+    }))
+  })
+  // cloud-gen-status stays idle: the actual cloud-generation flow
+  // needs upstream infrastructure (image generation provider, asset
+  // upload, polling) that the web build doesn't have. The renderer
+  // falls back to local-only generation when this returns idle, so
+  // returning idle is the honest "not implemented here" shape rather
+  // than a fake-progress object that would lie about work being done.
+  registerHandle('slides:cloud-gen-status', () => ({ status: 'idle' as const }))
 
   // Real dirty-tracking: lookup by the path the renderer holds. Returns
   // false for unknown paths so a renderer that lost track of its session
