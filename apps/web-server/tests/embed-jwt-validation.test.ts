@@ -98,10 +98,20 @@ function basePayload(overrides: Record<string, unknown> = {}) {
 }
 
 describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
+  beforeAll(() => {
+    // Force the secret back to our test value. Other test files (e.g.
+    // auth-scope.test.ts) may mutate process.env.GENOFFICE_JWT_SECRET
+    // during their own vi.hoisted setup, and vi.resetModules() only
+    // resets the local module registry — the captured SECRET const in
+    // auth.ts would then read a different value on the next import.
+    process.env.GENOFFICE_JWT_SECRET = 'embed-jwt-validation-suite-secret'
+  })
   afterEach(() => {
     // Reset the revocation hook between tests so oneTime tokens don't
     // leak across cases.
     vi.resetModules()
+    // Re-assert the secret in case a previous test file cleared it.
+    process.env.GENOFFICE_JWT_SECRET = 'embed-jwt-validation-suite-secret'
   })
 
   it('serves a valid HS256 JWT token (200)', async () => {

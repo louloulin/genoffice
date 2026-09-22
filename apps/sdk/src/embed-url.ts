@@ -18,6 +18,15 @@ export interface EmbedUrlInput {
   theme?: EditorTheme
   lang?: EditorLang
   toolbar?: EditorToolbar
+  /**
+   * Optional handshake nonce (URL-safe base64, 16 random bytes by
+   * convention). When present, `buildEmbedUrl` writes `?nonce=…` so the
+   * server-side embed bridge can echo it back in the `ready` postMessage
+   * event, letting the host page verify the iframe is actually serving
+   * our document (not a malicious imposter). Without this, the
+   * `?nonce=` parameter was silently dropped — see sdk1.md §11.20.
+   */
+  nonce?: string
   features?: Record<string, boolean | string | number>
 }
 
@@ -26,6 +35,7 @@ export function buildEmbedUrl(input: EmbedUrlInput): string {
   const params = base.searchParams
   params.set('app', input.app)
   params.set('token', input.token)
+  if (input.nonce) params.set('nonce', input.nonce)
   if (input.mode) params.set('mode', input.mode)
   if (input.theme) params.set('theme', input.theme)
   if (input.lang) params.set('lang', input.lang)

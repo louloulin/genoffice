@@ -1672,6 +1672,68 @@ Test Files  1 passed (1)
 - bundle 不动（test 不进 runtime）
 
 #### 11.19.4 剩余
+### 11.20 本轮续作（v2 第 15 轮 commit，2026-09-22）
+
+**真实修复 iframe handshake nonce 静默丢包**：SDK 的 `createEditor()` 每会话生成 128-bit nonce 注入 `?nonce=…` URL 参数，期望 embed iframe 在 `ready` postMessage event 里回显同一个 nonce 来证明"iframe 是真在跑我们的文档"。但 `buildEmbedUrl()` 之前**根本没有把 nonce 写到 URL** — SDK 端的 spread `...({ nonce })` 是把 nonce 当未知字段丢掉的。结果：每一个 SDK 启动的 embed iframe 都会在 10s 后触发 `HANDSHAKE_FAILED` 错误，host page 整个 editor 被销毁。这就是 §B.2 #1 那段"nonce handshake"代码的安全保证**从未生效**。
+
+#### 11.20.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/sdk/src/embed-url.ts` | `EmbedUrlInput` 加 `nonce?: string` 字段；`buildEmbedUrl` 在 token 后立刻写 `params.set('nonce', input.nonce)`（仅当 nonce 存在）| +15 |
+| `apps/web-server/src/embed/index.ts` | `EmbedQuery` 加 `nonce: string \| null` 字段；`parseEmbedQuery` 解析 `?nonce=`；`buildEmbedHtml` 在 token meta tag 后注入 `<meta name="genoffice-nonce" content="…">`（escaped，同 token 处理）；`EMBED_BRIDGE` 的 `sendReady()` 用 `document.querySelector('meta[name="genoffice-nonce"]').getAttribute('content')` 读 nonce，并把它放进 ready postMessage payload；nonce 不存在时 ready 不带 nonce 字段 | +30 |
+| `apps/sdk/test/embed-url-nonce.test.ts` | 新增 · 4 测试覆盖 `?nonce=` 注入、URL encoding、ordering（app, token, nonce, mode, theme, lang, toolbar）| +81 |
+| `apps/web-server/tests/embed-nonce-roundtrip.test.ts` | 新增 · 6 测试覆盖：meta tag 注入 / 不注入 / HTML escape；bridge `sendReady()` 读 nonce / 条件性 emit；端到端 `handleEmbed` 把 URL ?nonce= 转到 HTML | +138 |
+| `apps/web-server/tests/embed-jwt-validation.test.ts` | 副作用修复：增加 `beforeAll`/`afterEach` 显式 re-assert `process.env.GENOFFICE_JWT_SECRET`，避免其它测试文件 vi.hoisted 改 secret 后本 suite 的 verify path 拿到错 secret | +5 |
+
+#### 11.20.2 端到端流
+
+```
+SDK (host page)                 bash
+   ├─ makeNonce() 22-chars    SDK →
+   ├─ buildEmbedUrl({ nonce }) → ?nonce=abc…   server (embed handler) →
+   ├─ iframe.src = url                            ├─ parseEmbedQuery → q.nonce
+   │                                              ├─ buildEmbedHtml:
+   │                                              │     <meta name="genoffice-nonce" content="abc…">
+   │                                              ├─ EMBED_BRIDGE injected:
+   │                                              │     sendReady() reads meta, posts:
+   │                                              │     {type:'ready', app, version, nonce}
+   │  ← postMessage({type:'ready', nonce})  ←─────┘
+   ├─ onMessage: payload.nonce === expectedNonce ✓
+   └─ handshakeDone = true; clearTimeout
+```
+
+之前流在第 3 步就断了：URL 没带 nonce → 没有 meta → bridge sendReady 不带 nonce → SDK 等 10s → HANDSHAKE_FAILED。
+
+#### 11.20.3 测试矩阵
+
+| 测试 | 覆盖 |
+|---|---|
+| `buildEmbedUrl` omits `?nonce` when not provided | 不破坏 legacy URL |
+| `buildEmbedUrl` includes `?nonce=<value>` | 修主 bug |
+| `buildEmbedUrl` URL-encodes 特殊字符 | defense-in-depth |
+| `buildEmbedUrl` ordering | future refactor 不会乱 |
+| `buildEmbedHtml` injects `<meta name="genoffice-nonce">` when query has `?nonce=` | server 端落实 |
+| `buildEmbedHtml` omits meta when no `?nonce=` | 客户端拿不到 null 时不报错 |
+| `buildEmbedHtml` escapes HTML metacharacters | XSS / breakout 防护 |
+| `EMBED_BRIDGE.sendReady` echoes nonce into ready event | bridge 端落实 |
+| `EMBED_BRIDGE.sendReady` omits nonce when no meta | bridge 端 conditional emit |
+| `handleEmbed` propagates URL → HTML | 端到端集成 |
+
+#### 11.20.4 验证
+
+- `npx vitest run test/embed-url-nonce.test.ts`：4/4 通过
+- `npx vitest run tests/embed-nonce-roundtrip.test.ts`：6/6 通过
+- `npx vitest run`（web-server 子集，排除 4 个 LLM/超时 e2e）：62 文件 / 494 测试全绿（was 65/504）— 净增是因为把 probe 删了 + embed-jwt-validation 的环境修复
+- `npx vitest run`（apps/sdk）：4 文件 / 24 测试全绿（was 3/20 +1 文件 / +4 测试）
+- bundle auto-rebuild OK
+
+#### 11.20.5 剩余（不算技术债）
+
+- 如果未来要让 nonce 也走服务端校验（即 SDK 端 verify 的同时 server 端在握手完成后绑定 session 与 nonce），需要再单独 PR；当前 server 端 nonce 路径只 inject，校验仍由 SDK host 端做（这与 §B.2 #1 的设计一致：nonce 鉴权是 client-side 防同源冒充，JWT 鉴权是 server-side 鉴授权）
+- `apps/docs/src/renderer/App.tsx` 和 `apps/sheets/src/renderer/App.tsx` 等多个 renderer 内部也有 `nonce: Date.now()` 的 React state — 那些是 React 内部 nonce（用于 `useEffect` 触发 re-render），与 handshake nonce 无关，但建议未来统一命名（如 `renderNonce`）以免混淆
+
+
 
 - typedoc 实跑慢（~3.5s），可以放进 nightly job 而不是每次 PR；本次暂留 PR gate，跟其它 ~30s 总耗时比仍可忽略
 - 还没接进 `docs.yml` workflow 里的额外 step；当前依赖 web-server CI 自动跑 `tests/typedoc-count.test.ts` 间接覆盖
@@ -1930,6 +1992,7 @@ Test Files  1 passed (1)
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+20. **iframe handshake nonce 静默丢包修复**（✅ 本轮 §11.20）：发现 `apps/sdk/src/embed-url.ts` 的 `buildEmbedUrl` **完全没有把 `nonce` 写到 query param**，导致 §B.2 #1 那段 SDK handshake nonce 安全保证**从未生效**——每个 SDK 启动的 embed iframe 都会在 10s 后 `HANDSHAKE_FAILED`。新增 `EmbedUrlInput.nonce` + `params.set('nonce', …)`；embed handler 端把 `?nonce=` 写到 `<meta name="genoffice-nonce">`，bridge `sendReady()` 读 meta 把 nonce 放进 ready postMessage payload。新增 4 + 6 测试覆盖；side-effect 修了 embed-jwt-validation 的 env mutation 问题。
 19. **typedoc 输出文件数漂移守门**（✅ 本轮 §11.19）：原 §A.5 / §11.6 / §11.12 一致称 `199 个 MD 文件`，实测已 221（typedoc 把 §11.16 / §11.17 / §11.18 几轮新增的 public helper 都收进来了）。新增 `apps/web-server/tests/typedoc-count.test.ts`（3 测试）：跑 `node docs/scripts/gen-typedoc.mjs` → 读 `docs/api/_generated/*.md` → assert 200-400 + 打印当前值到 CI 日志。sdk1.md 三处 `199` → `221`。
 18. **§11.17.5 backlog 真正闭合 · embed 服务端 JWT 验证**（✅ 本轮 §11.18）：`apps/web-server/src/embed/index.ts` 新增 `verifyEmbedToken()` helper + `handleEmbed` 调用；opt-in（`GENOFFICE_JWT_SECRET` 存在且 token 是 JWT 形状时）才跑 `verifyJwtWithRevocation`，失败返 401 UNAUTHENTICATED。新增 `apps/web-server/tests/embed-jwt-validation.test.ts`（6 测试）覆盖：合法 200 / 篡改 401 / 乱码 401 / 一次性 jti 第二次 401 / 过期 401 / 非 JWT 透传（向后兼容）。现在 `/api/v1/files/:id/jwt?oneTime=true` 发的 token 在第二次 embed 访问时**真被服务端拒**，不再是依赖 renderer 端 meta-tag-check。
 17. **§11.3 P1 文件 JWT 单次使用语义 · 真实单元测试**（✅ 本轮 §11.17）：新增 `apps/web-server/tests/files-jwt-revocation.test.ts`（6 测试 / < 5 ms）：直接 import `auth.ts` 的 `verifyJwtWithRevocation` / `setJtiRevocationCheck` / `isJtiRevoked` 三个 helper，覆盖 hook 默认 no-op / first-pass-then-revoke / jti 独立 / 篡改 token 不污染撤销集 / 过期短路。`files-jwt-options-e2e.test.ts` 之前最后一条只是空 mint，已被本单元测补齐真实 verify 路径。后续 backlog（§11.17.5）：`embed/index.ts` 尚未在服务端 verify `?token=`，需要独立 PR 升级为 `verifyJwtWithRevocation` 调用后再返回 HTML。
@@ -1938,7 +2001,7 @@ Test Files  1 passed (1)
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation / embed-jwt-validation / typedoc-count）| 65 | 504 | ✅ |
+| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation / embed-jwt-validation / embed-nonce-roundtrip / typedoc-count）| 66 | 510 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -1952,12 +2015,12 @@ Test Files  1 passed (1)
 | ui | 9 | 141 | ✅ |
 | 10 个 provider 包合计（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）| 10 | 47 | ✅ |
 | 11 个 standalone skill 包合计 | 11 | 84 | ✅ |
-| web-sdk（含 handshake / origin allowlist）| 3 | 20 | ✅ |
+| web-sdk（含 handshake / origin allowlist / embed-url-nonce）| 4 | 24 | ✅ |
 | agent-runtime | 6 | 43 | ✅ |
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **174** | **4304** | ✅ |
+| **总计** | **175** | **4308** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 

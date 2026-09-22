@@ -102,6 +102,16 @@ interface EmbedQuery {
   lang: string | null
   toolbar: string | null
   title: string | null
+  /**
+   * Optional handshake nonce (URL-safe base64). When present the embed
+   * bridge echoes it back in the `ready` postMessage event so the host
+   * SDK can confirm the iframe is actually serving our document. Without
+   * it the iframe's identity is not cryptographically attested — any
+   * same-origin URL on the host's page could impersonate the editor.
+   *
+   * See sdk1.md §11.20.
+   */
+  nonce: string | null
 }
 
 function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
@@ -120,6 +130,7 @@ function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
     lang: url.searchParams.get('lang'),
     toolbar: url.searchParams.get('toolbar'),
     title: url.searchParams.get('title'),
+    nonce: url.searchParams.get('nonce'),
   }
 }
 
@@ -168,11 +179,21 @@ const EMBED_BRIDGE = `
     } catch (e) { /* parent gone, swallow */ }
   }
   function sendReady() {
-    post('ready', {
+    // Echo the handshake nonce (if any) so the host SDK can verify the
+    // iframe identity. The value comes from the <meta name="genoffice-nonce">
+    // tag we inject earlier in the document, which was sourced from the
+    // ?nonce= query param the host URL-builder passed in. The renderer
+    // bridge does NOT need to know how to generate a nonce — it just
+    // forwards whatever the server injected.
+    var nonceMeta = document.querySelector('meta[name="genoffice-nonce"]');
+    var nonce = nonceMeta ? nonceMeta.getAttribute('content') : null;
+    var readyPayload = {
       type: 'ready',
       app: window.__GENOFFICE_EMBED__ && window.__GENOFFICE_EMBED__.app,
       version: '0.9.0'
-    });
+    };
+    if (nonce) readyPayload.nonce = nonce;
+    post('ready', readyPayload);
   }
   function subscribePush() {
     var cfg = window.__GENOFFICE_EMBED__;
@@ -228,6 +249,13 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   const html = readFileSync(appIndexPath, 'utf-8')
   const safeToken = q.token.replace(/"/g, '&quot;').replace(/</g, '&lt;')
   const tokenTag = `\n<meta name="genoffice-token" content="${safeToken}">`
+  // Mirror the optional handshake nonce so the renderer bridge can echo it
+  // back in the `ready` postMessage event. Escaped the same way as the
+  // token. See sdk1.md §11.20.
+  const safeNonce = q.nonce
+    ? q.nonce.replace(/"/g, '&quot;').replace(/</g, '&lt;')
+    : null
+  const nonceTag = safeNonce ? `\n<meta name="genoffice-nonce" content="${safeNonce}">` : ''
   // Per-request sessionId for the embed iframe's SSE push channel. The bridge
   // opens /api/ipc/events?session=<id> and forwards every frame to window.parent.
   const sessionId = `embed-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -244,7 +272,7 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   const configTag = `\n<meta name="genoffice-embed-config" content="${escapeAttr(JSON.stringify(embedConfig))}">`
   const sessionTag = `\n<meta name="genoffice-session" content="${sessionId}">`
   const bridgeTag = `\n<script>window.__GENOFFICE_EMBED__=${JSON.stringify(embedConfig)};${EMBED_BRIDGE}</script>`
-  const injection = tokenTag + configTag + sessionTag + bridgeTag
+  const injection = tokenTag + nonceTag + configTag + sessionTag + bridgeTag
   // Case-insensitive match against `</head>` so a renderer with a `<HEAD>`
   // tag (rare but possible after build minification) still gets the bridge
   // injected. Without the `/i` flag a strict HTML renderer with an uppercase
