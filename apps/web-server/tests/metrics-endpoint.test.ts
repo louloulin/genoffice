@@ -13,6 +13,9 @@
  *
  * Counters are reset between cases via `_resetDeadLetterForTests()`
  * (which now also clears `totals`).
+ *
+ * The audit-log metric block (`genoffice_audit_log_*`) is exercised in
+ * its own describe below so a failure points at the right subsystem.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -21,7 +24,12 @@ import {
   replayDeadLetter,
 } from '../src/common/webhooks-dlq'
 import { handleMetrics } from '../src/api/v1/meta'
-import { handlerCount } from '../src/common'
+import {
+  handlerCount,
+  recordAudit,
+  _resetAuditLogForTests,
+  _setAuditMaxRecordsForTests,
+} from '../src/common'
 
 interface CapturedResponse {
   statusCode: number
@@ -57,10 +65,14 @@ function mockReq(): unknown {
 
 beforeEach(() => {
   _resetDeadLetterForTests()
+  _resetAuditLogForTests()
+  _setAuditMaxRecordsForTests(10_000)
 })
 
 afterEach(() => {
   _resetDeadLetterForTests()
+  _resetAuditLogForTests()
+  _setAuditMaxRecordsForTests(10_000)
 })
 
 describe('GET /api/v1/metrics (sdk1.md §11.35)', () => {
@@ -209,3 +221,86 @@ describe('SDK usage metrics (sdk1.md §11.36)', () => {
 function vi_fetchOk(): (input: unknown) => Promise<Response> {
   return async () => new Response('ok', { status: 200 })
 }
+
+describe('GET /api/v1/metrics — audit log block (sdk1 §A.5 retention backlog)', () => {
+  it('exposes the four audit-log metric lines (HELP + TYPE + sample)', () => {
+    const { res, read } = mockRes()
+    handleMetrics({ req: mockReq() as never, response: res as never })
+    const body = read().body
+    for (const name of [
+      'genoffice_audit_log_records',
+      'genoffice_audit_log_persisted_bytes',
+      'genoffice_audit_log_recorded_total',
+      'genoffice_audit_log_dropped_total',
+    ]) {
+      expect(body, `missing HELP for ${name}`).toContain(`# HELP ${name}`)
+      expect(body, `missing TYPE for ${name}`).toContain(`# TYPE ${name} `)
+    }
+  })
+
+  it('records=0, recorded_total=0, dropped_total=0, persisted_bytes=NaN on a cold start', () => {
+    const { res, read } = mockRes()
+    handleMetrics({ req: mockReq() as never, response: res as never })
+    const body = read().body
+    expect(body).toMatch(/^genoffice_audit_log_records 0$/m)
+    expect(body).toMatch(/^genoffice_audit_log_recorded_total 0$/m)
+    expect(body).toMatch(/^genoffice_audit_log_dropped_total 0$/m)
+    // persisted_bytes is either NaN (file does not exist — first ever
+    // scrape with no records recorded yet) or 0 (file was just truncated
+    // by _resetAuditLogForTests in beforeEach). Both are valid cold-start
+    // states; we accept either so a prior test's residual file doesn't
+    // turn this case red.
+    expect(body).toMatch(/^genoffice_audit_log_persisted_bytes (?:NaN|0)$/m)
+  })
+
+  it('records + recorded_total move up after recordAudit calls', () => {
+    recordAudit({
+      tenantId: 't1', userId: 'u1', action: 'file.saved',
+      resource: 'doc', resourceId: 'd1',
+      details: { sha: 'abc' }, ip: '127.0.0.1', userAgent: 'jest',
+    })
+    recordAudit({
+      tenantId: 't1', userId: 'u2', action: 'file.opened',
+      resource: 'doc', resourceId: 'd2',
+      details: {}, ip: '127.0.0.1', userAgent: 'jest',
+    })
+    recordAudit({
+      tenantId: 't1', userId: 'u1', action: 'file.saved',
+      resource: 'sheet', resourceId: 's1',
+      details: {}, ip: '127.0.0.1', userAgent: 'jest',
+    })
+
+    const { res, read } = mockRes()
+    handleMetrics({ req: mockReq() as never, response: res as never })
+    const body = read().body
+    expect(body).toMatch(/^genoffice_audit_log_records 3$/m)
+    expect(body).toMatch(/^genoffice_audit_log_recorded_total 3$/m)
+    expect(body).toMatch(/^genoffice_audit_log_dropped_total 0$/m)
+    // At least 3 records ⇒ JSONL has at least 3 lines on disk; we don't
+    // pin the byte count because newline length depends on payload shape.
+    expect(body).toMatch(/^genoffice_audit_log_persisted_bytes [1-9]\d*$/m)
+  })
+
+  it('dropped_total ticks up once the in-memory ring overflows the cap', () => {
+    // Shrink the cap so we can overflow without recording 10 001 events
+    // (Array.unshift is O(n); 10 001 calls is O(n²) — too slow for a
+    // unit test, but the production code path is identical).
+    _setAuditMaxRecordsForTests(3)
+
+    for (let i = 0; i < 5; i++) {
+      recordAudit({
+        tenantId: 't', userId: 'u', action: 'noise',
+        resource: 'doc', resourceId: `r${i}`,
+        details: { i }, ip: '127.0.0.1', userAgent: 'jest',
+      })
+    }
+
+    const { res, read } = mockRes()
+    handleMetrics({ req: mockReq() as never, response: res as never })
+    const body = read().body
+    expect(body).toMatch(/^genoffice_audit_log_records 3$/m)
+    expect(body).toMatch(/^genoffice_audit_log_recorded_total 5$/m)
+    // 5 events, cap 3 → 2 dropped.
+    expect(body).toMatch(/^genoffice_audit_log_dropped_total 2$/m)
+  })
+})

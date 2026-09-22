@@ -28,6 +28,16 @@
  *
  * Set `GENOFFICE_AUDIT_PERSIST=0` to disable persistence (used by
  * tests that don't want disk writes to escape their TMP DATA_DIR).
+ *
+ * Metrics (sdk1 §A.5 backlog — audit log retention / rotate):
+ *   `auditMetrics()` exposes four numbers via `/api/v1/metrics`:
+ *     - records        in-memory ring fill
+ *     - persistedBytes on-disk JSONL file size (NaN if persistence disabled)
+ *     - totalRecorded  cumulative records written since process start
+ *     - totalDropped   records evicted because the 10k ring overflowed
+ *   Both `totalRecorded` and `totalDropped` are process-lifetime counters;
+ *   a non-zero `totalDropped` is the leading indicator that the rotate /
+ *   retention worker (M5+) needs to ship.
  */
 
 // Use the namespace import so vi.mock('node:fs') can intercept the
@@ -81,12 +91,20 @@ export interface ExportAuditFilters {
 }
 
 const FILE = join(DATA_DIR, 'audit-log.jsonl')
-const MAX_RECORDS = 10_000
+// Default ring capacity. Mutable via `_setAuditMaxRecordsForTests` so
+// overflow tests can shrink it from 10 000 to a handful without paying
+// for the O(n²) unshift cost of recording 10 001 real events.
+let MAX_RECORDS = 10_000
 const PERSIST_DISABLED = process.env.GENOFFICE_AUDIT_PERSIST === '0'
 
-/** In-memory mirror, newest first. Bounded by `MAX_RECORDS`. */
+/**
+ * In-memory mirror, newest first. Bounded by `MAX_RECORDS`
+ * (mutable via `_setAuditMaxRecordsForTests`).
+ */
 const records: AuditRecord[] = []
 let loaded = false
+let totalRecorded = 0
+let totalDropped = 0
 
 function load(): void {
   if (loaded) return
@@ -159,8 +177,14 @@ export function recordAudit(input: RecordAuditInput): string {
   // Newest first so queryAudit can `slice` without a sort pass.
   records.unshift(record)
   if (records.length > MAX_RECORDS) {
+    // unshift keeps the newest, so the drop count equals the records we
+    // trimmed off the tail — one drop per ring overflow entry. Counting
+    // here (not at slice time) keeps the metric monotonic under concurrent
+    // recordAudit calls from the save pipeline.
+    totalDropped += records.length - MAX_RECORDS
     records.length = MAX_RECORDS
   }
+  totalRecorded += 1
   persist(record)
   return record.id
 }
@@ -198,6 +222,50 @@ export function queryAudit(filters: QueryAuditFilters = {}): {
 export function auditSize(): number {
   load()
   return records.length
+}
+
+/**
+ * Snapshot of every number Prometheus needs to know about the audit log.
+ *
+ * Exposed via `GET /api/v1/metrics` so an operator can scrape
+ * `genoffice_audit_log_*` before the rotate/retention worker ships.
+ * Specifically:
+ *  - `records`         — current in-memory ring fill; saturated at 10 000.
+ *  - `persistedBytes`  — current `audit-log.jsonl` size on disk; `null`
+ *    when persistence is disabled (GENOFFICE_AUDIT_PERSIST=0) or the
+ *    file has not been created yet (no recordAudit call).
+ *  - `totalRecorded`   — lifetime counter; monotonically increasing.
+ *  - `totalDropped`    — lifetime counter for ring overflow events.
+ *
+ * All four fields are read in O(1); no fs I/O happens for `records`,
+ * `totalRecorded`, or `totalDropped`. `persistedBytes` is a single
+ * `statSync` against the JSONL file, cheap enough for a per-scrape
+ * Prometheus call (every 15-60 s in normal deployments).
+ */
+export function auditMetrics(): {
+  records: number
+  persistedBytes: number | null
+  totalRecorded: number
+  totalDropped: number
+} {
+  load()
+  let persistedBytes: number | null = null
+  if (!PERSIST_DISABLED && fssync.existsSync(FILE)) {
+    try {
+      persistedBytes = fssync.statSync(FILE).size
+    } catch {
+      // statSync can fail on a concurrently-rotated file (M5+ rotate
+      // worker). Treat as unknown rather than throwing through the
+      // metrics endpoint.
+      persistedBytes = null
+    }
+  }
+  return {
+    records: records.length,
+    persistedBytes,
+    totalRecorded,
+    totalDropped,
+  }
 }
 
 /**
@@ -264,9 +332,33 @@ export function exportAudit(opts: ExportAuditFilters = {}): {
  * file. Without the file delete, the next `load()` would re-hydrate
  * the previous test's data.
  */
+/**
+ * Override the in-memory ring cap (test-only). Returns the previous
+ * value so the caller can restore it. Production code never calls this;
+ * it's exported to keep the overflow test cheap — recording 10 001
+ * real events would be O(n²) under the current unshift-on-the-front
+ * layout, which is fine in production but punishing in a vitest run.
+ */
+export function _setAuditMaxRecordsForTests(max: number): number {
+  if (!Number.isFinite(max) || max < 1) {
+    throw new Error(`_setAuditMaxRecordsForTests: max must be ≥ 1, got ${max}`)
+  }
+  const prev = MAX_RECORDS
+  MAX_RECORDS = max
+  // If the caller shrank the cap below the current fill, drop the tail
+  // so the next auditMetrics() / auditSize() call sees the new cap.
+  if (records.length > MAX_RECORDS) {
+    totalDropped += records.length - MAX_RECORDS
+    records.length = MAX_RECORDS
+  }
+  return prev
+}
+
 export function _resetAuditForTests(): void {
   records.length = 0
   loaded = false
+  totalRecorded = 0
+  totalDropped = 0
   if (!PERSIST_DISABLED && fssync.existsSync(FILE)) {
     try {
       fssync.writeFileSync(FILE, '', 'utf8')

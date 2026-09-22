@@ -99,9 +99,11 @@ export {
   recordAudit,
   queryAudit,
   auditSize,
+  auditMetrics,
   snapshotAuditLog,
   exportAudit,
   _resetAuditForTests as _resetAuditLogForTests,
+  _setAuditMaxRecordsForTests,
 } from './audit-log'
 export type { AuditRecord, RecordAuditInput, QueryAuditFilters, ExportAuditFilters } from './audit-log'
 

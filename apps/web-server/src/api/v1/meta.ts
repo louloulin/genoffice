@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sendJson, sendError } from './http-utils'
-import { handlerCount, listChannels } from '../../common/index'
+import { handlerCount, listChannels, auditMetrics } from '../../common/index'
 import { getDeadLetterMetrics } from '../../common/webhooks-dlq'
 import { getUsageTotals } from '../../embed/sdk-commands'
 
@@ -120,6 +120,7 @@ const PROCESS_START_MS = Date.now()
 export function handleMetrics(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
   const m = getDeadLetterMetrics()
   const usage = getUsageTotals()
+  const audit = auditMetrics()
   const uptimeSec = (Date.now() - PROCESS_START_MS) / 1000
   const lines: string[] = [
     '# HELP genoffice_dlq_size Current webhook dead-letter queue size',
@@ -144,6 +145,18 @@ export function handleMetrics(ctx: { request: IncomingMessage; response: ServerR
     '# HELP genoffice_ipc_channels_implemented Number of IPC handlers registered',
     '# TYPE genoffice_ipc_channels_implemented gauge',
     `genoffice_ipc_channels_implemented ${handlerCount()}`,
+    '# HELP genoffice_audit_log_records Current audit-log records held in memory (bounded at 10000)',
+    '# TYPE genoffice_audit_log_records gauge',
+    `genoffice_audit_log_records ${audit.records}`,
+    '# HELP genoffice_audit_log_persisted_bytes Bytes currently on disk in the JSONL audit log (NaN when persistence is disabled or no record has been recorded yet)',
+    '# TYPE genoffice_audit_log_persisted_bytes gauge',
+    `genoffice_audit_log_persisted_bytes ${audit.persistedBytes ?? 'NaN'}`,
+    '# HELP genoffice_audit_log_recorded_total Cumulative audit records recorded since process start',
+    '# TYPE genoffice_audit_log_recorded_total counter',
+    `genoffice_audit_log_recorded_total ${audit.totalRecorded}`,
+    '# HELP genoffice_audit_log_dropped_total Cumulative audit records evicted because the in-memory ring overflowed the 10000 cap',
+    '# TYPE genoffice_audit_log_dropped_total counter',
+    `genoffice_audit_log_dropped_total ${audit.totalDropped}`,
     '# HELP genoffice_uptime_seconds Seconds since the web-server process started',
     '# TYPE genoffice_uptime_seconds gauge',
     `genoffice_uptime_seconds ${uptimeSec.toFixed(3)}`,
