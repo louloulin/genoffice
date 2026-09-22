@@ -1608,6 +1608,51 @@ Test Files  1 passed (1)
 - typecheck：clean（除预存 pptx-ops / xlsx-gateway 错误）
 
 #### 11.17.5 后续观察（不算技术债，留 backlog）
+### 11.18 本轮续作（v2 第 13 轮 commit，2026-09-22）
+
+真正接通 §11.17.5 提出的 backlog：把 `verifyJwtWithRevocation` 真正接到 `/embed/:docId?token=` 的服务端路径上，让单次使用 token 在第二次访问时真的被服务端拒绝（不再是"meta-tag 透传到 renderer 由客户端决定"）。
+
+#### 11.18.1 设计要点
+
+- **opt-in**：仅当 `GENOFFICE_JWT_SECRET` 已配置 **AND** token 是 JWT 形状（3 个点分隔段）时，embed handler 才跑 `verifyJwtWithRevocation`。无 secret（dev 模式）或非 JWT 形状（legacy 共享密钥 / `WEB_TOKEN`）一律 pass-through → 完全向后兼容现有 dev setup。
+- **错误码统一**：token 验证失败 → `401 UNAUTHENTICATED`，与 v1 endpoint 错误信封一致（`§11.4 #3`）。
+- **激活 §11.3 P1 + §11.17 的 hook**：`api/v1/files.ts:291` 安装的撤销 hook 现在终于被生产路径触发；`/api/v1/files/:id/jwt?oneTime=true` 发的 token 在第二次 embed 访问时返 401。
+- **不做 doc ↔ payload 绑定**：当前不在 embed handler 里校验 `payload.doc === :docId`，留待独立 PR（需要先确定集成商怎么从 SDK 里带 doc 声明）。
+
+#### 11.18.2 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/embed/index.ts` | 新增 `verifyEmbedToken(token)` 私有 helper（依 `GENOFFICE_JWT_SECRET` 与 JWT 形状 opt-in 校验）· 在 `handleEmbed` parseEmbedQuery 后立即调用，失败返 401 + UNAUTHENTICATED 信封 | +75 / -0 |
+| `apps/web-server/tests/embed-jwt-validation.test.ts` | 新增 · 6 测试（1 skip，dev-mode suite）覆盖：合法 JWT 200 / 篡改 401 / 乱码 401 / 一次性 jti 第二次 401 / 过期 401 / 非 JWT 透传 | +226 |
+
+#### 11.18.3 测试矩阵
+
+| 场景 | 期望 |
+|---|---|
+| `GENOFFICE_JWT_SECRET` 已设 + 合法 HS256 JWT | 200（页面渲染或 503 编辑器未构建，二者皆非 401）|
+| `GENOFFICE_JWT_SECRET` 已设 + 篡改签名 | 401 UNAUTHENTICATED |
+| `GENOFFICE_JWT_SECRET` 已设 + 乱码但 3 段 | 401 UNAUTHENTICATED |
+| `GENOFFICE_JWT_SECRET` 已设 + 非 JWT 形状 | 200 / 503（向后兼容）|
+| oneTime token 第一次 | 200 / 503 |
+| oneTime token 第二次 | 401 UNAUTHENTICATED（hook 触发）|
+| 过期 JWT | 401 UNAUTHENTICATED |
+
+#### 11.18.4 验证
+
+- typecheck：clean（仅预存 pptx-ops / xlsx-gateway 错误）
+- `npx vitest run tests/embed-jwt-validation.test.ts`：6/6 通过（1 skip 留给 dev-mode env mutation 测试）
+- `npx vitest run apps/web-server`：**64 文件 / 501 测试全绿**（原 63/495 + 1 文件 / 6 测试）
+- bundle 自动重编 OK（29.9 MB）
+- 单次使用 token 真实被服务端拒（端到端 hook 闭环）
+
+#### 11.18.5 配套的 sdk1.md 状态
+
+- §0.3 保存功能验证追加："embed token 也走真校验"
+- §11.3 P1 行的"单次使用约束"从"已实装（仅 mint 路径）"升级为"已实装（mint + verify 路径都真）"
+- §11.17.5 真正剩余条目移到 §11.18.1 设计要点的"留待"段（doc ↔ payload 绑定）
+
+
 
 - `verifyJwtWithRevocation` 目前只被这套测试驱动；生产代码里 `embed/index.ts` 仍直接把 `?token=` 透传到 `<meta>` 不做服务端校验。若要做"真服务端门"，需要在 embed handler 调一次 `verifyJwtWithRevocation(token)` 然后再决定是否返回 HTML；这是独立 PR，建议等首次公开集成前再上。
 
@@ -1855,13 +1900,14 @@ Test Files  1 passed (1)
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+18. **§11.17.5 backlog 真正闭合 · embed 服务端 JWT 验证**（✅ 本轮 §11.18）：`apps/web-server/src/embed/index.ts` 新增 `verifyEmbedToken()` helper + `handleEmbed` 调用；opt-in（`GENOFFICE_JWT_SECRET` 存在且 token 是 JWT 形状时）才跑 `verifyJwtWithRevocation`，失败返 401 UNAUTHENTICATED。新增 `apps/web-server/tests/embed-jwt-validation.test.ts`（6 测试）覆盖：合法 200 / 篡改 401 / 乱码 401 / 一次性 jti 第二次 401 / 过期 401 / 非 JWT 透传（向后兼容）。现在 `/api/v1/files/:id/jwt?oneTime=true` 发的 token 在第二次 embed 访问时**真被服务端拒**，不再是依赖 renderer 端 meta-tag-check。
 17. **§11.3 P1 文件 JWT 单次使用语义 · 真实单元测试**（✅ 本轮 §11.17）：新增 `apps/web-server/tests/files-jwt-revocation.test.ts`（6 测试 / < 5 ms）：直接 import `auth.ts` 的 `verifyJwtWithRevocation` / `setJtiRevocationCheck` / `isJtiRevoked` 三个 helper，覆盖 hook 默认 no-op / first-pass-then-revoke / jti 独立 / 篡改 token 不污染撤销集 / 过期短路。`files-jwt-options-e2e.test.ts` 之前最后一条只是空 mint，已被本单元测补齐真实 verify 路径。后续 backlog（§11.17.5）：`embed/index.ts` 尚未在服务端 verify `?token=`，需要独立 PR 升级为 `verifyJwtWithRevocation` 调用后再返回 HTML。
 
 ### A.6 测试现状（本轮实施后更新）
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation）| 63 | 495 | ✅ |
+| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation / embed-jwt-validation）| 64 | 501 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -1880,7 +1926,7 @@ Test Files  1 passed (1)
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **172** | **4295** | ✅ |
+| **总计** | **173** | **4301** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 

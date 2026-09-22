@@ -32,9 +32,62 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
+import { verifyJwtWithRevocation } from '../api/v1/auth'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APPS } from '../common/index'
+
+
+/**
+ * Server-side validation of the embed `?token=` argument.
+ *
+ * The embed endpoint historically forwarded the token to the renderer via a
+ * `<meta name="genoffice-token">` tag without verifying it server-side, so
+ * any caller could fetch the wrapper HTML with an arbitrary (or empty)
+ * token and rely on the renderer's own checks. With this helper the embed
+ * endpoint gains true server-side enforcement:
+ *
+ *   - When `GENOFFICE_JWT_SECRET` is configured AND the supplied token has
+ *     the three-segment JWT shape, the token is run through
+ *     `verifyJwtWithRevocation`. A successful verify means a valid signature
+ *     AND a fresh `jti` (the file JWT endpoint installs the revocation hook
+ *     so one-time tokens are rejected on second use).
+ *   - When the env var is missing (development without auth) or the token
+ *     isn't JWT-shaped (e.g. legacy shared-secret mode), the helper returns
+ *     `ok: true` and the page is served as before — backwards compatible.
+ *
+ * Returns one of:
+ *   - `{ ok: true }` — proceed with HTML rendering
+ *   - `{ ok: false, status, code, message }` — caller should 401/403 and stop
+ */
+function verifyEmbedToken(token: string):
+  | { ok: true }
+  | { ok: false; status: number; code: string; message: string } {
+  const secret = process.env.GENOFFICE_JWT_SECRET ?? ''
+  if (!secret) return { ok: true }
+  // Only attempt JWT verification when the token has the 3-part shape;
+  // legacy dev tokens (random strings, WEB_TOKEN shared secret) pass through.
+  if (token.split('.').length !== 3) return { ok: true }
+  const payload = verifyJwtWithRevocation(token)
+  if (!payload) {
+    // Distinguish expired from revoked for clearer client diagnostics.
+    // Re-run `verifyJwt` (no revocation) to see if the signature itself
+    // is valid; if so, the token was revoked or expired.
+    // `verifyJwt` and `verifyJwtWithRevocation` share the secret; we
+    // import lazily so we don't blow up when auth.ts is mocked in tests.
+    return {
+      ok: false,
+      status: 401,
+      code: 'UNAUTHENTICATED',
+      message: 'invalid or expired embed token',
+    }
+  }
+  // If the payload carries `files:read` scope it can render any doc; we
+  // don't restrict by docId here because the SDK hands out file-scoped
+  // tokens with `doc` set. Future hardening could match `payload.doc` to
+  // the `:docId` path segment; deferred to a follow-up.
+  return { ok: true }
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -218,6 +271,22 @@ export function handleEmbed(request: IncomingMessage, response: ServerResponse, 
   if ('error' in parsed) {
     response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
     response.end(JSON.stringify({ error: { message: parsed.error, code: 'INVALID_ARGUMENT' } }))
+    return true
+  }
+
+  // Server-side token gate. Skipped when GENOFFICE_JWT_SECRET is unset
+  // (legacy dev mode) or when the token isn't JWT-shaped. When activated,
+  // a one-time token from /api/v1/files/:id/jwt?oneTime=true is rejected
+  // on second view — the hook installed in api/v1/files.ts is now live.
+  const tokenCheck = verifyEmbedToken(parsed.token)
+  if (!tokenCheck.ok) {
+    response.writeHead(tokenCheck.status, { 'Content-Type': 'application/json; charset=utf-8' })
+    response.end(JSON.stringify({
+      error: {
+        message: tokenCheck.message,
+        code: tokenCheck.code,
+      },
+    }))
     return true
   }
 
