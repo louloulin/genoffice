@@ -15,14 +15,20 @@
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
 import {
+  getRunLinks,
+  getSlideAnimations,
   getSlideHidden,
+  getSlideLinks,
   getSlideNotes,
   notesPathForSlide,
   openPptx,
+  readHeaderFooter,
   savePptx,
   type ElementClipboardItem,
+  type LinkTarget,
   type OpenedPptx,
   type Slide,
+  type SlideAnimation,
   type SlideDeck,
 } from '@genoffice/pptx-engine'
 
@@ -360,6 +366,42 @@ function resolveSlidesReadModel(event: unknown): {
   return { session, opened: session.opened, deck: session.opened.deck }
 }
 
+/**
+ * The pptx-engine hyperlink helpers return `{ elementId, target }` for
+ * each link found on a slide; the renderer contract (slides-api-factory
+ * ↔ `apps/slides/src/shared/ipc.ts:1396`) expects `{ sourceId, target }`
+ * instead. The fields hold the same value, so a one-line rename per item
+ * is enough. Empty arrays stay empty so the `for (const link of links)`
+ * loop the renderer runs on the result never sees undefined.
+ */
+function projectSlideLinks(
+  links: ReadonlyArray<{ elementId: string; target: LinkTarget }>,
+): Array<{ sourceId: string; target: LinkTarget }> {
+  const out: Array<{ sourceId: string; target: LinkTarget }> = []
+  for (const l of links) out.push({ sourceId: l.elementId, target: l.target })
+  return out
+}
+
+function projectRunLinks(
+  links: ReadonlyArray<{
+    elementId: string
+    paraIndex: number
+    runIndex: number
+    target: LinkTarget
+  }>,
+): Array<{ sourceId: string; paraIndex: number; runIndex: number; target: LinkTarget }> {
+  const out: Array<{ sourceId: string; paraIndex: number; runIndex: number; target: LinkTarget }> = []
+  for (const l of links) {
+    out.push({
+      sourceId: l.elementId,
+      paraIndex: l.paraIndex,
+      runIndex: l.runIndex,
+      target: l.target,
+    })
+  }
+  return out
+}
+
 /** EMU per CSS pixel at 96 DPI; pptx-engine stores dimensions in EMU. */
 const EMU_PER_PX = 9525
 
@@ -404,12 +446,53 @@ export function registerSlidesStateHandlers(): void {
     if (!rm) return []
     return rm.deck.slides.map((s, i) => projectRenderSlide(s, rm.opened.archive, i))
   })
-  registerHandle('slides:get-animations', () => [])
+  // Real animations: read the live `<p:timing>` projection from the
+  // slide's bodySuffix via getSlideAnimations (sdk1 §11.45 template
+  // applied to animations; engine keeps the animation list in sync
+  // with apply-txn's setAnimations op so live edits show up here).
+  registerHandle('slides:get-animations', (event: unknown, slideIndex: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number') return [] as SlideAnimation[]
+    const slide = rm.deck.slides[slideIndex]
+    if (!slide) return [] as SlideAnimation[]
+    return getSlideAnimations(slide)
+  })
   registerHandle('slides:get-chart-data', () => ({}))
   registerHandle('slides:get-comments', () => [])
-  registerHandle('slides:get-header-footer', () => ({ enabled: false }))
+  // Real header/footer echo for the dialog: read the live slide's
+  // placeholder state via readHeaderFooter(slide). The engine walks the
+  // slide's elements for `ftr` / `dt` / `sldNum` placeholders, so the
+  // answer reflects the post-applyHeaderFooter state without a
+  // re-parse. For unbound sessions / out-of-range slideIndex, return
+  // `{ enabled: false }` so the dialog paints a disabled footer
+  // instead of a missing one.
+  registerHandle('slides:get-header-footer', (event: unknown, slideIndex: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number') return { enabled: false as const }
+    const slide = rm.deck.slides[slideIndex]
+    if (!slide) return { enabled: false as const }
+    const hf = readHeaderFooter(slide)
+    return {
+      enabled: hf.footer != null || hf.date != null || hf.slideNum,
+      footer: hf.footer,
+      slideNum: hf.slideNum,
+      date: hf.date,
+    }
+  })
   registerHandle('slides:get-layouts', () => [])
-  registerHandle('slides:get-link', () => null)
+  // Single-element link lookup: filter the slide-links projection by
+  // sourceId (= elementId). Returns null when no slide session is bound,
+  // when slideIndex is out of range, or when the element has no link —
+  // matches the renderer's `if (r)` guard in slideshow hit-testing.
+  registerHandle('slides:get-link', (event: unknown, slideIndex: unknown, sourceId: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number' || typeof sourceId !== 'string') return null
+    const slide = rm.deck.slides[slideIndex]
+    if (!slide) return null
+    const links = getSlideLinks(rm.opened, slideIndex)
+    const found = links.find((l) => l.elementId === sourceId)
+    return found ? found.target : null
+  })
   // Real notes: read the live notesSlide archive part (apply-txn with
   // setSlideNotes mutates the same archive, so this picks up live edits
   // without re-parsing). For an unknown SSE session or out-of-range
@@ -430,8 +513,20 @@ export function registerSlidesStateHandlers(): void {
     }
   })
   registerHandle('slides:get-sections', () => [])
-  registerHandle('slides:get-shape-keys', () => [])
-  registerHandle('slides:get-slide-links', () => [])
+  // Engine has no morph-key model yet (sdk1 §11.42.6 M4 backlog).
+  // Return [] honestly so the renderer doesn't see undefined; once the
+  // engine gains `getMorphKeys` this becomes a one-line projection.
+  registerHandle('slides:get-shape-keys', (_event: unknown, _slideIndex: unknown) => [])
+  // Real slide-level links: walk every element (groups recursed) and
+  // resolve any `a:hlinkClick` against the slide's rels. The rels live
+  // in the live archive, so a hyperlink added via setElementHyperlink
+  // shows up on the next call without re-parse (same liveness story as
+  // §11.45 get-render-slides).
+  registerHandle('slides:get-slide-links', (event: unknown, slideIndex: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number') return []
+    return projectSlideLinks(getSlideLinks(rm.opened, slideIndex))
+  })
   // Real slide-size: project the deck's EMU dimensions onto CSS pixels at
   // 96 DPI (9525 EMU per px). The previous hardcoded 960x540 was wrong for
   // any 4:3 / a4 / custom-size deck; the renderer's canvas would render
@@ -445,7 +540,15 @@ export function registerSlidesStateHandlers(): void {
     const { cx, cy } = rm.deck.size
     return { width: Math.round(cx / EMU_PER_PX), height: Math.round(cy / EMU_PER_PX) }
   })
-  registerHandle('slides:get-run-links', () => [])
+  // Real run-level links: one entry per text run whose
+  // TextRun.hyperlinkRId resolves to a url/slide target via the live
+  // rels. Keyed by sourceId (= elementId) + paraIndex + runIndex so the
+  // slideshow's hit-test loop can match against layout glyph runs.
+  registerHandle('slides:get-run-links', (event: unknown, slideIndex: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number') return []
+    return projectRunLinks(getRunLinks(rm.opened, slideIndex))
+  })
   registerHandle('slides:has-slide-clipboard', () => false)
   registerHandle('slides:font-catalog', () => [])
   registerHandle('slides:font-missing', () => [])

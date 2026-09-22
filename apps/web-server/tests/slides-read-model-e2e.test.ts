@@ -239,4 +239,190 @@ describe.skipIf(skip)('slides:get-* read-model (sdk1 §11.45)', () => {
       ops: [{ op: 'setHidden', target: { slide: 0 }, hidden: false }],
     }], sessionId)
   })
+
+/**
+ * Tier-1 batch (sdk1 §11.46) — the remaining "easy" read-only channels
+ * that have a real engine-side source for their data:
+ *
+ *   - get-slide-links  → getSlideLinks(opened, slideIndex) walk over
+ *     every element + group (recursively) with a:hlinkClick resolved
+ *     against the live rels
+ *   - get-run-links    → same engine helper, but at paragraph/run
+ *     granularity (keyed by sourceId + paraIndex + runIndex)
+ *   - get-link         → filter the slide-links projection by sourceId
+ *   - get-animations   → readSlideAnimations(slide) walks the live
+ *     <p:timing> projection in bodySuffix
+ *   - get-header-footer → readHeaderFooter(slide) walks placeholders
+ *     for `ftr` / `dt` / `sldNum`
+ *
+ * The renderer contract uses `sourceId` for element ids while the
+ * engine uses `elementId`; projectSlideLinks / projectRunLinks in
+ * state.ts rename the field so the contract matches verbatim.
+ *
+ * What's covered:
+ *   - cold-start: each channel returns the documented empty shape
+ *     when no SSE session has called slides:open-path yet
+ *   - post-open-path: every channel returns [] / null against the
+ *     bundled blank.pptx (no hyperlinks, no animations, no
+ *     placeholders → empty arrays are correct)
+ *   - get-header-footer round-trip: applyHeaderFooter via apply-txn
+ *     makes the dialog echo reflect footer / slideNum / date
+ *   - get-link tolerates unknown sourceId (returns null) and
+ *     unknown slideIndex (returns null)
+ */
+describe.skipIf(skip)('slides:get-* read-model — tier 1 (sdk1 §11.46)', () => {
+  let server: ChildProcess | undefined
+  let base: string
+  let dataDir: string
+  let filesDir: string
+  let pptxPath: string
+
+  beforeAll(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'genoffice-slides-tier1-e2e-'))
+    filesDir = join(dataDir, 'files')
+    mkdirSync(filesDir, { recursive: true })
+    pptxPath = join(filesDir, 'deck.pptx')
+    copyFileSync(blankTemplate, pptxPath)
+
+    const port = 32800 + Math.floor(Math.random() * 8000)
+    base = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [bundle], {
+      cwd: pkgRoot,
+      env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await pollHealth(base, 15_000)
+  }, 30_000)
+
+  afterAll(async () => {
+    if (server) await stopServer(server)
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  async function openDeckAndRememberSession(): Promise<string> {
+    const sessionId = `s-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const r = await fetch(`${base}/api/ipc/slides%3Aopen-path`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-ipc-session': sessionId,
+      },
+      body: JSON.stringify({ args: [encodeTransportValue(pptxPath)] }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { error?: { code: string } }
+    expect(body.error, JSON.stringify(body)).toBeUndefined()
+    return sessionId
+  }
+
+  async function invoke(channel: string, args: unknown[], sessionId?: string): Promise<unknown> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (sessionId) headers['x-ipc-session'] = sessionId
+    const r = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ args: args.map((a) => encodeTransportValue(a)) }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json() as { result?: unknown }
+    return body.result
+  }
+
+  // ── cold-start fallbacks ──────────────────────────────────────────
+  it('get-slide-links returns [] when no session has opened yet', async () => {
+    expect(await invoke('slides:get-slide-links', [0])).toEqual([])
+  })
+
+  it('get-run-links returns [] when no session has opened yet', async () => {
+    expect(await invoke('slides:get-run-links', [0])).toEqual([])
+  })
+
+  it('get-link returns null when no session has opened yet', async () => {
+    expect(await invoke('slides:get-link', [0, 'sp_0'])).toBeNull()
+  })
+
+  it('get-animations returns [] when no session has opened yet', async () => {
+    expect(await invoke('slides:get-animations', [0])).toEqual([])
+  })
+
+  it('get-header-footer returns { enabled: false } when no session has opened yet', async () => {
+    expect(await invoke('slides:get-header-footer', [0])).toEqual({ enabled: false })
+  })
+
+  // ── post-open-path: blank.pptx carries no hyperlinks / animations ─
+  it('after open-path: get-slide-links returns [] (blank.pptx has no hyperlinks)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-slide-links', [0], sessionId)).toEqual([])
+  })
+
+  it('after open-path: get-run-links returns [] (blank.pptx has no run hyperlinks)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-run-links', [0], sessionId)).toEqual([])
+  })
+
+  it('after open-path: get-link returns null for an unknown sourceId', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-link', [0, 'sp_does_not_exist'], sessionId)).toBeNull()
+  })
+
+  it('after open-path: get-link tolerates an out-of-range slideIndex', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-link', [999, 'sp_0'], sessionId)).toBeNull()
+  })
+
+  it('after open-path: get-animations returns [] (blank.pptx has no timing)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    expect(await invoke('slides:get-animations', [0], sessionId)).toEqual([])
+  })
+
+  // ── get-header-footer round-trip ──────────────────────────────────
+  it('after open-path: get-header-footer reports enabled=false (blank.pptx has no footer placeholders)', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    const hf = await invoke('slides:get-header-footer', [0], sessionId) as {
+      enabled: boolean
+      footer: string | null
+      slideNum: boolean
+      date: string | null
+    }
+    expect(hf.enabled).toBe(false)
+    expect(hf.footer).toBeNull()
+    expect(hf.slideNum).toBe(false)
+    expect(hf.date).toBeNull()
+  })
+
+  it('after applyHeaderFooter: get-header-footer round-trips footer + slideNum + date', async () => {
+    const sessionId = await openDeckAndRememberSession()
+    // applyHeaderFooter writes dt / ftr / sldNum placeholders to every
+    // slide. Pass a fitWidthPx so the renderer-side validation
+    // (HeaderFooterOp.fitWidthPx is required per ipc.ts:958) doesn't
+    // reject the op. After this runs, readHeaderFooter on slide 0
+    // should echo back footer + slideNum=true + date.
+    const apply = await invoke('slides:apply-txn', [{
+      path: pptxPath,
+      ops: [
+        // pptx-ops registers the op as `applyHeaderFooter` with the
+        // engine's HeaderFooterOptions wrapped under `settings` (sdk1
+        // §11.46 tier 1 round-trip). fitWidthPx is a renderer-side
+        // requirement (HeaderFooterOp.fitWidthPx per ipc.ts:958) that
+        // the op itself ignores; pass it so applyHeaderFooter's
+        // upstream HeaderFooterOp validator doesn't reject the call.
+        { op: 'applyHeaderFooter', settings: { footer: 'Acme Confidential', slideNum: true, date: '2026-09-22' } },
+      ],
+    }], sessionId) as { applied: boolean; failures?: unknown[] }
+    expect(apply.applied).toBe(true)
+    expect(apply.failures ?? []).toEqual([])
+
+    const hf = await invoke('slides:get-header-footer', [0], sessionId) as {
+      enabled: boolean
+      footer: string | null
+      slideNum: boolean
+      date: string | null
+    }
+    expect(hf.enabled).toBe(true)
+    expect(hf.footer).toBe('Acme Confidential')
+    expect(hf.slideNum).toBe(true)
+    expect(hf.date).toBe('2026-09-22')
+  })
+})
+
 })
