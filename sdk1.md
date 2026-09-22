@@ -5673,7 +5673,7 @@ save handler
 | **移动端** | H5 编辑器未实装 | P1 | M4（Week 16） |
 | **导出** | html → docx 诚实拒绝（需 Playwright）| P2 | M6 |
 | **导出** | docx → pdf 诚实拒绝（需 LibreOffice）| P2 | M6 |
-| **存储后端** | S3/minio savePath 跨 backend 原子语义未统一 | P2 | M5 |
+| **存储后端** | S3/minio savePath 跨 backend 原子语义 ✅（`promoteAcrossBackend`：storage:// → backend.put；local → xlsx-gateway `promoteFileAtomically`；8 测试 in `tests/promote-across-backend.test.ts`）| — |
 | **字体** | FontFace API 集成（catalog/missing/install）| P2 | 渲染端 |
 | **剪贴板** | OS-native clipboard（仅桌面）| P3 | 跨环境差异 |
 | **协作通知** | Discord / Office Hours | P3 | 外部服务 |
@@ -5738,8 +5738,7 @@ save handler
    - reparse 不打断 renderer 持有 id
 9. **PDF/DOCX 导出真实化**
    - Playwright / LibreOffice 集成（容器化）
-10. **storage backend S3/minio 统一原子语义**
-    - `promoteFileAtomically` 在跨后端的契约
+10. **storage backend S3/minio 统一原子语义**（✅ 本轮落地：`apps/web-server/src/common/promote-across-backend.ts` 新增 `promoteAcrossBackend(stagingPath, targetPath, options?)`；`storage://` URI → `backend.put`；local → `promoteFileAtomically` 委托；8 e2e + 单元测试 in `apps/web-server/tests/promote-across-backend.test.ts`）
 
 #### **优先级 3 · 可做**（P2，8-12 周）
 

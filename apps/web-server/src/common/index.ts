@@ -10,6 +10,8 @@ export { readBlankTemplate, writeBlankOfficeFile } from './blank-templates'
 export type { TypedArrayTag } from './codec'
 
 export { registerHandle, getHandler, getHandlerEntry, listChannels, handlerCount } from './registry'
+export { promoteAcrossBackend } from './promote-across-backend'
+export type { PromoteOptions, PromoteResult } from './promote-across-backend'
 export type { IpcHandler } from './registry'
 
 export {

@@ -675,3 +675,15 @@ export function storageKeyFromPath(filePath: string): string | null {
 export function isRemoteStorage(): boolean {
   return getStorageBackend().id !== 'local'
 }
+
+/* Test-only: replace the cached storage backend. Used by
+ * tests/promote-across-backend.test.ts (and any future test that needs
+ * to assert on the backend's put/get calls). Not exported from
+ * common/index to keep it out of the production surface. */
+export function _setStorageBackendForTests(backend: StorageBackend): void {
+  _storageBackend = backend
+}
+
+export function _resetStorageBackendForTests(): void {
+  _storageBackend = null
+}
