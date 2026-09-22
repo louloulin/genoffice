@@ -72,6 +72,7 @@ import { registerEnterpriseHandlers } from './enterprise/index'
 import { registerAnydocHandlers } from './anydoc/index'
 import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
+import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 import { handleApiV1 } from './api/v1/index'
 import { handleEmbed } from './embed/index'
@@ -115,6 +116,11 @@ try {
 }
 
 initRecentState()
+/* Audit-log retention worker (sdk1 §A.5 audit-log backlog close).
+ * Periodically trims audit-log.jsonl to entries within
+ * GENOFFICE_AUDIT_RETENTION_DAYS (default 90). The timer is unref'd
+ * inside startAuditRotateWorker() so it never holds shutdown open. */
+startAuditRotateWorker()
 /* Rehydrate the persisted upload index BEFORE any handler can serve a
  * `files:read({id})`: an id issued in a previous session must resolve from the
  * first request after a restart, not only after the next upload. */

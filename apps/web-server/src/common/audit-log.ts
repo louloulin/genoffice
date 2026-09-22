@@ -339,6 +339,161 @@ export function exportAudit(opts: ExportAuditFilters = {}): {
  * real events would be O(n²) under the current unshift-on-the-front
  * layout, which is fine in production but punishing in a vitest run.
  */
+/**
+ * Retention / rotate worker (sdk1 §A.5 audit-log backlog close).
+ *
+ * Default: trim audit-log.jsonl to those with `timestamp` newer than
+ * `GENOFFICE_AUDIT_RETENTION_DAYS` (default 90). The rotate is a
+ * streaming rewrite — it filters the on-disk JSONL line-by-line,
+ * atomically swaps the file via temp + rename, and updates
+ * `totalDropped` on the metrics surface so Prometheus scrapes show
+ * the eviction immediately.
+ *
+ * Background loop:
+ * - `startAuditRotateWorker()` registers a `setInterval` that calls
+ *   `rotateAuditLog()` once every `GENOFFICE_AUDIT_ROTATE_INTERVAL_MS`
+ *   (default 24h).
+ * - `_stopAuditRotateWorkerForTests()` clears the interval; production
+ *   code never calls this. The interval is `unref()`'d so it never
+ *   holds the event loop open on shutdown.
+ */
+const DEFAULT_RETENTION_DAYS = 90
+const DEFAULT_ROTATE_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24h
+
+let rotateTimer: NodeJS.Timeout | null = null
+
+export interface RotateResult {
+  /** Number of records retained in the rewritten file. */
+  kept: number
+  /** Number of records evicted because their timestamp predates the cutoff. */
+  dropped: number
+  /** ISO 8601 cutoff used for this rotation (records older than this are dropped). */
+  cutoffIso: string
+  /** True if the JSONL file did not exist (no-op rotation). */
+  skipped: boolean
+}
+
+/** Compute the retention cutoff timestamp in ms for "now - retentionDays".
+ *  Visible for tests; production code calls `rotateAuditLog()`. */
+export function retentionCutoffMs(now: number = Date.now(), retentionDays: number = retentionDaysFromEnv()): number {
+  return now - retentionDays * 24 * 60 * 60 * 1000
+}
+
+function retentionDaysFromEnv(): number {
+  const raw = process.env.GENOFFICE_AUDIT_RETENTION_DAYS
+  if (!raw) return DEFAULT_RETENTION_DAYS
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RETENTION_DAYS
+}
+
+function rotateIntervalMsFromEnv(): number {
+  const raw = process.env.GENOFFICE_AUDIT_ROTATE_INTERVAL_MS
+  if (!raw) return DEFAULT_ROTATE_INTERVAL_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 1000 ? n : DEFAULT_ROTATE_INTERVAL_MS
+}
+
+/**
+ * Run one rotation pass: read every line, keep records with
+ * `timestamp >= cutoffMs`, atomically swap the JSONL file, and bump
+ * `totalDropped` accordingly. Returns the kept / dropped counts.
+ *
+ * Idempotent: calling repeatedly with the same cutoff is a no-op
+ * once the file already matches the retention window. Never throws
+ * — failures are logged and reported via the `skipped` flag.
+ */
+export function rotateAuditLog(opts: { retentionDays?: number; nowMs?: number } = {}): RotateResult {
+  const retentionDays = opts.retentionDays ?? retentionDaysFromEnv()
+  const nowMs = opts.nowMs ?? Date.now()
+  const cutoffMs = retentionCutoffMs(nowMs, retentionDays)
+  if (PERSIST_DISABLED || !fssync.existsSync(FILE)) {
+    return { kept: 0, dropped: 0, cutoffIso: new Date(cutoffMs).toISOString(), skipped: true }
+  }
+  let raw: string
+  try {
+    raw = fssync.readFileSync(FILE, 'utf8')
+  } catch (err) {
+    console.warn('[audit-log] rotate: failed to read file:', err)
+    return { kept: 0, dropped: 0, cutoffIso: new Date(cutoffMs).toISOString(), skipped: true }
+  }
+  if (!raw.trim()) {
+    return { kept: 0, dropped: 0, cutoffIso: new Date(cutoffMs).toISOString(), skipped: false }
+  }
+  const lines = raw.split('\n')
+  const keptLines: string[] = []
+  let dropped = 0
+  let kept = 0
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let rec: AuditRecord
+    try {
+      rec = JSON.parse(trimmed) as AuditRecord
+    } catch {
+      // Malformed: drop it (a corrupted line is "older than anything").
+      dropped++
+      continue
+    }
+    if (typeof rec.timestamp !== 'number' || rec.timestamp < cutoffMs) {
+      dropped++
+      continue
+    }
+    keptLines.push(trimmed)
+    kept++
+  }
+  if (dropped === 0) {
+    // No work to do — don't touch the file or the metrics counters.
+    return { kept, dropped, cutoffIso: new Date(cutoffMs).toISOString(), skipped: false }
+  }
+  try {
+    const tmp = `${FILE}.rotate-${process.pid}-${Date.now()}.tmp`
+    fssync.writeFileSync(tmp, keptLines.join('\n') + (keptLines.length ? '\n' : ''), 'utf8')
+    fssync.renameSync(tmp, FILE)
+    totalDropped += dropped
+  } catch (err) {
+    console.warn('[audit-log] rotate: failed to swap file:', err)
+    return { kept, dropped, cutoffIso: new Date(cutoffMs).toISOString(), skipped: true }
+  }
+  return { kept, dropped, cutoffIso: new Date(cutoffMs).toISOString(), skipped: false }
+}
+
+/**
+ * Start the background retention loop. Idempotent: calling twice is
+ * a no-op (the second call returns the existing timer). The timer is
+ * `unref()`'d so a server that calls this can still exit cleanly when
+ * its other work drains — the rotate is best-effort housekeeping,
+ * not a critical task.
+ *
+ * Returns the timer handle so callers (tests) can inspect / cancel.
+ */
+export function startAuditRotateWorker(): NodeJS.Timeout | null {
+  if (rotateTimer) return rotateTimer
+  const intervalMs = rotateIntervalMsFromEnv()
+  rotateTimer = setInterval(() => {
+    try {
+      const r = rotateAuditLog()
+      if (r.dropped > 0) {
+        console.log(
+          `[audit-log] rotated: kept=${r.kept} dropped=${r.dropped} cutoff=${r.cutoffIso}`,
+        )
+      }
+    } catch (err) {
+      console.warn('[audit-log] rotate worker tick failed:', err)
+    }
+  }, intervalMs)
+  rotateTimer.unref?.()
+  return rotateTimer
+}
+
+/** Cancel the background retention loop. Test-only — production code
+ *  never calls this; the worker keeps running for the process lifetime. */
+export function _stopAuditRotateWorkerForTests(): void {
+  if (rotateTimer) {
+    clearInterval(rotateTimer)
+    rotateTimer = null
+  }
+}
+
 export function _setAuditMaxRecordsForTests(max: number): number {
   if (!Number.isFinite(max) || max < 1) {
     throw new Error(`_setAuditMaxRecordsForTests: max must be ≥ 1, got ${max}`)
