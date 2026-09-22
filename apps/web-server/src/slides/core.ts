@@ -17,13 +17,11 @@ import {
   replaceSlidesSession,
   setSlidesDirty,
   forgetSlidesSession,
+  forgetSlidesSessionForPath,
+  setCurrentSlidesPath,
+  getCurrentSlidesPath,
 } from './state'
 
-/** Path-keyed alias used by save-as when it migrates a session off its old
- *  source path. Keeps the call sites readable. */
-function forgetSlidesSessionForPath(path: string): void {
-  forgetSlidesSession(path)
-}
 import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
 import { parseTheme } from '@genoffice/pptx-engine'
 import { displayMime } from '../../../slides/src/main/media-mime'
@@ -161,7 +159,7 @@ export function registerSlidesCoreHandlers(): void {
     return { id, path: opts?.path || '', name }
   })
 
-  registerHandle('slides:open-path', async (_event: unknown, filePath: unknown) => {
+  registerHandle('slides:open-path', async (event: unknown, filePath: unknown) => {
     // A non-string `filePath` is a renderer-side mistake (the channel
     // contract is "string path"), not a missing resource. Throwing
     // `InvalidArgumentError` (400) keeps the failure mode consistent with
@@ -237,6 +235,13 @@ export function registerSlidesCoreHandlers(): void {
     // re-opens the same logical file with a different URI (e.g. after a
     // save-as) would otherwise see a stale model.
     registerSlidesSession(path, opened)
+    // Record the active deck path against the SSE session id so legacy
+    // channels (slides:save / slides:apply-txn / slides:edit-text /
+    // slides:edit-fill / slides:edit-stroke / slides:add-element) can
+    // find the session without the renderer having to repeat the path on
+    // every call. A renderer that opens multiple decks in one session
+    // will see the most-recent one become "current".
+    setCurrentSlidesPath((event as { sessionId?: string } | null)?.sessionId, path)
 
     return {
       path,
@@ -266,11 +271,29 @@ export function registerSlidesCoreHandlers(): void {
   registerHandle(
     'slides:save',
     async (event: unknown, _id?: unknown, path?: unknown, data?: unknown) => {
-      if (typeof path !== 'string' || !path) {
-        return { ok: false, canceled: true, error: 'slides:save expects { path: string }' }
+      // The renderer's slidesApi.save() doesn't send the path — resolve it
+      // from the SSE session's currentSlidesPath (recorded on open-path).
+      // If the renderer DOES send path, prefer that (a save-as-via-old-API
+      // or future renderer that opts into explicit path wins).
+      let resolvedPath: string | undefined
+      if (typeof path === 'string' && path) {
+        resolvedPath = path
+      } else {
+        const sessionId = (event as { sessionId?: string } | null)?.sessionId
+        resolvedPath = getCurrentSlidesPath(sessionId)
       }
-      const key = storageKeyFromPath(path)
-      const canonical = key ? join(FILES_DIR, key) : path
+      if (!resolvedPath) {
+        return {
+          ok: false,
+          canceled: true,
+          error: 'slides:save expects { path: string } or an open-path session',
+        }
+      }
+      // Use a string-typed local — the IPC param `path` is typed `unknown`
+      // so TS can't narrow it via reassignment.
+      const renderPath = resolvedPath
+      const key = storageKeyFromPath(renderPath)
+      const canonical = key ? join(FILES_DIR, key) : renderPath
       if (!key && !isManagedPptxPath(canonical)) {
         // The old handler wrote to ANY path the renderer named, including
         // `/tmp/anywhere.pptx`. With `requireManagedPath` semantics the
@@ -369,17 +392,24 @@ export function registerSlidesCoreHandlers(): void {
 
   registerHandle(
     'slides:save-as',
-    async (_event: unknown, defaultName?: unknown, data?: unknown, sourcePath?: unknown) => {
+    async (event: unknown, defaultName?: unknown, data?: unknown, sourcePath?: unknown) => {
       // Save-as needs a source path to find the registered session, OR
       // explicit bytes from the renderer. A bare "save-as with neither"
       // used to return `WEB_UNSUPPORTED`; now it answers an explicit
       // invalid-argument so the renderer can branch correctly.
       if (data === undefined || data === null) {
+        // Fall back to the SSE session's current slides path so the
+        // renderer's no-arg slidesApi.saveAs(name) still finds the
+        // active deck.
+        if (typeof sourcePath !== 'string' || !sourcePath) {
+          const sessionId = (event as { sessionId?: string } | null)?.sessionId
+          sourcePath = getCurrentSlidesPath(sessionId)
+        }
         if (typeof sourcePath !== 'string' || !sourcePath) {
           return {
             ok: false,
             canceled: true,
-            error: 'slides:save-as expects { sourcePath: string } when no bytes are supplied',
+            error: 'slides:save-as expects { sourcePath: string } or an open-path session',
           }
         }
         const sourceSession = getSlidesSession(sourcePath)

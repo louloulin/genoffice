@@ -17,9 +17,51 @@
  */
 import { join } from 'node:path'
 import { registerHandle, FILES_DIR, storageKeyFromPath } from '../common/index'
-import { getSlidesSession, setSlidesDirty } from './state'
+import { getSlidesSession, setSlidesDirty, getCurrentSlidesPath } from './state'
 import type { OpenedPptx } from '@genoffice/pptx-engine'
 import { runTxn, type Op } from '@genoffice/pptx-ops'
+
+
+/**
+ * Resolve the slides session path for a legacy IPC channel. Legacy channels
+ * (`slides:edit-text` / `slides:edit-fill` / `slides:edit-stroke` /
+ * `slides:add-element`) don't carry the path in their args; the renderer
+ * held it in renderer-side state instead. We track the equivalent on the
+ * server side via `setCurrentSlidesPath(sessionId, path)` (called from
+ * `slides:open-path`), then look it up here.
+ */
+function legacySessionPath(event: unknown): string | undefined {
+  const sessionId = (event as { sessionId?: string } | null | undefined)?.sessionId
+  return getCurrentSlidesPath(sessionId)
+}
+
+/**
+ * Apply a single runTxn op using the legacy channel's args + the session
+ * path resolved from event.sessionId. Returns the legacy `{ ok: true }`
+ * shape on success or a structured `{ ok: false, error }` envelope on
+ * failure so the renderer can branch correctly.
+ */
+function applyLegacyOp(
+  event: unknown,
+  op: Op,
+  errorChannel: string,
+): { ok: true; applied?: true } | { ok: false; error: string } {
+  const path = legacySessionPath(event)
+  if (!path) {
+    return { ok: false, error: `${errorChannel}: no current slides session — call slides:open-path first` }
+  }
+  const session = getSlidesSession(path)
+  if (!session) {
+    return { ok: false, error: `${errorChannel}: no live model for current session` }
+  }
+  const r = runTxn(session.opened, { ops: [op], isolation: 'atomic' })
+  if (!r.applied) {
+    const first = r.failures?.[0]
+    return { ok: false, error: first?.error ?? `${errorChannel}: op failed` }
+  }
+  if ((r.records ?? []).length > 0) setSlidesDirty(path, true)
+  return { ok: true, applied: true }
+}
 
 export function registerSlidesElementHandlers(): void {
   // ----- slide-level mutations ---------------------------------------------
@@ -37,20 +79,90 @@ export function registerSlidesElementHandlers(): void {
   registerHandle('slides:add-image-bytes', () => ({ ok: true, imageId: `image-${Date.now()}` }))
   registerHandle('slides:add-table', () => ({ ok: true, tableId: `table-${Date.now()}` }))
   registerHandle('slides:add-text', () => ({ ok: true, elementId: `text-${Date.now()}` }))
-  registerHandle('slides:add-element', () => ({ ok: true, elementId: `element-${Date.now()}` }))
+  registerHandle('slides:add-element', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; kind?: string; xPx?: number; yPx?: number; wPx?: number; hPx?: number; fitWidthPx?: number; text?: string; paragraphs?: unknown; sourceId?: string }
+    if (typeof o.slideIndex !== 'number') {
+      return { ok: false, error: 'slides:add-element requires { slideIndex, ... }' }
+    }
+    const r = applyLegacyOp(
+      event,
+      {
+        op: 'addElement',
+        target: { slide: o.slideIndex },
+        kind: o.kind,
+        xPx: o.xPx,
+        yPx: o.yPx,
+        wPx: o.wPx,
+        hPx: o.hPx,
+        fitWidthPx: o.fitWidthPx,
+        text: o.text,
+        paragraphs: o.paragraphs,
+        ...(o.sourceId ? { sourceId: o.sourceId } : {}),
+      },
+      'slides:add-element',
+    )
+    return r.ok
+      ? { ok: true, elementId: `element-${Date.now()}`, applied: true }
+      : r
+  })
   registerHandle('slides:add-media-bytes', () => ({ ok: true }))
   registerHandle('slides:add-ink', () => ({ ok: true }))
   registerHandle('slides:add-smartart', () => ({ ok: true }))
 
-  registerHandle('slides:edit-text', () => ({ ok: true }))
+  registerHandle('slides:edit-text', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; paragraphs?: unknown; groupId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-text requires { slideIndex, sourceId, paragraphs }' }
+    }
+    return applyLegacyOp(
+      event,
+      {
+        op: 'setText',
+        target: { slide: o.slideIndex, el: o.sourceId },
+        paragraphs: o.paragraphs,
+        ...(o.groupId ? { group: o.groupId } : {}),
+      },
+      'slides:edit-text',
+    )
+  })
   registerHandle('slides:edit-background', () => ({ ok: true }))
   registerHandle('slides:edit-chart', () => ({ ok: true }))
   registerHandle('slides:edit-connector-endpoints', () => ({ ok: true }))
-  registerHandle('slides:edit-fill', () => ({ ok: true }))
+  registerHandle('slides:edit-fill', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; fill?: unknown; groupId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-fill requires { slideIndex, sourceId, fill }' }
+    }
+    return applyLegacyOp(
+      event,
+      {
+        op: 'setFill',
+        target: { slide: o.slideIndex, el: o.sourceId },
+        fill: o.fill,
+        ...(o.groupId ? { group: o.groupId } : {}),
+      },
+      'slides:edit-fill',
+    )
+  })
   registerHandle('slides:edit-image-fill', () => ({ ok: true }))
   registerHandle('slides:edit-picture-opacity', () => ({ ok: true }))
   registerHandle('slides:edit-picture-src-rect', () => ({ ok: true }))
-  registerHandle('slides:edit-stroke', () => ({ ok: true }))
+  registerHandle('slides:edit-stroke', (event: unknown, op: unknown) => {
+    const o = (op ?? {}) as { slideIndex?: number; sourceId?: string; stroke?: unknown; groupId?: string }
+    if (typeof o.slideIndex !== 'number' || typeof o.sourceId !== 'string') {
+      return { ok: false, error: 'slides:edit-stroke requires { slideIndex, sourceId, stroke }' }
+    }
+    return applyLegacyOp(
+      event,
+      {
+        op: 'setStroke',
+        target: { slide: o.slideIndex, el: o.sourceId },
+        stroke: o.stroke,
+        ...(o.groupId ? { group: o.groupId } : {}),
+      },
+      'slides:edit-stroke',
+    )
+  })
   registerHandle('slides:edit-table-cell', () => ({ ok: true }))
   registerHandle('slides:edit-table-style', () => ({ ok: true }))
   registerHandle('slides:edit-transform', () => ({ ok: true }))

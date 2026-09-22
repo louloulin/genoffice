@@ -27,6 +27,43 @@ interface SlidesSessionInfo {
 
 const sessions = new Map<string, SlidesSessionInfo>()
 
+/**
+ * Per-SSE-session current slides path. The renderer can only have one deck
+ * active at a time, so this maps the SSE session id (the value the renderer
+ * sends as `x-ipc-session`) to the path it last opened via `slides:open-path`.
+ * Legacy channels (`slides:save` / `slides:apply-txn` / `slides:edit-text`
+ * etc.) look up the path through `getCurrentSlidesPath(event)` so the
+ * renderer doesn't have to send it on every call.
+ *
+ * Cleared when `slides:close` or `forgetSlidesSessionForPath` runs.
+ */
+const currentSlidesPathBySession = new Map<string, string>()
+
+export function setCurrentSlidesPath(sessionId: string | undefined, path: string): void {
+  if (!sessionId) return
+  currentSlidesPathBySession.set(sessionId, path)
+}
+
+export function getCurrentSlidesPath(sessionId: string | undefined): string | undefined {
+  if (!sessionId) return undefined
+  return currentSlidesPathBySession.get(sessionId)
+}
+
+export function clearCurrentSlidesPath(sessionId: string | undefined, path: string): void {
+  if (!sessionId) return
+  const cur = currentSlidesPathBySession.get(sessionId)
+  if (cur === path) currentSlidesPathBySession.delete(sessionId)
+}
+
+/** Drop the sessionPath binding on a path regardless of which session held it.
+ *  Used when `forgetSlidesSession` is called so a stale binding can't survive
+ *  a registry eviction. */
+export function forgetSlidesSessionForPath(path: string): void {
+  for (const [sid, p] of currentSlidesPathBySession) {
+    if (p === path) currentSlidesPathBySession.delete(sid)
+  }
+}
+
 function touch(info: SlidesSessionInfo): void {
   info.lastTouchedAt = Date.now()
 }

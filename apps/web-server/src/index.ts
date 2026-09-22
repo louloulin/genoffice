@@ -489,9 +489,14 @@ const server = createServer(async (request, response) => {
 
       const handler = getHandler(channel)
       if (handler) {
+        // Pass the SSE session id through to handlers via the event object so
+        // they can look up per-session state (currentSlidesPath, dirty
+        // tracking, etc.). The id on sender stays -1 because there is no
+        // 1:1 webSocket — the real session key is the SSE channel.
         const event = {
           processId: 0,
           frameId: 0,
+          sessionId: session,
           sender: {
             id: -1,
             isDestroyed: () => false,

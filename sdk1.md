@@ -1531,6 +1531,50 @@ Test Files  1 passed (1)
 | §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
 
 
+### 11.16 本轮续作（v2 第 11 轮 commit，2026-09-22）
+
+发现一个**真 bug**——renderer 的 `slidesApi.save()` / `slides:edit-text` 等 legacy 通道调用时**不传 path**，而 web-server handler 之前要么返 `{ok: true}`（静默吞掉 mutation）要么返 `canceled: true`（要求 renderer 给 path，但 renderer 永远不会给）。这是 §0.8 中"Slides apply-txn 70+ element-level ops 仍为 { ok: true } 桩"的真实形态——之前描述里的"renderer 已迁 apply-txn"其实**只对了一半**：renderer 同时调 apply-txn **和** legacy 通道。
+
+#### 11.16.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/index.ts` | IPC event 对象加 `sessionId` 字段，让 handlers 能拿到 SSE session id | +6 |
+| `apps/web-server/src/slides/state.ts` | 新增 `currentSlidesPathBySession: Map<sessionId, path>` + `setCurrentSlidesPath` / `getCurrentSlidesPath` / `clearCurrentSlidesPath` / `forgetSlidesSessionForPath` 4 个 export | +50 |
+| `apps/web-server/src/slides/core.ts` | `slides:open-path` 现在 `setCurrentSlidesPath(event.sessionId, path)`；`slides:save` / `slides:save-as` 在 renderer 不给 path 时回退到 session-derived path；移除本地 `forgetSlidesSessionForPath` helper（state.ts 已经导出真版）| +20 |
+| `apps/web-server/src/slides/elements.ts` | 新增 `legacySessionPath(event)` + `applyLegacyOp(event, op, channel)` 辅助函数；把 4 个最常用 legacy 通道 `slides:edit-text` / `slides:edit-fill` / `slides:edit-stroke` / `slides:add-element` 从 `{ok:true}` 桩改成 dispatch 到 `runTxn` 的 `setText` / `setFill` / `setStroke` / `addElement` ops | +85 |
+| `apps/web-server/tests/slides-legacy-session-e2e.test.ts` | 新增 · 7 测试（save 无 path 序列化 / edit-text dispatch / edit-fill / edit-stroke / add-element / 无 session 返结构化错误 / save-as 无 sourcePath 回退）| +175 |
+
+#### 11.16.2 设计要点
+
+- **Renderer 不改一行**：legacy 通道的 IPC 协议不变；新增的 session 路径解析对 renderer 透明。改动只发生在 web-server 侧
+- **Per-session 而非 per-channel**：SSE session id 已经是 renderer's IPC session 的天然身份；同一个 session 内 "current slides path" 唯一，避免 multi-tab 互相覆盖
+- **apply-txn 是真理源**：所有 legacy 通道通过 `applyLegacyOp` 共享同一个 `runTxn` 调度路径，未来加新 op 只要往 `@genoffice/pptx-ops` 的 registry 注册一份，legacy 通道就能复用
+- **结构化失败**：未 open session 的 legacy 调用不再返 `{ok: true}`；返 `{ok: false, error: "no current slides session — call slides:open-path first"}` 让 renderer 至少能看清错误
+
+#### 11.16.3 §0.8 gap 表同步
+
+```diff
+- | Slides `apply-txn` 70+ element-level ops 真做 | ✅（73 ops via runTxn）| — |
++ | Slides `apply-txn` 70+ element-level ops 真做 | ✅（73 ops via runTxn + 4 个最常用 legacy 通道已 wire 到 applyLegacyOp）| — |
+```
+
+#### 11.16.4 验证
+
+- `npx vitest run`：**62 文件 / 489 测试全绿**（原 61/482 + slides-legacy-session-e2e 7 测试）
+- typecheck：clean（除预存 pptx-ops / xlsx-gateway 错误）
+- bundle 28.5 MB 重编 OK
+- live `/api/channels`：仍 551 channels（本次未新增 channel，纯路径解析）
+
+#### 11.16.5 §0.8 / §11.3 真正剩余
+
+| § | 项 | 状态 | 备注 |
+|---|---|---|---|
+| §A.3 | Discord 服务器 | ⬜ | 外部服务 |
+| §B.1 | 协作（CRDT/OT）+ 移动端 H5 | ⬜ | M4（Week 16）|
+| §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
+
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -1779,7 +1823,7 @@ Test Files  1 passed (1)
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface）| 61 | 482 | ✅ |
+| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session）| 62 | 489 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -1798,7 +1842,7 @@ Test Files  1 passed (1)
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **170** | **4282** | ✅ |
+| **总计** | **171** | **4289** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
