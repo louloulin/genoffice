@@ -236,3 +236,122 @@ export function guessMimeType(name: string): string {
   const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
   return MIME_BY_EXT[ext] ?? 'application/octet-stream'
 }
+
+
+/**
+ * Adapter that bridges the SDK command sink to the live editor model.
+ *
+ * Each editor app (docs/sheets/slides/pdf/markdown/html) exposes a tiny
+ * surface for SDK `editor.command(name, args)` round-trips that the
+ * server-backed IPC channel cannot serve because it has no view of the
+ * in-memory document:
+ *
+ *   • getText()           → current document text snapshot (for getContent)
+ *   • getBytes()          → current document byte size (for getContent)
+ *   • setText(text)       → replace the document text (setContent)
+ *   • insertText(text)    → append to cursor / end of doc (insertText)
+ *   • setTheme(theme)     → push the host's theme into the app's UI (setTheme)
+ *   • setLang(lang)       → push the host's language into the app's i18n (setLang)
+ *
+ * Apps that don't need one of these (e.g. a read-only preview) can omit
+ * the corresponding method — the matching command then answers
+ * `UnsupportedCommandError('UNSUPPORTED')` so the host gets a loud,
+ * actionable failure rather than a 30 s timeout.
+ */
+export interface SdkLiveModelAdapter {
+  getText?: () => string | undefined
+  getBytes?: () => number | undefined
+  setText?: (text: string) => void
+  insertText?: (text: string) => void
+  setTheme?: (theme: unknown) => void
+  setLang?: (lang: string) => void
+}
+
+/**
+ * Build the live-model command handler map from an adapter. Each method
+ * presence becomes a registered handler; absent methods fall back to
+ * the standard `UnsupportedCommandError` so the host sees the missing
+ * surface explicitly.
+ */
+export function makeLiveModelHandlers(
+  adapter: SdkLiveModelAdapter,
+): Record<string, SdkCommandHandler> {
+  const handlers: Record<string, SdkCommandHandler> = {}
+  if (adapter.getText || adapter.getBytes) {
+    handlers.getContent = () => {
+      const out: { text?: string; bytes?: number } = {}
+      if (adapter.getText) {
+        const t = adapter.getText()
+        if (typeof t === 'string') out.text = t
+      }
+      if (adapter.getBytes) {
+        const b = adapter.getBytes()
+        if (typeof b === 'number') out.bytes = b
+      }
+      return out
+    }
+  }
+  if (adapter.setText) {
+    handlers.setContent = (args: unknown) => {
+      const a = (args ?? {}) as { text?: unknown; html?: unknown }
+      // Prefer text over html when both are present — html needs the
+      // app's HTML importer which not every editor has. The text
+      // round-trip is the universally-supported contract.
+      const text = typeof a.text === 'string' ? a.text : (typeof a.html === 'string' ? a.html : null)
+      if (text === null) throw new Error('setContent: args.text (or html) is required')
+      adapter.setText!(text)
+    }
+  }
+  if (adapter.insertText) {
+    handlers.insertText = (args: unknown) => {
+      const a = (args ?? {}) as { text?: unknown }
+      if (typeof a.text !== 'string') throw new Error('insertText: args.text is required')
+      adapter.insertText!(a.text)
+    }
+  }
+  if (adapter.setTheme) {
+    handlers.setTheme = (args: unknown) => adapter.setTheme!(args)
+  }
+  if (adapter.setLang) {
+    handlers.setLang = (args: unknown) => {
+      const a = (args ?? {}) as { lang?: unknown }
+      if (typeof a.lang !== 'string') throw new Error('setLang: args.lang is required')
+      adapter.setLang!(a.lang)
+    }
+  }
+  return handlers
+}
+
+/**
+ * Convenience: install the sink with the default browser handlers
+ * (`openFileDialog`, `print`) merged with a live-model adapter. Apps
+ * that have a live editor call this once during boot:
+ *
+ * ```ts
+ * installLiveModelSink({
+ *   adapter: {
+ *     getText: () => editorView.getText(),
+ *     setText: (t) => editorView.replace(t),
+ *     insertText: (t) => editorView.insertAtCursor(t),
+ *   },
+ * })
+ * ```
+ *
+ * `extraHandlers` are merged last so an app can still register a
+ * custom command (e.g. an editor-specific `applyTheme` that overrides
+ * the adapter's `setTheme`) without losing the SDK defaults.
+ */
+export function installLiveModelSink(options: {
+  adapter: SdkLiveModelAdapter
+  extraHandlers?: Record<string, SdkCommandHandler>
+  target?: SdkCommandSinkTarget
+}): SdkCommandSinkHandle {
+  return installSdkCommandSink({
+    target: options.target,
+    handlers: {
+      ...defaultSdkCommandHandlers(),
+      ...makeLiveModelHandlers(options.adapter),
+      ...(options.extraHandlers ?? {}),
+    },
+  })
+}
