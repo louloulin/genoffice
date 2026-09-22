@@ -4361,6 +4361,69 @@ cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
 - 已知 follow-up：slides 应用第 78 个 legacy element 通道目前返桩（§11.42
   处理了形状错配，但 renderer 真正发出的 op 集合覆盖还没完成）
 
+### 11.69 · PDF renderer save 接线（§11.66 模式复用 · 第 6 个 app · 全部闭合）
+
+> 续 §11.66 + §11.67 + §11.68。pdf 是最后一个未接 SDK save 的 app，本轮
+> 闭合整个 SDK 2.0 Kestrel wiring backlog。本轮的 6 个 commit（§11.63 /
+> §11.64 / §11.66 / §11.67 / §11.68 / §11.69）让 6 个 app 全部支持
+> `editor.command('save')` + `editor.command('isDirty')` round-trip。
+
+#### ✅ 落点
+
+1. **`apps/pdf/src/renderer/App.tsx`**：现有 registerNativeAdapter useEffect
+   扩到 5 个方法：
+   ```ts
+   isDirty: () => dirty,
+   save: async () => {
+     if (!filePath) {
+       throw new Error('pdf:save — no file path; use saveAs first')
+     }
+     const ok = await save(false)
+     if (!ok) throw new Error('pdf:save returned ok=false')
+     return {
+       ok: true as const,
+       ...(filePath !== '' ? { savedPath: filePath } : {}),
+       savedAt: new Date().toISOString(),
+     }
+   },
+   ```
+   - `dirty` 是 line 1539 的派生 boolean（任意 markups / noteEdits /
+     drawings / textEdits / imageEdits / stamp / formEdits / rotations /
+     deleted / order / metadata 非空即 true）—— 与 line 1556
+     `window.pdfApi.setDirty(dirty)` 同步给主进程的信号同源
+   - pdf 没有 autosave-to-temp 兜底（docs 有，slides 有）—— 没
+     `filePath` 时必须 throw，让 host 改调 saveAs
+   - `exactOptionalPropertyTypes` 兼容：spread `savedPath` 而不是
+     `?? undefined`
+   - 依赖加 `[dirty, filePath]` —— dirty 翻转 / post-save path 切换时
+     SDK 立即看见
+
+2. **`apps/pdf/tests/sdk-save-wiring.test.ts`**（新增 142 行 / 6 测试）：
+   - isDirty delegation 3 case：clean / 单一非空 collection / 非 null scalar
+   - save delegation 3 case：成功 / no filePath throw / throw-on-false
+
+#### 🧪 验证
+
+- apps/pdf typecheck：clean（pre-existing 错误：pdfjs-dist 类型缺失
+  + 其它 i18n / 旧 stub —— 经 `git stash` 前后一致，与本次改动无关）
+- 新增 `sdk-save-wiring.test.ts`：**6 / 6 通过**
+
+#### 📊 进度 — **SDK save wiring 全部闭合**
+
+| App | Pattern | Commit | Test |
+|---|---|---|---|
+| markdown | text-buffer `onSave` | §11.63 | (in markdown suite) |
+| html | text-buffer `onSave` | §11.64 | (in html suite) |
+| docs | live-model `registerNativeAdapter` + composite dirty | §11.66 | 9 tests |
+| sheets | live-model + `journalSize > 0` | §11.67 | 8 tests |
+| slides | live-model + React `dirty` state | §11.68 | 5 tests |
+| **pdf** | **live-model + derived dirty + no path → throw** | **§11.69** | **6 tests** |
+
+6 个 app 全部支持 SDK 2.0 Kestrel `editor.command('save')` + `editor.command('isDirty')`
+round-trip. 余下 §A.5 backlog 项：slides engine stable id / HTML↔DOCX /
+S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
+或基础设施级工作（M4+），不在 wiring backlog 范围。
+
 ### 11.65 · Workbook 错误码统一收口（最后两处 + 测试同步）
 
 > 续 §11.59 + §11.61。workbook 通道的所有 throwable 已统一走

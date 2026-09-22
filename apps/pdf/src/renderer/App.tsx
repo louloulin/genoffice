@@ -1798,8 +1798,38 @@ export default function App() {
         length: undoStackRef.current.length + redoStackRef.current.length,
         current: undoStackRef.current.length,
       }),
+      // sdk1 §11.69 — publish `save` and `isDirty` so the host's
+      // `editor.command('save')` round-trips through the same `save`
+      // closure the close-guard and Ctrl+S already call. `dirty` is a
+      // derived boolean (line 1539: any non-empty edits / drawings /
+      // markups / metadata / stamp / form / rotation / order / delete
+      // collections) — the same value mirrored to the main process via
+      // `window.pdfApi.setDirty(dirty)` at line 1556, so the SDK's
+      // isDirty cannot drift from the close-guard's view.
+      // `autosave = false` keeps the SDK save out of the close-guard
+      // queue (the close prompt already owns its own path); the file
+      // itself opts into autosave on the first explicit save, matching
+      // the line 3324 autosave gate.
+      isDirty: () => dirty,
+      save: async () => {
+        if (!filePath) {
+          // PDFs always need a destination path — there is no
+          // autosave-to-temp fallback like docs has. The host must
+          // call saveAs first.
+          throw new Error('pdf:save — no file path; use saveAs first')
+        }
+        const ok = await save(false)
+        if (!ok) {
+          throw new Error('pdf:save returned ok=false')
+        }
+        return {
+          ok: true as const,
+          ...(filePath !== '' ? { savedPath: filePath } : {}),
+          savedAt: new Date().toISOString(),
+        }
+      },
     })
-  }, [])
+  }, [dirty, filePath])
 
   // ── Full-text search ──
 
