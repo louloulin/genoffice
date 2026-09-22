@@ -215,7 +215,7 @@ describe('sdk-commands dispatch (sdk1.md §11.36)', () => {
     const res = expectFail(
       dispatchSdkCommand({ name: 'restoreVersion', docId: 'doc-e.docx', args: { versionId: 'v-doc-e.docx-99' } }),
     )
-    expect(res.error.code).toBe('RESTORE_FAILED')
+    expect(res.error.code).toBe('NOT_FOUND')
   })
 
   // ── telemetry ─────────────────────────────────────────────────────────────
@@ -256,10 +256,10 @@ describe('sdk-commands dispatch (sdk1.md §11.36)', () => {
 
   // ── unsupported + malformed ───────────────────────────────────────────────
 
-  it('rejects renderer-owned commands with UNSUPPORTED + a remediation hint', () => {
+  it('rejects renderer-owned commands with WEB_UNSUPPORTED + a remediation hint', () => {
     for (const name of ['setContent', 'insertText', 'undo', 'mountSidebar', 'openFileDialog', 'print']) {
       const res = expectFail(dispatchSdkCommand({ name, docId: 'd.docx', args: {} }))
-      expect(res.error.code).toBe('UNSUPPORTED')
+      expect(res.error.code).toBe('WEB_UNSUPPORTED')
       expect(res.error.message).toContain('renderer bundle')
     }
   })

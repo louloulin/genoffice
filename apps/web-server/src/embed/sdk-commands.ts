@@ -29,7 +29,7 @@
  *      `mountSidebar` / `openFileDialog` / … These mutate the live
  *      editor buffer or require a browser dialog. The web-server
  *      cannot service them (there is no live model in this process),
- *      so we reject with `code: 'UNSUPPORTED'` + a remediation hint.
+ *      so we reject with a structured error + a remediation hint.
  *      The renderer bundle installs its own postMessage listener and
  *      services these before the bridge ever sees them; reaching this
  *      dispatcher means the renderer wasn't loaded or doesn't support
@@ -39,10 +39,22 @@
  *      client-side and posts it here so ops can scrape it alongside
  *      the DLQ metrics. Kept in a process-local counter (restart
  *      resets) mirroring the DLQ durability model.
+ *
+ * Error contract: handlers return the RAW result and THROW typed
+ * errors (`InvalidArgumentError` / `NotFoundError` /
+ * `WebUnsupportedError`). The shared IPC dispatcher in
+ * `apps/web-server/src/index.ts` already wraps the return value as
+ * `{ok:true, result}` and serialises thrown errors as
+ * `{error:{code, channel, reason}}` with the right HTTP status — so
+ * returning our own envelope here would double-nest. `dispatchSdkCommand`
+ * stays total (never throws) for the direct-call unit tests, but the
+ * IPC handler lets the typed errors propagate so the wire shape
+ * matches every other channel.
  */
 import { basename, join } from 'node:path'
 import { registerHandle } from '../common/registry'
 import { FILES_DIR, isManagedPath } from '../common/index'
+import { InvalidArgumentError, NotFoundError, WebUnsupportedError } from '../ai/errors'
 import {
   addComment,
   listComments,
@@ -68,22 +80,6 @@ export interface SdkCommandRequest {
   name: string
   args?: unknown
   docId?: string
-}
-
-export interface SdkCommandSuccess {
-  ok: true
-  result: unknown
-}
-
-export interface SdkCommandFailure {
-  ok: false
-  error: { code: string; message: string }
-}
-
-export type SdkCommandResponse = SdkCommandSuccess | SdkCommandFailure
-
-function fail(code: string, message: string): SdkCommandFailure {
-  return { ok: false, error: { code, message } }
 }
 
 /**
@@ -158,70 +154,75 @@ export function _resetUsageForTests(): void {
 
 // ─── Comment commands ────────────────────────────────────────────────────────
 
-function handleAddComment(req: SdkCommandRequest): SdkCommandResponse {
-  const resolved = requireDoc(req)
-  if ('error' in resolved) return resolved.error
+/** Throwing variant of `requireDoc` for the IPC path — the unit-test
+ *  helper `dispatchSdkCommand` catches it and maps to an envelope. */
+function requireDocOrThrow(req: SdkCommandRequest): { abs: string; key: string } {
+  const resolved = resolveDocPath(req.docId ?? '')
+  if (!resolved.ok) {
+    throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, resolved.message)
+  }
+  return resolved
+}
+
+export function addCommentCommand(req: SdkCommandRequest): { id: string } {
+  const { key } = requireDocOrThrow(req)
   const a = (req.args ?? {}) as { anchor?: CommentAnchor; text?: string; parentId?: string }
   if (!a.text || typeof a.text !== 'string') {
-    return fail('INVALID_ARGUMENT', 'addComment requires a non-empty text')
+    throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'addComment requires a non-empty text')
   }
   if (!a.anchor || typeof a.anchor !== 'object') {
-    return fail('INVALID_ARGUMENT', 'addComment requires an anchor object')
+    throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'addComment requires an anchor object')
   }
   // Author is the embed session, not a trusted client identity — the
-  // web-server has no JWT here (the bridge posts with the iframe's
-  // session header, not a bearer token). Hosts that need real author
-  // attribution should use `POST /api/v1/files/:id/comments` which
-  // stamps `sub` from the verified JWT.
-  const comment = addComment(resolved.key, {
+  // bridge posts with the iframe's session header, not a bearer token,
+  // so there is no verified `sub` to stamp. Hosts that need real author
+  // attribution should use `POST /api/v1/files/:id/comments`, which
+  // stamps the author from the verified JWT.
+  const comment = addComment(key, {
     author: 'embed-session',
     text: a.text,
     anchor: a.anchor,
     ...(a.parentId ? { parentId: a.parentId } : {}),
   })
-  return { ok: true, result: { id: comment.id } }
+  return { id: comment.id }
 }
 
-function handleListComments(req: SdkCommandRequest): SdkCommandResponse {
-  const resolved = requireDoc(req)
-  if ('error' in resolved) return resolved.error
+export function listCommentsCommand(req: SdkCommandRequest) {
+  const { key } = requireDocOrThrow(req)
   const a = (req.args ?? {}) as { resolved?: boolean; parentId?: string }
   const opts: { resolved?: boolean; parentId?: string } = {}
   if (typeof a.resolved === 'boolean') opts.resolved = a.resolved
   if (typeof a.parentId === 'string') opts.parentId = a.parentId
-  return { ok: true, result: { comments: listComments(resolved.key, opts) } }
+  return { comments: listComments(key, opts) }
 }
 
-function handleResolveComment(req: SdkCommandRequest): SdkCommandResponse {
-  const resolved = requireDoc(req)
-  if ('error' in resolved) return resolved.error
+export function resolveCommentCommand(req: SdkCommandRequest): undefined {
+  const { key } = requireDocOrThrow(req)
   const a = (req.args ?? {}) as { id?: string; resolved?: boolean }
   if (!a.id || typeof a.id !== 'string') {
-    return fail('INVALID_ARGUMENT', 'resolveComment requires an id')
+    throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'resolveComment requires an id')
   }
-  const updated = resolveComment(resolved.key, a.id, a.resolved !== false)
-  if (!updated) return fail('NOT_FOUND', `unknown comment id: ${a.id}`)
-  return { ok: true, result: undefined }
+  const updated = resolveComment(key, a.id, a.resolved !== false)
+  if (!updated) throw new NotFoundError(SDK_COMMAND_CHANNEL, `unknown comment id: ${a.id}`)
+  return undefined
 }
 
-function handleRemoveComment(req: SdkCommandRequest): SdkCommandResponse {
-  const resolved = requireDoc(req)
-  if ('error' in resolved) return resolved.error
+export function removeCommentCommand(req: SdkCommandRequest): undefined {
+  const { key } = requireDocOrThrow(req)
   const a = (req.args ?? {}) as { id?: string }
   if (!a.id || typeof a.id !== 'string') {
-    return fail('INVALID_ARGUMENT', 'removeComment requires an id')
+    throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'removeComment requires an id')
   }
-  const removed = removeComment(resolved.key, a.id)
-  if (!removed) return fail('NOT_FOUND', `unknown comment id: ${a.id}`)
-  return { ok: true, result: undefined }
+  const removed = removeComment(key, a.id)
+  if (!removed) throw new NotFoundError(SDK_COMMAND_CHANNEL, `unknown comment id: ${a.id}`)
+  return undefined
 }
 
 // ─── Version commands ────────────────────────────────────────────────────────
 
-function handleListVersions(req: SdkCommandRequest): SdkCommandResponse {
-  const resolved = requireDoc(req)
-  if ('error' in resolved) return resolved.error
-  const versions = listVersions(resolved.key).map((v) => ({
+export function listVersionsCommand(req: SdkCommandRequest) {
+  const { key } = requireDocOrThrow(req)
+  const versions = listVersions(key).map((v) => ({
     id: v.id,
     docId: v.docId,
     index: v.index,
@@ -230,43 +231,49 @@ function handleListVersions(req: SdkCommandRequest): SdkCommandResponse {
     sha256: v.sha256,
     ...(v.message ? { message: v.message } : {}),
   }))
-  return { ok: true, result: { versions } }
+  return { versions }
 }
 
-function handleRestoreVersion(req: SdkCommandRequest): SdkCommandResponse {
-  const resolved = requireDoc(req)
-  if ('error' in resolved) return resolved.error
+export function restoreVersionCommand(req: SdkCommandRequest): { version: string } {
+  const { key } = requireDocOrThrow(req)
   const a = (req.args ?? {}) as { versionId?: string }
   if (!a.versionId || typeof a.versionId !== 'string') {
-    return fail('INVALID_ARGUMENT', 'restoreVersion requires a versionId')
+    throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'restoreVersion requires a versionId')
   }
-  const outcome = restoreVersion(resolved.key, a.versionId)
-  if (!outcome.ok) return fail('RESTORE_FAILED', outcome.error ?? 'restore failed')
-  // Return the id of the newest snapshot so the host can re-list and
-  // confirm the restore landed (the restore itself captures a
-  // pre-restore snapshot, so the newest version is always the
-  // "just restored from" marker).
-  const versions = listVersions(resolved.key)
+  const outcome = restoreVersion(key, a.versionId)
+  if (!outcome.ok) {
+    // A missing snapshot is NOT_FOUND; a failed disk swap is a server
+    // fault. The store reports both through the same envelope, so
+    // branch on the message to pick the right status.
+    const reason = outcome.error ?? 'restore failed'
+    if (reason === 'version not found') throw new NotFoundError(SDK_COMMAND_CHANNEL, reason)
+    throw new Error(reason)
+  }
+  // The restore itself captures a pre-restore snapshot, so the newest
+  // version is always the "just restored from" marker. Return its id so
+  // the host can re-list and confirm the restore landed.
+  const versions = listVersions(key)
   const newest = versions[versions.length - 1]
-  return { ok: true, result: { version: newest?.id ?? a.versionId } }
+  return { version: newest?.id ?? a.versionId }
 }
 
-function handleCreateSnapshot(req: SdkCommandRequest): SdkCommandResponse {
-  const resolved = requireDoc(req)
-  if ('error' in resolved) return resolved.error
+export function createSnapshotCommand(req: SdkCommandRequest): { id: string } {
+  const { abs, key } = requireDocOrThrow(req)
   const a = (req.args ?? {}) as { label?: string }
-  if (!existsSync(resolved.abs)) {
-    return fail('NOT_FOUND', `file not found: ${resolved.key}`)
+  if (!existsSync(abs)) {
+    throw new NotFoundError(SDK_COMMAND_CHANNEL, `file not found: ${key}`)
   }
-  const bytes = readFileSync(resolved.abs)
-  const meta = captureBeforeSave(resolved.key, bytes, a.label ?? 'manual snapshot')
-  if (!meta) return fail('SNAPSHOT_FAILED', 'snapshot was not captured (empty file or unmanaged path)')
-  return { ok: true, result: { id: meta.id } }
+  const bytes = readFileSync(abs)
+  const meta = captureBeforeSave(key, bytes, a.label ?? 'manual snapshot')
+  if (!meta) {
+    throw new Error('snapshot was not captured (empty file or unmanaged path)')
+  }
+  return { id: meta.id }
 }
 
 // ─── Telemetry ───────────────────────────────────────────────────────────────
 
-function handleReportUsage(req: SdkCommandRequest): SdkCommandResponse {
+export function reportUsageCommand(req: SdkCommandRequest): undefined {
   const a = (req.args ?? {}) as Record<string, unknown>
   usageTotals.samples += 1
   usageTotals.docBytesWritten += num(a.docBytesWritten)
@@ -277,34 +284,29 @@ function handleReportUsage(req: SdkCommandRequest): SdkCommandResponse {
   if (typeof a.instanceId === 'string' && a.instanceId) {
     usageInstances.add(a.instanceId)
   }
-  return { ok: true, result: undefined }
+  return undefined
 }
 
 // ─── Dispatch table ──────────────────────────────────────────────────────────
 
-function requireDoc(req: SdkCommandRequest): { ok: true; abs: string; key: string } | { error: SdkCommandFailure } {
-  const resolved = resolveDocPath(req.docId ?? '')
-  if (!resolved.ok) return { error: fail('INVALID_ARGUMENT', resolved.message) }
-  return resolved
-}
-
 /**
- * Commands the web-server can service without a live editor model. Every
- * entry takes the parsed request and returns a `{ok, result|error}`
- * envelope. Anything not listed here rejects with `UNSUPPORTED` so the
- * host sees a loud, structured failure instead of a silent hang.
+ * Commands the web-server can service without a live editor model. Each
+ * entry returns the RAW result the IPC layer wraps, or throws a typed
+ * error the IPC layer serialises. Anything not listed rejects with a
+ * structured `WEB_UNSUPPORTED` so the host sees a loud, actionable
+ * failure instead of a silent hang.
  *
  * Exported for tests + for the `supportedSdkCommands()` audit helper.
  */
-export const SDK_COMMAND_TABLE: Record<string, (req: SdkCommandRequest) => SdkCommandResponse> = {
-  addComment: handleAddComment,
-  listComments: handleListComments,
-  resolveComment: handleResolveComment,
-  removeComment: handleRemoveComment,
-  listVersions: handleListVersions,
-  restoreVersion: handleRestoreVersion,
-  createSnapshot: handleCreateSnapshot,
-  reportUsage: handleReportUsage,
+export const SDK_COMMAND_TABLE: Record<string, (req: SdkCommandRequest) => unknown> = {
+  addComment: addCommentCommand,
+  listComments: listCommentsCommand,
+  resolveComment: resolveCommentCommand,
+  removeComment: removeCommentCommand,
+  listVersions: listVersionsCommand,
+  restoreVersion: restoreVersionCommand,
+  createSnapshot: createSnapshotCommand,
+  reportUsage: reportUsageCommand,
 }
 
 /** Command names this dispatcher can service (sorted). */
@@ -312,27 +314,52 @@ export function supportedSdkCommands(): string[] {
   return Object.keys(SDK_COMMAND_TABLE).sort()
 }
 
+/** The two envelope shapes `dispatchSdkCommand` can return. Kept for
+ *  the direct-call unit tests; the IPC path returns / throws the raw
+ *  values so the shared dispatcher owns the wire envelope. */
+export interface SdkCommandSuccess {
+  ok: true
+  result: unknown
+}
+export interface SdkCommandFailure {
+  ok: false
+  error: { code: string; message: string }
+}
+export type SdkCommandResponse = SdkCommandSuccess | SdkCommandFailure
+
+function errorCode(err: unknown): string {
+  const code = (err as { code?: unknown })?.code
+  return typeof code === 'string' ? code : 'INTERNAL'
+}
+
 /**
- * Pure dispatch — given a parsed request, return the response envelope.
- * Exported separately from the IPC registration so tests can exercise
- * the dispatch matrix without the HTTP layer.
+ * Total wrapper around the dispatch table: never throws, always returns
+ * an envelope. Used by tests and by any caller that wants to inspect
+ * failures without try/catch. The IPC handler below does NOT use this —
+ * it lets typed errors propagate so `sendIpcError` produces the same
+ * wire shape every other channel uses.
  */
 export function dispatchSdkCommand(request: SdkCommandRequest): SdkCommandResponse {
   if (!request || typeof request.name !== 'string' || !request.name) {
-    return fail('INVALID_ARGUMENT', 'command name is required')
+    return { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'command name is required' } }
   }
   const handler = SDK_COMMAND_TABLE[request.name]
   if (!handler) {
-    return fail(
-      'UNSUPPORTED',
-      `command "${request.name}" is not server-backed; the renderer bundle services it via its own postMessage listener`,
-    )
+    return {
+      ok: false,
+      error: {
+        code: 'WEB_UNSUPPORTED',
+        message:
+          `command "${request.name}" is not server-backed; the renderer bundle services it ` +
+          'via its own postMessage listener (window.__GENOFFICE_COMMAND_SINK__)',
+      },
+    }
   }
   try {
-    return handler(request)
+    return { ok: true, result: handler(request) }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    return fail('INTERNAL', message)
+    return { ok: false, error: { code: errorCode(err), message } }
   }
 }
 
@@ -340,10 +367,23 @@ export function dispatchSdkCommand(request: SdkCommandRequest): SdkCommandRespon
  * Register the `sdk:command` IPC channel. Called from
  * `apps/web-server/src/index.ts` at boot alongside the other
  * capability modules.
+ *
+ * Unlike `dispatchSdkCommand`, this handler lets typed errors
+ * propagate so the shared `sendIpcError` classifier owns the wire
+ * shape (status + `{error:{code, channel, reason}}`), matching every
+ * other IPC channel. Unknown commands raise `WebUnsupportedError` →
+ * HTTP 501.
  */
 export function registerSdkCommandHandlers(): void {
   registerHandle(SDK_COMMAND_CHANNEL, (_event: unknown, args: unknown) => {
     const request = (args ?? {}) as SdkCommandRequest
-    return dispatchSdkCommand(request)
+    if (!request || typeof request.name !== 'string' || !request.name) {
+      throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'command name is required')
+    }
+    const handler = SDK_COMMAND_TABLE[request.name]
+    if (!handler) {
+      throw new WebUnsupportedError(SDK_COMMAND_CHANNEL, 'not implemented')
+    }
+    return handler(request)
   })
 }
