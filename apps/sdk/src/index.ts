@@ -55,6 +55,8 @@ export type {
   CommentAddedEvent,
   CommentResolvedEvent,
   SidebarMessageEvent,
+  UsageEvent,
+  PickedFile,
   VersionMeta,
 } from './types'
 

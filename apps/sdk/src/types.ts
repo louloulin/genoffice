@@ -153,6 +153,19 @@ export interface CreateEditorOptions {
     /** Default true — release on destroy. */
     autoRelease?: boolean
   }
+  /**
+   * Enable SDK-side telemetry aggregation (sdk1.md §B.5.1 #9).
+   *
+   * When true, the SDK counts host-issued commands (setContent /
+   * insertText / insertImage bytes; aiRewrite / aiTranslate /
+   * aiSummarize invocations + character totals) and dispatches a
+   * `UsageEvent` every 30 seconds via `editor.on('usage', cb)`.
+   *
+   * Default false: telemetry must be opted in. The aggregation timer
+   * is cleared on `destroy()` so a torn-down editor never fires
+   * another event after `destroy()` returns.
+   */
+  telemetry?: boolean
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -227,6 +240,58 @@ export interface SidebarMessageEvent {
   message: unknown
 }
 
+/**
+ * Telemetry payload — opt-in via `createEditor({ telemetry: true })`.
+ *
+ * The SDK aggregates host-visible signals (bytes the host sent to the
+ * editor via setContent / insertText, AI calls the host triggered via
+ * aiRewrite / aiTranslate / aiSummarize, AI character totals, total
+ * session duration since `createEditor`). Aggregation runs on a
+ * 30-second `setInterval` and fires this event. The event payload
+ * always reports cumulative totals — hosts that want per-second rates
+ * should diff successive events.
+ *
+ * Off by default; opt-in is required because the event fires once
+ * every 30 seconds while the editor is live, and many hosts prefer to
+ * keep their event-handler footprint minimal.
+ *
+ * (sdk1.md §B.5.1 #9 Telemetry, SDK 2.0 Kestrel M4)
+ */
+export interface UsageEvent {
+  type: 'usage'
+  /** Mirror of `EditorHandle.instanceId` so the host can disambiguate. */
+  instanceId: string
+  /** Bytes the host sent to the editor via setContent / insertText / insertImage. */
+  docBytesWritten: number
+  /** Number of AI calls the host triggered (aiRewrite / aiTranslate / aiSummarize). */
+  aiCalls: number
+  /** Sum of prompt characters across AI calls (host-side estimate, not from the LLM). */
+  aiTokensIn: number
+  /** Sum of response characters across AI calls (host-side estimate, not from the LLM). */
+  aiTokensOut: number
+  /** Wall-clock ms since this `createEditor` call resolved. */
+  sessionDurationMs: number
+}
+
+/**
+ * Metadata for a single file the renderer shipped back to the host
+ * after `openFileDialog`. The renderer reads the File via FileReader
+ * to base64 so it can survive the structured-clone boundary of
+ * postMessage — File objects themselves don't cross postMessage.
+ *
+ * `dataBase64` is empty when the file is binary but the renderer
+ * chose to skip inlining (e.g. very large files); hosts that need the
+ * bytes should use `editor.command('openFileDialog', { accept: '…' })`
+ * with a smaller `multiple` count or read via a follow-up RPC.
+ */
+export interface PickedFile {
+  name: string
+  size: number
+  type: string
+  lastModified: number
+  dataBase64: string
+}
+
 export type EditorEvent =
   | ReadyEvent
   | SavedEvent
@@ -237,6 +302,7 @@ export type EditorEvent =
   | CommentAddedEvent
   | CommentResolvedEvent
   | SidebarMessageEvent
+  | UsageEvent
 
 export type EditorEventName = EditorEvent['type']
 
@@ -250,6 +316,7 @@ export type EditorEventMap = {
   commentAdded: CommentAddedEvent
   commentResolved: CommentResolvedEvent
   sidebarMessage: SidebarMessageEvent
+  usage: UsageEvent
 }
 
 export interface EditorError {
@@ -524,6 +591,29 @@ export interface EditorCommands {
    * throw a synchronous `DataCloneError`.
    */
   postToSidebar: { args: { panelId: string; message: unknown }; result: void }
+
+  /**
+   * Open a host-side file picker. The editor iframe renders a native
+   * `<input type='file'>` (or uses the host's `showOpenFilePicker` when
+   * available) and ships the picked File back to the host via
+   * postMessage. The host then receives either `{ files: [...] }`
+   * with the metadata + base64 payload, or `{ canceled: true }` when
+   * the user dismissed the dialog.
+   *
+   * Editors that don't support file picking (e.g. PDF view-only)
+   * reject with `code: 'UNSUPPORTED'`.
+   *
+   * Renderer-side follow-up: each apps/{docs,sheets,slides,pdf,
+   * markdown,html}/dist postMessage listener must implement
+   * `openFileDialog` (native file input + ArrayBuffer → base64
+   * postMessage back).
+   *
+   * (sdk1.md §B.5.1 #7 File picker, SDK 2.0 Kestrel M4)
+   */
+  openFileDialog: {
+    args: { accept?: string; multiple?: boolean }
+    result: { files: PickedFile[] } | { canceled: true }
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

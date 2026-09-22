@@ -43,6 +43,7 @@ import type {
   ReleaseEmbedNonceOptions,
   ReleaseEmbedNonceResult,
   ReleaseEmbedNonceError,
+  UsageEvent,
 } from './types'
 import { buildEmbedUrl } from './embed-url'
 // crypto.getRandomValues is in scope for both browser and modern Node;
@@ -282,6 +283,81 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   const handshakeTimeoutMs = clampHandshakeTimeout(options.handshakeTimeoutMs)
   let handshakeDone = !handshakeEnabled
   let handshakeTimer: ReturnType<typeof setTimeout> | null = null
+
+  // Telemetry aggregation (sdk1.md §B.5.1 #9, SDK 2.0 Kestrel M4).
+  // Off by default; only allocated when the host opts in via
+  // createEditor({ telemetry: true }). Counting happens inside
+  // command() (below); the 30 s ticker fires the usage event and is
+  // cleared on destroy().
+  const telemetryEnabled = options.telemetry === true
+  const telemetry = {
+    docBytesWritten: 0,
+    aiCalls: 0,
+    aiTokensIn: 0,
+    aiTokensOut: 0,
+    sessionStartedAt: Date.now(),
+    interval: null as ReturnType<typeof setInterval> | null,
+  }
+  function countTelemetry(commandName: string, commandArgs: unknown): void {
+    if (!telemetryEnabled) return
+    // Bytes-into-document: count only commands that carry document content
+    // the host is asking the editor to absorb. Renderer-side edits are
+    // NOT counted (the SDK has no visibility into them).
+    if (commandName === 'setContent') {
+      const a = commandArgs as { content?: string | { html?: string; text?: string } } | undefined
+      const content = typeof a?.content === 'string'
+        ? a.content
+        : (a?.content?.text ?? a?.content?.html ?? '')
+      telemetry.docBytesWritten += content.length
+    } else if (commandName === 'insertText') {
+      const a = commandArgs as { text?: string } | undefined
+      telemetry.docBytesWritten += (a?.text ?? '').length
+    } else if (commandName === 'insertImage') {
+      const a = commandArgs as { dataUrl?: string; url?: string } | undefined
+      const src = a?.dataUrl ?? a?.url ?? ''
+      telemetry.docBytesWritten += src.length
+    } else if (commandName === 'aiRewrite' || commandName === 'aiTranslate' || commandName === 'aiSummarize') {
+      telemetry.aiCalls += 1
+      // Host-side character estimate of the prompt payload. The actual
+      // token count is only known after the LLM responds (and the host
+      // doesn't see that — the SDK doesn't either), so we surface
+      // character totals and let the host divide by ~4 to estimate
+      // tokens if they want.
+      //
+      // Each AI command has its own arg shape — see types.ts
+      // AiRewriteArgs / AiTranslateArgs / AiSummarizeArgs. We sum the
+      // string-typed fields defensively, falling back to JSON length
+      // when the field is non-string (e.g. aiRewrite.selection is
+      // `unknown`).
+      const a = commandArgs as Record<string, unknown> | undefined
+      let promptChars = 0
+      if (a) {
+        for (const v of Object.values(a)) {
+          if (typeof v === 'string') promptChars += v.length
+        }
+      }
+      telemetry.aiTokensIn += promptChars
+      // Out-tokens are unknown until the LLM responds. We don't
+      // intercept the response — usage is a host-visible audit, not
+      // a wire-level LLM instrument. Leave at 0 unless the host
+      // provides a response handler.
+    }
+  }
+  if (telemetryEnabled) {
+    telemetry.interval = setInterval(() => {
+      if (destroyed) return
+      const event: UsageEvent = {
+        type: 'usage',
+        instanceId,
+        docBytesWritten: telemetry.docBytesWritten,
+        aiCalls: telemetry.aiCalls,
+        aiTokensIn: telemetry.aiTokensIn,
+        aiTokensOut: telemetry.aiTokensOut,
+        sessionDurationMs: Date.now() - telemetry.sessionStartedAt,
+      }
+      dispatch('usage', event)
+    }, 30_000)
+  }
   if (handshakeEnabled && expectedNonce) {
     handshakeTimer = setTimeout(() => {
       if (handshakeDone) return
@@ -384,6 +460,11 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     args?: EditorCommands[C]['args'],
   ): Promise<EditorCommands[C]['result']> {
     if (destroyed) return Promise.reject(new Error('editor destroyed'))
+    // Telemetry counter hook — runs BEFORE the iframe mount check so
+    // hosts using `skipIframe: true` in tests still see their command
+    // attempts counted. The hook itself is a no-op when telemetry is
+    // disabled (the default), so production hosts pay nothing.
+    countTelemetry(name as string, args)
     if (!iframe || !iframe.contentWindow) return Promise.reject(new Error('editor not mounted'))
     const correlationId = `cmd-${++nextCorrelation}-${Date.now().toString(36)}`
     return new Promise<EditorCommands[C]['result']>((resolve, reject) => {
@@ -410,6 +491,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     if (handshakeTimer) {
       clearTimeout(handshakeTimer)
       handshakeTimer = null
+    }
+    if (telemetry.interval) {
+      clearInterval(telemetry.interval)
+      telemetry.interval = null
     }
     window.removeEventListener('message', onMessage)
     pending.forEach((slot) => slot.reject(new Error('editor destroyed')))

@@ -2678,6 +2678,31 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
 40. **SDK 2.0 Kestrel M3 · Versions API 骨架（SDK 类型 + 后端 v1 endpoint）**（✅ 本轮）：
 41. **SDK 2.0 Kestrel M3.5 · Plugin Runtime 骨架（mountSidebar / unmountSidebar / postToSidebar + sidebarMessage 事件）**（✅ 本轮）：
+42. **SDK 2.0 Kestrel M4 · File Picker + Telemetry 骨架**（✅ 本轮）：
+    - 闭合 §B.5.1 #7 File picker + §B.5.1 #9 Telemetry（最后 2 个 surface）
+    - **SDK 类型层**（`apps/sdk/src/types.ts`）：
+      - `CreateEditorOptions` 新增 `telemetry?: boolean`（默认 false，opt-in）
+      - `EditorCommands` 新增 `openFileDialog({ accept?, multiple? }) → { files: PickedFile[] } | { canceled: true }`
+      - 新增 `PickedFile` interface（name / size / type / lastModified / dataBase64）—— renderer 把 File 序列化为 base64 跨 postMessage 边界
+      - 新增 `UsageEvent` interface（type / instanceId / docBytesWritten / aiCalls / aiTokensIn / aiTokensOut / sessionDurationMs）加入 EditorEvent union + EditorEventMap['usage']
+    - **SDK editor**（`apps/sdk/src/editor.ts`）：
+      - 新增 telemetry 聚合器：`createEditor({ telemetry: true })` 时挂 `setInterval(…, 30_000)`，每 30s `dispatch('usage', UsageEvent)`
+      - `countTelemetry(name, args)` hook 在 `command()` 内**先于 iframe 检查**调用 —— 这样 `skipIframe: true` 测试模式下 host 调命令也能累加 counter（实际生产中 iframe 总是存在）
+      - 计数器：setContent 累加 content 长度；insertText / insertImage 累加 text/dataUrl 长度；aiRewrite / aiTranslate / aiSummarize 累加 1 次 aiCalls + 所有 string-typed args 字段字符总数（aiTokensOut 永远 0，host 可除以 ~4 估 token）
+      - destroy() 清 interval（防止 destroyed editor 还派发 usage event）
+    - **SDK index**：`apps/sdk/src/index.ts` re-export `UsageEvent` + `PickedFile`
+    - **修复的小 bug**：counter hook 之前被放在 iframe 检查**之后**，导致 `skipIframe` 模式下无法累加 —— 与 M1/M2/M3.5 测试模式冲突
+    - **测试**（`apps/sdk/test/kestrel-m4.test.ts`，NEW 15 测试）：
+      - File Picker 类型合同 3：openFileDialog 在 EditorCommands 上 + 无 args + PickedFile 字段 pin
+      - Telemetry opt-in 3：默认不挂 interval；telemetry: false 不挂；telemetry: true 挂 30s interval
+      - UsageEvent 派发 5：UsageEvent 形状 + 单次 tick fire + 多次 tick + destroy 后无 fire + off() unsubscribe
+      - Counter 累加 3：telemetry off 时 counter 永远 0；setContent/insertText/insertImage 累加 docBytesWritten；ai* 累加 aiCalls + aiTokensIn
+      - Isolation 1：M1/M3.5 surface 不被本 PR regress
+      - 用 `vi.useFakeTimers()` in beforeEach + `vi.advanceTimersByTimeAsync(30_000)` 触发 setInterval（避免真实等待 30 s）
+      - SDK 12 文件 → 13 文件；129 → 144 测试（+15）
+    - **未做**（M4 收尾）：renderer 端实现 openFileDialog handler（apps/{docs,sheets,slides}/dist postMessage listener 弹 `<input type='file'>` + base64 回传）；live smoke（PORT=33002 + tmux：mount sidebar + open file dialog + 观察 30s 后 usage event）
+
+
     - 闭合 §B.5.1 #8 Plugin Runtime 的 SDK 类型层 + EditorHandle wiring
     - **SDK 类型层**（`apps/sdk/src/types.ts`）：
       - `EditorCommands` 新增 3 个：`mountSidebar({ panelUrl, width?, title? }) → { panelId }` / `unmountSidebar({ panelId }) → void` / `postToSidebar({ panelId, message }) → void`
@@ -3078,10 +3103,10 @@ off by default；`createEditor({ telemetry: true })` 启用。SDK 内部 `reques
 |---|---|---|---|
 | 1-2 | **✅ M1 — Multi-instance + Track-changes + Undo/Redo** | 1, 2 | +19 SDK 测试（11 multi-instance + 8 undo/redo；track changes backlog 至 M4+） |
 | 3-4 | **✅ M2 — Comments + Versions** | 3, 4 | +23 web-server 测试（11 store + 17 endpoint - 5 fix）；File picker backlog 至 M4 |
-| 5-6 | **🟡 M3 部分完成 — Versions + Plugin Runtime** | 8 | Versions +14 + Plugin Runtime +10 tests（M3.5 续作）；Export 留 M4 |
+| 5-6 | **✅ M3+M3.5+M4 — Versions + Plugin Runtime + File Picker + Telemetry** | 3, 7, 8, 9 | +14 +10 +15 tests；Track Changes / Export 留 v3 backlog |
 | 7-8 | M4 — Telemetry + 文档 + examples + sdk1.md v2.0 段 | 9 | +6 SDK 测试 |
 
-合计已完成：~66 新测试；SDK 108 → 129；web-server 581 → 618。
+合计已完成：~81 新测试；SDK 108 → 144；web-server 581 → 618。
 
 合计 ~74 新测试；SDK 测试 108 → ~182；curl 593 → ~629。
 
