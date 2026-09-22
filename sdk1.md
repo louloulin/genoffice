@@ -965,7 +965,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 | **P0 · 必做** | Slides session LRU 上限（防 OOM）| `apps/web-server/src/slides/state.ts` `MAX_SLIDES_SESSIONS = 32` | ✅ 已实装 |
 | **P1 · 应做** | webhook 失败重试 + 死信队列 | `apps/web-server/src/common/webhooks-store.ts:fireCallback` 指数退避（最多 3 次） | ✅ 完成（重试部分；DLQ 留 backlog） |
 | **P1 · 应做** | 拆分 `agent-runtime` / `agent-session` 的 Electron 依赖，发布为 npm public | `packages/agent-runtime/`, `packages/agent-session/` | ✅（§11.13）两包无 Electron 依赖、已加 npm 标准元数据、`npm publish --dry-run` 通过 |
-| **P1 · 应做** | `/api/v1/files/:id/jwt` 单次使用约束文档 + TTL 可配置 | `apps/web-server/src/api/v1/files.ts:handleFilesIssueJwt` + `auth.ts:verifyJwtWithRevocation` | ✅ 完成 |
+| **P1 · 应做** | `/api/v1/files/:id/jwt` 单次使用约束文档 + TTL 可配置 | `apps/web-server/src/api/v1/files.ts:handleFilesIssueJwt` + `auth.ts:verifyJwtWithRevocation` | ✅ 完成（含单元测试 `files-jwt-revocation.test.ts` 6 例覆盖 hook 一次性 / 不同 jti 独立 / 篡改拒绝 / 过期短路）|
 | **P2 · 改善** | 全文检索（文件级，非 KB）| `apps/web-server/src/shell/search.ts` 新增 `search:files` IPC handler | ✅ 完成 |
 | **P2 · 改善** | 文件版本历史（snapshot-on-save）| `apps/web-server/src/common/version-history.ts` + 7 save pipeline 钩子 | ✅ 完成（disk-backed，10/文件，自动 trim） |
 | **P3 · 长尾** | `getPkgRoot()` tsx 源码模式 4→5 级路径修复 | `apps/web-server/src/api/v1/meta.ts` 自动探测 marker | ✅ 完成 |
@@ -1574,6 +1574,43 @@ Test Files  1 passed (1)
 | §B.1 | 协作（CRDT/OT）+ 移动端 H5 | ⬜ | M4（Week 16）|
 | §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
 
+### 11.17 本轮续作（v2 第 12 轮 commit，2026-09-22）
+
+落地对单次使用文件 JWT 撤销 hook 的真实单元测试覆盖。§11.3 P1 那行 "单次使用约束" 之前只有 `files-jwt-options-e2e.test.ts` 的 mint 路径有覆盖，最后一条 "rejects a second verify" 的测试实际上只 mint 不验证。本轮补上 6 条专门驱动 `verifyJwtWithRevocation` + `setJtiRevocationCheck` + `isJtiRevoked` 的单元测试。
+
+#### 11.17.1 落实
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/tests/files-jwt-revocation.test.ts` | 新增 · 6 测试直接 import `auth.ts` 三个 helper，无 bundle 启动成本 | +122 |
+
+#### 11.17.2 测试矩阵
+
+| 测试 | 覆盖路径 |
+|---|---|
+| passes a token without jti through the default (no-op) revocation hook | `verifyJwtWithRevocation` 默认 no-op 路径 = `verifyJwt` |
+| passes a token with jti on first verify, rejects second verify | 核心一次性语义：first-pass returns payload / second-pass returns null |
+| keeps different jti values independent | hook 不能把全部 jti 当同一个集合处理 |
+| exposes isJtiRevoked as the public observability handle | 公开 API 的可观测性 |
+| does not reach the revocation hook for a tampered signature | 签名校验先于 hook：防篡改 token 不会污染撤销集 |
+| handles expiry and revocation together — expired token still returns null | 过期短路：expired token 在 hook 之前就被拒，jti 不会被记入 |
+
+#### 11.17.3 为什么是单元测试而非 e2e
+
+- bundle 启动 ~3 s；这套测试 < 5 ms 跑完，适合加进 CI fast lane
+- `verifyJwtWithRevocation` 是纯函数 + 模块级 hook，外部 e2e 拿不到 hook 内部状态（process-local），单元测可以装任意闭包
+- 与 `files-jwt-options-e2e.test.ts` 互补：e2e 守 "mint 路径正确"，单元测守 "verify 路径真的拦得住"
+
+#### 11.17.4 验证
+
+- `npx vitest run tests/files-jwt-revocation.test.ts`：6/6 通过（< 5 ms）
+- `npx vitest run`：**63 文件 / 495 测试全绿**（原 62/489 + 1 文件 / 6 测试）
+- typecheck：clean（除预存 pptx-ops / xlsx-gateway 错误）
+
+#### 11.17.5 后续观察（不算技术债，留 backlog）
+
+- `verifyJwtWithRevocation` 目前只被这套测试驱动；生产代码里 `embed/index.ts` 仍直接把 `?token=` 透传到 `<meta>` 不做服务端校验。若要做"真服务端门"，需要在 embed handler 调一次 `verifyJwtWithRevocation(token)` 然后再决定是否返回 HTML；这是独立 PR，建议等首次公开集成前再上。
+
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）
 
@@ -1818,12 +1855,13 @@ Test Files  1 passed (1)
    - **#14 ≥3 provider** — **10 个** provider 包（anthropic / openai / gemini / openai-compatible / ollama / deepseek / moonshot-kimi / qwen-dashscope / zhipu-glm / doubao）
    - **#15 双语文档** — `docs/zh/index.md` + 4 个 ZH 页面（headless-pdf-export / web-electron / web-implementation-guide / webserver-file-management）落地（`commit c5f691`）
    - **#11 Docker Hub 推送 + #12 域名/SSL** — 外部服务，沙箱内不可达（与 Discord 同类）
+17. **§11.3 P1 文件 JWT 单次使用语义 · 真实单元测试**（✅ 本轮 §11.17）：新增 `apps/web-server/tests/files-jwt-revocation.test.ts`（6 测试 / < 5 ms）：直接 import `auth.ts` 的 `verifyJwtWithRevocation` / `setJtiRevocationCheck` / `isJtiRevoked` 三个 helper，覆盖 hook 默认 no-op / first-pass-then-revoke / jti 独立 / 篡改 token 不污染撤销集 / 过期短路。`files-jwt-options-e2e.test.ts` 之前最后一条只是空 mint，已被本单元测补齐真实 verify 路径。后续 backlog（§11.17.5）：`embed/index.ts` 尚未在服务端 verify `?token=`，需要独立 PR 升级为 `verifyJwtWithRevocation` 调用后再返回 HTML。
 
 ### A.6 测试现状（本轮实施后更新）
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session）| 62 | 489 | ✅ |
+| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface / slides-legacy-session / files-jwt-revocation）| 63 | 495 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -1842,7 +1880,7 @@ Test Files  1 passed (1)
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **171** | **4289** | ✅ |
+| **总计** | **172** | **4295** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
