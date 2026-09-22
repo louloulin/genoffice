@@ -21,6 +21,13 @@ import { handleFilesList, handleFilesCreate, handleFilesGet, handleFilesDelete, 
 import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiImage, handleAiSkill } from './ai'
 import { handleKbSearch, handleKbEntries } from './kb'
 import { handleWebhooksUpsert, handleWebhooksDelete, handleCallbacksFire } from './webhooks'
+import {
+  handleFilesCommentsList,
+  handleFilesCommentsGet,
+  handleFilesCommentsAdd,
+  handleFilesCommentsPatch,
+  handleFilesCommentsDelete,
+} from './comments'
 import { handleWebhooksDlq, handleWebhooksDlqEntry } from './webhooks-dlq'
 import { handleHealth, handleChangelog, handleMetrics } from './meta'
 import { handleEmbedNonce, handleEmbedVerifyNonce, handleEmbedReleaseNonce } from './embed-nonce'
@@ -67,6 +74,28 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
   if (fileJwtMatch && method === 'POST') return handleFilesIssueJwt(ctx, decodeURIComponent(fileJwtMatch[1]))
   const fileCallbackMatch = /^\/api\/v1\/files\/([^/]+)\/callback$/.exec(pathname)
   if (fileCallbackMatch && method === 'POST') return handleFilesCallback(ctx, decodeURIComponent(fileCallbackMatch[1]))
+
+  // Comments (Kestrel M2, sdk1.md §B.5.1 #4 + §B.5.2).
+  // Two patterns: /api/v1/files/:id/comments (list/add) and
+  // /api/v1/files/:id/comments/:cid (get/patch/delete). Disambiguate by
+  // path segment count to keep the dispatcher flat-readable.
+  const fileCommentsListMatch = /^\/api\/v1\/files\/([^/]+)\/comments$/.exec(pathname)
+  if (fileCommentsListMatch && method === 'GET') {
+    return handleFilesCommentsList(ctx, decodeURIComponent(fileCommentsListMatch[1]!))
+  }
+  if (fileCommentsListMatch && method === 'POST') {
+    return handleFilesCommentsAdd(ctx, decodeURIComponent(fileCommentsListMatch[1]!))
+  }
+  const fileCommentsItemMatch = /^\/api\/v1\/files\/([^/]+)\/comments\/([^/]+)$/.exec(pathname)
+  if (fileCommentsItemMatch && method === 'GET') {
+    return handleFilesCommentsGet(ctx, decodeURIComponent(fileCommentsItemMatch[1]!), decodeURIComponent(fileCommentsItemMatch[2]!))
+  }
+  if (fileCommentsItemMatch && method === 'PATCH') {
+    return handleFilesCommentsPatch(ctx, decodeURIComponent(fileCommentsItemMatch[1]!), decodeURIComponent(fileCommentsItemMatch[2]!))
+  }
+  if (fileCommentsItemMatch && method === 'DELETE') {
+    return handleFilesCommentsDelete(ctx, decodeURIComponent(fileCommentsItemMatch[1]!), decodeURIComponent(fileCommentsItemMatch[2]!))
+  }
 
   // ai
   if (pathname === '/api/v1/ai/capabilities' && method === 'GET') return handleAiCapabilities(ctx)

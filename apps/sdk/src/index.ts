@@ -50,6 +50,10 @@ export type {
   SelectionChangeEvent,
   ErrorEvent,
   ClosedEvent,
+  Comment,
+  CommentAnchor,
+  CommentAddedEvent,
+  CommentResolvedEvent,
 } from './types'
 
 /** UMD global name for `<script>` consumers — see `dist/index.umd.js`. */

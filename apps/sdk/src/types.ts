@@ -187,6 +187,29 @@ export interface ClosedEvent {
   type: 'closed'
 }
 
+/**
+ * Fired when a comment is added - by the local user OR a remote user
+ * (e.g. a colleague adding one via the same web-server). Hosts should
+ * subscribe if they want to keep an external audit log or refresh a
+ * sidebar UI.
+ *
+ * (sdk1.md §B.5.1 #4, SDK 2.0 Kestrel M2)
+ */
+export interface CommentAddedEvent {
+  type: 'commentAdded'
+  comment: Comment
+}
+
+/**
+ * Fired when a comment is resolved or unresolved. The `resolvedAt`
+ * field on `Comment` is set on the first resolve; subsequent toggles
+ * keep the original timestamp.
+ */
+export interface CommentResolvedEvent {
+  type: 'commentResolved'
+  comment: Comment
+}
+
 export type EditorEvent =
   | ReadyEvent
   | SavedEvent
@@ -194,6 +217,8 @@ export type EditorEvent =
   | SelectionChangeEvent
   | ErrorEvent
   | ClosedEvent
+  | CommentAddedEvent
+  | CommentResolvedEvent
 
 export type EditorEventName = EditorEvent['type']
 
@@ -204,6 +229,8 @@ export type EditorEventMap = {
   selectionChange: SelectionChangeEvent
   error: ErrorEvent
   closed: ClosedEvent
+  commentAdded: CommentAddedEvent
+  commentResolved: CommentResolvedEvent
 }
 
 export interface EditorError {
@@ -242,6 +269,48 @@ export interface AiTranslateArgs {
 }
 export interface AiSummarizeArgs {
   length?: 'short' | 'medium' | 'long'
+}
+
+/**
+ * Comment / annotation on a document.
+ *
+ * Authors are taken from the JWT (`sub` claim) at insert time - the SDK
+ * does NOT trust a client-supplied author. Anchors are app-specific
+ * ranges (cell address for sheets, character range for prose, slide id
+ * for slides) so the type is `unknown` here; the renderer + backend pair
+ * define the concrete anchor shape per `EditorApp`.
+ *
+ * (sdk1.md §B.5.1 #4 Comments, SDK 2.0 Kestrel M2)
+ */
+export interface Comment {
+  id: string
+  author: string
+  text: string
+  /** App-specific anchor (cell address, char range, slide id, ...). */
+  anchor: unknown
+  createdAt: number
+  /** Epoch ms; set on first PATCH resolveComment({ resolved: true }). */
+  resolvedAt?: number
+  resolved: boolean
+  /** When this is a reply to another comment, the parent's id. */
+  parentId?: string
+}
+
+/**
+ * Anchor shape that the SDK forwards to the editor for `addComment`.
+ * The renderer converts this into the editor's native selection model
+ * (e.g. cell range for sheets, character range for prose). The backend
+ * stores the raw anchor; the editor renders it.
+ */
+export interface CommentAnchor {
+  /** Range anchor for prose / docs. */
+  range?: { start: number; end: number }
+  /** Cell anchor for sheets. */
+  cell?: string
+  /** Slide id for slides / pdf. */
+  slideId?: string
+  /** Any other opaque anchor shape. */
+  [key: string]: unknown
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -311,6 +380,32 @@ export interface EditorCommands {
    * don't track undo return `{ length: 0, current: 0 }`.
    */
   getUndoStack: { args?: Record<string, never>; result: { length: number; current: number } }
+
+  /**
+   * Add a comment / annotation. Resolves with the assigned `id`. The
+   * editor forwards the anchor through its native selection model.
+   *
+   * Editors that don't support comments (e.g. read-only mode) reject
+   * with `code: 'UNSUPPORTED'`.
+   *
+   * (sdk1.md §B.5.1 #4 Comments, SDK 2.0 Kestrel M2)
+   */
+  addComment: { args: { anchor: CommentAnchor; text: string; parentId?: string }; result: { id: string } }
+  /**
+   * List all comments on the current document. Filter arguments are
+   * `resolved?: boolean` (default: all) and `parentId?: string` (default:
+   * top-level only - replies are nested under the parent's `replies`
+   * field if the renderer flattens them).
+   */
+  listComments: { args?: { resolved?: boolean; parentId?: string }; result: { comments: Comment[] } }
+  /**
+   * Mark a comment resolved / unresolved. The renderer stamps
+   * `resolvedAt` on first resolve; subsequent toggles update the
+   * boolean only.
+   */
+  resolveComment: { args: { id: string; resolved: boolean }; result: void }
+  /** Delete a comment. Editors that soft-delete (keep in audit log) still resolve ok. */
+  removeComment: { args: { id: string }; result: void }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

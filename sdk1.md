@@ -2676,6 +2676,35 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 28. **SDK `createEmbedNonce()` helper 落地**（✅ 本轮 §11.28）：apps/sdk/src/editor.ts 新增 `createEmbedNonce(options)`，调 `POST /api/v1/embed/nonce` mint session + 构造带 `?sessionId=...&nonce=...` 的 embed URL。6 种结构化错误 code (`AUTH_FAILED` / `FORBIDDEN` / `BAD_REQUEST` / `MINT_FAILED` / `NETWORK_ERROR` / `INVALID_RESPONSE`)。`fetchImpl` 注入式 override 让测试不需要 polyfill global。配套：`types.ts` 加 3 类型；`embed-url.ts` `EmbedUrlInput.sessionId` + `buildEmbedUrl` 多一行；`index.ts` re-export。新增 `apps/sdk/test/create-embed-nonce.test.ts`（12 测试）+ `build-embed-url.test.ts` 追加 2 测试。SDK 总数 5 文件 / 36 → 6 文件 / 50 测试。live smoke 3/3 通过。
 27. **server-side nonce session binding 接入 embed handler**（✅ 本轮 §11.27）：`apps/web-server/src/embed/index.ts` 加 `EmbedQuery.sessionId` + `parseEmbedQuery` 提取 + `handleEmbed` 3 段守卫（sessionId 无 nonce → 400 INVALID_ARGUMENT；`verifyEmbedNonce().found=false` → 401 NONCE_SESSION_INVALID 含 reason:unknown/expired）。Opt-in 设计：URL 不带 sessionId 时仍走 §11.20 client-only 路径，不破 backward compat。新增 `apps/web-server/tests/embed-nonce-handler.test.ts`（6 测试）覆盖 valid + 4 rejection + legacy。6 文件 / 57 pass / 1 skip 回归。live smoke 5/5 通过。
 26. **server-side nonce ↔ session 绑定端点**（✅ 本轮 §11.26）：新增 `apps/web-server/src/embed/nonce-store.ts`（in-memory `Map<sessionId, NonceSession>`，LRU cap 1024 + 5 min 默认 TTL + 30 s `unref` 后台 sweeper）+ `apps/web-server/src/api/v1/embed-nonce.ts`（`POST /api/v1/embed/nonce` mint + `POST /api/v1/embed/verify-nonce` verify，两者走 `files:read` scope gate）+ `apps/web-server/tests/embed-nonce-session.test.ts`（13 测试）。`sessionId === nonce`（同 16 字节 base64url），verify 失败返 `200 {valid:false, reason}` 而非错误信封（SDK 可 branch 不 try/catch）。TTL 1 h hard cap 防误配。client-side nonce（§11.20）保留，本轮是 optional defense-in-depth。live smoke 6/6（mint / verify happy / wrong nonce / 401 / 403 / 400）全通。
+39. **SDK 2.0 Kestrel M2 · Comments API 骨架（SDK 类型 + 后端 v1 endpoint + 持久化）**（✅ 本轮）：
+    - 闭合 §B.5.1 #4 Comments API 第一段
+    - **SDK 类型层**（`apps/sdk/src/types.ts`）：
+      - 新增 `Comment` interface（id / author / text / anchor / createdAt / resolvedAt? / resolved / parentId?）
+      - 新增 `CommentAnchor` interface（range / cell / slideId / [k:v] 开放扩展）
+      - `EditorCommands` 新增 4 个：`addComment` / `listComments` / `resolveComment` / `removeComment`
+      - 新增 2 个事件接口 `CommentAddedEvent` / `CommentResolvedEvent` + `EditorEvent` union + `EditorEventMap` 各加 2 键
+    - **SDK index**：`apps/sdk/src/index.ts` re-export `Comment` / `CommentAnchor` / `CommentAddedEvent` / `CommentResolvedEvent`
+    - **后端存储**（`apps/web-server/src/common/comments-store.ts`，NEW，250 行）：
+      - 进程内 `Map<fileId, Comment[]>` + `DATA_DIR/comments.json` 持久化（与 `webhooks-store` 同模式）
+      - `addComment` / `listComments` / `resolveComment` / `removeComment` / `getComment` / `commentCountForFile` / `totalCommentCount`
+      - **sticky resolvedAt**：第一次 resolve 时打戳，后续 toggle 不改（与 only-office / google-docs 语义对齐）
+      - 16 KB 单条 text 上限（防 DoS）
+      - 边界处理：malformed JSON 启动不崩（warn + 续行）；未知 id 返 null
+      - `_resetCommentsForTests()`：清内存 + 删 comments.json + 重置 `loaded` flag
+    - **后端 v1 endpoint**（`apps/web-server/src/api/v1/comments.ts`，NEW，214 行）：
+      - `GET    /api/v1/files/:id/comments`     scope `files:read`     返 `{ fileId, count, comments[] }`（支持 `?resolved=true|false`）
+      - `POST   /api/v1/files/:id/comments`     scope `files:comment`  author 强制 JWT `sub`，client-supplied author 丢弃
+      - `GET    /api/v1/files/:id/comments/:cid` scope `files:read`
+      - `PATCH  /api/v1/files/:id/comments/:cid` scope `files:comment`  body `{ resolved: boolean }`，404 on unknown id
+      - `DELETE /api/v1/files/:id/comments/:cid` scope `files:comment`  硬删，204 on success / 404 on unknown
+      - 错误信封：`400 INVALID_ARGUMENT` / `401 UNAUTHENTICATED` / `403 FORBIDDEN` / `404 NOT_FOUND` / `500 INTERNAL`
+    - **v1 dispatcher**（`apps/web-server/src/api/v1/index.ts`）：5 个 regex match + 5 个 handler 调用，flatten-readable
+    - **测试**：
+      - `apps/web-server/tests/comments-store.test.ts`（NEW，11 测试）：id 唯一性 / author stamped / fresh array 防 mutation / resolved 过滤 / parentId 过滤 / sticky resolvedAt / 未知 id 返 null / 持久化到 disk / count helper / parentId round-trip
+      - `apps/web-server/tests/comments-v1-endpoint.test.ts`（NEW，17 测试）：401 / 403 / 200 空列表 / 201 创建 / client author 被丢弃 / 400 missing anchor / 400 empty text / 403 read-only scope / PATCH toggle / 404 unknown id / 400 missing resolved / 204 delete / 404 delete unknown / 200 get one / 404 get unknown / e2e `?resolved=true` 过滤
+      - web-server 68 文件 → 70 文件；web-server 581 → 604 测试（+23：11 + 17 - 5 fix）
+    - **未做**（M2 收尾）：renderer 端把 4 个命令 round-trip 进 postMessage handler（renderer-team 工作）；sidebar UI 渲染 `editor.on('commentAdded')`
+
 38. **SDK 2.0 Kestrel M1 · Multi-instance + Undo/Redo 命令骨架**（✅ 本轮）：
     - 闭合 §B.5.1 #1 Multi-instance + §B.5.1 #2 Undo/Redo
     - `apps/sdk/src/types.ts`：
