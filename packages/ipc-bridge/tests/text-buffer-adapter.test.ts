@@ -67,4 +67,55 @@ describe('text-buffer-adapter', () => {
       }),
     )
   })
+
+  it('sidebar option wires mountSidebar / unmountSidebar / postToSidebar alongside the text buffer', () => {
+    // Apps plug in one helper to get the full SDK 2.0 Kestrel M3.5 surface
+    // (3 text commands + 3 sidebar commands) without composing the adapter.
+    const mounted: Array<{ panelUrl: string; width?: number; title?: string }> = []
+    const unmounted: string[] = []
+    const posted: Array<{ panelId: string; message: unknown }> = []
+    let counter = 0
+    const fakeSidebar = {
+      mount(i: { panelUrl: string; width?: number; title?: string }) {
+        mounted.push(i)
+        counter += 1
+        return { panelId: `panel-${counter}` }
+      },
+      unmount(panelId: string) {
+        unmounted.push(panelId)
+        return true
+      },
+      post(panelId: string, message: unknown) {
+        posted.push({ panelId, message })
+      },
+    }
+    const handle = installTextBufferSink({ target: {}, sidebar: fakeSidebar })
+    expect(handle.supported).toEqual(
+      expect.arrayContaining([
+        'getContent',
+        'setContent',
+        'insertText',
+        'mountSidebar',
+        'unmountSidebar',
+        'postToSidebar',
+        'openFileDialog',
+        'print',
+      ]),
+    )
+    return handle
+      .dispatch('mountSidebar', { panelUrl: '/plugins/spell.html', width: 320, title: 'Spell' })
+      .then((r) => {
+        const r1 = r as { panelId: string }
+        expect(r1.panelId).toBe('panel-1')
+        expect(mounted).toEqual([{ panelUrl: '/plugins/spell.html', width: 320, title: 'Spell' }])
+        return handle.dispatch('postToSidebar', { panelId: r1.panelId, message: { type: 'progress', pct: 5 } })
+      })
+      .then(() => {
+        expect(posted).toEqual([{ panelId: 'panel-1', message: { type: 'progress', pct: 5 } }])
+        return handle.dispatch('unmountSidebar', { panelId: 'panel-1' })
+      })
+      .then(() => {
+        expect(unmounted).toEqual(['panel-1'])
+      })
+  })
 })

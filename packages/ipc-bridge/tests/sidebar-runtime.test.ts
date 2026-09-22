@@ -23,18 +23,23 @@ import {
  * also test the runtime without touching `globalThis.window`.
  */
 
-interface FakeIframe extends SidebarIframeLike {
+interface FakeIframe {
+  src?: string
+  style: Record<string, string>
   posted: Array<{ data: unknown; origin: string }>
+  setAttribute(name: string, value: string): void
+  getAttribute(name: string): string | null
+  contentWindow: { postMessage: (data: unknown, origin: string) => void }
 }
 
 function makeHost(): { host: SidebarHostLike; children: FakeIframe[] } {
   const children: FakeIframe[] = []
   const host: SidebarHostLike = {
     appendChild(child) {
-      children.push(child as FakeIframe)
+      children.push(child as unknown as FakeIframe)
     },
     removeChild(child) {
-      const i = children.indexOf(child as FakeIframe)
+      const i = children.indexOf(child as unknown as FakeIframe)
       if (i >= 0) children.splice(i, 1)
     },
   }
@@ -46,21 +51,20 @@ function makeIframeFactory(postedRef: { list: FakeIframe[] }): () => SidebarIfra
     const iframe: FakeIframe = {
       style: {},
       posted: [],
-      setAttribute(name, value) {
+      setAttribute(name: string, value: string) {
         if (name === 'src') iframe.src = value
       },
-      getAttribute(name) {
-        if (name === 'src') return iframe.src ?? null
-        return null
+      getAttribute(name: string) {
+        return iframe.src ?? null
       },
       contentWindow: {
-        postMessage(data, origin) {
+        postMessage(data: unknown, origin: string) {
           iframe.posted.push({ data, origin })
         },
       },
     }
     postedRef.list.push(iframe)
-    return iframe
+    return iframe as unknown as SidebarIframeLike
   }
 }
 
@@ -76,12 +80,12 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     expect(meta.title).toBe('Spell')
     expect(meta.iframe).toBeDefined()
     expect(children).toHaveLength(1)
-    expect(children[0]).toBe(meta.iframe)
+    expect(children[0] as unknown).toBe(meta.iframe as unknown)
     expect(rt.list()).toEqual([meta])
     expect(rt.has(meta.panelId)).toBe(true)
   })
 
-  it('generates a unique panelId per mount and stays stable across calls', () => {
+  it('generates a unique panelId per mount and stays monotonic', () => {
     const posted: FakeIframe[] = []
     const { host } = makeHost()
     const rt = createSidebarRuntime({ host, createIframe: makeIframeFactory({ list: posted }) })
@@ -89,7 +93,6 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     const b = rt.mount({ panelUrl: '/b' })
     const c = rt.mount({ panelUrl: '/c' })
     expect(new Set([a.panelId, b.panelId, c.panelId]).size).toBe(3)
-    // Counter is monotonic; the suffix increments.
     expect([a.panelId, b.panelId, c.panelId].map((p) => p.split('-').pop())).toEqual(['1', '2', '3'])
   })
 
@@ -103,13 +106,12 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     expect(rt.unmount(meta.panelId)).toBe(true)
     expect(children).toHaveLength(0)
     expect(rt.has(meta.panelId)).toBe(false)
-    // Idempotent second call.
     expect(rt.unmount(meta.panelId)).toBe(false)
   })
 
   it('post(panelId, message) writes a {v,panelId,message} envelope to the iframe.contentWindow', () => {
     const posted: FakeIframe[] = []
-    const { host } = makeHost()
+    const { host, children } = makeHost()
     const rt = createSidebarRuntime({
       host,
       createIframe: makeIframeFactory({ list: posted }),
@@ -117,8 +119,9 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     })
     const meta = rt.mount({ panelUrl: 'https://plugins.example/spell' })
     rt.post(meta.panelId, { type: 'progress', pct: 5 })
-    expect(meta.iframe.posted).toHaveLength(1)
-    expect(meta.iframe.posted[0]).toEqual({
+    const fake = children[0]!
+    expect(fake.posted).toHaveLength(1)
+    expect(fake.posted[0]).toEqual({
       data: { v: 'sidebar.v1', panelId: meta.panelId, message: { type: 'progress', pct: 5 } },
       origin: 'https://plugins.example',
     })
@@ -143,25 +146,21 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     const rt = createSidebarRuntime({
       host,
       createIframe: makeIframeFactory({ list: posted }),
-      bindWindow: false, // we'll drive dispatch manually
+      bindWindow: false,
     })
     const meta = rt.mount({ panelUrl: '/x' })
     const off = rt.onMessage((panelId, message) => seen.push({ panelId, message }))
-    // Valid envelope.
     rt.handleInboundMessage({ data: { v: 'sidebar.v1', panelId: meta.panelId, message: { kind: 'pong' } } })
     expect(seen).toEqual([{ panelId: meta.panelId, message: { kind: 'pong' } }])
-    // Wrong version.
     rt.handleInboundMessage({ data: { v: 'sidebar.v0', panelId: meta.panelId, message: {} } })
     expect(seen).toHaveLength(1)
-    // Wrong panel.
     rt.handleInboundMessage({ data: { v: 'sidebar.v1', panelId: 'ghost', message: {} } })
     expect(seen).toHaveLength(1)
-    // Not an object.
     rt.handleInboundMessage({ data: 42 })
     expect(seen).toHaveLength(1)
     off()
     rt.handleInboundMessage({ data: { v: 'sidebar.v1', panelId: meta.panelId, message: { kind: 'after' } } })
-    expect(seen).toHaveLength(1) // unsubscribed
+    expect(seen).toHaveLength(1)
   })
 
   it('inboundOrigin filter drops messages from other origins silently', () => {
@@ -222,14 +221,10 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     listeners[0]!({ data: { v: 'sidebar.v1', panelId: meta.panelId, message: { hi: 1 } }, origin: 'https://plugins.example' })
     expect(seen).toEqual([{ hi: 1 }])
     rt.dispose()
-    expect(listeners).toHaveLength(0) // window listener removed
+    expect(listeners).toHaveLength(0)
   })
 
   it('throws SidebarIframeUnavailableError at mount-time when no DOM factory and no document', () => {
-    // No `createIframe` is supplied AND `globalThis.document` is undefined in
-    // vitest's bare node environment — the runtime defers the missing-surface
-    // check to mount() so callers can still build a runtime in SSR / Node
-    // tests and only see the error when they actually try to mount.
     const { host } = makeHost()
     const rt = createSidebarRuntime({ host })
     expect(() => rt.mount({ panelUrl: '/x' })).toThrow(SidebarIframeUnavailableError)
@@ -250,14 +245,12 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
     rt.dispose()
     expect(children).toHaveLength(0)
     expect(rt.list()).toEqual([])
-    // Idempotent.
     rt.dispose()
-    // After dispose, mount throws.
     expect(() => rt.mount({ panelUrl: '/c' })).toThrow(/disposed/)
   })
 
   describe('integration: installLiveModelSink + createSidebarRuntime', () => {
-    it('mountSidebar → {panelId}, unmountSidebar → void, postToSidebar writes the envelope', async () => {
+    it('mountSidebar -> {panelId}, unmountSidebar -> void, postToSidebar writes the envelope', async () => {
       const posted: FakeIframe[] = []
       const { host, children } = makeHost()
       const rt = createSidebarRuntime({
@@ -273,7 +266,6 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
           postToSidebar: (i) => { rt.post(i.panelId, i.message); return undefined },
         },
       })
-      // mount
       const r1 = await sinkHandle.dispatch('mountSidebar', {
         panelUrl: 'https://plugins.example/spell',
         width: 320,
@@ -282,12 +274,11 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
       expect(r1.panelId).toMatch(/^sidebar-/)
       expect(rt.has(r1.panelId)).toBe(true)
       expect(children).toHaveLength(1)
-      // post
       await sinkHandle.dispatch('postToSidebar', { panelId: r1.panelId, message: { type: 'progress', pct: 1 } })
-      expect(children[0]!.posted).toEqual([
+      const fake = children[0]!
+      expect(fake.posted).toEqual([
         { data: { v: 'sidebar.v1', panelId: r1.panelId, message: { type: 'progress', pct: 1 } }, origin: 'https://plugins.example' },
       ])
-      // unmount
       await sinkHandle.dispatch('unmountSidebar', { panelId: r1.panelId })
       expect(rt.has(r1.panelId)).toBe(false)
       expect(children).toHaveLength(0)
@@ -310,7 +301,7 @@ describe('createSidebarRuntime (mountSidebar / unmountSidebar / postToSidebar)',
       ).rejects.toBeInstanceOf(SidebarPanelNotMountedError)
     })
 
-    it('panel → editor inbound postMessage fans out to onMessage + the user-provided onInboundMessage', () => {
+    it('panel -> editor inbound postMessage fans out to onMessage + the user-provided onInboundMessage', () => {
       const posted: FakeIframe[] = []
       const seen: Array<{ panelId: string; message: unknown; via: string }> = []
       const { host } = makeHost()

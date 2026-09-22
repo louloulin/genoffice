@@ -127,6 +127,15 @@ export function onBufferChange(listener: BufferListener, target?: BufferTarget):
 export function installTextBufferSink(options?: {
   target?: BufferTarget
   extraHandlers?: Record<string, (args: unknown) => unknown>
+  /**
+   * Optional SidebarRuntime (from \`@genoffice/ipc-bridge/sidebar-runtime\`).
+   * When present, \`mountSidebar / unmountSidebar / postToSidebar\` are
+   * wired into the live-model adapter alongside the text buffer
+   * commands so apps can drop in one helper and get the full
+   * SDK 2.0 Kestrel M3.5 surface (setContent / getContent /
+   * insertText + sidebar * 3) without composing the adapter manually.
+   */
+  sidebar?: SidebarRuntimeLike
 }): SdkCommandSinkHandle {
   const buffer = resolveBuffer(options?.target)
   // exactOptionalPropertyTypes: true — strip undefined optional props
@@ -145,5 +154,25 @@ export function installTextBufferSink(options?: {
   }
   if (options?.target !== undefined) base.target = options.target
   if (options?.extraHandlers !== undefined) base.extraHandlers = options.extraHandlers
+  if (options?.sidebar) {
+    const sb = options.sidebar
+    base.adapter = {
+      ...base.adapter,
+      mountSidebar: (i) => sb.mount(i),
+      unmountSidebar: (i) => { sb.unmount(i.panelId); return undefined },
+      postToSidebar: (i) => { sb.post(i.panelId, i.message); return undefined },
+    }
+  }
   return installLiveModelSink(base)
+}
+
+/**
+ * Minimal structural type for the sidebar runtime — text-buffer-adapter
+ * does not import sidebar-runtime.ts (that would be a cycle through
+ * sdk-command-sink.ts). Apps pass the real instance; tests can mock it.
+ */
+export interface SidebarRuntimeLike {
+  mount(input: { panelUrl: string; width?: number; title?: string }): { panelId: string }
+  unmount(panelId: string): boolean
+  post(panelId: string, message: unknown): void
 }

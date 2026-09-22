@@ -22,6 +22,7 @@ import {
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
 import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
+import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
 import { createDesktopApi, createProjectApi } from '../shared/desktop-api-factory'
 import type { DesktopApi } from '../shared/ipc'
 import { parseDataflareTranslateResponse } from '../shared/dataflare-translate-response'
@@ -64,7 +65,47 @@ if (!isElectronRuntime()) {
   // apps/docs/src/renderer/editor; this scaffold makes the host's
   // `editor.command('setContent' | 'getContent' | 'insertText')`
   // round-trip work end-to-end.
-  installTextBufferSink()
+  //
+  // SDK 2.0 Kestrel M3.5 Plugin Runtime (sdk1.md §11.36.5 follow-up):
+  // pass `sidebar: createSidebarRuntime({...})` so the host's
+  // `editor.command('mountSidebar' | 'unmountSidebar' | 'postToSidebar')`
+  // round-trips through to a real DOM container. The runtime lazily
+  // attaches a body-side <aside id="genoffice-sidebar"> on first mount
+  // — before that it's a no-op so the docs renderer doesn't pay a
+  // DOM cost when no host plugin is mounted.
+  installTextBufferSink({
+    sidebar: createSidebarRuntime({
+      // Real DOM host — the runtime only touches appendChild / removeChild
+      // and we trust those calls to operate on real elements. The runtime's
+      // narrow SidebarHostLike interface doesn't structurally match
+      // HTMLElement because SidebarIframeLike is a synthetic minimal shape
+      // (deliberately, so tests run under bare Node without jsdom), so we
+      // cast through unknown at the boundary.
+      host: (() => {
+        let el = document.getElementById('genoffice-sidebar')
+        if (!el) {
+          el = document.createElement('aside')
+          el.id = 'genoffice-sidebar'
+          el.setAttribute('aria-label', 'GenOffice plugin panels')
+          // Closed until mountSidebar is called; apps that want a
+          // visible sidebar can override via CSS in apps/docs/src/
+          // renderer/styles.css. The runtime toggles `data-mounted`
+          // for app-side styling hooks.
+          el.style.position = 'fixed'
+          el.style.top = '0'
+          el.style.right = '0'
+          el.style.bottom = '0'
+          el.style.width = '320px'
+          el.style.background = 'var(--bg, #fff)'
+          el.style.borderLeft = '1px solid var(--border, #e0e0e0)'
+          el.style.zIndex = '1000'
+          el.style.display = 'none'
+          document.body.appendChild(el)
+        }
+        return el as unknown as Parameters<typeof createSidebarRuntime>[0]['host']
+      })(),
+    }),
+  })
   const embeddedPathPrefix = window.location.pathname.startsWith('/office-engine/')
     ? '/office-engine'
     : ''
