@@ -1927,6 +1927,102 @@ export function App() {
     [],
   )
 
+  // sdk1 §11.66 — wire the SDK 2.0 Kestrel `editor.command('save')` /
+  // `editor.command('isDirty')` round-trip into the existing tiptap save
+  // pipeline. The sink is already installed by web-bridge.ts; this effect
+  // only registers the live-model adapter once the editor mounts so the
+  // sink can delegate to it. `registerNativeAdapter` returns an
+  // unsubscribe function that we call on unmount, so the sink falls
+  // back to the buffer (and ultimately `UnsupportedCommandError`) if
+  // the editor is torn down before the host sends another command.
+  //
+  // The save adapter mirrors the markdown/html `onSave` pattern
+  // (sdk1.md §11.63 + §11.64): call the existing save pipeline,
+  // surface `{ ok: true; savedPath? }` on success, throw on failure so
+  // the buffer stays dirty for a retry.
+  //
+  // The isDirty adapter snapshots the composite dirty check
+  // (doc-dirty.ts isDocDirty covers section / hf / page / numbering /
+  // theme / comments / protection — every UI flag that triggers an
+  // autosave). dirtyRef.current alone misses the structural subset.
+  const dirtySnapshotRef = useRef({
+    dirtyRef,
+    sectionDirty,
+    sectionsDirty,
+    trailingStartType,
+    pageColorDirty,
+    headerDirty,
+    footerDirty,
+    hfVariantsDirty,
+    sectionHfEdits,
+    pgNumEdit,
+    pgNumDirtySections,
+    numberingDirty,
+    styleUpserts,
+    titlePgDirty,
+    evenOddHfDirty,
+    watermarkDirty,
+    inksDirty,
+    notesDirty,
+    sourcesDirty,
+    zoteroDocumentDataDirty,
+    themeFontsDirty,
+    themeColorsDirty,
+    commentsDirty,
+    protectionDirty,
+    writeProtectionDirty,
+    removePersonalInfoDirty,
+  })
+  dirtySnapshotRef.current = {
+    dirtyRef,
+    sectionDirty,
+    sectionsDirty,
+    trailingStartType,
+    pageColorDirty,
+    headerDirty,
+    footerDirty,
+    hfVariantsDirty,
+    sectionHfEdits,
+    pgNumEdit,
+    pgNumDirtySections,
+    numberingDirty,
+    styleUpserts,
+    titlePgDirty,
+    evenOddHfDirty,
+    watermarkDirty,
+    inksDirty,
+    notesDirty,
+    sourcesDirty,
+    zoteroDocumentDataDirty,
+    themeFontsDirty,
+    themeColorsDirty,
+    commentsDirty,
+    protectionDirty,
+    writeProtectionDirty,
+    removePersonalInfoDirty,
+  }
+  useEffect(() => {
+    const unsubscribe = registerNativeAdapter({
+      save: async () => {
+        const ok = await save(false, false)
+        if (!ok) {
+          // The docs save pipeline resolves `false` for both "user
+          // canceled the dialog" and "transport refused". Either way
+          // the host needs a structured rejection, not silent success.
+          throw new Error('docs:save returned ok=false')
+        }
+        const savedPath = doc?.filePath
+        return {
+          ok: true as const,
+          savedPath: savedPath ?? undefined,
+          savedAt: new Date().toISOString(),
+        }
+      },
+      isDirty: () => isDocDirty(dirtySnapshotRef.current),
+    })
+    return unsubscribe
+  }, [save, doc?.filePath])
+
   // inserting a section break needs one save for the new section to take effect; the
   // flag is consumed in the render after state commit, guaranteeing the save closure
   // sees the latest sectionsDirty/trailingStartType

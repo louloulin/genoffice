@@ -4185,10 +4185,67 @@ cd packages/ipc-bridge && ../../node_modules/.bin/tsc --noEmit
 
 - §11.63 + §11.64 闭合 markdown + html 两个 text-buffer app
 - 余 4 app：
-  - docs（text-buffer，需要同样模式）
-  - sheets（text-buffer，需要同样模式，但走 `workbook:save` 通道）
+  - docs（live-model path — docs 有 tiptap + dirtyRef + isDocDirty 复合检查，
+    不能复用 text-buffer 模式）
+  - sheets（live-model path — 走 `workbook:save` 通道，dirty 来自 sheet edits）
   - slides（live-model path — slides 有自己的 deck，dirty 来自 deck）
   - pdf（live-model path — pdf 有自己的 state）
+
+### 11.66 · Docs renderer save 接线（§11.62 模式扩展 · 第 3 个 app）
+
+> 续 §11.63 + §11.64。docs 是第一个不走 text-buffer 的 app —— 它有
+> tiptap editor + `dirtyRef` + `isDocDirty` 复合 dirty 检查 + `saveImpl`
+> 走 `docs:save` IPC 通道。所以本轮走 `registerNativeAdapter` 路径
+> （live-model adapter），而不是 markdown/html 的 `onSave` 选项。
+
+#### ✅ 落点
+
+1. **`apps/docs/src/renderer/App.tsx`**：
+   - 顶部已经 import 了 `registerNativeAdapter`（sdk1 §11.36 留下的脚手架）
+     —— 本轮新增一个 useEffect 把 live-model adapter 真正注册进 sink：
+     ```ts
+     useEffect(() => {
+       const unsubscribe = registerNativeAdapter({
+         save: async () => {
+           const ok = await save(false, false)
+           if (!ok) throw new Error('docs:save returned ok=false')
+           return { ok: true as const, savedPath: doc?.filePath ?? undefined,
+                    savedAt: new Date().toISOString() }
+         },
+         isDirty: () => isDocDirty(dirtySnapshotRef.current),
+       })
+       return unsubscribe
+     }, [save, doc?.filePath])
+     ```
+   - `dirtySnapshotRef` 在每次 render 时刷新，承载所有 25 个 dirty 字段
+     （sectionDirty / headerDirty / pageColorDirty / themeFontsDirty /
+     commentsDirty / protectionDirty / ...），isDirty 用它喂 `isDocDirty()`
+     —— 比单看 `dirtyRef.current` 覆盖面更全（前者会漏 header / page
+     color / numbering / theme 类的修改）。
+
+2. **`apps/docs/tests/sdk-save-wiring.test.ts`**（新增 191 行 / 9 测试）：
+   - `isDocDirty` 复合检查：pristine / dirtyRef / headerDirty / pageColor /
+     numbering / theme / sectionsDirty / hfVariantsDirty / styleUpserts
+     共 8 个 case
+   - save delegation 3 case：成功路径 / 失败 throw / `savedPath` 为 undefined
+   - effect lifecycle 1 case：adapter shape snapshot
+
+#### 🧪 验证
+
+- apps/docs typecheck：clean（仅 1 处 pre-existing `packages/file-parse/src/pdf.ts:147`
+  pdfjs-dist 类型缺失，与本次改动无关）
+- 新增 `sdk-save-wiring.test.ts`：**9 / 9 通过**
+- 完整 docs 套件：**2334 / 2335 通过**（1 处 pre-existing flake ·
+  `protect-dialog.test.ts` 在 stash 前后均失败，与本次改动无关）
+
+#### 📊 进度
+
+- §11.63 + §11.64 + §11.66 闭合 markdown + html + docs 三个 app 的 SDK save
+  - markdown / html 走 text-buffer 的 `onSave`（读 buffer 文本）
+  - docs 走 `registerNativeAdapter` 的 live-model 路径（调 `saveImpl` + 复合 `isDocDirty`）
+- 余 3 app：sheets（走 workbook:save IPC）/ slides（live-model）/ pdf（live-model）
+- `registerNativeAdapter` 是 docs 用的新接入点 —— 给 sheets / slides / pdf
+  提供了清晰模板（live-model + composite dirty snapshot + unsubscribe on unmount）
 
 ### 11.65 · Workbook 错误码统一收口（最后两处 + 测试同步）
 
