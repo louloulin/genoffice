@@ -272,7 +272,18 @@ export function registerSlidesCoreHandlers(): void {
 
     let opened: Awaited<ReturnType<typeof openPptx>>
     try {
-      opened = await openPptx(new Uint8Array(bytes))
+      // useHashBasedIds: true (sdk1 §11.82 + §A.5 #7 follow-up close):
+      // each element's id is sha1(fragment bytes). The same XML fragment
+      // always gets the same id, even when other shapes are added /
+      // removed around it. The previous counter scheme shifted every
+      // later id by one when the user inserted a new shape between two
+      // existing ones — the renderer's stale selections then pointed at
+      // nothing and every id-addressed channel answered `null` for
+      // elements the user could still see. The renderer treats id as
+      // opaque (no sp_<digits> patterns anywhere in apps/slides/), so
+      // the switch is transparent to it. exactOptionalPropertyTypes:
+      // true forces the conditional spread.
+      opened = await openPptx(new Uint8Array(bytes), { useHashBasedIds: true })
     } catch (err) {
       throw new CorruptError(
         'slides:open-path',

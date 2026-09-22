@@ -5224,6 +5224,70 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
   `'soft:collab:write'`，dispatcher 才是剥离 prefix 的人。这样测试与生产
   行为一致，不会被前缀处理埋雷
 
+### 11.84 · web-server `slides:open-path` 默认启用 hash-based id（§A.5 #7 follow-up 收口）
+
+> §11.82 在 `@genoffice/pptx-engine` 给 `parseSlide` / `openPptx` 加了
+> opt-in 的 `useHashBasedIds: true` 选项，但**默认仍是 counter 方案**——
+> 避免破坏现有 renderer。本批把 web-server 的 `slides:open-path` 改
+> 成默认传 `useHashBasedIds: true`，闭合 §A.5 #7 的最后一步。
+>
+> §A.5 backlog **闭合数 +1**（§A.5 #7 follow-up complete）；累计 **74**。
+
+#### ✅ 落点
+
+1. **`apps/web-server/src/slides/core.ts` `slides:open-path` handler**：
+   - 在 `openPptx(new Uint8Array(bytes))` 调用处改成
+     `openPptx(new Uint8Array(bytes), { useHashBasedIds: true })`
+   - 加 WHY 注释（5 行）说明设计意图：hash scheme 让相同 fragment 总是
+     拿到相同 id，插入/删除 shape 不会 shift 其他 id；renderer 把 id
+     当 opaque string（apps/slides/ 内无 `sp_<digits>` 模式），所以
+     切换对 renderer 透明；`exactOptionalPropertyTypes: true` 强制
+     直接传 literal，不做条件 spread
+
+2. **`apps/web-server/tests/slides-hash-id-stability-e2e.test.ts`**（NEW，4 测试）：
+   - **测试 1**: 首次 `slides:open-path` 后每个 element 的 `sourceId`
+     匹配 `/^sp_[0-9a-f]{10}$/`（hash scheme 形状：prefix + 10 hex）
+   - **测试 2**: 第二次 `slides:open-path` 同字节得到**完全相同**的 id 集合
+     （counter scheme 在 reopen 时 id 全 shift，hash scheme 稳定）
+   - **测试 3**: `slides:apply-txn` 用 `addElement` append 一个新 shape
+     之后，前置的 `beforeIds.length` 个 id 仍然按原顺序出现；
+     新 shape 拿 `spnew_<counter>_<timestamp>` id（engine 对 mid-session
+     创建元素的契约，不是 hash scheme 的）
+   - **测试 4**: `slides:save` + 重新 `slides:open-path` 后，原 shape id
+     全部保留（savePptxToFile 字节级 round-trip 不会重编号）
+
+#### 🧪 验证
+
+- `apps/web-server/tests/slides-hash-id-stability-e2e.test.ts`：**4 / 4 通过**
+- 5 个现有 slides 测试套件（save / read-model / legacy-channels /
+  legacy-session / apply-txn-ops）：**104 / 104 通过**（hash scheme 对
+  现有 IPC 契约无破坏，因为 renderer 把 id 当 opaque）
+- `packages/pptx-engine/tests/parse.test.ts`：**76 / 76 通过**（engine 层
+  不动；web-server 调用层 opt-in）
+- `apps/web-server` typecheck：clean（仅 9 个预存在 pptx-ops /
+  xlsx-gateway 错误，与本批无关）
+- 启动 smoke：557 IPC channels / boot 0 errors
+
+#### 📊 进度
+
+- §A.5 #7 follow-up **完全闭合**：
+  - §11.70 把 counter 限定在 `parseSlide()` 单次生命周期内
+  - §11.82 加 `useHashBasedIds` 选项（counter 默认向后兼容）
+  - **§11.84** web-server 默认启用 hash（renderer 因 id opaque 而透明）
+- §A.5 backlog 闭合数 **73 → 74**
+- Web-server 现在对同一 deck 的 open-path 行为契约：same bytes ⇒
+  same ids（无论中间插入/删除多少元素，跨 save + reopen 也稳定）
+
+#### 🔍 已知小行为差异（无破坏，记录给后续参考）
+
+- 新建 shape 的 id 仍然是 `spnew_<counter>_<timestamp>`（engine 内部
+  计数器 + 当前时间戳），不是 hash-shaped。这是 engine 层 addElement
+  的契约，没有改成 hash-shaped（hash 是基于 fragment 字节的，新建 shape
+  的 fragment 在 savePptxToFile 之后才有字节序列可 hash）。
+- `useHashBasedIds: false` 仍可显式 opt-out（向后兼容），但 web-server
+  当前没有走这个分支；desktop renderer 是否需要切到 hash 由 renderer-team
+  决定。
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -5236,8 +5300,9 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 | §11.77 | workflow + comms + admin scope gate | +3 | 68 |
 | §11.78 | soft-scope + marketplace / update / prefs | +3 | 71 |
 | §11.79 | auth JWT rotation IPC + sensitive surfaces | +1 | 72 |
-| §11.83 | collab + history + comments + templates scope gate | +1 | **73** |
-| §A.5 backlog 闭合总数 |  |  | **73** |
+| §11.83 | collab + history + comments + templates scope gate | +1 | 73 |
+| §11.84 | web-server `slides:open-path` 默认启用 hash-based id | +1 | **74** |
+| §A.5 backlog 闭合总数 |  |  | **74** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -5262,7 +5327,6 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 1. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
 2. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面）：3-5 天
-3. 让 web-server 默认对 slides:open-path 启用 useHashBasedIds（迁移现有 renderer）：1-2 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
