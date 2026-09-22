@@ -190,7 +190,7 @@ atomicWriteFile(target, value.text, 'utf8')     // html:save（单行，无双�
 ### 0.5 测试现状（实测，2026-09-22）
 
 ```
-apps/web-server/tests/  →  90 文件 / 787 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
+apps/web-server/tests/  →  90 文件 / 791 测试 通过 · 1 skipped  (~30s wall · 2026-09-22 实测)  ← 全绿，0 失败
   - atomic.test.ts                17 tests   atomic write + 0-byte guard
   - workbook-save-e2e.test.ts      M1 真保存 全链路
   - slides-save-e2e.test.ts        M2 真保存 全链路
@@ -3169,7 +3169,7 @@ window.slidesApi.deleteElement({ ... }).then((r) => r && applySlide(current, r))
 
 #### 11.42.5 实测
 
-- `apps/web-server`：**90 文件 / 787 通过 / 1 skipped / 0 失败**（exit 0）——
+- `apps/web-server`：**90 文件 / 791 通过 / 1 skipped / 0 失败**（exit 0）——
   本轮首次达成全绿（此前 translate-* 两个 e2e 因硬编码 python 路径必红，见 §11.43.2）。
 - 相关套件：`slides-legacy-channels-e2e` 17/17 ·
   `slides-legacy-session-e2e` 7/7 · `slides-save-e2e` 7/7 ·
@@ -3230,7 +3230,7 @@ window.slidesApi.deleteElement({...}).then((r) => r && applySlide(current, r))
 应 skip 而非 fail。**两个方向都验过**：本机命中后 7 个用例真的跑并全过（此前是
 失败而非 skip）；`CODEX_PYTHON` 指向不存在文件时报告 skip。
 
-**结果**：`apps/web-server` **90 文件 / 787 通过 / 1 skipped / 0 失败** —— 本分支
+**结果**：`apps/web-server` **90 文件 / 791 通过 / 1 skipped / 0 失败** —— 本分支
 首次全绿，P1 回归门禁达成。
 
 #### 11.42.6 本轮不做（明确范围）
@@ -3318,6 +3318,110 @@ cd apps/web-server
 
 §A.5 那条 backlog（filed in cda3f12）现标记为 ✅ `fc36dc4`。CSV open + save
 两端的 round-trip 在 web 构建下完整闭合。
+
+### 11.44 · 审计日志保留期可观测性 — `/api/v1/metrics` 暴露 4 个 Prometheus 指标（§A.5 部分收口）
+
+> 承接 §A.5 backlog 中的"审计日志保留期 / rotate"：rotate worker 本身
+> （`GENOFFICE_AUDIT_RETENTION_DAYS` + 周期脚本）仍 M5+，但**在 rotate 上线
+> 之前必须有可观测性**，否则操作员没有领先指标知道 10k in-memory cap 已经在
+> busy save pipeline 上溢出。`f35524d`。
+
+#### 11.44.1 之前的样子
+
+`/api/v1/metrics` 暴露 webhook DLQ + IPC channel + SDK usage + uptime 共 15 个
+指标，**审计日志一个都没有**。要知道"现在内存里有几条 / JSONL 多大 / 有没有
+溢出"，只能 `wc -l $DATA_DIR/audit-log.jsonl` + `grep -c 'unshift-trim'` 日
+志——前者不知道内存态，后者无日志可看。
+
+#### 11.44.2 暴露的 4 个 Prometheus 指标
+
+| 名字 | 类型 | 含义 |
+|---|---|---|
+| `genoffice_audit_log_records` | gauge | 当前 in-memory ring 容量（饱和于 10k）|
+| `genoffice_audit_log_persisted_bytes` | gauge | 当前 JSONL 文件磁盘字节数；持久化关闭或首次启动无记录时为 `NaN` |
+| `genoffice_audit_log_recorded_total` | counter | 进程启动以来累计记录的审计事件 |
+| `genoffice_audit_log_dropped_total` | counter | 因 ring overflow 被驱逐的记录数（**rotate 紧急度的领先指标**）|
+
+文本格式（节选）：
+```
+# HELP genoffice_audit_log_records Current audit-log records held in memory (bounded at 10000)
+# TYPE genoffice_audit_log_records gauge
+genoffice_audit_log_records 42
+# HELP genoffice_audit_log_persisted_bytes Bytes currently on disk in the JSONL audit log (NaN when persistence is disabled or no record has been recorded yet)
+# TYPE genoffice_audit_log_persisted_bytes gauge
+genoffice_audit_log_persisted_bytes 4832
+# HELP genoffice_audit_log_recorded_total Cumulative audit records recorded since process start
+# TYPE genoffice_audit_log_recorded_total counter
+genoffice_audit_log_recorded_total 117
+# HELP genoffice_audit_log_dropped_total Cumulative audit records evicted because the in-memory ring overflowed the 10000 cap
+# TYPE genoffice_audit_log_dropped_total counter
+genoffice_audit_log_dropped_total 0
+```
+
+#### 11.44.3 实现要点
+
+1. **`apps/web-server/src/common/audit-log.ts`**：
+   - 模块级 `totalRecorded` + `totalDropped` 计数器，在 `recordAudit` 的 unshift
+     边界计算 drop count（`totalDropped += records.length - MAX_RECORDS`），不
+     在 slice 时计算 → 在并发 `recordAudit` 调用下计数器仍单调。
+   - 新导出 `auditMetrics()` 返回 `{ records, persistedBytes, totalRecorded,
+     totalDropped }`。`persistedBytes` 仅做一次 `fssync.statSync(FILE)`，对
+     15-60s 的 Prometheus 抓取足够便宜；`statSync` 失败（并发 rotate）返 null →
+     Prometheus `NaN`，不会抛穿 metrics endpoint。
+   - 新导出 `_setAuditMaxRecordsForTests(n)`：把 `MAX_RECORDS` 从 `const` 改
+     `let`，让 overflow 测试用 3 而不是 10k 把 ring 灌满——`Array.unshift` 是
+     O(n)，10 001 次 = O(n²) 不可接受；生产代码不调用。
+   - `_resetAuditForTests` 同步清零两个新计数器并 truncate JSONL。
+
+2. **`apps/web-server/src/common/index.ts`**：re-export `auditMetrics` 与
+   `_setAuditMaxRecordsForTests`。
+
+3. **`apps/web-server/src/api/v1/meta.ts`**：
+   - import `auditMetrics`；
+   - `handleMetrics` 内 `const audit = auditMetrics()` 一次取快照；
+   - 在 `genoffice_ipc_channels_implemented` 之后追加 4 行 HELP/TYPE/value。
+   - 持久化关闭 / 首次启动无记录：`persisted_bytes ?? 'NaN'` 走 Prometheus
+     `NaN` sentinel。
+
+4. **`apps/web-server/tests/metrics-endpoint.test.ts`**：4 个新 e2e：
+   - 暴露所有 4 行（HELP + TYPE + sample）；
+   - 冷启动值：`records=0, recorded_total=0, dropped_total=0`；`persisted_bytes`
+     是 `NaN`（首次抓取无文件）或 `0`（_reset 留下的空文件）都接受——这是有效
+     冷启动状态，不该让某次 process 残留文件使本用例红；
+   - 3 次 `recordAudit` 后 `records=3, recorded_total=3, persisted_bytes` 转正
+     整数；
+   - cap=3, 5 次 `recordAudit` → `records=3, recorded_total=5, dropped_total=2`
+     ——overflow 计数器在边界正确累加。
+
+#### 11.44.4 验证
+
+```
+cd apps/web-server
+./node_modules/.bin/vitest run --config ./vitest.config.ts tests/metrics-endpoint.test.ts
+# 12/12 passed（8 既有 + 4 新增）
+
+./node_modules/.bin/vitest run --config ./vitest.config.ts
+# 791 passed | 1 skipped | 0 failures（90 文件）
+
+../../node_modules/.bin/tsc --noEmit
+# 无新增错误（同 9 个 pre-existing 在 packages/{pptx-ops,xlsx-gateway}）
+```
+
+#### 11.44.5 不在本轮范围内
+
+- rotate worker 本身（`GENOFFICE_AUDIT_RETENTION_DAYS` 周期脚本 / crontab /
+  systemd timer / k8s CronJob）仍 M5+。本轮只是给它准备了"我什么时候溢出"
+  的信号。
+- `audit:log` scope gate（"只有合法 IPC 调用方能写审计"）是另一条独立 M5+
+  backlog（§11.37.6），本次不动。
+- 跨进程并发安全（cluster 模式下多进程写同一 JSONL）需要换 SQLite 或
+  Postgres backend；本轮 `records` / `totalRecorded` / `totalDropped` 仍是
+  进程内态，与 M4+ cluster 化时统一规划。
+
+#### 11.44.6 收口结果
+
+§A.5 中"审计日志保留期 / rotate"条目现标注 ✅ `f35524d`（观测部分）；
+rotate worker 仍留 M5+。`/api/v1/metrics` 现有 19 个指标（15 既有 + 4 新）。
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
@@ -4017,8 +4121,12 @@ Buffer 挂在 `globalThis.window['__GENOFFICE_TEXT_BUFFER__']`（或显式 `targ
 - **CRDT/OT 协作（M4 backlog）**：单人模式通；collab:* 通道骨架有，但多人同时写编辑合并 peer 未实装。
 - **`workbook:read-range` 返空 cells bug**：实测 Rust sidecar 的 read_range 命令对 inlineStr / sharedString 解析返回 `cells: []`，无论 open 后还是 save 后。涉及 Rust 二进制改动，沙箱不可 rebuild，留 M4+ 路线图。当前 PR 回退了 JS 侧的 refresh 实验（不能修），仅在本节记录。
 - **audit:log scope gate 缺失**：M5+ backlog（§11.37.6 记录）。当前任何已认证 IPC 调用方都能写审计日志。
-- **审计日志保留期 / rotate**：当前 10k 条内存 mirror + 磁盘 JSONL 无限增长。生产环境需要
-  `GENOFFICE_AUDIT_RETENTION_DAYS` + 周期 rotate 脚本（M5+）。
+- **审计日志保留期 / rotate**（观测已完成 ✅ `f35524d`，rotate 本身仍 M5+）：
+  10k 条内存 mirror + 磁盘 JSONL 无限增长。`genoffice_audit_log_records` /
+  `genoffice_audit_log_persisted_bytes` / `genoffice_audit_log_recorded_total` /
+  `genoffice_audit_log_dropped_total` 已在 `/api/v1/metrics` 暴露；
+  `dropped_total` 是 rotate 紧急度的领先指标。rotate 脚本本身
+  （`GENOFFICE_AUDIT_RETENTION_DAYS` + 周期 worker）仍 M5+。详见 §11.44。
 - **Discord 服务器 / Office Hours**：外部服务，沙箱不可达（§A.3 ⬜ 保留）。
 - ~~**CSV 保存 round-trip on web**~~ ✅ `fc36dc4`：`.csv` 的 open 路径已用 `csvToXlsxBuffer(decodeCsvBuffer(...))` + `csvPath` 回填走完（§11.44）；save 路径已通过 web-bridge `exportCsv` + web-server `workbook:export-csv` handler 闭合（`atomicWriteFile(targetPath, Buffer.concat([BOM, content]))` + 64MB ceiling + 空内容拒绝 + 受管路径校验）。详见 §11.43。
 
