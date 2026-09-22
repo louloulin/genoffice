@@ -1,7 +1,6 @@
 /**
  * Slides apply-txn e2e (M2 batch-2) — verifies the web build now drives the
- * full `@genoffice/pptx-ops` executor (58 op shapes) instead of the previous
- * 3-op subset. Each test boots the real bundle, copies the bundled blank
+ * full `@genoffice/pptx-ops` executor (63 op shapes — measured via `opNames().length`) instead of the previous 3-op subset. Each test boots the real bundle, copies the bundled blank
  * pptx fixture into FILES_DIR, opens it through the same Rust pptx-engine
  * the desktop main process owns, runs a small op batch, then asserts the
  * bytes round-trip cleanly through a second open.

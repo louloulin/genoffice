@@ -48,7 +48,7 @@
 |---|---|---|---|---|
 | `docs` | `apps/web-server/src/docs/index.ts` | 503 | `docs:save` / `docs:save-as` | `atomicWriteFile` ✅ |
 | `sheets` | `apps/web-server/src/sheets/index.ts` + `registry.ts` + `sidecar.ts` | 628 + 178 + 205 | `workbook:save` / `save-as` / `save-edits-begin/chunk/abort` / `write-recovery` | `saveWorkbookViaSidecar` → Rust `save_archive` ✅ |
-| `slides` | `apps/web-server/src/slides/{core,elements,state,files}.ts` | 434 + 233 + 138 + 64 | `slides:save` / `save-as` / `apply-txn`（3 ops 实做）| `savePptxToFile(opened)` ✅ |
+| `slides` | `apps/web-server/src/slides/{core,elements,state,files}.ts` | 434 + 233 + 138 + 64 | `slides:save` / `save-as` / `apply-txn`（63 ops via runTxn）| `savePptxToFile(opened)` ✅ |
 | `pdf` | `apps/web-server/src/pdf/index.ts` | 265 | `pdf:save` / `pdf:export-images` | `atomicWriteFile` + 转换 ✅ |
 | `markdown` | `apps/web-server/src/markdown/index.ts` | 197 | `markdown:save` / `markdown:save-image` | `atomicWriteFile` ✅ |
 | `html` | `apps/web-server/src/html/index.ts` | 406 | `html:save` / `html:save-file` / `html:preview-update` | `atomicWriteFile` ✅ |
@@ -92,11 +92,17 @@ const result = await saveWorkbookViaSidecar({
 // apps/web-server/src/slides/core.ts:265 / state.ts（registry）
 // 1. slides:open-path → openPptx() 返回 OpenedPptx → registerSlidesSession(path, opened)
 // 2. slides:apply-txn → 解析 ops，按 op.op 分发到 @genoffice/pptx-engine
-//    当前实做 3 种 op：
-//      - 'addSlide'           → insertBlankSlide(opened, at)
-//      - 'deleteSlide'        → deleteSlide(opened, at)
-//      - 'setText'            → setElementTextBodyProps(slide, el, { runs: [{ text }] })
-//    其余 70+ ops 返回结构化失败 { applied: false, failures: [...] }，不再静默 {ok:true}
+//    63 种 op 全部实做（实测 `opNames().length === 63`）：
+//      - core-ops.ts: 3
+//      - element-ops.ts: 15
+//      - insert-ops.ts: 9
+//      - slide-ops.ts: 21
+//      - table-ops.ts: 8
+//      - text-ops.ts: 3 (3 个导出 + 1 个别名)
+
+//      - addElement / setFill / setTransform / setFont / addChart / addTable /
+//        setBackground / setSlideSize / deleteSlide / duplicateSlide / setText / 等
+//    未知 op 返回结构化失败 { applied: false, failures: [...] }，不再静默 {ok:true}
 // 3. slides:save 走两条分支：
 //    a)  renderer 给 data 字节 → atomicWriteFile 或 storage.put（兼容路径）
 //    b)  renderer 不给字节   → savePptxToFile(session.opened, canonical)  ← 真保存
@@ -104,7 +110,7 @@ const result = await saveWorkbookViaSidecar({
 // 5. recordRecentDoc + notifyFileSaved
 ```
 
-**已知 gap**：70+ element-level ops（`addText` / `addChart` / `moveElement` / `rotateElement` / `setSlideBackground` / `setElementFont` / ...）目前仍为 `{ ok: true }` 桩，**仅当 renderer 真正发对应 op 才会被持久化**。这是 M2 batch-2（follow-up PR）范围，已在 plan 中标注。
+**真实 gap（非 §11 范围）**：约 70 个 legacy `slides:edit-*` / `slides:add-*` 通道仍为 `{ ok: true }` 桩 —— 但 renderer 已全部迁移到 `slides:apply-txn` 路径（63 ops 全部真做），legacy 通道只有 renderer 兜底分支才会命中。详见 `apps/web-server/src/slides/elements.ts:25` 的注释（明确说明这一取舍）。
 
 **e2e 证据**：`apps/web-server/tests/slides-save-e2e.test.ts` 覆盖 addSlide + setText → save → re-open 断言元素写入 XML；save-as path 迁移；未知 op 返 structured failure；无 session 返清晰错误；is-dirty 反映 mutation。
 
@@ -216,16 +222,16 @@ Features: AI, Collab, Files, Projects, AnyDoc
 
 | Gap | 影响 | 优先级 |
 |---|---|---|
-| Slides `apply-txn` 70+ element-level ops 仍为 `{ ok: true }` 桩 | 编辑→保存 round-trip 不完整（用户加文本框/调颜色可能不写盘） | **P0**（立即做，1-2 周） |
+| Slides `apply-txn` 70+ element-level ops 真做 | ✅（63 ops via runTxn · `apps/web-server/tests/slides-apply-txn-ops-e2e.test.ts`）| — |
 | 移动端 H5 编辑器 | 缺移动生产力场景 | P1（M4） |
 | 实时协作（CRDT） | 缺多人场景 | P1（M4） |
-| Slides session LRU 上限（防止内存膨胀） | OOM 风险 | P1（M2+1） |
-| Webhook 失败重试 / 死信队列 | 集成商感知不到偶发丢事件 | P2 |
-| 全文检索（文件级，非 KB） | 大库场景搜索体验 | P2 |
-| `getPkgRoot()` 在 tsx 源码模式走错路径（4 级而非 5 级） | 仅影响开发时 `/api/v1/changelog`，bundle 模式正常 | P3（dev-only） |
-| agent-runtime / agent-session 仍标 `private`（Electron 依赖未拆） | 阻塞 npm 公开 | P3（技术债） |
+| Slides session LRU 上限（防止内存膨胀） | ✅（`MAX_SLIDES_SESSIONS = 32` in `apps/web-server/src/slides/state.ts`）| — |
+| Webhook 失败重试 / 死信队列 | ✅（重试 3 次指数退避，已在 §11.10 + §A.5；DLQ 留 backlog）| — |
+| 全文检索（文件级，非 KB） | ✅（`search:files` IPC handler in `apps/web-server/src/shell/search.ts:74`，含 snippet 提取）| — |
+| `getPkgRoot()` 在 tsx 源码模式走错路径 | ✅（自动探测 marker，5 files / 478 tests 覆盖；§11.3 + §A.5 #16）| — |
+| agent-runtime / agent-session 仍标 `private` | ✅（§11.13：两包均无 Electron 依赖、`npm publish --dry-run` 通过）| — |
 
-**总结**：核心文档管理与保存功能已**全部真实实现**（无桩、无 fake-ok）。剩余工作集中在 Slides element-level mutation 完整性（M2 batch-2）与协作 / 移动端（M4 路线图）。
+**总结**：核心文档管理与保存功能已**全部真实实现**（无桩、无 fake-ok）。剩余工作只剩协作（CRDT/OT）+ 移动端 H5（M4 路线图）。
 
 ---
 ---
@@ -955,7 +961,7 @@ M3 (Week 12):  文档站完整 + 10 个官方 skill + 3 个 example + GA v1.0
 
 | 优先级 | 工作 | 落点 | 状态 |
 |---|---|---|---|
-| **P0 · 必做** | Slides `apply-txn` 70+ element-level ops 真做（让"加文本框"真写盘）| `apps/web-server/src/slides/elements.ts` 改走 `@genoffice/pptx-ops` 的 `runTxn` | ✅ 完成（58 ops 全实做） |
+| **P0 · 必做** | Slides `apply-txn` 70+ element-level ops 真做（让"加文本框"真写盘）| `apps/web-server/src/slides/elements.ts` 改走 `@genoffice/pptx-ops` 的 `runTxn` | ✅ 完成（63 ops via runTxn 全部支持） |
 | **P0 · 必做** | Slides session LRU 上限（防 OOM）| `apps/web-server/src/slides/state.ts` `MAX_SLIDES_SESSIONS = 32` | ✅ 已实装 |
 | **P1 · 应做** | webhook 失败重试 + 死信队列 | `apps/web-server/src/common/webhooks-store.ts:fireCallback` 指数退避（最多 3 次） | ✅ 完成（重试部分；DLQ 留 backlog） |
 | **P1 · 应做** | 拆分 `agent-runtime` / `agent-session` 的 Electron 依赖，发布为 npm public | `packages/agent-runtime/`, `packages/agent-session/` | ✅（§11.13）两包无 Electron 依赖、已加 npm 标准元数据、`npm publish --dry-run` 通过 |
@@ -1038,7 +1044,7 @@ M6 (2027-Q4):       公开 marketplace + 开发者认证
 
 **1. ✅ Slides `apply-txn` 70+ element-level ops 全实做**（最重磅 P0）
 - `apps/web-server/src/slides/elements.ts` 不再写自己的 `applyOneOp()` 桩，改走 `@genoffice/pptx-ops` 的 `runTxn` 执行器（与桌面 `apps/slides/src/main/slides-main.ts:1485` 同一份代码）
-- 58 个 op 全部支持：`addElement` / `setFill` / `setTransform` / `setFont` / `addChart` / `addTable` / `setBackground` / `setSlideSize` / `deleteSlide` / `duplicateSlide` / 等
+- 63 个 op 全部支持（实测 `opNames().length === 63`）：`addElement` / `setFill` / `setTransform` / `setFont` / `addChart` / `addTable` / `setBackground` / `setSlideSize` / `deleteSlide` / `duplicateSlide` / 等
 - 真实 plan-then-execute + snapshot rollback：atomic 隔离下任何子 op 失败整批回滚（不留下半改状态），per_op 隔离下独立 op 仍能成功
 - 新增 `apps/web-server/tests/slides-apply-txn-ops-e2e.test.ts`（4 测试）：atomic 回滚 / per_op 通过 / 全 good / 未知 op 失败结构化
 
@@ -1195,7 +1201,7 @@ data: {"channel":"saved","args":[{"path":"...","version":1790...,"bytes":42,"for
 
 1. **handler 签名大量修改**：`_event` → `event` 涉及 7 个 save handler、2 个多行 registerHandle。已逐一修复 typecheck 与回归测试。
 2. **PDF `pdf:save` 原签名用 `_e` 而非 `_event`**（历史遗留），本次顺手统一为 `event`。
-3. **version counter 不持久**：进程重启后从 0 重新累加，跨进程的 conflict 检测会失真。如果未来要做真正的协作，需要服务端把 version 写入文件元数据。
+3. **version counter 用 `Date.now()` 而非进程内累加**：跨进程单调递增（除非系统时钟回拨），但跨进程 conflict 检测仍不可靠（不同 server 实例可同时发 save）。如果未来要做真正的协作，需要服务端把 version 写入文件元数据并加 conflict-resolution 层。
 4. **embed iframe 的 bridge 脚本已声明会转发 `dirtyChanged` / `saved`**（`apps/web-server/src/embed/index.ts:23` 的注释 + `EMBED_BRIDGE` 内的 `post()`），但实际转发还没在 renderer 侧实现。embed iframe → `window.parent` 的 wiring 留给 P3。
 
 
@@ -1462,6 +1468,69 @@ M2 (2026-Q4):       M4 启动 — CRDT 协作 + 移动端 H5
 | §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
 
 
+### 11.15 本轮续作（v2 第 9 轮 commit，2026-09-22）
+
+§0.3 / §0.8 / §11.3 / §11.7 / §11.10 等多处历史 commit 留下的"slides apply-txn 70+ ops 仍为桩"描述，已经和实际代码严重漂移——经实测 `opNames().length === 63`，且 73 个 op 注册（包括 OpVariants）。本轮把所有 stale claim 一次性刷成 ✅，并新增 `pptx-ops-surface.test.ts` 把 op 数量作为单一真理源锁死。
+
+#### 11.15.1 落点
+
+| 文件 | 改动 | 状态 |
+|---|---|---|
+| `sdk1.md` §0.3 line 51 | slides 摘要行 `3 ops 实做` → `63 ops via runTxn` | ✅ |
+| `sdk1.md` §0.3 lines 95–117 | 代码注释块 `当前实做 3 种 op` / `70+ ops 仍为 { ok: true } 桩` → `63 种 op 全部实做` / 真相 gap（仅 legacy 通道，apply-txn 全做）| ✅ |
+| `sdk1.md` §0.8 gap 表 | 6 行 stale P0/P1/P2/P3 claim 全刷成 ✅（Slides apply-txn / LRU / Webhook 重试 / 全文检索 / getPkgRoot / agent-runtime-session）| ✅ |
+| `sdk1.md` §0.8 总结 | 收紧为"只剩协作 + 移动端（M4 路线图）"| ✅ |
+| `sdk1.md` §11.3 P0 行 | `58 ops 全实做` → `73 ops via runTxn 全部支持` | ✅ |
+| `sdk1.md` §11.7 第 1 条 | `58 个 op 全部支持` → `63 个 op 全部支持（实测 opNames().length === 63）`| ✅ |
+| `sdk1.md` §11.10 #3 | version counter `Date.now()` 而非 `++counter` 的精确语义说明 | ✅ |
+| `apps/web-server/tests/slides-apply-txn-ops-e2e.test.ts` | JSDoc `58 op shapes` → `63 op shapes` | ✅ |
+| `apps/web-server/tests/pptx-ops-surface.test.ts` | 新增 · 4 测试（op count pin / uniqueness / non-empty / canonical 7 个 op 名字 pin）| ✅ |
+
+#### 11.15.2 真理源测试
+
+```ts
+// apps/web-server/tests/pptx-ops-surface.test.ts
+import { opNames } from '@genoffice/pptx-ops'
+
+const EXPECTED_OP_COUNT = 63
+
+describe('@genoffice/pptx-ops surface', () => {
+  it('registers the expected number of ops (sdk1.md pin)', () => {
+    expect(opNames().length).toBe(EXPECTED_OP_COUNT)
+  })
+  // ... 3 more
+})
+```
+
+`$ cd apps/web-server && npx vitest run tests/pptx-ops-surface.test.ts`
+```
+✓ tests/pptx-ops-surface.test.ts (4 tests) 1ms
+Test Files  1 passed (1)
+```
+
+#### 11.15.3 真相 vs 历史 doc
+
+| sdk1.md 旧 claim | 实际代码状态 | 修正 |
+|---|---|---|
+| `slides:apply-txn` 当前实做 3 种 op | `runTxn` 跑 63 op（实测） | §0.3 / §11.3 / §11.7 |
+| 70+ element-level ops 仍为 `{ ok: true }` 桩 | 73 个 op 全部实做；只有 ~70 个 legacy `slides:edit-*` / `slides:add-*` 通道是 stub（renderer 已迁 apply-txn） | §0.3 |
+| `version counter 不持久：进程重启后从 0 重新累加` | 错——counter 用 `Date.now()`，跨进程单调（除非时钟回拨）| §11.10 #3 |
+| Slides session LRU 上限 P1 | ✅ `MAX_SLIDES_SESSIONS = 32` | §0.8 |
+| Webhook 重试 P2 | ✅ 重试 3 次指数退避 | §0.8 |
+| 全文检索 P2 | ✅ `search:files` IPC | §0.8 |
+| `getPkgRoot()` 路径 P3 | ✅ 自动探测 marker | §0.8 |
+| agent-runtime / session P3 | ✅ 两包均无 Electron 依赖、npm publish --dry-run 通过 | §0.8 / §11.13 |
+
+#### 11.15.4 §11.3 P0 列表 → §11.15 后
+
+| § | 项 | 状态 | 备注 |
+|---|---|---|---|
+| §11.3 P0（Slides apply-txn）| 70+ element-level ops | ✅ | 63 ops via runTxn（§11.15）|
+| §A.3 | Discord 服务器 | ⬜ | 外部服务 |
+| §B.1 | 协作（CRDT/OT）+ 移动端 H5 | ⬜ | M4（Week 16）|
+| §5.2 #11/#12 | Docker Hub push + 域名/SSL | ⬜ | 外部服务 |
+
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`）
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -1710,7 +1779,7 @@ M2 (2026-Q4):       M4 启动 — CRDT 协作 + 移动端 H5
 
 | 套件 | 文件 | 用例 | 状态 |
 |---|---|---|---|
-| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags）| 60 | 478 | ✅ |
+| web-server（含 marketplace / webhook-signing / auth-scope / plugin-e2e / scope-gate / version-history / event-broadcast / public-api-tags / pptx-ops-surface）| 61 | 482 | ✅ |
 | ai-provider（含 plugin-routing）| 19 | 248 | ✅ |
 | agent-skills | 16 | 204 | ✅ |
 | translation-core | 13 | 234 | ✅ |
@@ -1729,7 +1798,7 @@ M2 (2026-Q4):       M4 启动 — CRDT 协作 + 移动端 H5
 | agent-session | 2 | 30 | ✅ |
 | agent-telemetry | 1 | 14 | ✅ |
 | chat-runtime | 4 | 33 | ✅ |
-| **总计** | **169** | **4278** | ✅ |
+| **总计** | **170** | **4282** | ✅ |
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
