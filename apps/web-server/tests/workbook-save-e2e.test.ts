@@ -294,3 +294,96 @@ describe.skipIf(skip)('workbook:save (M1 real save)', () => {
     expect(save.status).toBe(404)
   })
 })
+
+/* ── workbook format routing (CSV / XLS) ───────────────────────────────────
+ * The file picker advertises `.xlsx,.xlsm,.xls,.csv`, so a user who picks
+ * a CSV (or has an old `.xls`) gets a `workbook:open-path` call with that
+ * extension. The xlsx sidecar only reads zip-format workbooks, so the
+ * previous behaviour was a misleading "Failed to parse workbook: invalid Zip
+ * archive" — the user told their own good file was corrupt.
+ *
+ * Desktop solves this in `prepareWorkbookForOpen` by converting CSV to a
+ * temp `.xlsx` first and remembering the original as the save target. The
+ * web build mirrors that, plus it surfaces a clear "not supported yet"
+ * error for legacy BIFF `.xls` instead of the same misleading message.
+ *
+ * Each test boots the real bundle against a temp DATA_DIR. The read-range
+ * bug (`cells: []` for inlineStr / sharedString) is a known separate
+ * defect tracked in §A.5 of sdk1.md, unrelated to format routing.
+ */
+describe.skipIf(skip)('workbook format routing (csv / xls)', () => {
+  let server: ChildProcess | undefined
+  let base: string
+  let dataDir: string
+  let filesDir: string
+
+  beforeAll(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'genoffice-xfmt-e2e-'))
+    filesDir = join(dataDir, 'files')
+    require('node:fs').mkdirSync(filesDir, { recursive: true })
+    const port = 31000 + Math.floor(Math.random() * 8000)
+    base = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [bundle], {
+      cwd: pkgRoot,
+      env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await pollHealth(base, 15_000)
+  }, 30_000)
+
+  afterAll(async () => {
+    if (server) await stopServer(server)
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  const invokeLocal = async (channel: string, args: unknown[]) => {
+    const r = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ args: args.map((a) => encodeTransportValue(a)) }),
+    })
+    const text = await r.text()
+    return { status: r.status, body: text ? JSON.parse(text) : null }
+  }
+
+  it('opens a .csv through the sidecar and echoes the original path as csvPath', async () => {
+    writeFileSync(join(filesDir, 'suppliers.csv'), 'name,qty\nbolt,12\nbracket,3\n')
+    const r = await invokeLocal('workbook:open-path', [join(filesDir, 'suppliers.csv')])
+    expect(r.status).toBe(200)
+    const opened = r.body?.result as
+      | { csvPath?: string; name: string; path: string; sheets: unknown[] }
+      | undefined
+    // csvPath must be the file the user picked — the renderer's Save uses it
+    // to write values back to the SAME file (Excel's behaviour). A staging
+    // path would silently land saves on a deleted copy.
+    expect(opened?.csvPath).toBe(join(filesDir, 'suppliers.csv'))
+    expect(opened?.name).toBe('suppliers.csv')
+    expect(opened?.path).toBe(join(filesDir, 'suppliers.csv'))
+    expect(Array.isArray(opened?.sheets)).toBe(true)
+  })
+
+  it('refuses a legacy .xls with a real reason, not "corrupt archive"', async () => {
+    // Synthesize the OLE2 magic bytes — the sidecar's zip-only parser would
+    // otherwise emit its misleading "Could not find EOCD" message.
+    const xls = Buffer.concat([
+      Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+      Buffer.alloc(512),
+    ])
+    writeFileSync(join(filesDir, 'legacy.xls'), xls)
+    const r = await invokeLocal('workbook:open-path', [join(filesDir, 'legacy.xls')])
+    // IPC-layer status code for thrown structured errors is 422 (see
+    // src/index.ts `handleIpcInvoke`). The body is the same envelope shape.
+    expect(r.status).toBe(422)
+    const body = r.body as { error?: { message: string; code: string; channel: string } }
+    expect(body.error?.code).toBe('CORRUPT')
+    expect(body.error?.message).toMatch(/Legacy \.xls .*not supported/)
+    expect(body.error?.channel).toBe('workbook:open-path')
+  })
+
+  it('does NOT attach csvPath to a normal xlsx open', async () => {
+    writeFileSync(join(filesDir, 'plain.xlsx'), readFileSync(fixture))
+    const r = await invokeLocal('workbook:open-path', [join(filesDir, 'plain.xlsx')])
+    expect(r.status).toBe(200)
+    expect(r.body?.result?.csvPath).toBeUndefined()
+  })
+})

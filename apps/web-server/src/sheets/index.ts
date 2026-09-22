@@ -34,6 +34,7 @@ import {
   promoteSnapshot,
 } from './registry'
 import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
+import { csvToXlsxBuffer, decodeCsvBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import { CorruptError, InvalidArgumentError, NotFoundError } from '../ai/errors'
 
 const sheetsSidecar = new WebSheetsSidecar()
@@ -71,6 +72,12 @@ export function registerSheetsHandlers(): void {
   registerHandle('sheets:has-queued-workbook', () => false)
 
   registerHandle('workbook:open-path', async (_event: unknown, filePath: unknown) => {
+    /* The user-picked path is what `csvPath` must echo back: the renderer's
+     * Save uses it to write the values back to the SAME file the user opened
+     * (Excel's behavior). `path` may be different by the time we reach the
+     * CSV-conversion step below, because a `storage://` URI would have been
+     * staged into FILES_DIR by then. */
+    const originalFilePath = typeof filePath === 'string' ? filePath : ''
     // The xlsx-sidecar reads files from disk only. Accept either a
     // managed FILES_DIR path or a `storage://<backend>/<key>` URI by
     // staging storage URIs into FILES_DIR first so the sidecar can open
@@ -117,6 +124,40 @@ export function registerSheetsHandlers(): void {
     const requestedPath = typeof filePath === 'string' ? filePath : path
     const name = DOCS_RECENT.get(requestedPath)?.name ?? basename(requestedPath)
     const id = `sheet-${Date.now()}`
+
+    /* The sidecar is zip/xlsx-only. Hand it a `.csv` or a legacy BIFF `.xls`
+     * and it fails with `invalid Zip archive: Could not find EOCD`, which the
+     * catch below turns into a misleading "corrupt archive" error. The file
+     * picker advertises `.xlsx,.xlsm,.xls,.csv`, so a user who chose the
+     * menu's own filter got told their good file was corrupt.
+     *
+     * Desktop solves this in `prepareWorkbookForOpen` by converting to a temp
+     * `.xlsx` first and remembering the original as the save target. Same
+     * idea here; the converted copy lands in the snapshot dir so the existing
+     * session-eviction path owns its cleanup.
+     *
+     * `@genoffice/xlsx-gateway`'s CSV reader is pure TS + JSZip with a
+     * charset sniffer (`decodeCsvBuffer` tries gb18030 / shift_jis / big5 /
+     * euc-kr before falling back), so a Chinese Excel CSV round-trips instead
+     * of turning into replacement characters. Runs BEFORE the sidecar so the
+     * sidecar only ever sees a real xlsx. */
+    let csvSourcePath: string | undefined
+    const sourceFormat = detectFormat(path)
+    if (sourceFormat === 'csv') {
+      const converted = await csvToXlsxBuffer(decodeCsvBuffer(readFileSync(path)))
+      const convertedPath = newSnapshotPath(path)
+      atomicWriteFile(convertedPath, converted)
+      csvSourcePath = originalFilePath || path
+      path = convertedPath
+    } else if (sourceFormat === 'xls') {
+      // Legacy BIFF `.xls` needs the Rust `convertWorkbook` the desktop calls;
+      // that command is not exposed on `WebSheetsSidecar`. Naming the real
+      // reason beats the misleading "corrupt archive" a zip-only parse gives.
+      throw new CorruptError(
+        'workbook:open-path',
+        'Legacy .xls workbooks are not supported by the web build yet — convert to .xlsx first.',
+      )
+    }
 
     // The renderer expects a fully parsed WorkbookFile (workbookFileSchema in
     // apps/sheets/src/shared/desktop-api.ts). The Electron main process parses
@@ -180,6 +221,10 @@ export function registerSheetsHandlers(): void {
       name,
       sha256,
       fileBytes: bytes.byteLength,
+      // The renderer's Save keeps the CSV identity when this is present
+      // (`save-actions.ts`: `state.file.csvPath !== undefined`), so it must
+      // point at the original `.csv`, never the converted copy.
+      ...(csvSourcePath === undefined ? {} : { csvPath: csvSourcePath }),
     }
   })
 
