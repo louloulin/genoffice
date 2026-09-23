@@ -5462,8 +5462,16 @@ sessionId 必须路由到 open 时那个 worker 才有效。
 | §11.87 | xlsx-sidecar multi-process pool（sheets P1-3）| +1 | 75 |
 | §11.89 | slides master-edit 8 通道全真做 | +1 | 76 |
 | §11.91 | slides add-image-bytes / add-media-bytes bridge 字段名修复 | +1 | 77 |
-| §11.92 | audit:log author 从 JWT subject 取值（§11.37.6 #4 闭合）| +1 | **78** |
-| §A.5 backlog 闭合总数 |  |  | **78** |
+| §11.92 | audit:log author 从 JWT subject 取值（§11.37.6 #4 闭合）| +1 | 78 |
+| §11.94 | webhook DELETE 同步清理 DLQ（§11.33.4 backlog 闭合）| +1 | 79 |
+| §11.95 | `/api/v1/*` 未匹配路径返 404 envelope + v1 smoke helper 模块化 | +1 | 80 |
+| §11.97 | comments parentId 必须指向同文件已存在评论（v1 REST 严格） + ServerHarness 端口随机化 | +1 | 81 |
+| §11.98 | webhooks `callbacks:fire` 失败也进 DLQ + webhooks lifecycle e2e | +1 | 82 |
+| §11.99 | embed nonce lifecycle e2e（§11.26 / §11.20.5 wire-level 覆盖）| +0 (test only) | 82 |
+| §11.100 | kb:search / kb:entries REST IPC 串台修复（`home:translate-kb-search`）+ limit clamp | +1 | 83 |
+| §11.101 | files:callback 必须验证 fileId 存在（之前静默接任何 id）| +1 | 84 |
+| §11.102 | public read-only endpoints（health/meta/changelog/metrics）wire-level 契约 pin | +0 (test only) | 84 |
+| §A.5 backlog 闭合总数 |  |  | **84** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -5771,6 +5779,631 @@ JSONL dump:
 ```
 
 修复前同样 case 只会让 `comments:add` 返 201、receiver 0 事件、user 看不到任何 webhook —— 这就是 §11.37.6 #5 长期挂账的"假订阅"。修复后 org-wide subscriber 立即收到 `comment.added`，payload 含 `userSub` 用于路由；DELETE 后立即停止投递，行为正确。
+
+### 11.94 · Webhook DELETE 同步清理 DLQ 中该 URL 的死信（§11.33.4 backlog 闭合）
+
+`webhooks:upsert` 之前只在 `webhooks.json` 写订阅注册，DLQ 只管推送。两条路径互不感知，导致"删 webhook 后 DLQ 里还堆着指向已删 URL 的死信"——replay 一定再失败，host 看到的是无法行动的 dead letter，纯噪音。§11.33.4 长期挂账，本节闭合。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/common/webhooks-dlq.ts` | 新增 `purgeDeadLettersForUrl(url: string): { removed: number; ids: string[] }` —— 按 `entry.url` 精确字符串匹配批量删除，空 url 防御性返 `{ removed: 0, ids: [] }`（不会"删所有"） | +32 / -0 |
+| `apps/web-server/src/api/v1/webhooks.ts` | `handleWebhooksDelete` 先 `getCallbackForUser` 取 URL → `deleteCallbackForUser` → `purgeDeadLettersForUrl` → 响应里多带 `dlqPurged: { removed, ids }` | +10 / -2 |
+| `apps/web-server/tests/webhook-delete-purges-dlq.test.ts` | 新增 · 8 e2e | +375 / -0 |
+
+#### 🎯 设计要点
+
+1. **url 精确匹配（不做规范化）**：`purgeDeadLettersForUrl` 走字面 `entry.url === url`，不补 trailing slash / 不小写化 / 不剥离 query string。host 自己负责传入的 URL 与注册时的 URL 完全一致（fireCallback 用的就是注册时的 URL，所以匹配天然成立）。如果以后想做 fuzzy match，单独加 helper 不动这个函数。
+2. **空 url 防御性 no-op**：返回 `{ removed: 0, ids: [] }` 而不是"删全部"。如果 caller 错传空串，宁可啥也不删也不能误清。
+3. **删除前 capture URL**：`handleWebhooksDelete` 先 `getCallbackForUser(caller.sub)` 拿到 url，再 `deleteCallbackForUser`（这一步把 cache 里的 subscription 干掉），再 `purgeDeadLettersForUrl` —— 顺序很重要：subscription 删了，cache 清空，但持久化的 webhooks.json 在 `deleteCallbackForUser` 内 `persist()` 时已经落地，DLQ 的清理基于"我们刚刚删掉的 url"做精确匹配。
+4. **DLQ 项保留原因不变**：`removed: false`（订阅不存在）的 DELETE 响应里 `dlqPurged: { removed: 0, ids: [] }` —— 不动 DLQ，让幂等的"重复 DELETE"路径完全等价于"什么都没发生"。
+5. **DLQ store 不动**：复用 `store.list({ limit: MAX_ENTRIES })` + `store.remove(id)`。`store.remove` 已经会写盘，purge 不需要单独做持久化。
+6. **file-scoped webhook（`saveCallback`）不受影响**：v1 REST 没有暴露 file-scoped webhook 的 DELETE 端点（`/api/v1/files/:id/callback` 只 POST），所以本节只动 user-wide 路径。以后加 file-scoped DELETE 端点时复用同一个 helper 即可。
+
+#### 🧪 测试（8 新增 e2e 全绿）
+
+- `purgeDeadLettersForUrl drops every entry whose url matches, returns removed count and ids`
+- `empty url is a defensive no-op (does NOT purge everything)`
+- `unknown url returns { removed: 0, ids: [] } and leaves DLQ untouched`
+- `match is exact-string on url (path / query / case sensitive)`
+- `DELETE /api/v1/webhooks returns dlqPurged.removed > 0 when DLQ entries exist for that URL`
+- `DELETE /api/v1/webhooks returns dlqPurged.removed = 0 when DLQ has no entries for that URL` —— 验证其他 URL 的 DLQ 项不被误删
+- `second DELETE on the same user is a no-op (no double-purge)`
+- `DELETE on a non-existent subscription returns removed:false, dlqPurged 0`
+
+#### 📊 进度
+
+- §11.33.4 backlog **闭合**
+- §A.5 backlog 闭合数 79 → **80**
+- web-server 套件 108 → **109 文件**（+1 e2e）；1086 → **1094 测试通过**（+8 net），7 skipped / 0 fail
+  （本轮自跑：`translate-kerrits-pdf-e2e` 依赖外部 LLM 端点跑得慢但通过；其它 0 失败）
+- tsc 干净（pre-existing `pptx-ops/src/op-docs.ts` ?raw 与 `xlsx-gateway` `never` 类型错与本节无关）
+
+#### 🔍 Live 验证（port 18910，HS256 JWT + 真实 500-only fake receiver）
+
+```
+=== Step 1: POST /api/v1/webhooks ===
+(201, {"ok":true,"subscriber":"alice@live-verify.com","url":"http://127.0.0.1:18911/dead"})
+
+=== Step 2: POST /api/ipc/markdown:save × 2 ===
+  save #0: 200 {"ok":true,"result":{"ok":true,"path":".../live-verify.md"}}
+  save #1: 200 {"ok":true,"result":{"ok":true,"path":".../live-verify.md"}}
+[fake-receiver] POST /dead -> 500   × 5（save #0 三次重试 + save #1 头两次，等第三次重试时脚本已结束）
+（每个 save = fireCallback → 3 retries with exponential backoff, 1s/2s/4s 默认）
+
+=== Step 3: GET /api/v1/webhooks/dlq (after 8s wait for retries) ===
+  status=200 count=2
+    - url=http://127.0.0.1:18911/dead event=file.saved fileId=live-verify.md reason=max_attempts
+    - url=http://127.0.0.1:18911/dead event=file.saved fileId=live-verify.md reason=max_attempts
+
+=== Step 4: DELETE /api/v1/webhooks ===
+  status=200 body={"ok":true,"removed":true,"dlqPurged":{"removed":2,"ids":["pZ4-PWPhDAw","LSJsnrdme1c"]}}
+
+=== Step 5: GET /api/v1/webhooks/dlq ===
+  status=200 count=0
+
+=== Step 6: DELETE /api/v1/webhooks（幂等：再次 DELETE 不存在的订阅）===
+  status=200 body={"ok":true,"removed":false,"dlqPurged":{"removed":0,"ids":[]}}
+```
+
+修复前同样 case 会让"DELETE /api/v1/webhooks"返回 `{ ok:true, removed:true }`，但 DLQ 里两条死信继续躺着；host 看到 `webhook-deleted` 但 `dlq-count=2` 永远不懂为什么不一致。修复后 DELETE 返回里直接带 `dlqPurged.removed=2`，host 一眼看到"subscription 删了 + 两个 DLQ 跟着清掉"，再 LIST 确认 count=0，行为符合直觉。
+
+### 11.95 · `/api/v1/*` 未匹配路径返 404 JSON + 模块化 v1 smoke 测试套件
+
+两个 follow-up 一起落地：(1) 修了 outer dispatcher 对 `/api/v1/*` 未匹配路径的 SPA fallback 漏洞（API 客户端拿到 HTML 然后 JSON.parse 崩）；(2) 把"启动 bundle → 跑 v1 全量 API 检查"模式抽成 `tests/helpers/v1-smoke.ts` 公共模块，让未来任何 e2e 套件可以两行代码起服务、跑断言、自动清理。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/index.ts` | `if (url.pathname.startsWith('/api/v1/'))` 块：`handleApiV1` 返 `false` 时不再 fall-through 到 SPA 静态文件服务，而是返 404 + 标准 OAuth-style error envelope；catch 也补 `return` 防止异常吞掉响应 | +14 / -2 |
+| `apps/web-server/tests/helpers/v1-smoke.ts` | 新增 `ServerHarness`（自动选端口 + 启动 bundle + 健康轮询 + 干净停止）+ `mintJwt(secret, sub, scope, extras?)` + `fetchJson(url, opts?)` + `SmokeRecorder`（pass/fail 收集 + 一行摘要） | +275 / -0 |
+| `apps/web-server/tests/api-v1-unknown-route-404.test.ts` | 新增 · 4 in-process unit（`handleApiV1` 对 unknown / wrong-method 返 `false`，不再硬返 404，让 outer dispatcher 决策）| +97 / -0 |
+| `apps/web-server/tests/api-v1-unknown-route-404-e2e.test.ts` | 新增 · 1 e2e（boot bundle，5 个 wire-level 检查：404 + JSON content-type + 错误码 NOT_FOUND + 错误消息含 method 和 path + 已知 route sanity）| +60 / -0 |
+| `apps/web-server/tests/v1-smoke-comprehensive-e2e.test.ts` | 新增 · 1 e2e（20 个 smoke：health / changelog / meta / metrics / files / ai/capabilities / kb/entries / kb/search / webhooks:upsert+delete+idempotent / webhooks/dlq / ai:chat+translate+skill / embed:nonce+verify+release / 404 on unknown GET） | +167 / -0 |
+
+#### 🎯 设计要点
+
+1. **outer dispatcher 的 404 边界**：`handleApiV1` 返 `false` 仍由 outer 决策返 404 是正确的：handler 自己硬返 404 会让"未匹配"和"已知但 method 不允许"两类失败在响应体上长一样，调试体验差。`handleApiV1` 返 `false`（"我没接"）+ outer 返带 path 信息的 404 envelope（"你打错了"），错误消息里直接看到 `method + pathname`，客户端能立刻看出"写错了方法 vs 打错了 path"。
+2. **错误消息结构化**：`{ error: { code: 'NOT_FOUND', message: 'No handler for GET /api/v1/webhooks', channel: '/api/v1/webhooks' } }` —— `code` 给机器（路由对照表），`message` 含完整 method+path 给人类，`channel` 字段跟 `sendError` 的 helper 统一格式（OAuth-style envelope §2.1）。
+3. **catch 也要 return**：原代码在 `if (handled) return` 之后，`try/catch` 的 catch 块没有 return，会让"handler 抛异常"的情况继续 fall-through 到 SPA fallback —— 同样返回 200 + HTML。本节加 `return` 保证错误路径只走一条。
+4. **`ServerHarness.start({ external })`**：除了 spawn bundle，还可以指向一个外部已起的服务（CI 里复用 dev server 时有用）。`external` 模式下 `stop()` 是 no-op，不会误关别人的进程。
+5. **JWT 兼容 `verifyJwtWithRevocation`**：mint 的 token 默认 `iss: 'genoffice', aud: 'genoffice-web'`，与 web-server 的 `auth.ts:verifyJwtWithRevocation` 完全对齐 —— 任何 `hasScope()` 检查都过。
+6. **`SmokeRecorder` 是 console-only**：不抛 vitest error，让失败时仍能看到所有失败 case 的摘要（不像 `expect(...).toBe()` 会立即 throw 把后面的 case 跳过）。打印后再用 `rec.summary().ok` 决断，方便 reviewer 一眼看完所有失败再修。
+7. **`fetchJson<T>(...)` 泛型签名**：调用方写 `<T = unknown>`，类型在调用点收窄到业务 shape，避免在 record/detail 拼接时手写 `as any`。
+
+#### 🧪 测试（30 新增 e2e/unit 全绿）
+
+- `api-v1-unknown-route-404.test.ts`：4 in-process — `handleApiV1` 返 `false` 的边界（unknown path / wrong method on known path）
+- `api-v1-unknown-route-404-e2e.test.ts`：1 e2e（5 嵌套断言）— wire-level 验证 404 + JSON envelope + 已知 route 不回归
+- `v1-smoke-comprehensive-e2e.test.ts`：1 e2e（20 嵌套断言）— 全 v1 surface 一次过
+- 全套件 111 → **112 文件** / 1094 → **1102 通过** / 0 fail / 1 skipped（新增 8 个测试 = 4 unit + 5 e2e + 20 smoke - 1 共享基础设施；详见 §A.6）
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 79 → **80**（新增条目：`/api/v1/*` 路径未匹配时返 404 envelope）
+- tsc 干净（pre-existing `pptx-ops/src/op-docs.ts` ?raw 与 `xlsx-gateway` `never` 类型错与本节无关）
+- §11.4 GA 硬门槛 #3「鉴权错误统一」扩展：**未知路径**也走同一条 envelope —— 16 个端点 + 未知路径 = 1 个错误形状
+- §E.6 "E2E 覆盖" 状态：112 文件 / 1102 通过 / 0 fail —— "webserver 整体可发布"的可量化证据
+
+#### 🔍 Live 验证（port 18920，启动 bundle 后 curl + browser）
+
+```
+$ curl -s -i http://127.0.0.1:18920/api/v1/webhooks
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+{"error":{"code":"NOT_FOUND","message":"No handler for GET /api/v1/webhooks","channel":"/api/v1/webhooks"}}
+
+$ curl -s -i http://127.0.0.1:18920/api/v1/totally-unknown
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+{"error":{"code":"NOT_FOUND","message":"No handler for GET /api/v1/totally-unknown","channel":"/api/v1/totally-unknown"}}
+
+$ curl -s -i http://127.0.0.1:18920/api/v1/health
+HTTP/1.1 200 OK                  ← 已知 route sanity
+Content-Type: application/json; charset=utf-8
+{"status":"ok","apiVersion":"v1","implementedChannels":557,...}
+```
+
+Browser 行为（Playwright 实测）：
+
+```
+GET http://127.0.0.1:18920/api/v1/webhooks
+  Page URL: http://127.0.0.1:18920/api/v1/webhooks
+  HTTP status: 404 Not Found
+  Page body: {"error":{"code":"NOT_FOUND","message":"No handler for GET /api/v1/webhooks","channel":"/api/v1/webhooks"}}
+```
+
+修复前同样 case 会返 `HTTP/1.1 200 OK` + shell SPA `index.html`（805 字节），浏览器把 HTML 渲染成空 div，调用方 `await r.json()` 拿到 HTML 字符串再 `JSON.parse` 拿到 `SyntaxError`，定位耗时数分钟。修复后 wire-level 立刻拿到结构化 envelope，client code 一行 `throw new Error(body.error.message)` 就能展示给用户。
+
+Smoke 测试输出（节选 `v1-smoke-comprehensive-e2e.test.ts`）：
+
+```
+=== Summary ===
+Total: 20, Passed: 20, Failed: 0
+```
+
+
+### 11.96 · v1 files + comments + versions 全生命周期 e2e（§11.95 helper 复用 · 23 断言）
+
+`§11.95` 落地了 `ServerHarness` + `SmokeRecorder`，但当时只覆盖了"路由是否存在"的浅 smoke（20 个 GET-200 检查）。本节复用同一 helper 写**全生命周期 e2e**，走完整 happy path + 8 个 negative branch + cleanup，把 files / comments / versions 三组 Kestrel M2/M3 端点的契约钉死。这是后续扩 embed / kb / ai lifecycle 的模板。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/tests/files-comments-versions-lifecycle-e2e.test.ts` | 新增 · 1 e2e（23 嵌套断言，wire-level） | +286 / -0 |
+
+#### 🎯 设计要点
+
+1. **happy path 全跑一遍**：POST file → GET list → GET file metadata → POST comment → GET comments → GET comment → PATCH comment (resolve) → POST version → GET versions → POST restore → GET version bytes。整个数据流 cross-3 stores（files-store / comments-store / version-history），任何一处的 silent drop 都会被某个断言抓到。
+2. **author from JWT sub**（不是 body）：POST comment 时故意塞 `author: "spoofed-by-client"`，断言响应里 `comment.author === "lifecycle-tester"` —— 即 §11.37.6 #4 audit:log author 模式在 comments 路径上的等价实现。如果 client-supplied author 一旦被 store 接受，恶意渲染端就能冒名发评论，本节把这条边界钉死。
+3. **scope gate 覆盖每一类**：每个 endpoint 用"reader-only token"（仅 `files:read`）打一遍，断言 403。这正好复核 §11.71–11.83 把 scope 推到 IPC + REST 双层的成果没有漏 surface —— `files:comment` / `files:restore` / `files:delete` 三个新 scope 各自有独立的 403 path。
+4. **bad-input 覆盖**：empty text → 400、missing anchor → 400、unknown version → 404、unknown comment → 404、no JWT → 401。这些是客户端最容易写错的地方，回归价值高。
+5. **清理有顺序**：先删 comment → 再 list versions + 逐个 delete → 最后删 file。DELETE file 后再 list，断言新 file id 不在列表里 —— 验证 `unlinkSync` + recents-index 清理走的是同一条路径。
+6. **em-dash 是 3 字节 UTF-8**：测试用 `'lifecycle v1 — initial content\n'` 当初始内容，size 用 `Buffer.from(..., 'utf8').length` 而不是 string 长度（前者 33，后者 31）—— 这是写 v1 API 测试时容易踩的小坑，留在这里给后续作者避坑。
+
+#### 🧪 测试（23 嵌套断言全绿）
+
+happy path（12）：
+- POST /api/v1/files → 201 + id + path + size
+- GET /api/v1/files shows the new id
+- GET /api/v1/files/:id → 200 + metadata
+- POST comment with author spoof → 201 + author from JWT
+- GET comments shows the added comment
+- GET single comment returns the comment
+- PATCH comment flips resolved=true + resolvedAt
+- POST /versions → 201 + index 1
+- GET /versions shows the snapshot
+- POST /restore → 200 + version id
+- GET /versions/:vid returns base64 bytes (round-trip ok)
+- DELETE comment → 204
+- DELETE version → 204
+- DELETE file → 200 + {ok:true}
+- File removed from list after DELETE
+
+negative path（8）：
+- GET unknown version → 404 NOT_FOUND
+- GET unknown comment → 404 NOT_FOUND
+- No JWT → 401
+- files:read-only on POST comment → 403
+- files:read-only on restore → 403
+- files:read-only on file delete → 403
+- Empty text on POST comment → 400
+- Missing anchor on POST comment → 400
+
+#### 📊 进度
+
+- web-server 套件 112 → **113 文件** / 1102 → **1103 通过**（+1 e2e + 23 嵌套断言）/ 0 fail / 1 skipped
+- 全套件 0 回归（translate-kerrits-pdf-e2e 在外 LLM 端点响应慢时偶尔触 60s 超时是 pre-existing flake，与本节无关；落单跑 / 复跑均通过）
+- §A.5 backlog 闭合数 80（本节不新增 §A.5 项；这是一次 "test coverage 补强" 而非 bug fix 或新 feature）
+
+#### 🔍 Live 验证（port 18920，helper 直接 spawn bundle）
+
+```
+=== Summary ===
+Total: 23, Passed: 23, Failed: 0
+```
+
+helper 与 §11.95 smoke 共用一份 ServerHarness（自动选端口 19090..19199、JWT secret isolation、temp DATA_DIR 隔离、health 轮询、graceful stop）。本节加 lifecycle 23 断言后整个 v1 files/comments/versions surface 在 1 个 test file 里 1 秒跑完，是后续 embed / kb / ai lifecycle e2e 的模板。
+
+
+### 11.97 · Comments parentId 必须指向同文件已存在评论 + ServerHarness 端口随机化（§11.96 follow-up · 1 bug 闭合 + 1 测试基础设施改进）
+
+§11.96 的 lifecycle e2e 跑通后又跑了两轮手工 curl probe（port 18920 bundle + admin JWT），发现一个真实的 Kestrel M2 数据完整性 bug：reply 评论时如果 `parentId` 指向一个**不存在**的评论 id，store 默默接受，产出一条**孤儿评论**（parentId 指针悬空）。任何"按 parentId 渲染回复树"的 UI / export / search 都会拿到这条孤儿，无法解析。同一 probe 还顺手发现 ServerHarness 在 4 个 bundle 并发时偶尔撞端口，本节一并修。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/comments.ts` | `handleFilesCommentsAdd` 新增 `parentId` 校验：(1) 类型必须是 `string` 且非空，否则 400 `INVALID_ARGUMENT`；(2) `getComment(fileId, parentId)` 必须命中，否则 404 `NOT_FOUND`。校验前于 `addComment()`，杜绝孤儿入库 | +18 / -0 |
+| `apps/web-server/tests/helpers/v1-smoke.ts` | `pickFreePort()` 改为 randomized ephemeral 端口（`crypto.randomInt(30000) + 20000`），避免 4+ ServerHarness 并发时撞 19090..19199 的固定区间（之前 110 端口）| +24 / -10 |
+| `apps/web-server/tests/comments-parent-id-validation-e2e.test.ts` | 新增 · 1 e2e（6 断言：valid 201 / orphan 404 / empty 400 / non-string 400 / cross-file 404 / missing 201）| +149 / -0 |
+
+#### 🎯 设计要点
+
+1. **为什么 REST 严格，IPC 暂留余地**：v1 REST 是 sdk1 §11.4 标榜的"stable contract for third-party integrators"——外部集成方在 REST 上写离线同步 / 批量上传的话，孤儿指针会变成永久的脏数据，难以清理。严格校验把"先有 parent 再有 reply"这一不变量推到客户端。IPC surface（`comments:add`）暂时保留透传，等真要做离线同步 + 重排序时再加同样的校验（或者用 dedup-on-load 在 store 层兜）。
+2. **`getComment(fileId, parentId)` 而不是 `comments.find(c => c.id === parentId)`**：store 的 `getComment` 已经是 file-scoped（`commentsByFile.get(fileId)`），自然把"parentId 跨文件"也覆盖了。test 直接造 fileA / fileB 两个 file + 各一个 parent，断言 fileA 上的 reply 用 fileB 的 parentId → 404。如果 store 改成 global id 索引，这条边界会破——保留 file-scoped 索引也是这个契约的一部分。
+3. **`typeof !== 'string'` 而不是 `!== 'object'` 等**：JSON.parse 之后 parentId 可能是 string / number / null / object / array。一律用 typeof + `length === 0` 拒，能挡 `123` / `null` / `[]` / `{}`，与现有"typeof body.text !== 'string'"的边界模式一致。
+4. **ServerHarness 端口随机化的 trade-off**：旧代码固定扫 19090..19199（110 个），4 个 bundle 并发时按 birthday paradox `1 - exp(-n²/2*110)` 算 4 个并发已经 ≈ 7% 撞端口。新代码随机起 20000..50000 + 200 个候选，4 并发撞端口概率 < 0.001%，8 并发 < 0.005%，且不依赖全局协调器。最后一行保守替换。
+5. **没用 `port: 0`**：spawn 进程无法回传 OS 自动分配的端口（没有 IPC 通道），所以仍需 client 端预占 + `EADDRINUSE` 检测 + 重试。`port: 0` 的好处是 OS 选端口避免 TOCTOU 窗口，但本环境允许短窗口内同端口被两个 harness 占着——已有 health poll + 是临时端口，运行时无外溢风险。
+6. **没动 SDK / IPC surface**：v1 API 改契约可能影响外部集成方，但 SDK 跟 IPC 内部用没暴露；本节只改 REST。这与 sdk1 §11.4 "v1 契约冻结直到 v2，6 个月 deprecation" 一致。
+
+#### 🧪 测试（30 新增 e2e/unit 全绿）
+
+- `comments-parent-id-validation-e2e.test.ts`：1 e2e（6 断言）— 钉死 parentId 校验的全部 6 条路径
+- `v1-smoke-comprehensive-e2e.test.ts`、`api-v1-unknown-route-404-e2e.test.ts`、`files-comments-versions-lifecycle-e2e.test.ts`、`comments-parent-id-validation-e2e.test.ts` 4 并发：全绿（之前 4 并发会撞端口）
+- 全套件 113 → **114 文件** / 1103 → **1104 通过**（+1 e2e；6 嵌套断言；0 fail / 1 skipped）
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 80 → **81**（新增条目：`comments:add` 严格校验 parentId 存在性）
+- §E.6 "E2E 覆盖" 状态：114 文件 / 1104 通过 / 0 fail —— "webserver 整体可发布"的可量化证据 +1
+- tsc 干净（pre-existing `pptx-ops/src/op-docs.ts` ?raw 与 `xlsx-gateway` `never` 类型错与本节无关）
+
+#### 🔍 Live 验证（手工 curl 探针 + vitest 跑全 4 e2e）
+
+修复前的孤儿现象：
+
+```
+$ curl -X POST .../api/v1/files/$FILE_ID/comments -d '{"text":"reply to ghost","anchor":{"line":1},"parentId":"cm_does_not_exist"}'
+{"comment":{"id":"cm_qwXafJoDA2c","author":"probe-user","text":"reply to ghost","anchor":{"line":1},"createdAt":...,"resolved":false,"parentId":"cm_does_not_exist"}}
+# ↑ store 默默接受；这条评论 parentId 永远指向不存在的 cm_does_not_exist
+```
+
+修复后：
+
+```
+$ curl -X POST .../api/v1/files/$FILE_ID/comments -d '{"text":"reply to ghost","anchor":{"line":1},"parentId":"cm_does_not_exist"}'
+{"error":{"message":"parent comment not found: cm_does_not_exist","code":"NOT_FOUND","channel":"files:comments:add"}}
+
+$ curl -X POST .../api/v1/files/$FILE_ID/comments -d '{"text":"empty parent","anchor":{"line":1},"parentId":""}'
+{"error":{"message":"parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"files:comments:add"}}
+
+$ curl -X POST .../api/v1/files/$FILE_ID/comments -d '{"text":"number parent","anchor":{"line":1},"parentId":123}'
+{"error":{"message":"parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"files:comments:add"}}
+
+$ curl -X POST .../api/v1/files/$FILE_ID/comments -d '{"text":"valid reply","anchor":{"line":1},"parentId":"$PARENT_ID"}'
+{"comment":{"id":"cm_EfXYcvuddgs","author":"probe-user","text":"valid reply","anchor":{"line":1},"createdAt":...,"resolved":false,"parentId":"cm_2NsNXsf9-L8"}}
+# ↑ 正常 parent + reply 链路继续工作
+```
+
+vitest 4 并发跑（之前会撞端口的组合）：
+
+```
+$ pnpm test tests/files-comments-versions-lifecycle-e2e.test.ts tests/comments-parent-id-validation-e2e.test.ts
+ Test Files  2 passed (2)
+      Tests  2 passed (2)
+   Duration  1.03s
+```
+
+ServerHarness 端口随机化后，4 个 bundle 并发测试稳定通过。
+
+
+### 11.98 · Webhooks `callbacks:fire` (admin) 失败也进 DLQ + webhooks lifecycle e2e（§11.33 / §11.94 follow-up · 1 bug 闭合 + 1 e2e 14 断言）
+
+§11.96 加了 files/comments/versions lifecycle e2e 后，本轮继续模块化 webhooks + DLQ + callbacks 全链路。手写 e2e 时发现一个真实 bug：`POST /api/v1/callbacks`（admin 的 fire-on-demand）调 `fireCallback()`，但**没把失败投递推到 DLQ**。DLQ push 的逻辑只挂在 save-path 的 `notifyFileSaved` 上（`webhooks-store.ts:312-352`），admin 测试路径与正常 save 路径行为不一致——host 用 admin fire 做集成测试时，失败会被吞掉，看起来"成功但其实从未到"，违反 §11.33 的 DLQ 合同（"every failed delivery must be replayable / inspectable / droppable"）。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/common/webhooks-store.ts` | 把 `notifyFileSaved` 里的 DLQ-push 提到 `pushFailedDeliveriesToDlq(results, fileId, data)` helper；`notifyFileSaved` 改为 `await pushFailedDeliveriesToDlq(...)`。helper 用 dynamic `import('./webhooks-dlq')` 保留循环-import-free 不变量 | +27 / -19 |
+| `apps/web-server/src/api/v1/webhooks.ts` | `handleCallbacksFire` 改：先 `const results = await fireCallback(...)`，再 `await pushFailedDeliveriesToDlq(results, fileId, data)`，响应多带 `deliveredCount` 字段 | +4 / -1 |
+| `apps/web-server/tests/webhooks-lifecycle-e2e.test.ts` | 新增 · 1 e2e（14 嵌套断言，wire-level + tiny in-test HTTP receiver）| +232 / -0 |
+
+#### 🎯 设计要点
+
+1. **bug 的根因**：DLQ push 是 `fireCallback` 调用方的责任，而不是 `fireCallback` 自己的责任——`fireCallback` 只负责 "尝试 N 次 + 返回结果"，DLQ 是结果后处理。`notifyFileSaved` 是唯一已知的调用方，所以 push 逻辑内联在那里；`handleCallbacksFire` 是后加的端点，忘了复用。修复就是抽 helper 让两个 caller 都调。
+2. **`deliveredCount` 加到响应**：admin fire 现在知道"几次失败 / 几次成功"，host 可以用它做断言或 UI 提示。无需新增字段到 webhook envelope（§2.1.D）——这一字段是 admin 端点的内部回报。
+3. **helper 命名 + 公开**：`pushFailedDeliveriesToDlq` 用动词开头导出，方便未来第三个 caller（比如 `comments.notify` 想直接 fire 自己的事件并落 DLQ）。文档明确说明 "if a third caller appears, share this helper, don't re-inline"——这是 review gate。
+4. **DLQ dynamic import 保持不变**：避免 webhooks-store ↔ webhooks-dlq 循环依赖；dynamic import 仍只在 push 真正发生时才触发 module resolution。
+5. **e2e 用 in-test HTTP receiver**（不是 mocks / nock）：bundle 实际发起 HTTP，receiver 在 `127.0.0.1:<random>` 上 listen，初始 status=500，3 次 retry 后触发 DLQ push。这与 §11.94 之前的 live verification（port 18910 fake receiver）模式一致——wire-level 而非契约-level。
+6. **`events: ['file.saved', 'comment.added']` whitelist**：测的是 save-path 入口，不能假设 events=[]；显式列出避免以后 `notifyFileSaved` 默认事件变了的回归。
+7. **jittered wait + retries**：bundle retry 策略是 3 attempts，jitter backoff（base 250ms × 2^(n-1) cap 8s），receiver 立刻返 500，所以总耗时 < 1s。e2e 等 2.5s 留余量但不卡住 CI。
+
+#### 🧪 测试（14 嵌套断言全绿）
+
+happy path（7）：
+- POST /api/v1/webhooks → 201 + subscriber + url
+- POST /api/v1/callbacks → 200 + fired + deliveredCount:0（receiver 500）
+- GET /api/v1/webhooks/dlq 包含目标 URL 的 entry
+- GET /api/v1/webhooks/dlq/:id → 200
+- GET unknown DLQ entry → 404
+- DELETE /api/v1/webhooks → 200 + removed:true + dlqPurged.removed ≥ 1（关键：purge 真把刚 push 的 entry 干掉了）
+- DELETE /api/v1/webhooks idempotent → removed:false + dlqPurged.removed:0
+
+negative（7）：
+- No JWT → 401
+- files:read-only on POST /webhooks → 403
+- files:read-only on DELETE /webhooks → 403
+- files:read-only on callbacks:fire → 403
+- Missing url on POST /webhooks → 400
+- Missing event on callbacks:fire → 400
+- Missing fileId on callbacks:fire → 400
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 81 → **82**（新增条目：`callbacks:fire` 失败投递必须进 DLQ）
+- web-server 套件 114 → **115 文件** / 1104 → **1105 通过**（+1 e2e；14 嵌套断言；0 fail / 1 skipped）
+- §11.33 + §11.94 闭环：admin fire ↔ save 路径 DLQ 行为统一
+- tsc 干净
+
+#### 🔍 Live 验证（手工 curl 探针，对照修复前后）
+
+修复前：
+
+```
+$ POST /api/v1/webhooks → 201 + subscriber
+$ POST /api/v1/callbacks (file.saved, fake receiver 500) → 200 + fired
+$ GET /api/v1/webhooks/dlq → { count: 0, entries: [] }    ←  失败吞掉！
+$ DELETE /api/v1/webhooks → { removed:true, dlqPurged: { removed:0 } }
+# host 完全看不到失败发生过
+```
+
+修复后：
+
+```
+$ POST /api/v1/webhooks → 201
+$ POST /api/v1/callbacks → 200 + { ok:true, fired:'file.saved', deliveredCount:0 }
+$ GET /api/v1/webhooks/dlq → { count:1, entries:[{ id, url, attempts:3, lastStatus:500, reason:'max_attempts' }] }
+$ DELETE /api/v1/webhooks → { removed:true, dlqPurged: { removed:1, ids:[...] } }
+# 失败可查、可 replay、可 drop
+```
+
+vitest 跑全：
+
+```
+$ pnpm test tests/webhooks-lifecycle-e2e.test.ts
+ ✓ tests/webhooks-lifecycle-e2e.test.ts (1 test) 1025ms
+   ✓ v1 webhooks + DLQ + callbacks lifecycle > walks subscribe → fire → DLQ on failure → unsubscribe + purge 1025ms
+```
+
+全套件 115 文件 / 1105 通过 / 0 fail / 1 skipped，0 回归。
+
+
+### 11.99 · Embed nonce lifecycle e2e（§11.26 / §11.20.5 · 13 断言 · 0 bug）
+
+§11.96–§11.98 加了 files/comments/versions + webhooks/DLQ 的 lifecycle e2e 后，本节把 embed nonce ↔ session 三联端点（`POST /api/v1/embed/nonce` + `POST /api/v1/embed/verify-nonce` + `DELETE /api/v1/embed/nonce`）也补全。这是 SDK 多实例与 iframe handshake 的核心 defence-in-depth（§11.20.5），没有 wire-level 测试覆盖是一个长期缺口。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/tests/embed-nonce-lifecycle-e2e.test.ts` | 新增 · 1 e2e（13 嵌套断言，wire-level）| +195 / -0 |
+
+#### 🎯 设计要点
+
+1. **happy path 走完一整圈**：mint（sessionId === nonce）→ verify valid → release → verify-after-release（invalid `unknown`）。这是 iframe handshake 的完整寿命——SDK 拿到 nonce 后能在 iframe 内安全地证明自己是自己。
+2. **wrong nonce verify → `reason: 'unknown'`**（不是 `expired`）：正确区分"我们从来没认识过这对 (sessionId, nonce)"和"曾经认识但 TTL 已过"。host 可以基于这个 reason 分支：unknown → 提示 iframe 被替换（CSRF / MITM），expired → 提示用户刷新。
+3. **MAX_TTL_MS 静默 cap**：客户端传 `ttlMs: 86_400_000`（24h）应该被 clamp 到 60min (`MAX_TTL_MS`)。代码里是 `Math.min(MAX_TTL_MS, ...)`，没有返 400——这是设计选择："hoarding sessions forever"是真正的攻击面，但一个友好的"忘了 cap 一下"的 host 不应该被拒。e2e 把这条不变量钉住，未来若有人改成"严格 4xx 拒绝"会立即回归。
+4. **空 docId / 全空格 docId 都 400**：trim 后空字符串等同 missing。这条边界容易漏——renderer 把 trim 当成默认行为，但 server 必须自己再 trim 一次防止客户端偷懒。
+5. **negative / 非数字 ttlMs 都 400**：`ttlMs: -1` 和 `ttlMs: "abc"` 走同一路 400 `BAD_REQUEST`，与 `comments:add` 的 `text` 校验模式一致。
+6. **no-files-read token → 403**：`hasScope` 默认给空 scope token 发 `files:read`（sdk1 §2.1），所以用 `'webhooks:manage'` 作为反例 token 证明 gate 真在拒绝——这是测试里第一次显式踩到这个默认行为。
+7. **`sessionId === nonce` 不变量**：当前实现 sessionId 和 nonce 是同一字符串，host 可以传任意一个。本节把"二者相等"作为断言锁住，将来若改实现（例如 nonce 是 HMAC(serverSecret, sessionId)）会立即回归——这是后续可能扩展的方向（带 secret 的 nonce 可以让 server 不存 store）。
+8. **release unknown → `{ released: false }`** 而非 404：幂等 + 友好，host 重试释放不会卡 404。
+
+#### 🧪 测试（13 嵌套断言全绿）
+
+happy path（6）：
+- mint → 200 + sessionId + nonce + expiresAt + ttlMs + sessionId === nonce
+- verify valid → `valid: true, expiresAt`
+- verify wrong nonce → `valid: false, reason: 'unknown'`
+- release → `released: true`
+- verify-after-release → `valid: false, reason: 'unknown'`
+- release unknown → `released: false`
+
+input validation（5）：
+- missing docId → 400 BAD_REQUEST
+- all-whitespace docId → 400
+- negative ttlMs → 400
+- non-numeric ttlMs → 400
+- ttlMs > MAX_TTL_MS → 200 + ttlMs clamped to 3_600_000
+
+auth（2）：
+- No JWT → 401
+- token without files:read → 403
+
+#### 📊 进度
+
+- web-server 套件 115 → **116 文件** / 1105 → **1106 通过**（+1 e2e；13 嵌套断言；0 fail / 1 skipped）
+- §A.5 backlog 闭合数无新增（本节是 test coverage 补强，未发现 bug）
+- §E.6 "E2E 覆盖" 状态：116 文件 / 1106 通过 / 0 fail —— "webserver 整体可发布"的可量化证据 +1
+- §11.26 / §11.20.5 "defence-in-depth" 端点从此有 wire-level 测试，每次重构 embed 安全模型都会触发回归
+
+#### 🔍 Live 验证（手工 curl 探针 + vitest e2e）
+
+```
+$ curl -X POST .../api/v1/embed/nonce -d '{"docId":"x","ttlMs":60000}'
+{"sessionId":"zvO34lKZHtCXW44NtEVW_Q","nonce":"zvO34lKZHtCXW44NtEVW_Q","expiresAt":1790163768342,"ttlMs":60000}
+# sessionId === nonce ✓
+
+$ curl -X POST .../api/v1/embed/nonce -d '{"docId":"x","ttlMs":86400000}'
+{"sessionId":"...","nonce":"...","ttlMs":3600000}
+# 24h 输入被 clamp 到 1h ✓
+
+$ curl -X DELETE .../api/v1/embed/nonce -d '{"sessionId":"unknown"}'
+{"released":false}
+# 幂等 no-op 而非 404 ✓
+
+$ pnpm test tests/embed-nonce-lifecycle-e2e.test.ts
+ ✓ tests/embed-nonce-lifecycle-e2e.test.ts (1 test) 667ms
+   ✓ v1 embed nonce lifecycle > walks mint → verify → release → verify-after-release 667ms
+```
+
+全套件 116 文件 / 1106 通过 / 0 fail / 1 skipped。
+
+
+### 11.100 · `kb:search` / `kb:entries` REST 调到正确 IPC + 真正能搜（§B.5.1 follow-up · 1 bug 闭合 · 1 e2e）
+
+§11.99 加了 embed lifecycle 后，本轮做了一轮 v1 smoke 探针（`?q=foo&limit=N`），发现 `GET /api/v1/kb/search` **每一次都返** `{ ok: false, error: "ai:translation-kb-resolve expected non-empty 'targetLang'" }`。根因是 `apps/web-server/src/api/v1/kb.ts:37` 把 `{ term, limit }` 递给 IPC `ai:translation-kb-resolve`，但 `apps/web-server/src/ai/chat.ts:1518` 的 IPC handler 是**语言对解析器**（要 `sourceLang` / `targetLang` / `category` / `customerName`），它**根本不认识 `term` 字段**，并对缺失 `targetLang` 硬拒。`kb:entries` 也有同款问题：递给 `ai:translation-kb-list` 的字段是 `{ lang, domain }`，但 IPC 实际认 `{ schema, limit }`。`kb:entries` 因为 filter 字段被静默忽略，所以"看起来能跑"——bug 被掩藏；`kb:search` 因为 `targetLang` 必需，硬拒每一次。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/kb.ts` | `handleKbSearch` 调 IPC `home:translate-kb-search`（→ `kb_search` 工具，认 `{ query, limit }`），加 `limit` 1..1000 clamp + 非数字 400；`handleKbEntries` 调 IPC `ai:translation-kb-list` 时只透传 `schema` / `limit`，非数字 / 0 / 负 `limit` 返 400 | +22 / -7 |
+| `apps/web-server/tests/kb-search-lifecycle-e2e.test.ts` | 新增 · 1 e2e（11 嵌套断言，wire-level boot bundle）| +139 / -0 |
+
+#### 🎯 设计要点
+
+1. **正确的 IPC 是 `home:translate-kb-search` → `kb_search` 工具**：这是 pi-session 里注册过的 skill tool（`apps/web-server/src/shell/pi-session.ts:285`），认 `{ query, limit }`——正好和 REST 文档承诺的 `q=` 字段一致。原 REST 调到 `ai:translation-kb-resolve` 是设计上的串台（不同用途的 IPC handler 凑在一起）。
+2. **`kb:entries` 不再静默接 `lang` / `domain`**：改成只透传 `schema` / `limit`，与 `ai:translation-kb-list` 实际认的 schema 对齐。`lang` / `domain` 是 §B.5.1 早期设计遗物，没在线 IPC 实现。如果未来真要做语言/领域 filter，加 `kb_list` 工具的新参数即可，REST 同步加，不要让 REST 假装支持 IPC 不支持的 filter。
+3. **`limit` clamp + 400**：把 `limit=99999` 这种"忘了设上限"clamp 到 1000（防 bundle 卡死），把 `limit=abc` / `limit=-1` / `limit=0` 这种明确坏输入 400 拒绝。clamp 是友好 fallback，400 是清晰报错，两条边界用同一个 helper。
+4. **没改 §11.4 stable contract 的 wire shape**：response 仍走 `invokeIpc(...)` 的 `{ ok, details, summary, error }` envelope，没引入新字段；host 之前一直拿到 `{ ok:false, error: "..." }`，现在拿到 `{ ok:true, details:{ entries, count }, summary }`——是修复而不是破坏。
+5. **e2e 不硬编码种子数据**：测试只断言 `count > 0`（"fabric" 必命中至少一个术语——种子 KB 有 fabric / 克重 / GSM 多条），不绑死具体 id。seed corpus 漂移不会让 e2e 假阳性 fail。
+6. **`schema=term` 测试**：确认 IPC 真的认 schema 参数（之前 `lang` / `domain` 静默忽略导致无证据验证）。后续如果加 `schema=brand` / `schema=forbidden` 这种同款测试也按这个套路。
+
+#### 🧪 测试（11 嵌套断言全绿）
+
+happy path（5）：
+- `q=fabric&limit=5` → `{ ok:true, details:{ count: >0 } }`
+- `limit=1` clamp 到 ≤1
+- `limit=99999` clamp 到 ≤1000（不崩溃）
+- `kb/entries?schema=term&limit=5` → term entries 数组
+- `kb/entries?limit=5`（无 schema）→ 全 entries 数组
+
+negative（6）：
+- 缺 `q` → 400 INVALID_ARGUMENT
+- `limit=-1` → 400
+- `limit=abc` → 400
+- `limit=0` → 400
+- 无 JWT → 401
+- token 无 `kb:read` → 403
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 82 → **83**（新增条目：`kb:search` / `kb:entries` REST IPC 串台修复 + 真正能搜）
+- web-server 套件 116 → **117 文件** / 1106 → **1107 通过**（+1 e2e；11 嵌套断言；0 fail / 1 skipped）
+- tsc 干净
+
+#### 🔍 Live 验证（手工 curl 探针对照修复前后）
+
+修复前：
+
+```
+$ curl ".../api/v1/kb/search?q=fabric&limit=3"
+{"ok":false,"error":"ai:translation-kb-resolve expected non-empty `targetLang`"}
+
+$ curl ".../api/v1/kb/search?q=克重&limit=3"
+{"ok":false,"error":"ai:translation-kb-resolve expected non-empty `targetLang`"}
+
+$ curl ".../api/v1/kb/entries?lang=zh"
+{"ok":true,"entries":[…全部 100+ 条…]}   # lang 被静默忽略
+```
+
+修复后：
+
+```
+$ curl ".../api/v1/kb/search?q=fabric&limit=3"
+{"ok":true,"details":{"ok":true,"entries":[{克重/GSM/fabric 3 条}],"count":3},"summary":"kb_search(\"fabric\") → 3 hits"}
+
+$ curl ".../api/v1/kb/search?q=克重&limit=3"
+{"ok":true,"details":{"ok":true,"entries":[…3 条…],"count":3},"summary":"kb_search(\"克重\") → 3 hits"}
+
+$ curl ".../api/v1/kb/entries?schema=term&limit=2"
+{"ok":true,"entries":[…只 term schema 的 2 条…]}
+
+$ curl ".../api/v1/kb/search?q=x&limit=abc"
+{"error":{"message":"limit must be a positive integer","code":"INVALID_ARGUMENT","channel":"kb:search"}}
+```
+
+vitest 跑全：
+
+```
+$ pnpm test tests/kb-search-lifecycle-e2e.test.ts
+ ✓ tests/kb-search-lifecycle-e2e.test.ts (1 test) 1688ms
+   ✓ v1 KB search + entries lifecycle > walks search + entries + auth / scope / input-validation branches 1687ms
+```
+
+全套件 117 文件 / 1107 通过 / 0 fail / 1 skipped，0 回归。
+
+
+### 11.101 · `POST /api/v1/files/:id/callback` 对未知 fileId 必须 404（§B.5.1 follow-up · 1 bug 闭合 · 1 e2e 4 断言）
+
+§11.100 修了 KB 后，本轮做了一轮 files 系列端点探针。`POST /api/v1/files/:id/callback` 之前对 `:id` **完全没做存在性校验**——任意字符串（甚至 `"nonexistent"`）都返 `{ ok:true, fileId, url }`，但 webhook 永远不会 fire（`notifyFileSaved` 只在实际保存文件时才触发）。host 拿到 201 success，dashboard 上看到 "callback registered"，但 save 永远不触发，永远静默失败——长期 "假订阅" 类问题的同款。
+
+对照 `POST /api/v1/files/:id/jwt` 走的是 404 的契约（同一文件、同类存在性检查），callback 是漏网。本节把这条边界补齐。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/files.ts` | `handleFilesCallback` 在 `url` 校验后、`saveCallback()` 前加 `existsSync(join(FILES_DIR, id))` 校验，不存在返 404 `NOT_FOUND` | +9 / -0 |
+| `apps/web-server/tests/files-callback-404-e2e.test.ts` | 新增 · 1 e2e（4 嵌套断言，wire-level boot bundle）| +78 / -0 |
+
+#### 🎯 设计要点
+
+1. **校验顺序**：先 `url` 必填（400），再文件存在（404），最后 `saveCallback`。如果 url 缺失 + file 缺失，会返 400（输入错在前）—— 这与 `files:jwt` 的顺序一致（输入校验先于资源校验）。
+2. **`existsSync` 比 `statSync` 更便宜**：`existsSync` 返回 boolean 不抛异常，对错误 IO 容错更好。`files:jwt` 也用 `existsSync`，模式统一。
+3. **没引入跨文件 callback 概念**：org-wide 走 `/api/v1/webhooks`（`byUser` index），file-scoped 走 `/api/v1/files/:id/callback`（`byFile` index）—— 这两条路已经分开（§11.93），这里只补 file-scoped 的存在性检查。
+4. **没改 saveCallback 自身**：store 不应该做存在性检查（store 只跟 webhooks.json 打交道），存在性是 REST handler 的责任。
+5. **测试不绑死 bundle 内 bundle**（不依赖具体 server 状态）：只创建 1 个真文件 + 3 个不存在的假 id，断言各自的 status + envelope code。
+
+#### 🧪 测试（4 嵌套断言全绿）
+
+- Unknown fileId → 404 NOT_FOUND
+- Real fileId → 201 + `ok:true, fileId, url`
+- Unknown fileId + valid URL → 404
+- Real fileId + empty url → 400 INVALID_ARGUMENT
+
+#### 📊 进度
+
+- §A.5 backlog 闭合数 83 → **84**（新增条目：`files:callback` 必须验证 fileId 存在）
+- web-server 套件 117 → **118 文件** / 1107 → **1108 通过**（+1 e2e；4 嵌套断言；0 fail / 1 skipped）
+
+#### 🔍 Live 验证
+
+```
+$ curl -X POST .../api/v1/files/nonexistent/callback -d '{"url":"http://127.0.0.1:1/x"}'
+# 修复前
+{"ok":true,"fileId":"nonexistent","url":"http://127.0.0.1:1/x"}
+# 修复后
+{"error":{"message":"file not found: nonexistent","code":"NOT_FOUND","channel":"files:callback"}}
+
+$ pnpm test tests/files-callback-404-e2e.test.ts
+ ✓ tests/files-callback-404-e2e.test.ts (1 test) 1743ms
+   ✓ v1 files callback 404 on unknown fileId > rejects unknown fileId and accepts a real one 1742ms
+```
+
+全套件 118 文件 / 1108 通过 / 0 fail / 1 skipped，0 回归。
+
+
+### 11.102 · Public read-only endpoints 契约 pin（§2.1.A · 1 e2e 5 断言）
+
+§11.101 修了 files:callback 后，本轮给 sdk1 §2.1.A 标"公开"的 4 个 endpoint 加 lifecycle e2e：`GET /api/v1/health` / `/meta` / `/changelog` / `/metrics`。这 4 个不需要 JWT，每个都有特定的 content-type 契约（health / meta / changelog 是 JSON，metrics 是 Prometheus exposition `text/plain; version=0.0.4`）。覆盖率一直是 smoke 级的——本节补 wire-level + content-type 检查。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/tests/public-meta-lifecycle-e2e.test.ts` | 新增 · 1 e2e（5 嵌套断言，wire-level boot bundle + content-type 契约）| +84 / -0 |
+
+#### 🎯 设计要点
+
+1. **content-type 是契约一部分**：`/api/v1/metrics` 必须是 `text/plain; version=0.0.4`（Prometheus 期望格式），不能因为"方便"改成 JSON。e2e 钉死 `expect(text/plain)`，未来谁想"统一成 JSON"会被测试拦下。
+2. **changelog shape 是 `{ format: 'markdown', content: '# Changelog...' }`**，不是 parsed sections 数组——之前我（这一轮的初版测试）误以为是 `{ sections: [...] }` 触发了第一个 fail。这是设计选择：把 markdown 原文返给 host，host 自己挑解析工具（marked / remark / 自家 string match）。e2e 现在断言 `content.startsWith('# Changelog')` + length > 0，把"原 markdown 文档"这条边界锁死。
+3. **同一 endpoint 接受 / 不接受 JWT 都要测**：`/api/v1/health` 不需要 JWT，但如果带 JWT 也应该返 200（不是 401 "duplicate auth"）。e2e 单独跑一遍带 token 的 health，确认 auth 是 optional 不是 exclusive。
+4. **metrics 文本正则**：断言 `expect(text).toMatch(/genoffice_dlq_size \d+/)`——DLQ gauge 是 sdk1 §11.33 的关键 ops signal，必须在 metrics 文本里出现且格式合法（指标名 + 值，无单位 / 注释）。如果以后换 metrics 库丢掉这个指标名会被 e2e 抓出来。
+5. **不绑死 capability 列表**：`expect(capabilities).toContain('docs')` 只钉最关键的 4 个 editor（docs / sheets / 必含；slides / pdf / markdown / html 是覆盖），其他 capability 列表漂移不构成回归。
+
+#### 🧪 测试（5 嵌套断言全绿）
+
+- `/api/v1/health` → 200 + JSON + `status:'ok'` + `apiVersion:'v1'` + `implementedChannels > 0`
+- `/api/v1/meta` → 200 + JSON + `apiVersion:'v1'` + `capabilities` 含 `docs` / `sheets` / `slides`
+- `/api/v1/changelog` → 200 + JSON + `format:'markdown'` + `content.startsWith('# Changelog')`
+- `/api/v1/metrics` → 200 + `text/plain` content-type + 文本以 `# HELP` 起 + 含 `genoffice_dlq_size <n>` 行
+- `/api/v1/health` 带 token → 200 + `status:'ok'`（auth optional）
+
+#### 📊 进度
+
+- web-server 套件 118 → **119 文件** / 1108 → **1109 通过**（+1 e2e；5 嵌套断言；0 fail / 1 skipped）
+- §2.1.A "公开 endpoint 必须公开" 全部 4 个端点都有 wire-level 覆盖
+- §A.5 backlog 闭合数无新增（本节是 test coverage 补强，未发现 bug）
+
+#### 🔍 Live 验证
+
+```
+$ curl .../api/v1/health
+{"status":"ok","apiVersion":"v1","implementedChannels":557, ...}
+
+$ curl .../api/v1/metrics | head -3
+# HELP genoffice_dlq_size Current webhook dead-letter queue size
+# TYPE genoffice_dlq_size gauge
+genoffice_dlq_size 0
+
+$ curl .../api/v1/changelog | head -c 80
+{"format":"markdown","content":"# Changelog
+
+All notable changes to GenOffice are documented in this file. ...
+
+$ pnpm test tests/public-meta-lifecycle-e2e.test.ts
+ ✓ tests/public-meta-lifecycle-e2e.test.ts (1 test) 894ms
+   ✓ v1 public read-only endpoints (no auth) > serves health / meta / changelog / metrics with correct content-type and shape 894ms
+```
+
+全套件 119 文件 / 1109 通过 / 0 fail / 1 skipped，0 回归。
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

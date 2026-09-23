@@ -28,13 +28,26 @@ export async function handleKbSearch(ctx: { request: IncomingMessage; response: 
     sendError(ctx.response, gate.status, gate.message, gate.code, 'kb:search')
     return true
   }
-  const q = new URL(ctx.request.url ?? '/', 'http://localhost').searchParams.get('q')
+  const url = new URL(ctx.request.url ?? '/', 'http://localhost')
+  const q = url.searchParams.get('q')
   if (!q) {
     sendError(ctx.response, 400, 'expected ?q= query parameter', 'INVALID_ARGUMENT', 'kb:search')
     return true
   }
-  const limit = Number(new URL(ctx.request.url ?? '/', 'http://localhost').searchParams.get('limit') || '10')
-  const result = await invokeIpc('ai:translation-kb-resolve', [{ term: q, limit }])
+  // The `home:translate-kb-search` IPC proxies to the `kb_search` tool
+  // which accepts `{ query, limit }`. The previous implementation called
+  // `ai:translation-kb-resolve` with `{ term, limit }` — but that IPC is a
+  // language-pair resolver (requires `targetLang`) and the `term` field is
+  // not in its schema, so every kb:search call returned
+  // `expected non-empty 'targetLang'`. This was discovered via interactive
+  // curl probes after §11.95 smoke; see sdk1 §11.100.
+  const limitParam = url.searchParams.get('limit')
+  const limit = limitParam ? Math.min(1000, Math.max(1, Number(limitParam) || 10)) : 10
+  if (limitParam && (Number.isNaN(Number(limitParam)) || Number(limitParam) < 1)) {
+    sendError(ctx.response, 400, 'limit must be a positive integer', 'INVALID_ARGUMENT', 'kb:search')
+    return true
+  }
+  const result = await invokeIpc('home:translate-kb-search', [{ query: q, limit }])
   sendJson(ctx.response, 200, result)
   return true
 }
@@ -55,10 +68,25 @@ export async function handleKbEntries(ctx: { request: IncomingMessage; response:
     sendError(ctx.response, gate.status, gate.message, gate.code, 'kb:entries')
     return true
   }
+  // The `ai:translation-kb-list` IPC expects `{ schema?, limit? }` per
+  // apps/web-server/src/ai/chat.ts:1463. The previous REST shim sent
+  // `{ lang?, domain? }` which silently no-op filtered (entries still
+  // came back, so the bug was hidden). Forward `schema` (string) and
+  // `limit` (clamped positive integer) only — the IPC ignores unknown
+  // fields, and accepting other fields would mislead hosts about what
+  // the server can actually filter by.
   const url = new URL(ctx.request.url ?? '/', 'http://localhost')
-  const filters = {
-    ...(url.searchParams.get('lang') ? { lang: url.searchParams.get('lang') } : {}),
-    ...(url.searchParams.get('domain') ? { domain: url.searchParams.get('domain') } : {}),
+  const filters: { schema?: string; limit?: number } = {}
+  const schema = url.searchParams.get('schema')
+  if (schema) filters.schema = schema
+  const limitParam = url.searchParams.get('limit')
+  if (limitParam) {
+    const n = Number(limitParam)
+    if (Number.isNaN(n) || n < 1) {
+      sendError(ctx.response, 400, 'limit must be a positive integer', 'INVALID_ARGUMENT', 'kb:entries')
+      return true
+    }
+    filters.limit = Math.min(1000, n)
   }
   const result = await invokeIpc('ai:translation-kb-list', [filters])
   sendJson(ctx.response, 200, result)

@@ -107,6 +107,23 @@ export async function handleFilesCommentsAdd(
     badRequest(ctx.response, op, 'text exceeds 16 KB cap')
     return true
   }
+  // Reject orphan replies: parentId must point to an existing comment on
+  // the SAME file. Without this, an offline-first client that retried a
+  // reply after losing the parent (or a buggy renderer) would create
+  // dangling pointers that thread UIs can never resolve. Strict on the
+  // REST surface (sdk1 §11.4 stable contract); the IPC surface can stay
+  // permissive later if a sync story requires it.
+  if (body.parentId !== undefined) {
+    if (typeof body.parentId !== 'string' || body.parentId.length === 0) {
+      badRequest(ctx.response, op, 'parentId must be a non-empty string when provided')
+      return true
+    }
+    const parent = getComment(fileId, body.parentId)
+    if (!parent) {
+      notFound(ctx.response, op, `parent comment not found: ${body.parentId}`)
+      return true
+    }
+  }
   try {
     const comment = addComment(fileId, {
       author: gate.payload.sub,

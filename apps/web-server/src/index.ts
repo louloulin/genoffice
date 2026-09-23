@@ -435,8 +435,21 @@ const server = createServer(async (request, response) => {
     try {
       const handled = await handleApiV1({ request, response, pathname: url.pathname, method: request.method || "GET" })
       if (handled) return
+      // No handler matched: the path is reserved by /api/v1/* but unknown.
+      // Return 404 with a structured envelope instead of falling through to
+      // the SPA static fallback (which would serve HTML and confuse API
+      // clients with a 200 + index.html).
+      sendJson(response, 404, {
+        error: {
+          code: 'NOT_FOUND',
+          message: `No handler for ${request.method || 'GET'} ${url.pathname}`,
+          channel: url.pathname,
+        },
+      })
+      return
     } catch (err) {
       sendIpcError(response, err, true, url.pathname)
+      return
     }
   }
 

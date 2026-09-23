@@ -14,7 +14,9 @@ import {
   deleteCallbackForUser,
   getCallbackForUser,
   fireCallback,
+  pushFailedDeliveriesToDlq,
 } from '../../common/webhooks-store'
+import { purgeDeadLettersForUrl } from '../../common/webhooks-dlq'
 import { requireScopeFromHeaders } from './auth'
 
 /**
@@ -78,8 +80,15 @@ export async function handleWebhooksDelete(ctx: { request: IncomingMessage; resp
     return true
   }
   const caller = { sub: gate.payload.sub }
+  // Capture the URL before deletion so we can purge stale DLQ entries
+  // (sdk1.md §11.33.4): every DLQ entry whose target matches this URL
+  // becomes a dead letter with no valid receiver once the subscription
+  // is gone. Purging at delete-time keeps the DLQ focused on
+  // actionable items; hosts see the count in the response.
+  const existing = getCallbackForUser(caller.sub)
   const removed = deleteCallbackForUser(caller.sub)
-  sendJson(ctx.response, 200, { ok: true, removed })
+  const dlqPurged = existing ? purgeDeadLettersForUrl(existing.url) : { removed: 0, ids: [] }
+  sendJson(ctx.response, 200, { ok: true, removed, dlqPurged })
   return true
 }
 
@@ -88,7 +97,7 @@ export async function handleWebhooksDelete(ctx: { request: IncomingMessage; resp
  * registered callbacks. Exported for the integration tests as well.
  * @public
  */
-export { fireCallback, getCallbackForUser }
+export { fireCallback, getCallbackForUser, pushFailedDeliveriesToDlq }
 
 /**
  * `POST /api/v1/callbacks/fire`
@@ -121,7 +130,13 @@ export async function handleCallbacksFire(ctx: { request: IncomingMessage; respo
     sendError(ctx.response, 400, 'expected { event, fileId, data? }', 'INVALID_ARGUMENT', 'callbacks:fire')
     return true
   }
-  await fireCallback(body.event, body.fileId, body.data ?? {})
-  sendJson(ctx.response, 200, { ok: true, fired: body.event })
+  const results = await fireCallback(body.event, body.fileId, body.data ?? {})
+  // Mirror the save-path DLQ behavior (sdk1.md §11.33): failed
+  // deliveries are recorded so hosts can replay / inspect / drop them
+  // via the v1 /webhooks/dlq endpoints. Without this the admin fire
+  // endpoint would silently lose failures — the previous behavior was
+  // a §11.33.4 follow-up gap.
+  await pushFailedDeliveriesToDlq(results, body.fileId, body.data ?? {})
+  sendJson(ctx.response, 200, { ok: true, fired: body.event, deliveredCount: results.filter((r) => r.delivered).length })
   return true
 }

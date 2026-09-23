@@ -9,7 +9,57 @@ Releases are tagged in git; the most recent tag is also the current
 
 ## [Unreleased]
 
+### Fixed
+
+- **comments `:id/comments` POST** — `parentId` must point to an existing
+  comment on the same file; orphan replies are now rejected (400 / 404)
+  instead of silently creating dangling pointers. (sdk1 §11.97)
+- **webhooks `POST /api/v1/callbacks` (admin fire)** — failed deliveries
+  are now pushed to the DLQ, mirroring the save-path behaviour.
+  Previously admin-fired callbacks with 5xx receivers disappeared
+  silently. (sdk1 §11.98)
+- **KB `GET /api/v1/kb/search` / `/kb/entries`** — REST shim was
+  dispatching to the wrong IPC handlers with mismatched field names
+  (`{ term }` vs `{ query }`, `{ lang, domain }` vs `{ schema }`); every
+  search returned `{ ok:false, error:"expected non-empty 'targetLang'" }`
+  and `/entries` was silently no-op filtering. Now routed through
+  `home:translate-kb-search` / `ai:translation-kb-list` with matching
+  shapes and proper `limit` validation (1..1000 clamp + non-numeric 400).
+  (sdk1 §11.100)
+- **files `POST /api/v1/files/:id/callback`** — was silently registering
+  per-file webhooks for nonexistent fileIds (returned `201 ok:true` even
+  for `"nonexistent"`), creating dangling subscriptions that never fire.
+  Now 404 NOT_FOUND on unknown fileId, mirroring the contract of
+  `/files/:id/jwt`. (sdk1 §11.101)
+
 ### Added
+
+- **Test infrastructure** — `ServerHarness` picks a randomised
+  ephemeral port (20000..50000) so 4+ bundle e2e can run in parallel
+  without collision. (sdk1 §11.97)
+- **e2e lifecycle coverage** — 3 new bundle-bootstrapping e2e files
+  exercise the full v1 happy path + negative branches:
+  - `tests/files-comments-versions-lifecycle-e2e.test.ts` (23
+    assertions) — files / comments / versions full CRUD + scope gates
+    + cleanup. (sdk1 §11.96)
+  - `tests/webhooks-lifecycle-e2e.test.ts` (14 assertions) — webhook
+    subscribe / fire / DLQ-on-failure / unsubscribe / idempotent
+    re-delete, with in-test HTTP receiver. (sdk1 §11.98)
+  - `tests/embed-nonce-lifecycle-e2e.test.ts` (13 assertions) — embed
+    nonce mint / verify / release / verify-after-release / TTL clamp
+    / scope gates. (sdk1 §11.99)
+  - `tests/comments-parent-id-validation-e2e.test.ts` (6 assertions)
+    — pins the orphan-reply boundary added by §11.97 fix above.
+  - `tests/kb-search-lifecycle-e2e.test.ts` (11 assertions) — pins
+    the search / entries contract added by §11.100 fix above.
+  - `tests/files-callback-404-e2e.test.ts` (4 assertions) — pins
+    the unknown-fileId boundary added by §11.101 fix above.
+  - `tests/public-meta-lifecycle-e2e.test.ts` (5 assertions) —
+    locks the content-type + body-shape contract of the public
+    health / meta / changelog / metrics endpoints (§2.1.A).
+    (sdk1 §11.102)
+
+### Changed
 
 - **Public open release.** Apache-2.0 across the entire monorepo.
 - **REST API v1** (`@genoffice/web-server`)

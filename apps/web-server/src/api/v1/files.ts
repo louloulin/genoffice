@@ -444,6 +444,16 @@ export async function handleFilesCallback(ctx: { request: IncomingMessage; respo
     sendError(ctx.response, 400, 'expected { url, events? }', 'INVALID_ARGUMENT', 'files:callback')
     return true
   }
+  // Validate file exists before registering a per-file subscription.
+  // Without this, hosts can register callbacks for nonexistent fileIds
+  // and the response says "ok:true" — but the callback never fires
+  // because notifyFileSaved only fires for files that actually got
+  // saved. Same 404 contract as `/files/:id/jwt` (sdk1 §11.101).
+  const path = join(FILES_DIR, id)
+  if (!existsSync(path)) {
+    sendError(ctx.response, 404, `file not found: ${id}`, 'NOT_FOUND', 'files:callback')
+    return true
+  }
   try {
     const { saveCallback } = await import('../../common/webhooks-store')
     saveCallback({

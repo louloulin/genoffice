@@ -80,15 +80,50 @@ export async function handleAiTranslate(ctx: { request: IncomingMessage; respons
     return true
   }
   const caller = { sub: gate.payload.sub }
-  let body: unknown
+  let rawBody: { text?: unknown; from?: unknown; to?: unknown; instruction?: unknown; sourceLang?: unknown; targetLang?: unknown }
   try {
     const raw = await readBody(ctx.request)
-    body = raw ? JSON.parse(raw) : {}
+    rawBody = raw ? JSON.parse(raw) : {}
   } catch {
     sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'ai:translate')
     return true
   }
-  const result = await invokeIpc('ai:translate', [body])
+  // The REST shape (sdk1 §11.4 / docs/api/rest-api.md) is
+  // `{ text, from?, to }` — host-friendly. The IPC shape is
+  // `{ instruction, sourceLang, targetLang, ... }`. Without this adapter
+  // the IPC returns `{ ok:false, error:'ai:translate expected non-empty targetLang' }`
+  // because the REST never sent `targetLang` (it sent `to`), and the IPC
+  // treats the call as "client error: missing field". Translate the keys
+  // + types here so hosts can use the documented REST shape.
+  const instruction = typeof rawBody.text === 'string'
+    ? rawBody.text
+    : typeof rawBody.instruction === 'string'
+      ? rawBody.instruction
+      : ''
+  const targetLang = typeof rawBody.to === 'string'
+    ? rawBody.to
+    : typeof rawBody.targetLang === 'string'
+      ? rawBody.targetLang
+      : ''
+  if (!targetLang) {
+    sendError(ctx.response, 400, 'expected { text, from?, to } with non-empty `to`', 'INVALID_ARGUMENT', 'ai:translate')
+    return true
+  }
+  if (!instruction) {
+    sendError(ctx.response, 400, 'expected { text, from?, to } with non-empty `text`', 'INVALID_ARGUMENT', 'ai:translate')
+    return true
+  }
+  const sourceLang = typeof rawBody.from === 'string'
+    ? rawBody.from
+    : typeof rawBody.sourceLang === 'string'
+      ? rawBody.sourceLang
+      : undefined
+  const ipcBody = {
+    instruction,
+    targetLang,
+    ...(sourceLang ? { sourceLang } : {}),
+  }
+  const result = await invokeIpc('ai:translate', [ipcBody])
   sendJson(ctx.response, 200, result)
   return true
 }
@@ -110,15 +145,35 @@ export async function handleAiImage(ctx: { request: IncomingMessage; response: S
     return true
   }
   const caller = { sub: gate.payload.sub }
-  let body: unknown
+  let rawBody: { url?: unknown; prompt?: unknown }
   try {
     const raw = await readBody(ctx.request)
-    body = raw ? JSON.parse(raw) : {}
+    rawBody = raw ? JSON.parse(raw) : {}
   } catch {
     sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'ai:image')
     return true
   }
-  const result = await invokeIpc('ai:fetch-image', [body])
+  // The IPC `ai:fetch-image` fetches an image FROM a URL and returns
+  // base64-encoded bytes (see apps/web-server/src/ai/chat.ts:1806). It
+  // does NOT generate an image from a prompt — there is no image-generation
+  // IPC wired up in this build. The REST endpoint is therefore a
+  // fetch-from-URL surface: hosts send `{ url }` and get the bytes back.
+  // Previously the handler forwarded the body object straight through,
+  // the IPC rejected non-string URLs as `null`, and the REST returned
+  // `{ "null" }` looking like success. Validate the URL string here so
+  // callers see a real 400 instead of a silent null. Image generation
+  // via prompt is not yet implemented; the docs and capability list
+  // correctly mark `image_generation` as not configured by default.
+  const url = typeof rawBody.url === 'string' ? rawBody.url : ''
+  if (!url) {
+    sendError(ctx.response, 400, 'expected { url: string }', 'INVALID_ARGUMENT', 'ai:image')
+    return true
+  }
+  if (url.length > 4096) {
+    sendError(ctx.response, 400, 'url exceeds 4096 char cap', 'INVALID_ARGUMENT', 'ai:image')
+    return true
+  }
+  const result = await invokeIpc('ai:fetch-image', [url])
   sendJson(ctx.response, 200, result)
   return true
 }

@@ -252,6 +252,38 @@ export function deleteDeadLetter(id: string): boolean {
 }
 
 /**
+ * Bulk-drop every DLQ entry whose `url` matches the supplied target.
+ * Returns the removed ids plus the count so the caller (typically the
+ * webhook delete endpoint) can surface the side-effect to the host.
+ *
+ * Used to close the §11.33.4 backlog: when a webhook subscription is
+ * removed via DELETE /api/v1/webhooks, every DLQ entry that was
+ * targeting that webhook URL becomes a stale dead letter with no valid
+ * receiver. Replays would hit a now-defunct URL; leaving them around
+ * just fills the ring buffer with entries the host can never act on.
+ * Purging at delete-time keeps the DLQ focused on actionable items.
+ *
+ * The match is exact-string on `entry.url`. Two webhook registrations
+ * that share a URL (e.g. one file-scoped, one user-wide) are treated as
+ * the same target and both purge on the first delete — the caller can
+ * disambiguate by inspecting the returned ids before purging if it
+ * needs finer control.
+ */
+export function purgeDeadLettersForUrl(url: string): { removed: number; ids: string[] } {
+  const ids: string[] = []
+  if (!url) return { removed: 0, ids }
+  for (const e of store.list({ limit: MAX_ENTRIES })) {
+    if (e.url !== url) continue
+    if (store.remove(e.id)) ids.push(e.id)
+  }
+  // `store.remove` writes the disk snapshot per call; we accept the
+  // extra I/O here because purges are infrequent (delete-time, not
+  // delivery-time) and the alternative — batching the disk write — would
+  // require a separate `store.purgeMany()` API for a single consumer.
+  return { removed: ids.length, ids }
+}
+
+/**
  * Snapshot of DLQ counters + per-reason breakdown. Returned shape is
  * stable so v1 /metrics can serialize to JSON or Prometheus text.
  *

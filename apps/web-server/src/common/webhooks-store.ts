@@ -311,38 +311,53 @@ export type FireCallbackSingleResult = WebhookDeliveryResult | null
  */
 export function notifyFileSaved(filePath: string, extra: { size?: number; format?: string } = {}): void {
   const fileId = filePath.split(/[\\/]/).pop() ?? filePath
-  // fire-and-forget; on failure each delivery attempt is pushed to the DLQ
-  // individually so hosts can replay / inspect / drop them per-recipient.
-  // The DLQ import is deferred (dynamic) so this module stays
-  // circular-import-free with webhooks-dlq.ts.
   void fireCallback('file.saved', fileId, { path: filePath, ...extra }).then(async (results) => {
     if (!results || results.length === 0) return
-    // Lazy require: avoids the cyclic-import dance and only loads DLQ
-    // code paths when something actually fails.
-    const { pushDeadLetter } = await import('./webhooks-dlq')
-    for (const result of results) {
-      if (result.delivered) continue
-      // Caller-fault 4xx (other than 429) is non-retryable — fireCallback
-      // exits after a single attempt. We surface those as `non_retryable_4xx`
-      // so operators can branch their tooling (e.g. fix the URL / auth
-      // header) without confusing them with transient server-side failures.
-      const reason: 'max_attempts' | 'non_retryable_4xx' =
-        result.attempts === 1 && result.finalStatus !== null && result.finalStatus >= 400 && result.finalStatus < 500 && result.finalStatus !== 429
-          ? 'non_retryable_4xx'
-          : 'max_attempts'
-      pushDeadLetter({
-        url: result.url,
-        event: result.event,
-        fileId,
-        body: JSON.stringify({ v: '1.0', event: result.event, ts: Math.floor(Date.now() / 1000), fileId, data: { path: filePath, ...extra } }),
-        attempts: result.attempts,
-        lastStatus: result.finalStatus,
-        lastError: result.error ?? null,
-        reason,
-      })
-    }
+    await pushFailedDeliveriesToDlq(results, fileId, { path: filePath, ...extra })
   }).catch(() => {
     // DLQ push itself is best-effort; if even that fails the original
     // failure is already logged by fireCallback.
   })
+}
+
+/**
+ * Convert failed `fireCallback` results into DLQ entries. Used by
+ * `notifyFileSaved` (save path) and `handleCallbacksFire` (admin test
+ * endpoint) so failed deliveries land in the DLQ regardless of which
+ * surface initiated them. The DLQ import is deferred so this module
+ * stays circular-import-free with webhooks-dlq.ts.
+ *
+ * Caller-fault 4xx (other than 429) is non-retryable — `fireCallback`
+ * exits after a single attempt. We surface those as `non_retryable_4xx`
+ * so operators can branch their tooling (e.g. fix the URL / auth header)
+ * without confusing them with transient server-side failures.
+ *
+ * @public — exported so the v1 admin fire endpoint can mirror the
+ * save-path DLQ behavior without going through `notifyFileSaved`
+ * (which hardcodes event='file.saved').
+ */
+export async function pushFailedDeliveriesToDlq(
+  results: WebhookDeliveryResult[],
+  fileId: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const failed = results.filter((r) => !r.delivered)
+  if (failed.length === 0) return
+  const { pushDeadLetter } = await import('./webhooks-dlq')
+  for (const result of failed) {
+    const reason: 'max_attempts' | 'non_retryable_4xx' =
+      result.attempts === 1 && result.finalStatus !== null && result.finalStatus >= 400 && result.finalStatus < 500 && result.finalStatus !== 429
+        ? 'non_retryable_4xx'
+        : 'max_attempts'
+    pushDeadLetter({
+      url: result.url,
+      event: result.event,
+      fileId,
+      body: JSON.stringify({ v: '1.0', event: result.event, ts: Math.floor(Date.now() / 1000), fileId, data }),
+      attempts: result.attempts,
+      lastStatus: result.finalStatus,
+      lastError: result.error ?? null,
+      reason,
+    })
+  }
 }
