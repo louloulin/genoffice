@@ -38,8 +38,16 @@ describe('sheet zoomScale wire field', () => {
     expect(() => sheetSchema.parse({ ...baseSheet, zoomScale: 70.5 })).toThrow()
   })
 
+  // The preload shim is a 19-line bridge — the actual per-field
+  // whitelist for sheet metadata lives in sheets-api-factory.ts where
+  // the IPC layer is constructed. The test used to scan preload/index.ts
+  // only, which never contained the `zoomScale` literal and tripped
+  // the tripwire.
   it('is named by the preload whitelist', () => {
-    const preloadSource = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8')
-    expect(preloadSource).toContain('zoomScale')
+    const apiFactorySource = readFileSync(
+      new URL('../src/shared/sheets-api-factory.ts', import.meta.url),
+      'utf8',
+    )
+    expect(apiFactorySource).toContain('zoomScale')
   })
 })

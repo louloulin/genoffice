@@ -199,7 +199,7 @@ describe('FindPanel', () => {
             target,
             strings: STRINGS,
             onClose() {},
-            focusRequest: { field, nonce },
+            focusRequest: { field, revision: nonce },
           }),
         )
       })

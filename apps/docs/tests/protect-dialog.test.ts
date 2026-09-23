@@ -102,6 +102,11 @@ describe('ProtectDialog', () => {
     await d.cleanup()
   })
 
+  // `hashProtectionPassword` defaults to 100 000 SHA-512 iterations; under
+  // heavy parallel CPU contention (full-suite run) the Web Crypto pipeline
+  // can take 30+ s on a shared CI runner and blow the default 20 s test
+  // timeout. Bump the timeout for the password-touching cases so the suite
+  // stays green without lowering the production spin count.
   it('setting a modify password produces verifiable writeProtection credentials', async () => {
     const d = await mount({})
     const [, , modify, modifyConfirm] = d.passwordInputs()
@@ -113,7 +118,7 @@ describe('ProtectDialog', () => {
     expect(result.writeProtection?.hash).toBeTruthy()
     expect(await verifyProtectionPassword('to-modify', result.writeProtection!)).toBe(true)
     await d.cleanup()
-  })
+  }, 60_000)
 
   it('enabling a comments restriction without password enforces mode only', async () => {
     const d = await mount({})
@@ -126,7 +131,7 @@ describe('ProtectDialog', () => {
       protection: { edit: 'comments', enforced: true },
     })
     await d.cleanup()
-  })
+  }, 60_000)
 
   it('removing a password-protected restriction requires the correct password', async () => {
     const creds = await hashProtectionPassword('lock-pw', 1000)
@@ -142,7 +147,7 @@ describe('ProtectDialog', () => {
     await d.submit(d.applied)
     expect(d.onApply).toHaveBeenCalledWith({ protection: null })
     await d.cleanup()
-  })
+  }, 60_000)
 
   it('changing only the mode of an unlocked restriction keeps the existing hash', async () => {
     const creds = await hashProtectionPassword('lock-pw', 1000)

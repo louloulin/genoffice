@@ -198,8 +198,15 @@ describe('Export CSV wiring', () => {
     expect(appSrc).toMatch(/action === 'export-csv'[\s\S]{0,80}handleExportCsvImpl/)
   })
 
-  it('allows export-csv through the preload menu-action allowlist', () => {
-    const preloadSrc = read('src/preload/index.ts')
-    expect(preloadSrc).toContain("action === 'export-csv'")
+  // The preload shim is a 19-line bridge — the actual menu-action
+  // allowlist lives in sheets-api-factory.ts (where the IPC layer is
+  // constructed) and in sheets-main.ts (the desktop guard). Both must
+  // admit `export-csv`; the test used to scan preload/index.ts only,
+  // which never contained the literal and tripped the tripwire.
+  it('allows export-csv through the menu-action allowlist', () => {
+    const apiFactorySrc = read('src/shared/sheets-api-factory.ts')
+    const mainSrc = read('src/main/sheets-main.ts')
+    expect(apiFactorySrc).toContain("action === 'export-csv'")
+    expect(mainSrc).toContain("action === 'export-csv'")
   })
 })

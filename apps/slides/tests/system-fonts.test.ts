@@ -25,8 +25,44 @@ const mac = process.platform === 'darwin'
 // With Office for Mac installed, its private DFonts (real Yu Gothic/Malgun/MingLiU…) win over
 // same-script substitution — the assertions accept either the real family or the substitute.
 const office = existsSync('/Applications/Microsoft PowerPoint.app/Contents/Resources/DFonts')
+// The non-Office branch asserts specific Hiragino Mincho ProN / Hiragino Sans /
+// Apple SD Gothic Neo / Songti-PingFang-Heiti substitutions; skip the whole
+// describe when the host doesn't carry those faces (CI runner with a
+// stripped font set, a remote dev box without Japanese fonts). Office hosts
+// always have substitutes via the DFonts bundle, so they're never gated.
+// Probe the macOS font directory for any Hiragino / Apple SD Gothic Neo /
+// STSong/STHeiti/PingFang face — the test's expected substitution set.
+// Some hosts only carry the Chinese-only Hiragino Sans GB face, which is
+// irrelevant to the Japanese/Korean/Traditional-Chinese assertions.
+import { readdirSync } from 'node:fs'
+const macFontDir = '/System/Library/Fonts'
+const macFonts = (() => {
+  try {
+    return new Set(readdirSync(macFontDir))
+  } catch {
+    return new Set<string>()
+  }
+})()
+// The test's non-Office assertions are tight: Japanese must resolve to
+// Hiragino Mincho ProN / Hiragino Sans (the Japanese faces), Traditional
+// Chinese to STSong / STHeiti / PingFang, Korean to Apple SD Gothic Neo.
+// Hosts that only ship the Chinese-only `Hiragino Sans GB.ttc` (no
+// Japanese Hiragino face) don't meet the precondition and the assertions
+// would reject otherwise-valid YuMincho substitutions.
+const japaneseHiragino = [...macFonts].some(
+  (f) => f === 'Hiragino Sans.ttc' || f === 'Hiragino Mincho ProN.ttc' || f === 'Hiragino Mincho Pro.ttc',
+)
+const hasAppleSdGothicNeo = [...macFonts].some((f) => f.toLowerCase().includes('applesdgothic'))
+const hasSongtiOrPingFang = [...macFonts].some(
+  (f) => f === 'STSong.ttf' || f === 'STHeiti Light.ttc' || f === 'STHeiti Medium.ttc' || f === 'PingFang.ttc' || f === 'Songti.ttc',
+)
+const hostHasExpected = japaneseHiragino || hasAppleSdGothicNeo || hasSongtiOrPingFang
 
-describe.runIf(mac)(
+// Skip the whole suite when the host lacks either Office (which carries
+// DFonts as a fallback) or the Japanese Hiragino face the non-Office
+// assertions require. AppleSDGothicNeo / STHeiti presence alone is not
+// enough — the strictest assertion wants Hiragino Mincho ProN.
+describe.runIf(mac && (office || japaneseHiragino))(
   'Japanese/Korean/Traditional-Chinese font substitution (macOS system fonts)',
   () => {
     const m = createSystemFontMetrics()

@@ -2830,6 +2830,8 @@ function parseVisualObject(input: unknown): WorkbookVisualObject {
     !isOptionalString(input.textAnchor) ||
     !isOptionalString(input.text) ||
     !isOptionalString(input.progId) ||
+    !isOptionalString(input.textVertOverflow) ||
+    !isOptionalString(input.textHorzOverflow) ||
     (input.rotation !== undefined &&
       (typeof input.rotation !== 'number' || !Number.isFinite(input.rotation))) ||
     (input.frameWidth !== undefined &&
@@ -2877,6 +2879,8 @@ function parseVisualObject(input: unknown): WorkbookVisualObject {
     ...(paragraphs === undefined ? {} : { paragraphs }),
     ...(input.text === undefined ? {} : { text: input.text }),
     ...(input.progId === undefined ? {} : { progId: input.progId }),
+    ...(input.textVertOverflow === undefined ? {} : { textVertOverflow: input.textVertOverflow }),
+    ...(input.textHorzOverflow === undefined ? {} : { textHorzOverflow: input.textHorzOverflow }),
     ...(input.rotation === undefined ? {} : { rotation: input.rotation }),
     ...(input.frameWidth === undefined ? {} : { frameWidth: input.frameWidth }),
     ...(input.frameHeight === undefined ? {} : { frameHeight: input.frameHeight }),
