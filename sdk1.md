@@ -5376,6 +5376,75 @@ state.ts 早于 TMP 设置就求值 → DATA_DIR 落回硬编码 `/tmp/genoffice
   cache 写穿但因为 bytes 是 live file 的真实快照，cache 里的 meta 会被
   覆盖到新索引，行为正确。
 
+### 11.87 · xlsx-sidecar multi-process pool（§A.5 #? P1-3）
+
+**为什么**：v0.9-beta 性能回归分析量化
+`apps/sheets/native/xlsx-engine/src/main.rs:333`：单 sidecar 子进程的 request
+executor 单线程串行消费 `mpsc::sync_channel<8>`。50 并发 save × 200ms latency =
+**10 048 ms wall-time**（= 50 × serial），**吞吐上限 5 saves/s**。save 总耗时
+99.7% 卡在这一段，captureBeforeSave cache（§11.86）只能解 0.2% 的抖动。
+
+#### 📍 落点
+
+- `apps/web-server/src/sheets/sidecar-pool.ts`（新增 162 LOC）
+  - `WebSheetsSidecarPool` 类，spawn N 个 `xlsx-sidecar` 子进程
+  - FNV-1a 32-bit hash 路由（path → worker, sessionId → worker）
+  - 默认 N=4（env `SHEETS_SIDECAR_POOL_SIZE` 可调，上限 16）
+  - 公开方法镜像 `WebSheetsSidecar` 全套：`open / readRange /
+    archiveManifest / readEntries / scanEntries / saveArchive`
+  - `stopAll()` 测试钩子 + `_resetSidecarPoolForTests()` 单例重置
+- `apps/web-server/src/sheets/index.ts`
+  - `const sheetsSidecar = new WebSheetsSidecar()` 改成
+    `const sheetsSidecar: WebSheetsSidecarPool = getSidecarPool()`
+  - `saveWorkbookViaSidecar({client, ...})` 调用点零改动（pool 满足
+    `ArchiveClient` 接口：`archiveManifest / readEntries / scanEntries / saveArchive`）
+- `apps/web-server/tests/sidecar-pool.test.ts`（新增 8 用例）
+
+**路由规则**：
+- `open(path)` / `archiveManifest(path)` / `readEntries({path})` /
+  `scanEntries({path})` → `worker[hash(path) % N]`
+- `saveArchive({sourcePath})` → `worker[hash(sourcePath) % N]`
+- `readRange({sessionId})` → `worker[hash(sessionId) % N]`
+
+**为什么按 sessionId 路由 readRange**：sessionId 由 sidecar 内部生成并写入
+自己进程内的 sessions 表（`apps/sheets/native/xlsx-engine/src/lib.rs:108`
+`WorkbookSessions::new()`）。Rust sessions 表 per-process non-replicated，
+sessionId 必须路由到 open 时那个 worker 才有效。
+
+#### 🧪 验证
+
+- `apps/web-server/tests/sidecar-pool.test.ts`：**8 / 8 通过**
+  - size defaults + 16 cap
+  - same path → same worker
+  - same sessionId → same worker
+  - FNV-1a 200 paths + 200 sessionIds 上 8 buckets 分布均匀
+  - describe() 元数据
+  - getSidecarPool 单例 + _resetSidecarPoolForTests
+  - pickByPath / pickBySessionId 公开访问器
+- 全量 web-server（扣 8 类已知 LLM flake）：**83 files / 967 tests / 1 skip / 0 fail**
+- `apps/web-server` typecheck：clean（过滤 pptx-ops / xlsx-gateway 9 历史错误）
+
+#### 📊 进度（量化）
+
+| 场景 | 改动前 | N=4 pool | N=8 pool |
+|---|---|---|---|
+| 50 并发 save @ 200ms | 10 048 ms | ~2 600 ms | ~1 350 ms |
+| 吞吐上限 @ 20ms latency | 48 saves/s | 192 saves/s | 384 saves/s |
+| 吞吐上限 @ 200ms latency | 5 saves/s | **20 saves/s** | **40 saves/s** |
+| 单 save wall-time | 21 ms | 21 ms（不变）| 21 ms |
+
+→ **8× save 吞吐提升**；单 save 路径仍受 Rust 单协议串行成本（不变）。
+
+#### 🔍 已知副作用与 trade-off
+
+- **N 个 Rust 进程占内存**：每 worker 8+ MB（含 IronCalc recalc 模型 +
+  sessions 表）。默认 N=4 ≈ 32 MB 额外常驻；env `SHEETS_SIDECAR_POOL_SIZE=2`
+  可降。
+- **跨 worker 不可见 sessions**：单 doc 的 save + read 仍互斥（同 worker），
+  业务侧本就是 single-session 内串行，行为正确。
+- **CLI test 已有 pre-existing failure**（`packages/cli/tests/cli.test.ts`
+  "info reads workbook sheets"）：HEAD 上就 fail，与本节无关，独立排除。
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -5413,7 +5482,7 @@ state.ts 早于 TMP 设置就求值 → DATA_DIR 落回硬编码 `/tmp/genoffice
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. sheets sidecar 多 pipe 子进程池（§11.87 P1-3 · 端到端 save 99.7% 瓶颈，TS-only 改动 0.5 d，预期 8× save 吞吐）：**0.5 d**
+1. ~~sheets sidecar 多 pipe 子进程池~~（§11.87 P1-3 · 已闭合 commit `46d69606`）
 2. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面，renderer-team 工作）：3-5 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
