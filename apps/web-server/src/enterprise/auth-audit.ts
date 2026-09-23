@@ -62,7 +62,18 @@ export function registerAuditHandlers(): void {
   // and query, and validates the type defensively so a non-string
   // tenantId (a common refactor mistake) fails loudly instead of
   // being silently coerced to 'default' downstream.
-  registerHandle('audit:log', (_event: unknown, args: unknown) => {
+  // sdk1 §11.92 — audit:log author comes from the JWT subject by default.
+  // The IPC dispatcher now stamps `event.userId` with the verified JWT sub
+  // (apps/web-server/src/index.ts) so an authenticated renderer call
+  // doesn't have to repeat its identity on every audit record. The
+  // precedence is: explicit args.userId > event.userId (JWT sub) >
+  // recordAudit()'s 'system' default. This closes §11.37.6 #4 — every
+  // audit record now carries a real caller id instead of 'system',
+  // and callers can still override by passing args.userId for the
+  // rare case where the acting principal differs from the JWT holder
+  // (impersonation, server-side batch).
+  registerHandle('audit:log', (event: unknown, args: unknown) => {
+    const eventUserId = (event as { userId?: string } | null)?.userId
     const { action, resource, resourceId, details, status, userId, tenantId } = (args || {}) as {
       action: string
       resource: string
@@ -81,13 +92,17 @@ export function registerAuditHandlers(): void {
     if (resource !== undefined && typeof resource !== 'string') {
       throw new InvalidArgumentError('audit:log', 'resource must be a string')
     }
+    // Precedence: args.userId (caller override) > event.userId (JWT sub).
+    // recordAudit itself defaults to 'system' when neither is supplied,
+    // matching the legacy behaviour for tests / unauthenticated dev mode.
+    const resolvedUserId = userId ?? eventUserId
     const id = recordAudit({
       action,
       resource,
       ...(resourceId ? { resourceId } : {}),
       ...(details ? { details } : {}),
       ...(status ? { status } : {}),
-      ...(userId ? { userId } : {}),
+      ...(resolvedUserId ? { userId: resolvedUserId } : {}),
       ...(tenantId ? { tenantId } : {}),
     })
     return { ok: true, id }

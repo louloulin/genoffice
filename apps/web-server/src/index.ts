@@ -75,7 +75,7 @@ import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
-import { requireScopeFromHeaders } from './api/v1/auth'
+import { requireScopeFromHeaders, verifyJwtWithRevocation } from './api/v1/auth'
 
 /**
  * True when the request carries an `Authorization: Bearer …` header. Used
@@ -556,14 +556,25 @@ const server = createServer(async (request, response) => {
             }
           }
         }
-        // Pass the SSE session id through to handlers via the event object so
-        // they can look up per-session state (currentSlidesPath, dirty
-        // tracking, etc.). The id on sender stays -1 because there is no
-        // 1:1 webSocket — the real session key is the SSE channel.
+        // Pass the SSE session id + JWT subject through to handlers via the
+        // event object so they can look up per-session state (currentSlidesPath,
+        // dirty tracking, etc.) and stamp audit records with the real caller.
+        // The id on sender stays -1 because there is no 1:1 webSocket — the
+        // real session key is the SSE channel. userId is best-effort: when
+        // no Authorization header is present (legacy renderer stack, dev
+        // mode), userId is undefined and audit:log falls back to its
+        // caller-supplied arg or 'system'. §11.92 wires this so audit
+        // records stop carrying 'system' for every authenticated caller.
+        const authPayload = hasAuthorizationHeader(request.headers)
+          ? verifyJwtWithRevocation(
+              ((request.headers as { authorization?: string }).authorization ?? '').slice('Bearer '.length),
+            )
+          : null
         const event = {
           processId: 0,
           frameId: 0,
           sessionId: session,
+          ...(authPayload?.sub ? { userId: authPayload.sub } : {}),
           sender: {
             id: -1,
             isDestroyed: () => false,

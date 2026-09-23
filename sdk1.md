@@ -5461,8 +5461,9 @@ sessionId 必须路由到 open 时那个 worker 才有效。
 | §11.84 | web-server `slides:open-path` 默认启用 hash-based id | +1 | 74 |
 | §11.87 | xlsx-sidecar multi-process pool（sheets P1-3）| +1 | 75 |
 | §11.89 | slides master-edit 8 通道全真做 | +1 | 76 |
-| §11.91 | slides add-image-bytes / add-media-bytes bridge 字段名修复 | +1 | **77** |
-| §A.5 backlog 闭合总数 |  |  | **77** |
+| §11.91 | slides add-image-bytes / add-media-bytes bridge 字段名修复 | +1 | 77 |
+| §11.92 | audit:log author 从 JWT subject 取值（§11.37.6 #4 闭合）| +1 | **78** |
+| §A.5 backlog 闭合总数 |  |  | **78** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -5655,6 +5656,52 @@ op（`target.part`）直接解析元素。`flushTouchedParts` 写回
 #### 🔍 已知差异
 
 - **handler 签名是窄接口**：现在只接受 `base64`，不再静默兼容 `bytes`。这是有意的 —— 任何 caller（renderer、SDK、自动化测试）都应遵守 `AddImageBytesOp` / `AddMediaBytesOp` 契约。如果有外部 caller 偷偷用了 `bytes`，会立刻看到 badArgs（404-ish）而不是静默 null。
+
+### 11.92 · audit:log author 从 JWT subject 取值（§11.37.6 #4 闭合）
+
+§11.37.6 backlog 第 4 项：`audit:log` handler 之前一直把缺失的 `userId` 落到 `'system'`。结果是任何经过认证的 renderer 调用都把 `file.saved` / `version.created` 等写到 JSONL 时 author 全是 `'system'` —— 运维查"谁做的"必须把 access log 和 audit log 并排 grep。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/index.ts` | IPC dispatcher 从 request headers 提取 JWT → 用 `verifyJwtWithRevocation` 验证 → 把 `payload.sub` 写到 `event.userId` | +14 / -2 |
+| `apps/web-server/src/enterprise/auth-audit.ts` | `audit:log` handler 读 `event.userId` 作为 `args.userId` 之后的 fallback | +12 / -5 |
+| `apps/web-server/tests/audit-log-author-e2e.test.ts` | 新增 · 4 e2e | +175 |
+
+#### 🎯 设计要点
+
+1. **dispatcher 是唯一切点**：所有 IPC 都过 dispatcher，所以 JWT 验证只需要做一次。结果 stamp 在 `event.userId`，后续 handler 各自决定是否使用 —— 不强制其它 handler 接受这个字段（向后兼容）。
+2. **revocation-aware**：`verifyJwtWithRevocation` 而非 `verifyJwt`，所以 revoked 的 jti（embed iframe、admin revocation）会让 userId 不写进 event —— 已撤销的 token 不能留下审计痕迹。
+3. **优先级明确**：`args.userId`（caller 主动 override，用于 impersonation / 服务端 batch）> `event.userId`（JWT sub）> `recordAudit` 的 `'system'` 默认。覆盖顺序固定，handler 不需要做联合类型兜底。
+4. **scope gate 已经守门**：`audit:write` 是 hard scope —— 没有 Authorization header 早被 401 挡掉，根本到不了 handler。所以 audit:log 永远不会在缺 JWT 时记 `'system'`（这个边界由 negative test pin 住）。
+
+#### 🧪 测试（4 e2e 全绿）
+
+- `records the JWT subject as userId when args.userId is not supplied` —— JWT sub = `alice@acme.com` → JSONL 记 `userId: "alice@acme.com"`，**不是 `'system'`**
+- `records a different JWT subject for a different caller` —— 不同 JWT 记录不同 userId
+- `args.userId overrides the JWT subject (impersonation / server-side batch)` —— 显式 args.userId 覆盖 JWT sub
+- `audit:log without a JWT is rejected 401 by the scope gate` —— 无 token → 401，根本不写入 JSONL（边界 pin）
+
+#### 📊 进度
+
+- §11.37.6 #4 **闭合**（audit:log author 从 JWT sub 取值）
+- §A.5 backlog 闭合数 77 → **78**
+- web-server 套件 106 → **107 文件**（+1 e2e）；1074 → **1078 测试通过**（+4 net），1 跳过 / 1 失败
+  （1 失败为 pre-existing `translate-pi-agent-e2e` env pollution，本节不引入）
+- tsc 干净
+
+#### 🔍 Live 验证（port 18904）
+
+```
+audit:log (alice@verify.com JWT, no args.userId)  → userId: "alice@verify.com"
+audit:log (alice@verify.com JWT, args.userId="impersonated@verify.com")  → userId: "impersonated@verify.com"
+JSONL dump:
+  {"id":"audit-edabe5c2-…","userId":"alice@verify.com","action":"file.saved.live-verify",...}
+  {"id":"audit-028b1af3-…","userId":"impersonated@verify.com","action":"file.saved.live-verify-2",...}
+```
+
+`'system'` 不再出现在认证调用产生的记录里。
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
