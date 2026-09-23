@@ -8,7 +8,7 @@
  * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { sendJson, sendError, readBody } from './http-utils'
+import { sendJson, sendError, readBody, isValidWebhookUrl, isValidEventList } from './http-utils'
 import {
   saveCallbackForUser,
   deleteCallbackForUser,
@@ -44,8 +44,23 @@ export async function handleWebhooksUpsert(ctx: { request: IncomingMessage; resp
     sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'webhooks:upsert')
     return true
   }
-  if (typeof body.url !== 'string' || !body.url) {
-    sendError(ctx.response, 400, 'expected { url, events? }', 'INVALID_ARGUMENT', 'webhooks:upsert')
+  if (!isValidWebhookUrl(body.url)) {
+    sendError(ctx.response, 400, 'url must be a string with http: or https: scheme', 'INVALID_ARGUMENT', 'webhooks:upsert')
+    return true
+  }
+  // §11.117: validate events is an array of non-empty strings. null /
+  // undefined / omitted → use the default event list (matches §11.115
+  // `null doc` semantics: serializer produces null for "unset", not
+  // "explicit empty"). An explicit non-array like `"file.saved"` or
+  // `[1,2,3]` would be stored verbatim, then `[1,2,3].includes('file.saved')`
+  // returns false → webhook silently never fires.
+  let events: string[]
+  if (body.events === undefined || body.events === null) {
+    events = ['file.saved', 'ai.completed', 'comment.added', 'comment.resolved', 'comment.removed']
+  } else if (isValidEventList(body.events)) {
+    events = body.events
+  } else {
+    sendError(ctx.response, 400, 'events must be an array of non-empty strings', 'INVALID_ARGUMENT', 'webhooks:upsert')
     return true
   }
   // Org-wide subs are keyed by JWT `sub`. We use a dedicated
@@ -56,7 +71,7 @@ export async function handleWebhooksUpsert(ctx: { request: IncomingMessage; resp
   // other fileId would skip the receiver entirely.
   saveCallbackForUser(caller.sub, {
     url: body.url,
-    events: Array.isArray(body.events) ? body.events : ['file.saved', 'ai.completed', 'comment.added', 'comment.resolved', 'comment.removed'],
+    events,
     createdAt: Date.now(),
   })
   sendJson(ctx.response, 201, { ok: true, subscriber: caller.sub, url: body.url })

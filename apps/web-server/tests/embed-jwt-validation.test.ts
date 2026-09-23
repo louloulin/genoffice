@@ -121,7 +121,7 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     const handleEmbed = await loadHandler()
     const token = signJwt(basePayload())
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
 
     // The docs app may or may not be built; either 200 (rendered) or
     // 503 (not built) — but it must NOT be 401. 401 means validation
@@ -154,7 +154,7 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     const tampered = parts.join('.')
 
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${tampered}&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${tampered}&app=docs`))
     expect(resp.status()).toBe(401)
     const body = JSON.parse(resp.chunks.join(''))
     expect(body.error.code).toBe('UNAUTHENTICATED')
@@ -169,7 +169,7 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     // 3 dot-separated parts, but the base64 doesn't decode to a real HS256 header.
     const garbage = 'aaa.bbb.ccc'
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${garbage}&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${garbage}&app=docs`))
     expect(resp.status()).toBe(401)
     const body = JSON.parse(resp.chunks.join(''))
     expect(body.error.code).toBe('UNAUTHENTICATED')
@@ -185,7 +185,7 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
 
     const handleEmbed = await loadHandler()
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=opaque-shared-secret&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=opaque-shared-secret&app=docs`))
     expect([200, 503]).toContain(resp.status())
   })
 
@@ -202,12 +202,12 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     // First view: the hook records the jti but returns false (not revoked
     // yet), so the page should be served.
     const first = fakeResponse()
-    handleEmbed({} as Incoming, first.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, first.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
     expect([200, 503]).toContain(first.status())
 
     // Second view: the hook returns true (revoked), so we should get 401.
     const second = fakeResponse()
-    handleEmbed({} as Incoming, second.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, second.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
     expect(second.status()).toBe(401)
     const body = JSON.parse(second.chunks.join(''))
     expect(body.error.code).toBe('UNAUTHENTICATED')
@@ -222,7 +222,7 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     const expired = signJwt({ ...basePayload(), iat, exp: iat + 60 })
 
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${expired}&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${expired}&app=docs`))
     expect(resp.status()).toBe(401)
     const body = JSON.parse(resp.chunks.join(''))
     expect(body.error.code).toBe('UNAUTHENTICATED')
@@ -242,7 +242,7 @@ describe('handleEmbed: legacy dev mode (no GENOFFICE_JWT_SECRET)', () => {
       vi.resetModules()
       const handleEmbed = await loadHandler()
       const resp = fakeResponse()
-      handleEmbed({} as Incoming, resp.res, new URL('http://x/embed/doc_abc?token=anything-goes&app=docs'))
+      handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL('http://x/embed/doc_abc?token=anything-goes&app=docs'))
       expect([200, 503]).toContain(resp.status())
     } finally {
       if (saved !== undefined) process.env.GENOFFICE_JWT_SECRET = saved

@@ -148,10 +148,21 @@ describe.skipIf(skip)('v1 REST API smoke (sdk1 follow-up)', () => {
         }
       }
 
-      // ---- 404 envelope on unknown /api/v1/* paths ----
+      // ---- 404 envelope on truly-unknown /api/v1/* paths; 405 for wrong method on existing routes (sdk1 §11.111) ----
       {
-        const r = await h.req('/api/v1/webhooks', { method: 'GET' })
-        rec.record('GET /api/v1/webhooks → 404 JSON (not SPA HTML)', r.status === 404 && r.headers.get('content-type')?.includes('application/json'), `status=${r.status}`)
+        // sdk1 §11.111: /api/v1/webhooks is a known v1 path; only POST / DELETE
+        // are valid. The previous test asserted 404 (which was the bug —
+        // RFC 7231 violation: wrong-method on an existing path must be 405,
+        // not 404). 404 is reserved for paths that don't exist at any method.
+        const r = await h.req<{ error: { code: string; allow: string } }>('/api/v1/webhooks', { method: 'GET' })
+        rec.record(
+          'GET /api/v1/webhooks → 405 METHOD_NOT_ALLOWED with allow list (sdk1 §11.111)',
+          r.status === 405 &&
+            r.headers.get('content-type')?.includes('application/json') &&
+            r.body.error.code === 'METHOD_NOT_ALLOWED' &&
+            r.body.error.allow === 'POST, DELETE',
+          `status=${r.status}`,
+        )
       }
       {
         const r = await h.req('/api/v1/totally-unknown')

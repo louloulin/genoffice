@@ -235,6 +235,22 @@ function escapeAttr(s: string): string {
 export function handleEmbed(request: IncomingMessage, response: ServerResponse, url: URL): boolean {
   if (!url.pathname.startsWith('/embed/')) return false
 
+  // sdk1 §11.109: only GET is documented; POST / PUT / DELETE fall
+  // through to the SPA fallback (200 + index.html) which looks like
+  // a successful render. Return 405 with the structured envelope.
+  if (request.method !== 'GET') {
+    response.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' })
+    response.end(JSON.stringify({
+      error: {
+        code: 'METHOD_NOT_ALLOWED',
+        message: 'GET required',
+        channel: url.pathname,
+        allow: 'GET',
+      },
+    }))
+    return true
+  }
+
   const parsed = parseEmbedQuery(url)
   if ('error' in parsed) {
     response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })

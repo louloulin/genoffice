@@ -245,8 +245,27 @@ export function requireScopeFromHeaders(
  */
 export function hasScope(payload: JwtPayload | null | undefined, scope: string): boolean {
   if (!payload) return false
-  if (payload.sub === 'admin') return true // internal admin user bypass
-  const claims = [...(payload.scope ?? []), ...(payload.perm ?? [])]
+  // Internal admin user bypass (matches the pre-existing convention).
+  // sdk1 §11.106: also honor the literal scope `admin` so hosts that
+  // follow the documented convention (`scope: ['admin']` for full access)
+  // don't get 403 on every admin-only endpoint. `*` continues to work
+  // as a wildcard; `admin` is a synonym specifically because the
+  // v1 docs (`comments.ts:13`, `ai.ts:38`, etc.) all advertise
+  // `scope: 'admin'` as the admin bypass — previously the docstring
+  // and implementation were out of sync and hosts that followed the
+  // docs got 403 on admin endpoints.
+  if (payload.sub === 'admin') return true
+  // sdk1 §11.115: filter to strings before matching. A token minted before
+  // the §11.115 validation landed (or one hand-crafted with a non-string
+  // claim) could carry `scope: [1,2,3]`; the old `claim.endsWith(...)` call
+  // then threw `claim.endsWith is not a function`, turning every scoped
+  // request into a 500. A non-string claim is meaningless to the matcher,
+  // so drop it — this is a *deny* (the claim grants nothing), never an
+  // accidental grant.
+  const claims = [...(payload.scope ?? []), ...(payload.perm ?? [])].filter(
+    (c): c is string => typeof c === 'string',
+  )
+  if (claims.includes('admin')) return true
   if (claims.length === 0) {
     // Default: read-only.
     return scope === 'files:read'
@@ -260,6 +279,17 @@ export function hasScope(payload: JwtPayload | null | undefined, scope: string):
   }
   return false
 }
+
+/** Max lifetime a caller may request via `ttl` (seconds). Tokens whose
+ *  requested TTL exceeds this are clamped rather than rejected — matches
+ *  the `ttlMs` clamp the embed-nonce endpoint uses (sdk1 §11.26). The
+ *  default is a day; no host legitimately needs a longer-lived bearer
+ *  token, and a longer TTL only widens the blast radius of a leaked one. */
+const MAX_TTL_SEC = 86_400 // 24 h
+/** Min lifetime a caller may request. Sub-second / zero / negative TTLs
+ *  are clamped up so a host can never mint an already-dead or eternal
+ *  token by accident. */
+const MIN_TTL_SEC = 30
 
 /**
  * Mint a short-lived JWT for iframe embed / API consumers.
@@ -276,7 +306,10 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
     sendError(response, 503, 'JWT not configured (set GENOFFICE_JWT_SECRET)', 'NOT_CONFIGURED')
     return true
   }
-  let body: { sub?: string; doc?: string; perm?: string[]; scope?: string[]; exp?: number }
+  // Accept `ttl` (documented in docs/api/rest-api.md) as well as the
+  // legacy `exp` (absolute epoch-seconds). Unknown extra fields are
+  // allowed but never trusted.
+  let body: { sub?: unknown; doc?: unknown; perm?: unknown; scope?: unknown; exp?: unknown; ttl?: unknown }
   try {
     const raw = await readBody(request)
     body = raw ? JSON.parse(raw) : {}
@@ -284,19 +317,89 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
     sendError(response, 400, 'request body is not valid JSON', 'INVALID_ARGUMENT', 'auth:jwt')
     return true
   }
-  if (typeof body.sub !== 'string' || !body.sub) {
-    sendError(response, 400, 'expected { sub: string }', 'INVALID_ARGUMENT', 'auth:jwt')
+  // sdk1 §11.106: also reject whitespace-only sub. Previously the
+  // check `!body.sub` only rejected empty string; `"   "` (3 spaces)
+  // was accepted and the resulting JWT had a meaningless sub claim,
+  // which would surface as `"   "` in audit logs / event subscribers.
+  if (typeof body.sub !== 'string' || body.sub.trim().length === 0) {
+    sendError(response, 400, 'expected non-empty { sub: string }', 'INVALID_ARGUMENT', 'auth:jwt')
     return true
   }
+  const sub = body.sub.trim()
+
+  // sdk1 §11.115 bug A: `doc`, when present, MUST be a non-empty string.
+  // The old code did `...(body.doc ? { doc: body.doc } : {})` with no type
+  // check, so `{ doc: 123 }` (a number) was signed verbatim into the token,
+  // producing a spec-violating JWT whose `doc` claim is a number — any
+  // downstream consumer comparing `payload.doc === id` misbehaves. Reject
+  // non-string / whitespace-only values rather than silently signing them.
+  // `null` is treated as "field not set" (JSON idiom) rather than an error.
+  const docArg = body.doc ?? undefined
+  if (docArg !== undefined) {
+    if (typeof docArg !== 'string' || docArg.trim().length === 0) {
+      sendError(response, 400, 'doc must be a non-empty string when provided', 'INVALID_ARGUMENT', 'auth:jwt')
+      return true
+    }
+  }
+
+  // sdk1 §11.115 bug B: `scope` / `perm` MUST be arrays of non-empty
+  // strings. The old code spread them directly (`...body.scope`), which:
+  //   - threw `(body.scope ?? []) is not iterable` (an opaque 500) when a
+  //     caller sent a string / number / object instead of an array;
+  //   - and silently split a bare string into its characters
+  //     (`"admin"` → `['a','d','m','i','n']`), producing a token whose
+  //     scope is garbage yet still passes the `typeof x === 'string'` shape
+  //     check downstream.
+  // Both are caller errors → 400 with the standard envelope.
+  const scopeArg = body.scope ?? undefined
+  const permArg = body.perm ?? undefined
+  if (scopeArg !== undefined && !isStringArray(scopeArg)) {
+    sendError(response, 400, 'scope must be an array of non-empty strings', 'INVALID_ARGUMENT', 'auth:jwt')
+    return true
+  }
+  if (permArg !== undefined && !isStringArray(permArg)) {
+    sendError(response, 400, 'perm must be an array of non-empty strings', 'INVALID_ARGUMENT', 'auth:jwt')
+    return true
+  }
+
   const now = Math.floor(Date.now() / 1000)
-  const exp = typeof body.exp === 'number' && body.exp > now ? body.exp : now + DEFAULT_TTL_SEC
+  // sdk1 §11.115 bug C: lifetime resolution. Precedence is
+  // `ttl` (relative seconds, documented) over `exp` (legacy absolute).
+  // Whichever is supplied is clamped to [MIN_TTL_SEC, MAX_TTL_SEC] so we
+  // can never mint (a) an already-expired token, (b) a token whose `exp`
+  // JSON-serialises to `null` (the old `exp: 1e999` path — `JSON.stringify(
+  // Infinity)` is `null`, and `verifyJwt` only checks `typeof exp ===
+  // 'number'`, so a `null` exp token was effectively immortal), or (c) a
+  // token living longer than MAX_TTL_SEC.
+  let exp = now + DEFAULT_TTL_SEC
+  const ttlArg = body.ttl ?? undefined
+  const expArg = body.exp ?? undefined
+  if (ttlArg !== undefined || expArg !== undefined) {
+    const requested = ttlArg !== undefined ? ttlArg : expArg
+    const n = Number(requested)
+    if (!Number.isFinite(n)) {
+      // `Number.isFinite` is false for Infinity / -Infinity / NaN. A
+      // non-finite lifetime can never be signed safely (`JSON.stringify(
+      // Infinity)` is `null`, which `verifyJwt` treats as no-expiry).
+      sendError(response, 400, 'ttl must be a finite number of seconds', 'INVALID_ARGUMENT', 'auth:jwt')
+      return true
+    }
+    // `ttl` is relative; `exp` is absolute epoch-seconds (legacy).
+    const requestedExp = ttlArg !== undefined ? now + Math.floor(n) : Math.floor(n)
+    const ttl = requestedExp - now
+    const clamped = Math.min(MAX_TTL_SEC, Math.max(MIN_TTL_SEC, ttl))
+    exp = now + clamped
+  }
+
   // Merge `scope` and `perm` so downstream code (hasScope) sees both.
-  const mergedScope = Array.from(new Set([...(body.scope ?? []), ...(body.perm ?? [])]))
+  const mergedScope = Array.from(
+    new Set([...((scopeArg as string[] | undefined) ?? []), ...((permArg as string[] | undefined) ?? [])]),
+  )
   const payload: JwtPayload = {
-    sub: body.sub,
-    ...(body.doc ? { doc: body.doc } : {}),
+    sub,
+    ...(docArg ? { doc: docArg } : {}),
     ...(mergedScope.length ? { scope: mergedScope } : {}),
-    ...(body.perm ? { perm: body.perm } : {}),
+    ...(permArg ? { perm: permArg as string[] } : {}),
     iat: now,
     exp,
     iss: 'genoffice',
@@ -304,11 +407,16 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
   }
   try {
     const token = signJwt(payload)
-    sendJson(response, 200, { token, exp, alg: ALG })
+    sendJson(response, 200, { token, exp, ttlSeconds: exp - now, alg: ALG })
   } catch (err) {
     sendError(response, 500, err instanceof Error ? err.message : String(err), 'INTERNAL', 'auth:jwt')
   }
   return true
+}
+
+/** True when `v` is an array of one-or-more non-empty trimmed strings. */
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string' && x.trim().length > 0)
 }
 
 /**

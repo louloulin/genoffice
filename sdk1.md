@@ -5471,7 +5471,21 @@ sessionId 必须路由到 open 时那个 worker 才有效。
 | §11.100 | kb:search / kb:entries REST IPC 串台修复（`home:translate-kb-search`）+ limit clamp | +1 | 83 |
 | §11.101 | files:callback 必须验证 fileId 存在（之前静默接任何 id）| +1 | 84 |
 | §11.102 | public read-only endpoints（health/meta/changelog/metrics）wire-level 契约 pin | +0 (test only) | 84 |
-| §A.5 backlog 闭合总数 |  |  | **84** |
+| §11.103 | ai:translate / ai:image REST ↔ IPC shape adapter + url validator（host-friendly 错误） | +1 | 85 |
+| §11.104 | ai:chat / ai/skill/:name REST ↔ IPC shape adapter（OpenAI messages → IPC {settings,system,user}） | +1 | 86 |
+| §11.105 | comments PATCH/GET + versions GET single wire-level 契约 pin（覆盖 SDK1 §2.1.A 详情端点） | +0 (test only) | 86 |
+| §11.106 | auth/jwt `sub` whitespace trim + hasScope 兑现文档承诺 `scope:"admin"` 旁路（连续 4 端点 admin 403 bug）| +1 | 87 |
+| §11.107 | `/api/channels` + `/api/ai/pi-prompt` wrong-method 405 + pi-prompt 错误信封对齐 v1 `{error:{code,message,channel}}` | +1 | 88 |
+| §11.108 | `/api/ipc/:channel` args 类型校验（non-array 返 400 而非 500 leak）+ `/api/collab/sessions` wrong-method 405 | +1 | 89 |
+| §11.109 | `POST /api/v1/files/:id/jwt` malformed body 静默返默认 → 400 + `/embed/:docId` wrong-method 405（caller-side method gate）| +1 | 90 |
+| §11.110 | 7 个 non-v1 / legacy endpoint wrong-method 405 sweep（`/health`、`/api/ipc/events`、`/api/ai/stream`/`.../cancel`、`/api/ai/translate`/`.../stream`/`.../cancel`）+ `/api/ipc/events` POST 被 `/api/ipc/` POST catch-all 遮蔽的 404 旁路 fix | +1 | 91 |
+| §11.111 | `/api/v1/*` dispatcher 把 wrong-method 误归 404（RFC 7231 违例）→ 405 + `Allow:` list（覆盖 ~30 个 v1 端点：`webhooks`/`files`/`ai`/`kb`/`embed`/`auth`/...）+ `/api/v1/webhooks/dlq` 集合级别缺 method gate + `/api/html/preview/<id>` SPA-fallback 第三闭合 | +1 | 92 |
+| §11.112 | `/api/v1/kb/search?q=<whitespace>` 通过 IPC `ok:false` leak（200 + IPC-shape 错误信封）→ REST layer `q.trim()` 闸闭合 + SPA fallback wrong-method GET/HEAD-only 闸闭合（11 个 SPA sub-route × 4 method = 44 处）| +1 | 93 |
+| §11.113 | Webhook DLQ 把 subscriber `events` 白名单过滤掉的 event 误归 `reason:'max_attempts', attempts:0, lastError:null` 噪声 → `WebhookDeliveryResult.filtered` 标记 + `pushFailedDeliveriesToDlq` 跳过 filtered 结果（host 无法对 filtered event 做有效 retry，DLQ 信号被噪声淹没） | +1 | 94 |
+| §11.114 | v1 `:id` 路径穿越 → 任意文件读取（`POST/GET /files/:id/versions` 拍快照读回 `DATA_DIR/webhooks.json` 等兄弟 store）+ 畸形百分号编码 `decodeURIComponent` 抛 `URIError` 归 500 leak → `isWithin(FILES_DIR)` containment + `safeDecode` 400 分支（跨 15 个 handler） | +1 | 95 |
+| §11.115 | `/api/v1/auth/jwt` payload 校验缺失：`scope`/`perm` 非数组→500 内部串泄漏 + 裸字符串静默拆字符 + `doc` 非字符串原样签 + `exp:1e999`→`exp:null` 永生 token + 文档 `ttl` 不生效 + `hasScope` 遇历史坏 claim 500 → `isStringArray`/`doc` 闸 + `ttl` 优先 & clamp[30,86400] + `hasScope` 过滤非字符串 claim | +1 | 96 |
+| §11.116 | `/api/v1/kb/search` 与 `/kb/entries` 把 `limit=1.5` / `limit=101..1000` / `schema=nonsense` 透传给 IPC，IPC 拒绝后 REST 透回 `200 + {ok:false}` → REST 层对齐 IPC 真实边界（search 1..100 整数 / entries 1..1000 整数 / 5 合法 schema），坏值 400，clamp 后 200 永真成功（闭合 §11.100 留下的 "clamp 上界凭经验猜" 漏洞） | +1 | 97 |
+| §A.5 backlog 闭合总数 |  |  | **97** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -6405,6 +6419,1287 @@ $ pnpm test tests/public-meta-lifecycle-e2e.test.ts
 
 全套件 119 文件 / 1109 通过 / 0 fail / 1 skipped，0 回归。
 
+### 11.103 · `ai:translate` / `ai:image` REST ↔ IPC shape adapter + URL validator（§2.1.A · 1 bug 双闭合）
+
+§11.102 给 4 个 public read-only 端点加了 lifecycle e2e 后，本轮做最后一轮 v1 AI 端点的手写 probe。`POST /api/v1/ai/translate` 与 `POST /api/v1/ai/image` 都把 body **原样转发**给 IPC，IPC 端 schema 不一致就导致两个独立但都"看起来像成功"的 bug：
+
+1. **`ai:translate`** REST 文档（`docs/api/rest-api.md` / sdk1 §11.4）规定 `{ text, from?, to }`；IPC `ai:translate`（`apps/web-server/src/ai/chat.ts:743`）实际只接 `{ instruction, sourceLang, targetLang, ... }`。REST 直接转发意味着 IPC 永远拿不到 `targetLang`，永远返 `{ ok:false, error:'expected non-empty targetLang' }`。host 看错误以为是 LLM 不可达，其实是 REST adapter 缺一层 shape conversion。
+2. **`ai:image`** REST 文档（`docs/api/rest-api.md:57,61`）说"Image generation"，但 IPC `ai:fetch-image`（`apps/web-server/src/ai/chat.ts:1806`）实际是**从 URL 抓图返 base64**，不是 image generation。REST 直接转发 body 后，IPC 拒非 string 类型返 `null`，REST 把 `null` JSON 序列化后返 `{"null":null}` —— 看起来 `200 OK` 但实际啥也没做。最坏的是 host 把"image generation"接到这个端点上后永远拿不到图，也永远收不到错。
+
+`docs/api/rest-api.md` 的 image-generation 文案与 IPC 不符是一个独立 backlog（image generation 还没真接），但**这两处**REST adapter 必须先把"传进来的 shape 校验 + 错误码透明化"做掉。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/ai.ts` | `handleAiTranslate` 加 REST `{text, from?, to}` → IPC `{instruction, sourceLang, targetLang}` 适配 + `to`/`text` 缺失返 400；`handleAiImage` 加 `{url: string}` 校验（≤4096 chars）→ IPC `ai:fetch-image` 传 URL string | +52 / -16 |
+| `apps/web-server/tests/ai-translate-image-validation-e2e.test.ts` | 新增 · 1 e2e（16 嵌套断言，wire-level boot bundle）| +248 / -0 |
+
+#### 🎯 设计要点
+
+1. **REST shape 是契约，不是 IPC shape 的别名**。IPC 内部可以随便换 schema，但 REST `{text, from?, to}` 与 `{url}` 是 host-facing 的——一旦发布，host SDK 就是按这个写。所以 adapter 必须在 REST 边界把两种 shape 互相翻译；不能把 IPC 的"严格校验错误"原文回给 host，因为 host 看不懂（"what is `instruction`?"）。
+2. **`handleAiTranslate` 兼容 IPC-shape**：同时接受 `{instruction, sourceLang, targetLang}`，避免打破已经按 IPC shape 直接走 REST 的 renderer / 内部测试。validator 只看"任何一个字段配齐就算合法"——这是兼容性修复，不是破坏性修复。
+3. **`handleAiImage` 不接受 `prompt` 字段**（REST 文档假装它是 image generation，但实际不是）：validator 看到 `{prompt: ...}` 直接 400 并指明"expected `{url: string}`"。host 看到错误立刻知道错在哪。`docs/api/rest-api.md:57,61` 的 "Image generation" 文案**保留**，但加 footnote 说明当前端点是 `ai:fetch-image`（URL → base64）；真正的 image generation 端点等 provider 接入后再补（`/api/v1/ai/generate-image`）。
+4. **URL 长度 cap 4096 chars**：防 host 误传 `data:` URL / 长 base64 URL 把 IPC `fetch()` 卡住。4096 = 常见 CDN URL + 余量，比 RFC 3986 推荐 URI 长度上限还宽。超过直接 400，不走 IPC。
+5. **不绑 LLM provider 行为**：e2e 不假设 `ai:translate` 会成功返 translation —— 上游 Claude 可能 403、网络可能断。e2e 只断言"`expected non-empty 'instruction'` 这种 IPC-shape 错误**不再出现**"，意思是"IPC 拿到的是合法 shape，剩下就是 LLM 的事"。这把"REST adapter bug"与"LLM 配置 / 网络问题"两个独立的失败模式彻底分开，host debug 时不会走错路。
+
+#### 🧪 测试（16 嵌套断言全绿）
+
+- `ai/translate` REST shape `{text, from, to}` → 200 + IPC shape 合法（**不**返 `expected non-empty 'instruction'`）
+- `ai/translate` 仅 `{text, to}`（缺 `from`）→ 200 + IPC shape 合法
+- `ai/translate` IPC shape `{instruction, targetLang}` → 200 + 兼容 IPC-style caller
+- `ai/translate` 缺 `to` → 400 INVALID_ARGUMENT + 消息含 `` `to` ``
+- `ai/translate` 缺 `text` → 400 INVALID_ARGUMENT + 消息含 `` `text` ``
+- `ai/translate` 空 body `{}` → 400 INVALID_ARGUMENT
+- `ai/translate` invalid JSON → 400 INVALID_ARGUMENT + `invalid JSON body`
+- `ai/translate` 缺 JWT → 401
+- `ai/translate` JWT 无 `ai:translate` → 403
+- `ai/image` valid URL → 200 + IPC 被调（base64 或 null 都合法，看网络）
+- `ai/image` `prompt` only → 400 INVALID_ARGUMENT（**旧 silent-null bug 现在被 400 暴露**）
+- `ai/image` 空 body → 400 INVALID_ARGUMENT
+- `ai/image` URL > 4096 chars → 400 INVALID_ARGUMENT + `4096`
+- `ai/image` 缺 JWT → 401
+- `ai/image` JWT 无 `ai:image` → 403
+
+#### 📊 进度
+
+- web-server 套件 119 → **120 文件** / 1109 → **1110 通过**（+1 e2e；16 嵌套断言；1 失败为 pre-existing `translate-kerrits-pdf-e2e`，与本节无关）
+- §A.5 backlog 闭合数 84 → **85**（+1：ai:translate REST adapter bug；ai:image silent-null bug 在同一节一并修，归并为 1 项）
+- §2.1.A "v1 AI 端点 shape 必须 host-friendly" 闭合
+
+#### 🔍 Live 验证
+
+```
+$ TOKEN=$(node /tmp/mint-jwt.mjs)
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/ai/translate \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"text":"Hello world","from":"en","to":"zh"}' | head -c 200
+{"ok":false,"error":"Claude HTTP 403: the service returned a web page ... "}
+HTTP 200
+
+# ↑ 注意：之前的错误是 "expected non-empty 'instruction'"（REST adapter bug）；
+# 现在是 Claude 403（真实上游 LLM provider 问题）—— 这是**正确**的错误分离。
+
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/ai/image \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"url":"https://httpbin.org/image/png"}' | head -c 80
+{"base64":"iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/gAIDAAAfYUlEQVR4nN19d1hT2db+SiOhF8Eg...
+HTTP 200
+
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/ai/image \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"prompt":"a cat"}'
+{"error":{"message":"expected { url: string }","code":"INVALID_ARGUMENT","channel":"ai:image"}}
+HTTP 400
+
+$ pnpm test tests/ai-translate-image-validation-e2e.test.ts
+ ✓ tests/ai-translate-image-validation-e2e.test.ts (1 test) 2874ms
+   ✓ v1 AI translate + image shape validation > walks translate + image + auth / scope / input-validation branches 2873ms
+```
+
+全套件 120 文件 / 1110 通过 / 1 fail（pre-existing）/ 1 skipped / 0 回归。
+
+### 11.104 · `ai:chat` / `ai/skill/:name` REST ↔ IPC shape adapter（§2.1.A · 1 bug 双闭合）
+
+§11.103 修了 `ai/translate` + `ai/image` 后，本轮做最后一轮 v1 AI 端点的 curl probe。`POST /api/v1/ai/chat` 与 `POST /api/v1/ai/skill/:name` 把 body **原样转发**给 IPC，IPC 端 schema 不一致导致**两个独立但都"看起来像成功"的 bug**（与 §11.103 同款问题，但落在另外两个端点上）：
+
+1. **`ai:chat`** REST 文档（`docs/api/rest-api.md:59`）写 "Streaming chat (SSE)"，实际 handler 是同步 one-shot。host 自然按 OpenAI-style `POST { messages: [{role, content}] }` 调用；IPC `ai:chat`（`apps/web-server/src/ai/chat.ts:652`）实际要 `{ settings, system, user }`。REST 直接转发意味着 IPC 永远拿不到 `user`，永远返 `{ ok:false, error:"expected { settings, system, user }" }`。host 看错误以为是 LLM 不可达或 stream endpoint 配错，其实是 REST adapter 缺 shape conversion。
+2. **`ai/skill/:name`** 完全同款：handler 把 body 展开后只加 `skill: name` 字段就丢给 IPC，IPC 同样拒。host 调用任何 skill 永远失败。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/ai.ts` | `handleAiChat` + `handleAiSkill` 加 OpenAI `{ messages: [...] }` ↔ IPC `{ settings, system, user }` 适配（新增 `adaptChatShape` 模块级 helper）；同时保留 IPC-shape 直传兼容；缺 user 返 400 | +57 / -8 |
+| `apps/web-server/tests/ai-chat-skill-shape-validation-e2e.test.ts` | 新增 · 1 e2e（16 嵌套断言，wire-level boot bundle）| +241 / -0 |
+
+#### 🎯 设计要点
+
+1. **OpenAI-shape 是契约**：industry-standard `{ messages: [{role, content}] }` 是 host SDK 已经按这个写的。REST adapter 必须把 system + user 多轮消息合并成 IPC 的 `{ system, user }`，把 assistant turn 丢弃（assistant 是渲染端的隐式历史，不是新指令）。renderers 需要完整多轮 history 时直接走 IPC-shape，REST adapter 不掩盖信息（注释里明确说明）。
+2. **IPC-shape 兼容**：和 §11.103 同款 —— renderer / 内部测试已经按 `{ user, system, settings }` 写好的 caller 不能被打破。adapter 同时接受两套 shape，`user` 字段非空就算合法。
+3. **assistant turn 丢弃**而不是尝试续传：续传意味着 IPC 端要做完整 multi-turn chat 解析，那是另一个 feature。REST adapter 只做 host-friendly 的"取最后一轮 user + 累积 system"，避免在边界加未实现的语义。
+4. **`ai/skill/:name` 走同一条 `adaptChatShape`**：skill 与 chat 共享 adapter，避免两处 drift。skill handler 在 adapter 输出上额外注入 `skill: name`，这样 skill 调度器还能正常识别 skill。
+5. **不绑 LLM provider 行为**：e2e 不假设 `ai:chat` 会成功返 chat —— 上游 LLM 可能 auth 失败 / 网络断。e2e 只断言"`expected { settings, system, user }` 这种 IPC-shape 错误**不再出现**"，意味着 IPC 拿到合法 shape，剩下就是 LLM provider 的事。和 §11.103 同款，把 REST adapter bug 与 LLM 配置 / 网络问题彻底分开。
+
+#### 🧪 测试（16 嵌套断言全绿）
+
+- `ai/chat` OpenAI-shape 单 user message → 200 + IPC shape 合法
+- `ai/chat` OpenAI-shape system + user → 200 + IPC shape 合法
+- `ai/chat` IPC-shape `{user, system}` → 200 + 兼容 IPC-style caller
+- `ai/chat` 空 `messages: []` → 400 INVALID_ARGUMENT + 消息含 `messages`
+- `ai/chat` 只有 system turn → 400 INVALID_ARGUMENT
+- `ai/chat` invalid JSON → 400 INVALID_ARGUMENT + `invalid JSON body`
+- `ai/chat` 缺 JWT → 401
+- `ai/chat` JWT 无 `ai:chat` → 403
+- `ai/skill/translate-text` OpenAI-shape → 200 + IPC shape 合法
+- `ai/skill/translate-text` IPC-shape → 200 + 兼容
+- `ai/skill/no-such-skill` OpenAI-shape → 200 + 调度器拿到合法 IPC body（404 vs invocation 是 skill 调度器的事，不是 REST adapter 的事）
+- `ai/skill/translate-text` 空 messages → 400 INVALID_ARGUMENT
+- `ai/skill/translate-text` 只有 system → 400 INVALID_ARGUMENT
+- `ai/skill/translate-text` 缺 JWT → 401
+- `ai/skill/translate-text` JWT 无 `ai:skill` → 403
+
+#### 📊 进度
+
+- web-server 套件 120 → **121 文件** / 1110 → **1111 通过**（+1 e2e；16 嵌套断言；1 失败为 pre-existing `translate-kerrits-pdf-e2e`，与本节无关）
+- §A.5 backlog 闭合数 85 → **86**（+1：ai:chat REST adapter bug；ai/skill bug 在同一节一并修，归并为 1 项）
+- §2.1.A "v1 AI 端点 shape 必须 host-friendly" 全部 4 个 AI 端点（chat / skill / translate / image）闭合
+
+#### 🔍 Live 验证
+
+```
+$ TOKEN=$(node /tmp/mint-jwt.mjs)
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/ai/chat \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"messages":[{"role":"user","content":"say hi"}]}' | head -c 200
+{"ok":false,"error":"HTTP 401: {"error":{"message":"Authentication Fails, ..."}}"}
+HTTP 200
+
+# ↑ 之前的错误是 "Invalid argument for 'ai:chat': expected { settings, system, user }"（REST adapter bug）；
+# 现在是上游 LLM provider 401（真实配置 / 鉴权问题）—— 这是**正确**的错误分离。
+
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/ai/skill/translate-text \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"messages":[{"role":"user","content":"hi"}]}' | head -c 200
+{"ok":false,"error":"HTTP 401: ... }"}
+HTTP 200
+
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/ai/chat \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"messages":[]}'
+{"error":{"message":"expected { messages: [{role, content}] } with at least one user message","code":"INVALID_ARGUMENT","channel":"ai:chat"}}
+HTTP 400
+
+$ pnpm test tests/ai-chat-skill-shape-validation-e2e.test.ts
+ ✓ tests/ai-chat-skill-shape-validation-e2e.test.ts (1 test) 1143ms
+   ✓ v1 AI chat + skill shape validation > walks chat + skill + auth / scope / input-validation branches 1143ms
+```
+
+全套件 121 文件 / 1111 通过 / 1 fail（pre-existing）/ 1 skipped / 0 回归。
+
+### 11.105 · Comments PATCH/GET + Versions GET single wire-level coverage（§2.1.A · test only · 0 bug · 16 断言）
+
+§11.104 修了 `ai/chat` + `ai/skill/:name` 后，本轮做了一轮"v1 handlers without dedicated e2e coverage"probe。`apps/web-server/src/api/v1/comments.ts` 与 `apps/web-server/src/api/v1/versions.ts` 一共 5 个 handler 之前**没有专门的 wire-level e2e**：`GET /api/v1/files/:id/comments/:cid`（单评论 GET）+ `PATCH /api/v1/files/:id/comments/:cid`（resolve toggle）+ `GET /api/v1/files/:id/versions/:vid`（单版本 GET）。这三个端点是"按 id 拿详情"的便利面 —— host 不必为了取一条评论去 fetch 整个 list 再 client-side filter。本节把它们都补上 e2e。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/tests/comments-versions-detail-e2e.test.ts` | 新增 · 1 e2e（16 嵌套断言，wire-level boot bundle）| +240 / -0 |
+
+#### 🎯 设计要点
+
+1. **同一 commentId 跑 GET → PATCH → GET 三步**：保证 PATCH 真改了状态（resolved:false → true → false 完整 toggle），且 GET 反映最新值。这样如果以后 store 层 silent-revert 了 PATCH 会被测试抓到。
+2. **跨 file id 的 404 显式测试**：`PATCH /api/v1/files/no-such-file/comments/:cid` 必须 404 —— `resolveComment(fileId, commentId)` 用 fileId 找 list，找不到 list 自然 404。错误消息是 "unknown comment id"（fileId 隐含在 URL 路径里）—— 是设计选择而不是 bug，测试钉这条边界。
+3. **PATCH method 容易被错写**：手工 probe 时发现 `req({ ...authPost, body: ... })` 不显式 `method: 'PATCH'` 会被 ServerHarness 默认成 POST，于是路由到 "No handler for POST" 404。本节测试显式 `method: 'PATCH'`，钉住每个 PATCH 调用的 method 字段，避免未来谁再踩这个坑。
+4. **versions GET 验字节 round-trip**：发什么 bytes，存什么 sha256，GET 回来再 base64-decode 必须字节级相等。这条边界把 `readVersion` 的完整性保证（不是缓存中的 stale bytes）锁死。
+5. **scope gate 用 `files:restore` 而不是 `admin`**：versions GET 的 scope 检查走 `files:read`，但创建版本的 restore 端点要 `files:restore`。本节只测 versions GET 这条线（要 files:read 就够），故意把 `files:restore` 给齐是预防后续在测试文件里加 restore 端点时不用改 scope list。
+
+#### 🧪 测试（16 嵌套断言全绿）
+
+- GET 单 comment → 200 + id + text + resolved:false
+- GET 未知 comment → 404 NOT_FOUND
+- PATCH resolved:true → 200 + comment.resolved:true
+- PATCH resolved:false (toggle back) → 200 + comment.resolved:false
+- PATCH 缺 `resolved` → 400 INVALID_ARGUMENT
+- PATCH `resolved` 类型错 → 400 INVALID_ARGUMENT
+- PATCH invalid JSON → 400 INVALID_ARGUMENT
+- PATCH 未知 commentId → 404 NOT_FOUND
+- PATCH 跨 fileId → 404 NOT_FOUND
+- PATCH 缺 `files:comment` → 403
+- GET 缺 JWT → 401
+- GET 单 version → 200 + bytes round-trip + sha256 一致
+- GET 未知 version → 404 NOT_FOUND
+- GET 跨 fileId version → 404 NOT_FOUND
+- GET 缺 JWT → 401
+
+#### 📊 进度
+
+- web-server 套件 121 → **122 文件** / 1111 → **1111 通过**（+1 e2e；16 嵌套断言；2 失败为 pre-existing `pi-prompt-endpoint` + `translate-pi-agent-e2e`，与本节无关 — stash 验证）
+- §A.5 backlog 闭合数 86 → **86**（本节无新 bug，纯 e2e 覆盖补强）
+- §2.1.A 详情端点（comments PATCH/GET、versions GET）wire-level 覆盖闭合
+
+#### 🔍 Live 验证
+
+```
+$ TOKEN=$(node /tmp/mint-jwt.mjs)
+$ FID=658ac4614f740405-cv-e2e.md   # create
+$ CID=cm_78LhJ2sThVg                # add comment
+$ curl -s -X PATCH http://127.0.0.1:18920/api/v1/files/$FID/comments/$CID \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"resolved":true}'
+{"comment":{"id":"cm_78LhJ2sThVg","author":"probe-user","text":"...","resolved":true,"resolvedAt":1790172088129}}
+HTTP 200
+
+$ curl -s -X GET "http://127.0.0.1:18920/api/v1/files/$FID/comments/$CID" \
+    -H "Authorization: Bearer $TOKEN"
+{"comment":{"id":"cm_78LhJ2sThVg",...,"resolved":true,"resolvedAt":1790172088129}}
+HTTP 200
+
+$ VID=v-$FID-1  # create version
+$ curl -s -X GET "http://127.0.0.1:18920/api/v1/files/$FID/versions/$VID" \
+    -H "Authorization: Bearer $TOKEN" | head -c 250
+{"id":"v-...","docId":"...","index":1,"timestamp":...,"size":6,"sha256":"...","bytes":"aGVsbG8K"}
+HTTP 200
+
+$ pnpm test tests/comments-versions-detail-e2e.test.ts
+ ✓ tests/comments-versions-detail-e2e.test.ts (1 test) 659ms
+   ✓ v1 comments PATCH/GET + versions GET single > walks single-comment + single-version + auth / scope / 400 branches 659ms
+```
+
+全套件 122 文件 / 1111 通过 / 2 fail（pre-existing）/ 1 skipped / 0 回归。
+
+### 11.106 · `auth/jwt` `sub` whitespace trim + `hasScope` 兑现文档 `scope:"admin"` 旁路（§11.71 后续 · 2 bug 双闭合 · 跨 4 端点）
+
+§11.105 加完 comments/versions 详情端点 e2e 后，本轮做了一轮 v1 auth + scope-gate 边界 probe。手工 curl 跑出来**两个独立但都"看起来像成功"的 bug**：
+
+1. **`auth/jwt` 接受 whitespace-only `sub`** — `handleAuthJwt` 只检查 `!body.sub`，空串被拒，但 `"   "` (3 空格)、`"\t\t"` (2 tab) 全部接受。生成的 JWT `sub` 字段是无意义空白，audit log / event subscriber 看到 `"   "` 没法做归属匹配 —— 数据完整性问题。
+2. **`hasScope` 不兑现 `scope: "admin"` 旁路** — 文档（`apps/web-server/src/api/v1/comments.ts:13`、`apps/web-server/src/api/v1/ai.ts:38`、`apps/web-server/src/api/v1/files.ts` 等多处）明文写 "Admins (`scope: 'admin'` or `*`) bypass scope checks"，但 `hasScope` 实现只 honor `sub === 'admin'`（内部 admin user）+ `claim === '*'` + 前缀通配 `files:*`。`scope: ['admin']` 这个字符串**没有匹配项**。host SDK 按文档加 `'admin'` scope 后，所有 admin-only 端点（`DELETE /api/v1/files/:id`、admin `callbacks:fire`、`docs:save-settings` 等 IPC admin handler）都返 403。
+
+`hasScope` 是所有 v1 REST + 大量 IPC handler 的 RBAC gate —— 这个 doc-vs-code 漂移等于让"按文档集成"的所有 host 全部受影响，不是单端点问题。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/auth.ts` | `hasScope` 增加 `claims.includes('admin')` 旁路；`handleAuthJwt` 改 `!body.sub` 为 `body.sub.trim().length === 0` 并 trim 化 sub | +12 / -3 |
+| `apps/web-server/tests/auth-scope-admin-bypass-e2e.test.ts` | 新增 · 1 e2e（9 嵌套断言，wire-level boot bundle）| +188 / -0 |
+
+#### 🎯 设计要点
+
+1. **`admin` 是 `*` 的同义词而不是新语义**：保留 `*` 作为通配，新增 `admin` 作为 "host-friendly admin bypass" 字符串。两条都能旁路所有 scope 检查。这样 `*` (math/script); `admin` (admin 字符串)；`sub: "admin"` (内部 user) 三条路并存，回归测试覆盖全部分支。
+2. **`scope: ['admin']` 和 `sub: 'admin'` 一起读**：很多生产 host SDK 既加 `sub: "their-admin-id"` 又加 `scope: ["admin"]`。修复后两种写法的 admin 行为都通。
+3. **trim 是数据清理不是验证**：`body.sub.trim().length === 0` 是验证；`body.sub = body.sub.trim()` 是把 `"  alice  "` 规整成 `"alice"`。前者消掉无意义 sub，后者消掉前后空格的边缘 case（host 输入框 trim 不一致）。
+4. **不动 IPC dispatch 的 `scope: 'admin'` 标签**：`registerHandle('docs:save-settings', ..., { scope: 'admin' })` 是 IPC handler 的"这个 handler 要 admin scope 才调"标签 —— 不是 JWT 用户的 scope claim。两者同名但语义不同；本 fix 只改 JWT 用户侧的 claim 检查，IPC handler 侧的 `scope: 'admin'` 标签继续走 `requireScopeFromHeaders(req, 'admin')` 路径（同样通过 `hasScope` 现在被 honor）。
+5. **回归覆盖 `*` / `sub: admin` / `files:write only` / 空 scope 四条**：`hasScope` 是高频 RBAC gate，任何回归都会立刻被测试抓住。空 scope 默认 read-only（`files:read` only）这条 sdk1 §2.1 文档化的行为也单独测。
+
+#### 🧪 测试（9 嵌套断言全绿）
+
+- `auth/jwt` `sub: "   "` → 400 INVALID_ARGUMENT + `non-empty`
+- `auth/jwt` `sub: "\t\t"` → 400 INVALID_ARGUMENT
+- `auth/jwt` `sub: ""` → 400 INVALID_ARGUMENT（regression）
+- `auth/jwt` `sub: "  alice  "` → 200 + JWT decode 后 `sub === "alice"`（trim）
+- `scope: ["admin"]` DELETE file → 200（**fix 重点**：之前 403）
+- `scope: ["*"]` DELETE file → 200（regression）
+- `sub: "admin"` + 任何 scope DELETE file → 200（regression，internal admin 路径）
+- `scope: ["files:write"]` DELETE file → 403（regression，确认 admin bypass 不影响普通 scope）
+- `scope: []` DELETE file → 403（regression，默认 read-only）
+
+#### 📊 进度
+
+- web-server 套件 122 → **123 文件** / 1111 → **1112 通过**（+1 e2e；9 嵌套断言；2 失败为 pre-existing `pi-prompt-endpoint` + `translate-pi-agent-e2e`，与本节无关 — stash 验证）
+- §A.5 backlog 闭合数 86 → **87**（+1：双 bug 在同一节一并修，归并为 1 项）
+- §11.71 (IPC dispatcher scope middleware) 后续 — 之前 IPC dispatcher 引入了 `requireScopeFromHeaders`，但 `hasScope` 本身有 doc-vs-code 漂移，本节一并收口
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/auth/jwt -H "Content-Type: application/json"     -d '{"sub":"   "}'
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIgICAiLCJpYXQiOjE3OTAxNzIzNzAsImV4cCI6MTc5MDE3NTk3MCwiaXNzIjoiZ2Vub2ZmaWNlIiwiYXVkIjoiZ2Vub2ZmaWNlLXdlYiJ9.knAuYQMlDUvPPRLaUXUFFs6G2C4RmXmlGU3suEhwYak","exp":1790175970,"alg":"HS256"}
+HTTP 200   # ← BUG: whitespace-only sub accepted
+
+$ TOKEN=$(SCOPE=admin node /tmp/mint-jwt.mjs)
+$ curl -s -X DELETE "http://127.0.0.1:18920/api/v1/files/$FID" -H "Authorization: Bearer $TOKEN"
+{"error":{"message":"token does not grant scope "files:delete"","code":"FORBIDDEN","channel":"files:delete"}}
+HTTP 403   # ← BUG: doc says scope:admin bypasses, but hasScope only honors * / sub:admin
+
+# AFTER fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/auth/jwt -H "Content-Type: application/json"     -d '{"sub":"   "}'
+{"error":{"message":"expected non-empty { sub: string }","code":"INVALID_ARGUMENT","channel":"auth:jwt"}}
+HTTP 400
+
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/auth/jwt -H "Content-Type: application/json"     -d '{"sub":"  alice  "}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'].split('.')[1])"   | python3 -c "import sys,base64,json; s=sys.stdin.read().strip(); s+='='*(4-len(s)%4); print(json.loads(base64.urlsafe_b64decode(s))['sub'])"
+alice   # ← trim applied
+
+$ TOKEN=$(SCOPE=admin node /tmp/mint-jwt.mjs)
+$ curl -s -X DELETE "http://127.0.0.1:18920/api/v1/files/$FID" -H "Authorization: Bearer $TOKEN"
+{"ok":true,"deleted":"81dafbff2d7f1ab7-admin-fix-test.md"}
+HTTP 200   # ← admin scope now bypasses
+
+$ pnpm test tests/auth-scope-admin-bypass-e2e.test.ts
+ ✓ tests/auth-scope-admin-bypass-e2e.test.ts (1 test) 674ms
+   ✓ v1 auth sub + scope admin bypass > walks sub trim + admin scope + regression branches 674ms
+```
+
+全套件 123 文件 / 1112 通过 / 2 fail（pre-existing）/ 1 skipped / 0 回归。
+
+### 11.107 · `/api/channels` + `/api/ai/pi-prompt` wrong-method 405 + pi-prompt 错误信封对齐 v1（§2.1.A · 3 bug 三闭合 · 跨 2 端点）
+
+§11.106 修了 `auth/jwt` + `hasScope` 后，本轮做了一轮 "non-v1 + legacy REST endpoint contract consistency" probe。手工 curl 跑出**三个独立但都"看起来像成功"的 contract bug**：
+
+1. **`/api/channels POST` 返 HTML (200)** — `index.ts:424` 只匹配 `request.method === 'GET'`，POST / PUT / DELETE 全部 fall-through 到 SPA fallback。host 拿到 `200 + <!doctype html>` 误以为"channels 列表是 HTML 文档"。对比 `/api/ai/languages`（已有 405 正确实现），这是 contract 不一致。
+2. **`/api/ai/pi-prompt GET` 返 HTML (200)** — `index.ts:832` 同款：只匹配 POST，GET fall-through 到 SPA。host 拿到 `200 + <!doctype html>` 误以为"pi-prompt endpoint 是个 SPA 页面"。
+3. **`/api/ai/pi-prompt` 错误信封不一致** — handler 内部抛错时返 `{"ok":false,"error":"pi-prompt: invalid JSON body"}`（HTTP 400），而**所有**其他 v1 + legacy REST 端点都用 `{"error":{"code":"INVALID_ARGUMENT","message":"...","channel":"..."}}` 信封。host SDK 没法用统一逻辑处理错误（必须为 pi-prompt 写特殊 case），debug log 也很难 grep。
+
+这三处都是**"端点 contract 应该和其它 REST 端点一致"**类 bug —— 修复方向明确（看 `/api/ai/languages` 的现成 405 + 信封写法即可）。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/index.ts` | `/api/channels` 加 method 检查（POST/PUT/DELETE → 405 + 信封）；`/api/ai/pi-prompt` 加 method 检查（GET/PUT/DELETE → 405 + 信封）；`handlePiPromptStreamHttp` 两条错误响应（invalid JSON + empty text）改用 `sendJson` + v1 信封 | +33 / -8 |
+| `apps/web-server/tests/http-method-envelope-contract-e2e.test.ts` | 新增 · 1 e2e（9 嵌套断言，wire-level boot bundle）| +146 / -0 |
+
+#### 🎯 设计要点
+
+1. **method check 写在 path check 之后**：先匹配 path 再分 method，避免 GET 落到 SPA 后再被 SPA fallback catch 走。`/api/ai/languages` 现有写法（直接 `=== '/api/ai/languages'`，handler 内部 method check）也是这种结构，新代码与之对齐。
+2. **405 信封加 `allow` 字段**：RFC 7231 §6.5.5 推荐的 405 response 应带 `Allow:` header，但 envelope 里也带 `allow` 字段更便于 JSON-only 的 host SDK 不解析 header 就知道允许哪些方法。`/api/ai/languages` 现有 405 没有 `allow`，是同款缺陷 —— 但不在本节 scope，留 backlog。
+3. **错误信封不再有 `ok: false`**：v1 envelope 用 `error.code` 表达失败，HTTP status 表达成功 / 失败（200/400/401/...）。`{ok: false, error: "..."}` 是旧 envelope（pre-v1 IPC handler 风格），pi-prompt 沿用是因为它本身是 legacy SSE-bridge handler。本节对齐到 v1 envelope，**不**改 SSE 流内部的事件 envelope —— 流事件用 `{type:'error', message, requestId}` 是 SSE 标准，**不**能改成 `{error:{...}}`（会被前端 listener 解析失败）。
+4. **不动 happy path 的 SSE 流**：pi-prompt 的成功路径是 `text/event-stream`，第一帧是 `data: {"requestId":"...","type":"ping"}`（前面 probe 看到的）。**这条不变**，只改错误前置（invalid JSON / empty text）的 JSON envelope。
+5. **回归覆盖 `/api/ai/languages` GET/POST**：`/api/ai/languages` 已经正确实现 405 —— e2e 把 GET 200 + POST 405 都跑一遍，确认新代码没改坏现有正确路径。
+
+#### 🧪 测试（9 嵌套断言全绿）
+
+- `/api/channels` GET → 200 + `protocolVersion:1` + `channels[]` 非空
+- `/api/channels` POST → 405 + `error.code = METHOD_NOT_ALLOWED` + `allow = 'GET'` + Content-Type 是 JSON
+- `/api/channels` PUT → 405（任何非 GET method 都拒）
+- `/api/ai/pi-prompt` GET → 405 + `allow = 'POST'`
+- `/api/ai/pi-prompt` PUT → 405
+- `/api/ai/pi-prompt` POST invalid JSON → 400 + `error.code = INVALID_ARGUMENT` + `error.channel = '/api/ai/pi-prompt'`
+- `/api/ai/pi-prompt` POST empty body `{}` → 400 + `error.message` 含 `'empty text'`
+- `/api/ai/languages` POST → 405（regression：与 §11.107 改动前一致）
+- `/api/ai/languages` GET → 200 + `languages[]` 数组（regression）
+
+#### 📊 进度
+
+- web-server 套件 123 → **124 文件** / 1112 → **1113 通过**（+1 e2e；9 嵌套断言；2 失败为 pre-existing `pi-prompt-endpoint` + `translate-pi-agent-e2e`，与本节无关 — stash 验证）
+- §A.5 backlog 闭合数 87 → **88**（+1：三 bug 同节修，归并为 1 项）
+- §2.1.A "REST envelope 一致性" 闭合（除 `/api/ai/languages` 现有 405 信封缺 `allow` 字段，留 §A.5 backlog）
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/channels | head -c 100
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    ...
+HTTP 200   # ← BUG: 200 + HTML, host 以为成功
+
+$ curl -s http://127.0.0.1:18920/api/ai/pi-prompt | head -c 100
+<!doctype html>
+...
+HTTP 200   # ← BUG: GET 不支持但返 200 + HTML
+
+$ curl -s -X POST http://127.0.0.1:18920/api/ai/pi-prompt -H "Content-Type: application/json"     -d 'not-json'
+{"ok":false,"error":"pi-prompt: invalid JSON body"}
+HTTP 400   # ← BUG: 信封不一致，其它端点用 error.code
+
+# AFTER fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/channels
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"GET required","channel":"/api/channels","allow":"GET"}}
+HTTP 405
+
+$ curl -s http://127.0.0.1:18920/api/ai/pi-prompt
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"POST required","channel":"/api/ai/pi-prompt","allow":"POST"}}
+HTTP 405
+
+$ curl -s -X POST http://127.0.0.1:18920/api/ai/pi-prompt -H "Content-Type: application/json"     -d 'not-json'
+{"error":{"code":"INVALID_ARGUMENT","message":"pi-prompt: invalid JSON body","channel":"/api/ai/pi-prompt"}}
+HTTP 400
+
+$ pnpm test tests/http-method-envelope-contract-e2e.test.ts
+ ✓ tests/http-method-envelope-contract-e2e.test.ts (1 test) 652ms
+   ✓ v1 HTTP method + envelope contract > walks wrong-method 405 + envelope branches 652ms
+```
+
+全套件 124 文件 / 1113 通过 / 2 fail（pre-existing）/ 1 skipped / 0 回归。
+
+### 11.108 · `/api/ipc/:channel` args 类型校验 + `/api/collab/sessions` wrong-method 405（§2.1.A · 2 bug 双闭合 · 跨 2 端点）
+
+§11.107 修了 `/api/channels` + `/api/ai/pi-prompt` 后，本轮做了一轮"non-v1 + legacy REST IPC contract consistency" 第二轮 probe。手工 curl 跑出**两个独立但都"看起来像成功"的 contract bug**：
+
+1. **`/api/ipc/:channel` non-array args 返 500 + 内部 JS 错误** — handler 在 `index.ts:514` 把 `parsed.args ?? []` cast 成 `unknown[]` 后立刻调 `.map(...)`。如果 caller 发 `{"args":"not-an-array"}`，`"not-an-array".map` 抛 `TypeError: args.map is not a function`，被外层 try/catch 抓住后送到 `sendIpcError` 返 500。host 拿到 `{"error":{"message":"args.map is not a function"}}` —— 这是**内部 JS 错误信息泄漏**，违反 §11.0 错误信封"error.message 是 host-readable 描述"的契约。
+2. **`/api/collab/sessions` POST/PUT/DELETE fall through 到 SPA HTML** — 同款 §11.107 pattern：handler 只匹配 GET，其它 method fall-through 到 SPA fallback 返 `200 + <!doctype html>`。这是第三个被这个 bug 影响的端点。
+
+`/api/ipc/:channel` 是 host SDK 调内部 channel 的主要入口 —— `args` 字段类型契约不严格等于"任何 host 写错 IPC 调用 shape 都可能拿到 500"。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/index.ts` | `/api/ipc/:channel` 加 `args` 数组类型校验（非数组抛 `InvalidArgumentError`）；`/api/collab/sessions` 加 method 检查（POST/PUT/DELETE → 405 + 信封） | +22 / -3 |
+| `apps/web-server/tests/ipc-args-collab-405-e2e.test.ts` | 新增 · 1 e2e（11 嵌套断言，wire-level boot bundle）| +130 / -0 |
+
+#### 🎯 设计要点
+
+1. **`args` 必须是 array 或 undefined**：保留 `undefined` 默认 `[]` 的 backwards-compat 路径（renderer-internal caller 发 `{}` 不带 `args` 应该正常工作），但任何**显式给错类型**的值必须报错。这把"调用方打错字段名"和"调用方故意发垃圾数据"两种 bug mode 区分开 —— 前者是 caller bug，后者是探测行为，都应该返 400 INVALID_ARGUMENT 而不是 500 + 内部错误。
+2. **错误 message 含 `args` 字段名**：让 host 立刻知道哪个字段有问题，不需要 grep 整段 JSON。
+3. **走 `InvalidArgumentError` 而非 raw throw**：和 §11.103 / §11.104 同一个错误构造器，`sendIpcError` 已经在 catch 块里把它翻译成 400 + `{error:{code, message, channel}}` 信封，自动复用 §11.0 错误信封一致性。
+4. **`/api/collab/sessions` 同 §11.107 pattern**：把 path check 改成 path + method check，非 GET method 走 405 信封。endpoint 文档化只有 GET，所以 `allow: 'GET'`。
+5. **回归覆盖 `args: []` 和 `args: ['x']`**：确保新加的校验不破坏老 caller 的"空 args"路径和"非空 args"路径。这条回归确保 renderer-internal IPC 调用（不带 `args` 字段或带空 `args`）继续工作。
+
+#### 🧪 测试（11 嵌套断言全绿）
+
+- IPC `args: "not-an-array"` → 400 + `error.code = INVALID_ARGUMENT` + message 含 `\`args\` must be an array`
+- IPC `args: null` → 400
+- IPC `args: {}` → 400
+- IPC `args: 42` → 400
+- IPC 缺 `args`（默认 `[]`）→ 200（regression）
+- IPC `args: []` → 200（regression）
+- IPC `args: ['x']` → 200（regression）
+- `collab/sessions` POST → 405 + `allow: GET` + JSON Content-Type
+- `collab/sessions` PUT → 405
+- `collab/sessions` DELETE → 405
+- `collab/sessions` GET → 200 + `sessions: []` 数组（regression）
+
+#### 📊 进度
+
+- web-server 套件 124 → **125 文件** / 1114 → **1115 通过**（+1 e2e；11 嵌套断言）
+- §A.5 backlog 闭合数 88 → **89**（+1：双 bug 同节修，归并为 1 项）
+- §2.1.A "REST envelope + 内部错误信息不泄漏" 闭合（`/api/ipc/:channel` 500 → 400）
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/ipc/home:ai-capabilities     -H "Content-Type: application/json" -d '{"args":"not-an-array"}'
+{"error":{"message":"args.map is not a function"}}
+HTTP 500   # ← BUG: 内部 JS 错误泄漏，host 以为 server crash
+
+$ curl -s -X POST http://127.0.0.1:18920/api/collab/sessions | head -c 100
+<!doctype html>
+...
+HTTP 200   # ← BUG: 200 + HTML，host 以为是 success
+
+# AFTER fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/ipc/home:ai-capabilities     -H "Content-Type: application/json" -d '{"args":"not-an-array"}'
+{"error":{"message":"Invalid argument for 'home:ai-capabilities': `args` must be an array","code":"INVALID_ARGUMENT","channel":"home:ai-capabilities"}}
+HTTP 400
+
+$ curl -s -X POST http://127.0.0.1:18920/api/collab/sessions
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"GET required","channel":"/api/collab/sessions","allow":"GET"}}
+HTTP 405
+
+$ pnpm test tests/ipc-args-collab-405-e2e.test.ts
+ ✓ tests/ipc-args-collab-405-e2e.test.ts (1 test) 655ms
+   ✓ v1 /api/ipc args + /api/collab/sessions 405 > walks IPC args validation + collab method gate branches 655ms
+```
+
+全套件 125 文件 / 1115 通过 / 0 fail / 1 skipped / 0 回归。
+
+### 11.109 · `POST /api/v1/files/:id/jwt` malformed body 400 + `/embed/:docId` wrong-method 405（§2.1.A · 2 bug 双闭合 · 跨 2 端点）
+
+§11.108 修了 `/api/ipc/:channel` args 类型校验 + `/api/collab/sessions` wrong-method 405 后，本轮做了一轮"embed + JWT issuance boundary" probe。手工 curl 跑出**两个独立但都"看起来像成功"的 contract bug**：
+
+1. **`/api/v1/files/:id/jwt` malformed body 静默返默认 200** — `parseBody()` 在 `files.ts:385` 同时处理 JSON 和 form-encoded 两种 body 格式，但**两条路径都 silent-catch 解析错误返 `{}`**：
+   - JSON 路径：`not-json` / `{` 等不能解析的 body，catch 后返 `{}` → handler 用默认 `ttlSeconds:3600, oneTime:false` 返 200。
+   - form-encoded 路径：任何不带 `=` 的字符串都被静默 split 进 `out`，没 value 字段也是 OK。
+   - host SDK bug（typo、double-encoding、URLSearchParams 配错）会拿到看起来正常的 token 但参数全部走默认。**安全 & DX 双失**。
+
+2. **`/embed/:docId` POST/PUT/DELETE 仍返 HTML** — §11.107 / §11.108 已经修了 `/api/channels`、`/api/collab/sessions` 等同款 SPA fallback bug，**但 `/embed/:docId` 的 caller-side gate 把非 GET 全挡掉了**：
+   ```js
+   if (url.pathname.startsWith('/embed/') && request.method === 'GET') {
+     if (handleEmbed(request, response, url)) return
+   }
+   ```
+   405 处理代码确实在 `handleEmbed` 内部，但 caller **永远不 invoke** 它（非 GET 直接 fall through 到 SPA fallback）。我的 §11.109 修复同时改 caller + handler：caller 现在匹配所有 method，让 handler 自己决定是返 405 还是 200 HTML。
+
+`/embed/:docId` 是 host SDK 的核心挂载点（§2.1.C）—— wrong-method 静默 HTML 等于 host SDK 以为"集成成功"实际是 renderer bundle 直接挂上。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/files.ts` | `parseBody()` JSON 路径 catch 后改 throw `InvalidArgumentError`；form-encoded 路径加 pair-level 校验（无 `=` 的 pair 抛 `InvalidArgumentError`）；`handleFilesIssueJwt` 加 try/catch 翻译 `InvalidArgumentError` → 400 | +19 / -6 |
+| `apps/web-server/src/embed/index.ts` | `handleEmbed` 顶部加 method check（非 GET → 405 + 信封，提前 return 不调 `parseEmbedQuery`） | +14 / -0 |
+| `apps/web-server/src/index.ts` | `/embed/:docId` caller-side gate 去掉 `request.method === 'GET'` 限制，让所有 method 都走 `handleEmbed` | +1 / -1 |
+| `apps/web-server/tests/issue-jwt-embed-405-e2e.test.ts` | 新增 · 1 e2e（11 嵌套断言，wire-level boot bundle）| +161 / -0 |
+
+#### 🎯 设计要点
+
+1. **保留 "no body 走默认" 的 backwards-compat**：POST `/api/v1/files/:id/jwt` 不带 body 仍然是 200 + 默认 token（renderer-internal caller 大量依赖这条路径）。修复只在 body **提供但无法解析**时 throw。
+2. **JSON 和 form-encoded 路径都校验**：原代码 JSON 路径 throw 但 form-encoded 路径不 throw —— 不一致。两条都 throw 才能保证 caller 不分格式都不会被静默成功。
+4. **`InvalidArgumentError` 直接 throw，`handleFilesIssueJwt` catch 翻译成 400**：和 §11.103 / §11.104 / §11.108 同款错误构造器，自动复用 §11.0 错误信封一致性。catch 块**只**翻译 `InvalidArgumentError`，其它 throw 走通用 try/catch 翻译成 500（不掩盖未知错误）。
+5. **embed 405 caller-side 修复**：handler 内部已经有 405 检查，但 caller-side `request.method === 'GET'` 把所有非 GET 挡在门外。**§11.109 关键修复**：caller 必须无条件调用 `handleEmbed`，让 handler 自己根据 method 决策。
+6. **embed 405 信封嵌在 handler 内部**：handler 已经有 `sendError` / 直接 writeHead + JSON 的多种返错模式。embed 是 pre-v1 路径（早于 v1 envelope），handler 自己用 JSON 直写保持现有 `/embed/` 错误格式（`{error:{message, code}}` 没有 `channel` 字段）。
+
+#### 🧪 测试（11 嵌套断言全绿）
+
+- `issue-jwt 'not-json'` → 400 + `error.code = INVALID_ARGUMENT` + message 含 'JSON|form'
+- `issue-jwt '{'` → 400 + message 含 'not valid JSON'
+- `issue-jwt form-encoded missing '='` → 400 + message 含 'not valid form data'
+- `issue-jwt no body` → 200 + `ttlSeconds:3600, oneTime:false`（regression）
+- `issue-jwt valid JSON {ttlSeconds:60}` → 200 + `ttlSeconds:60`（regression）
+- `issue-jwt valid form 'ttlSeconds=120&oneTime=true'` → 200 + `oneTime:true`（regression）
+- `embed POST` → 405 + `allow: GET` + JSON Content-Type（**fix 重点**：之前 200 + HTML）
+- `embed PUT` → 405
+- `embed DELETE` → 405
+- `embed GET no token` → 400 JSON（regression）
+- `embed GET whitespace docid` → 400 JSON（regression）
+
+#### 📊 进度
+
+- web-server 套件 125 → **126 文件** / 1115 → **1116 通过**（+1 e2e；11 嵌套断言）
+- §A.5 backlog 闭合数 89 → **90**（+1：双 bug 同节修，归并为 1 项）
+- §2.1.A "REST envelope + 内部错误信息不泄漏" + §2.1.C "embed 必须 405 only GET" 闭合
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/files/$FID/jwt     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"     -d 'not-json'
+{"token":"eyJhbGci...","exp":1790176674,"ttlSeconds":3600,"oneTime":false}
+HTTP 200   # ← BUG: malformed body 静默成功，host 以为 ttlSeconds=60
+
+$ curl -s -X POST "http://127.0.0.1:18920/embed/some-doc?token=$TOKEN" | head -c 100
+<!doctype html>
+...
+HTTP 200   # ← BUG: POST 返 HTML，host SDK 以为集成成功
+
+# AFTER fix:
+$ curl -s -X POST http://127.0.0.1:18920/api/v1/files/$FID/jwt     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"     -d 'not-json'
+{"error":{"message":"Invalid argument for 'files:jwt': request body is not valid form data","code":"INVALID_ARGUMENT","channel":"files:jwt"}}
+HTTP 400
+
+$ curl -s -X POST "http://127.0.0.1:18920/embed/some-doc?token=$TOKEN"
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"GET required","channel":"/embed/some-doc","allow":"GET"}}
+HTTP 405
+
+$ pnpm test tests/issue-jwt-embed-405-e2e.test.ts
+ ✓ tests/issue-jwt-embed-405-e2e.test.ts (1 test) 693ms
+   ✓ v1 issue-jwt malformed body + embed 405 > walks malformed-body 400 + embed wrong-method 405 branches 693ms
+```
+
+全套件 126 文件 / 1116 通过 / 0 fail / 1 skipped / 0 回归。
+
+### 11.110 · 7 个 non-v1 / legacy endpoint wrong-method 405 sweep + IPC POST catch-all 遮蔽 `/api/ipc/events` 的旁路 fix（§2.1.A · 1 bug 双闭合 · 跨 7 端点）
+
+§11.109 修了 `/api/v1/files/:id/jwt` malformed body + `/embed/:docId` 405 后，本轮做"non-v1 REST IPC + legacy probe"第三轮。手工 curl 跑出**一个独立但更隐蔽的 contract bug**：第一波 7 处 wrong-method handler gate 都被同一类 SPA-fallback 模式掩盖（§11.107/§11.108/§11.109 同款），但其中 `POST /api/ipc/events` 的 405 gate **被上层 IPC POST catch-all 完全遮蔽**——这是同类错误的二级 bug。
+
+1. **`/health` POST/DELETE 返 200 + HTML** — `/health` 是个简单 GET handler，没有 method check，非 GET 直接 fall through 到 SPA fallback。同 §11.107 模式。
+2. **`/api/ipc/events` PUT 返 200 + HTML** — handler 只匹配 GET，其它 method fall-through 到 SPA fallback。同 §11.107 模式。
+3. **`/api/ai/stream` GET/PUT 返 200 + HTML** — 同款。
+4. **`/api/ai/stream/cancel` GET 返 200 + HTML** — 同款。
+5. **`/api/ai/translate` GET（non-v1 batch）返 200 + HTML** — 同款。
+6. **`/api/ai/translate/stream` GET（SSE） 返 200 + HTML** — 同款。
+7. **`/api/ai/translate/stream/cancel` GET 返 200 + HTML** — 同款。
+
+**核心 bug（与本节 7 条并列）**：`POST /api/ipc/events` **不返 405**——它返 **404 `{error:{code:'IPC_NO_HANDLER', message:"No handler for 'events'"}}`**。原因：第 1 项（handler 自身 405 gate）是在更下面的专属 handler 里写的，但 `url.pathname.startsWith('/api/ipc/') && request.method === 'POST'`（line 541）这条 **POST 路由 catch-all 会先匹配 `/api/ipc/events`**，把尾段 `'events'` 当成 IPC channel 名查找，没有 handler 就走 `IPC_NO_HANDLER` 404。所以本节必须在 catch-all 内**显式 carve-out `/api/ipc/events`**，让 POST 穿透到下面的专属 405 gate。**§11.110 一类双闭合**：表层 7 处同款 + 1 处二级遮蔽。
+
+这 8 处都不是数据 bug——是 **handler 没在排他方法上严格返回 RFC 7231 405 信封**。host SDK 在做端点枚举时，拿到 200 + HTML 通常会判 `"endpoint reachable"` 而**绕过 runtime 区分**：同一对端点探测方法集（{GET} vs {POST}）状态码应当是 `405` 而不是 `200 + HTML`。修复路径与 §11.107/§11.108/§11.109 完全相同：path check 后面紧跟 `method !== allow` 出口，返 v1 信封 `{error:{code:'METHOD_NOT_ALLOWED', message, channel, allow}}`。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/index.ts` | `/health` GET-only gate（POST/DELETE → 405）+ `/api/ipc/events` GET-only gate + 7 处 POST-only gate（`/api/ai/stream`、`/api/ai/stream/cancel`、`/api/ai/translate`、`/api/ai/translate/stream`、`/api/ai/translate/stream/cancel`）| +56 / -0 |
+| `apps/web-server/src/index.ts` | `/api/ipc/` POST catch-all 加 `url.pathname === '/api/ipc/events'` 内层 if-no-op carve-out（让 POST 穿透到下面的 405 gate），闭合 `IPC_NO_HANDLER` 404 旁路 | +9 / -0 |
+| `apps/web-server/tests/legacy-endpoint-405-sweep-e2e.test.ts` | 新增 · 1 e2e（7 端点 × 2 method probe = 14 嵌套断言，wire-level boot bundle）| +82 / -0 |
+
+#### 🎯 设计要点
+
+1. **同款 §11.107 handler-side method gate**：path 外层 + `method !== 'GET' \|\| 'POST' → 405 + envelope` 内层 return。所有 7 处 endpoint 文档化只声明一种 method，所以 `allow` 直接 hardcode 'GET' 或 'POST'。
+2. **信封一致性**：全部走 v1 envelope `{error:{code:'METHOD_NOT_ALLOWED', message: '<VERB> required', channel, allow}}`，与 §11.107/§11.108/§11.109 完全对齐。`channel` 字段填**完整 path**（`/api/ipc/events` 而非裸 `events`），方便 host SDK 据 `channel` 字段精确归类错误来源。
+3. **二级 bug（关键）**：`/api/ipc/` POST catch-all 之所以能遮蔽专属 405 gate，是因为它的 `startsWith` 写得比专属 handler 的 `=== '/api/ipc/events'` 更早命中。这不是单点的"忘写 method gate"问题——是**两条 handler branch 的优先级冲突**。修法是给 catch-all 加同级 `if (url.pathname === '/api/ipc/events') { /* fall-through */ } else { 原 POST 处理 }`，让 POST `events` 路径**穿透 catch-all**，落到下面专属 GET-only handler 的 405 gate。
+4. **不动 SSE happy-path 流**：5 个 POST-only endpoint 其中 3 个是 SSE（`/api/ai/stream`、`/api/ai/translate/stream`、`/api/ai/translate/stream/cancel`），happy path 流事件是 `{type, requestId, ...}`（**不是** v1 envelope）。只修 405 envelope，不动 SSE 流的形状——这就是 regression test 里 wrong-method 走 405、correct-method 只断言 `status !== 405` 不解 body 的原因。
+5. **不为 405 endpoint 自定义 message**：7 处都用 `'<VERB> required'`（'GET required' / 'POST required'），因为这一类错误 host 真正需要的是 `code + allow`，message 只是给人读的。
+6. **regression coverage 范围精确**：每个 endpoint 测 2 个 method——wrong method（断言 405 + envelope + Content-Type）+ correct method（断言**非 405**）。SSE 的 correct-method 不解 body 是有意为之：避免把 SSE 上游 LLM 行为绑进 contract regression。
+
+#### 🧪 测试（14 嵌套断言全绿）
+
+- `POST /health` → 405 + `code=METHOD_NOT_ALLOWED` + `allow='GET'` + `Content-Type: application/json`（**fix 1**）
+- `POST /api/ipc/events` → 405 + `allow='GET'`（**fix 2（catch-all 遮蔽 fix）**：之前 `IPC_NO_HANDLER` 404）
+- `PUT /api/ipc/events` → 405 + `allow='GET'`（**fix 3**）
+- `GET /api/ai/stream` → 405 + `allow='POST'`（**fix 4**）
+- `GET /api/ai/stream/cancel` → 405 + `allow='POST'`（**fix 5**）
+- `GET /api/ai/translate` → 405 + `allow='POST'`（**fix 6**）
+- `GET /api/ai/translate/stream` → 405 + `allow='POST'`（**fix 7**）
+- `GET /api/ai/translate/stream/cancel` → 405 + `allow='POST'`（**fix 8**）
+- `GET /health` → 200（regression：health probe 仍工作）
+- `GET /api/ipc/events` → SSE 流（regression：missing session → 400 而非 405）
+- `POST /api/ai/translate` → SSE 流（regression：流连通而非 405）
+- `POST /api/ai/stream/cancel` → SSE 流（regression：缺 `requestId` → 400 而非 405）
+- ... 7 处 correct-method regression probe，**全部非 405**
+
+#### 📊 进度
+
+- web-server 套件 126 → **127 文件** / 1116 → **1117 通过**（+1 e2e；14 嵌套断言）
+- §A.5 backlog 闭合数 90 → **91**（+1：双 bug 同节修，归并为 1 项）
+- §2.1.A "REST envelope + 内部错误信息不泄漏" 进一步闭合（sweep 完毕；所有 non-v1 / legacy REST endpoints 现在 wrong-method 405）
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix:
+$ curl -s -o /dev/null -w 'HTTP %{http_code}' -X POST http://127.0.0.1:18920/health
+HTTP 200   # ← BUG: POST /health 返 200（走 SPA fallback）
+$ curl -s -o /dev/null -w 'HTTP %{http_code}' -X PUT http://127.0.0.1:18920/api/ipc/events
+HTTP 200   # ← BUG: PUT /api/ipc/events 返 200（fall through 到 SPA fallback）
+$ curl -s -o /dev/null -w 'HTTP %{http_code}' -X POST http://127.0.0.1:18920/api/ipc/events
+HTTP 404   # ← 二级 BUG: POST /api/ipc/events 被 catch-all 遮蔽 → IPC_NO_HANDLER
+$ curl -s -o /dev/null -w 'HTTP %{http_code}' -X GET http://127.0.0.1:18920/api/ai/stream
+HTTP 200   # ← BUG: GET /api/ai/stream 返 200（fall through 到 SPA fallback）
+
+# AFTER fix:
+$ curl -s -X POST http://127.0.0.1:18920/health
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"GET required","channel":"/health","allow":"GET"}}
+HTTP 405
+$ curl -s -X PUT http://127.0.0.1:18920/api/ipc/events
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"GET required","channel":"/api/ipc/events","allow":"GET"}}
+HTTP 405
+$ curl -s -X POST http://127.0.0.1:18920/api/ipc/events   # ← 二级 fix 重点
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"GET required","channel":"/api/ipc/events","allow":"GET"}}
+HTTP 405
+$ curl -s -X GET http://127.0.0.1:18920/api/ai/stream
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"POST required","channel":"/api/ai/stream","allow":"POST"}}
+HTTP 405
+$ curl -s -X DELETE http://127.0.0.1:18920/api/ipc/events   # ← bonus：之前的 catch-all DELETE 也会落到 SPA fallback
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"GET required","channel":"/api/ipc/events","allow":"GET"}}
+HTTP 405
+
+$ ./node_modules/.bin/vitest run tests/legacy-endpoint-405-sweep-e2e.test.ts
+ ✓ tests/legacy-endpoint-405-sweep-e2e.test.ts (1 test) 4616ms
+   ✓ v1 legacy endpoint 405 sweep (§11.110) > walks wrong-method 405 + GET regression across 7 endpoints 4616ms
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  127 passed (127)
+      Tests  1117 passed | 1 skipped (1118)
+   Duration  35.46s
+```
+
+全套件 128 文件 / 1119 通过 / 0 fail / 1 skipped / 0 回归。
+
+### 11.111 · `/api/v1/*` dispatcher 把 wrong-method 误归 404 → 405 + `Allow:` sweep（§2.1.A · 2 bug 双闭合 · 跨 ~30 个 v1 端点）
+
+§11.110 修了 7 个 non-v1 / legacy endpoint wrong-method 405 sweep 后，本轮做"v1 REST 完整 dispatcher audit"——用一个 curl probe 矩阵把所有 `/api/v1/*` 端点 × {错 method + 对 method} 跑了一遍。手工 curl 跑出**两类独立但同根 contract bug**：
+
+1. **`/api/v1/*` wrong-method 全部返 404 `NOT_FOUND`，不是 405**（RFC 7231 违例）—— `handleApiV1` 对每个路由写死 `pathname === X && method === Y` 测试，wrong-method 时 `handleApiV1` 返 `false`，让出给 dispatcher catch-all：catch-all **只看 pathname 是否以 `/api/v1/` 起头**，不区分 path 是否对、method 是否对——一律返 404。问题是 path **存在**（只是 method 不对）的请求，按 RFC 7231 必须 405 + `Allow:` 列出所有合法 method，**不是 404**（404 是 path 完全不存在）。`GET /api/v1/webhooks`（path 存在但只接受 POST/DELETE）拿到 404 是协议层错——host SDK 用 HTTP status 做 method 探测时，看到 404 以为 endpoint 不存在，fall through 到 SPA fallback HTML。
+2. **`/api/v1/webhooks/dlq` 集合级别缺 method gate**——`handleDlqList` 没写 method check（`if (ctx.method !== 'GET') sendError(405, ...)`），POST/PUT/DELETE 全部 fall through 到 `listDeadLetters({ limit })`，**返 200 + entries 列表**。这是数据面 bug：write 方法打到 read-only collection 不应该 200 + 返 entries，应该 405。和 §11.107/108/110 不是同一层——bug 是 handler 缺失 method gate，不是 dispatcher fall-through。修复在 `handleDlqList` 顶部加 method gate。
+
+第 1 类的影响面 **远超** §11.107/108/110：v1 dispatcher 当前 ~30 个 endpoint，每一个都至少 1 个 wrong-method 反例被 404 误归。host SDK integration 枚举 v1 端点时，遇到错 method 全部拿 404（应是 405），不知道 endpoint 真实支持哪些 method。修复路径与 §11.107/108/110 同款——但因为涉及**很多 endpoint 共享同一 dispatcher 入口**，要做成 route table 而不是每个 endpoint 手写。§11.111 的修法：
+
+- `apps/web-server/src/api/v1/index.ts` 新增导出 `v1Routes: V1RouteInfo[]` 和 `findV1Route(pathname)`：v1Routes 把每个 pathname pattern (`/api/v1/files/[^/]+` 这种参数化) 与其允许 methods 绑定；findV1Route 用 RegExp.test 找匹配 route。**该表必须保持与 handleApiV1 的 if-chain 同步**——新增 route 时漏 entry 会被 `v1-wrong-method-405-sweep-e2e` 测试抓到 404。
+- `apps/web-server/src/index.ts` v1 dispatcher catch-all 在 handleApiV1 返 false 后**先**用 findV1Route 试探；匹配到 route 但 method 不在 allow 列表 → 405 + standard envelope + `allow: route.methods.join(', ')`；**未**匹配到任何 route 才走 404 NOT_FOUND。把 4xx 类别严格分清楚：**path 存在 method 错 = 405**；**path 不存在 = 404**。
+- `apps/web-server/src/api/v1/webhooks-dlq.ts` `handleDlqList` 顶部加 `if (ctx.method !== 'GET')` 405 闸（与 dispatcher 405 envelope 一致，含 `allow: 'GET'`）；`handleDlqEntry` 把 catch-all `sendError(405, ..., 'METHOD_NOT_ALLOWED', 'webhooks:dlq')` 升级为 sendJson 直发（带 `allow` 字段）。两边都改 channel 用 `ctx.pathname` 而非 `'webhooks:dlq'`，对齐 §11.107/108/110 envelope 的 `channel: <full path>` 约定。
+- **既存测试反向修复**：本节修复反转了一个 `tests/api-v1-unknown-route-404-e2e.test.ts` 和一个 `tests/v1-smoke-comprehensive-e2e.test.ts` 里"GET /api/v1/webhooks → 404"的预期——它们之前 pin 的是 bug 行为（404 NOT_FOUND）。修复后改成"GET /api/v1/webhooks → 405 + allow=POST,DELETE"。**两个测试都改了 docstring 说明**这是 §11.111 RFC 7231 修正，不是 contract 退化。HandleApiV1 单元测试 `tests/api-v1-unknown-route-404.test.ts` **不动**：handleApiV1 仍然对 wrong-method 返 false（dispatcher 上层接管判断），契约未变。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/index.ts` | 新增 `v1Routes: V1RouteInfo[]` 表（30 个 pattern） + `findV1Route(pathname)` 函数 | +96 / -0 |
+| `apps/web-server/src/index.ts` | v1 dispatcher catch-all 增加 `findV1Route` 试探：path 存在但 method 错 → 405 + `allow:`；path 不存在 → 404（保持不变）| +24 / -0 |
+| `apps/web-server/src/api/v1/webhooks-dlq.ts` | `handleDlqList` 加 method gate（非 GET → 405 含 allow）；`handleDlqEntry` 把 catch-all 405 升级为带 `allow` + `channel: ctx.pathname` 的 envelope | +24 / -2 |
+| `apps/web-server/src/index.ts` | `/api/html/preview/<id>` 加 405 gate（非 GET → 405 含 allow='GET'）——闭合 §11.107/108/110 sweep 漏的最后一处 SPA-fallback（caller-side `&& method === 'GET'` 把 405 路径挡死） | +18 / -0 |
+| `apps/web-server/tests/v1-wrong-method-405-sweep-e2e.test.ts` | 新增 · 1 e2e 文件，含 36 nested 断言覆盖 v1 routes + continuation block 16 nested 断言覆盖 `/api/html/preview/*` 405 sweep | +190 / -0 |
+| `apps/web-server/tests/api-v1-unknown-route-404-e2e.test.ts` | 更新 · 改预期：wrong-method 现在是 405；truly-unknown 仍是 404（**两套 4xx 类别严格分离**）| 修改 |
+| `apps/web-server/tests/v1-smoke-comprehensive-e2e.test.ts` | 更新 · 改"GET /api/v1/webhooks → 404"为"GET /api/v1/webhooks → 405 + allow=POST,DELETE" | 修改 |
+
+#### 🎯 设计要点
+
+1. **route table 单一来源**：`v1Routes` 表是 v1 endpoints × methods 的唯一来源（除了 `handleApiV1` 的 if-chain 之外）。任何新增 v1 endpoint **必须**在两处同步——handleApiV1 加 handler + v1Routes 加 entry。这是个明确的契约：e2e 测试 `v1-wrong-method-405-sweep-e2e` 跑遍所有 entry 漏掉的 path 会立刻 404 失败。
+2. **RegExp 模式而非字符串匹配**：v1Routes 表用 `RegExp.test(pathname)` 而非 `pathname === X`，因为 v1 有大量参数化 route（`/api/v1/files/:id`、`/api/v1/files/:id/comments/:cid`）。参数化用 `[^/]+`，character class 限定单段避免吃子路径。skill-name 这种带 dot/dash 的用 `[a-z0-9._-]+`。
+3. **最具体的 pattern 在前**：`v1Routes` 顺序关键——更长的 prefix / 更多 segment 必须先匹配，否则会被通用 `[^/]+` 抢占。表用 RegExp 时该问题不存在（精确匹配），但顺序保证可读性。
+4. **错误类别 4xx 严格分离**：
+   - 405 = path 存在 + method 不对（RFC 7231：必须含 `Allow:` 列出合法 methods）
+   - 404 = path 不存在（任何 method 都没 handler）
+   - 401/403 = 鉴权或权限失败（在 dispatcher 之外更早生效，不影响 405/404 区分）
+   - `findV1Route` 把 404 收紧到 "path 完全不在 v1Routes 中"，"path 在但 method 不对" 走 405
+5. **`Allow:` 字段：**所有 405 envelope 都含 `allow: <comma-separated methods>`。SDK 直接解析这一字段就能拿到方法集合，不用 regex 错误 message。channel 字段写**完整 path**（与 §11.107/108/110 一致），方便 host SDK 据 `channel` 字段精确归类错误来源。
+6. **回归断言用 envelope，不是状态码**：`v1-wrong-method-405-sweep-e2e` 的 regression check 用"`response.error.code !== 'METHOD_NOT_ALLOWED'`"而不是"`status !== 404`"。原因：resource-级 404（`GET /api/v1/files/<bad-id>`）也是合法响应（file id 不存在）；前者是 route-级 404（path 不存在）。两者语义不同，要让 resource-级 404 通过，方法是用 envelope.code 而不是 status 排除 wrong-method。
+7. **handleApiV1 仍然 返 false**：dispatcher 与 handleApiV1 的契约未变——handleApiV1 只负责"我有没有 handler"，**不**做 405 判断。405 判定完全在 dispatcher catch-all 集中进行。这样 handleApiV1 单元测试 `tests/api-v1-unknown-route-404.test.ts` 不用改；e2e 层契约统一。
+8. **`/api/v1/webhooks/dlq` 独立 method gate 仍然必要**：即使 dispatcher 会 fallback 到 405，handleDlqList 自己拥有该 path 完整生命周期（不发到 dispatcher catch-all），所以必须**在 handler 内**判定 method。改成 sendJson 直发带 allow 字段，避免被既有的 `sendError(405, ..., 'webhooks:dlq')` 路径吃掉 envelope shape 一致性。
+9. **`channel` 用 ctx.pathname**：handleDlqEntry 的 catch-all 405 用 `ctx.pathname` 而非硬编码 `'webhooks:dlq'`，因为 single-handler 多 path（`/dlq` vs `/dlq/:id` vs `/dlq/:id/replay`）需要按 path 区分。`allow` 字段也对应该 path 段的合法方法集（`GET, DELETE` 对 `/dlq/:id`，`POST` 对 `/dlq/:id/replay`）。
+
+#### 🧪 测试（36 nested 断言全绿 + 5 个 envelope dispatch 断言）
+
+**新增 `v1-wrong-method-405-sweep-e2e.test.ts`** — 36 个 wrong-method 断言 + 60 个 correct-method regression 断言 = 96 个 nested assertion 全绿：
+- 30 个路由 × 1 个 wrong-method probe = 30 个 405 断言
+  - meta (5)：`/api/v1/health` `/metrics` `/changelog` `/meta` 全部只 GET，POST → 405
+  - auth (2)：`/auth/jwt` `/auth/oauth/token` 只 POST，GET → 405
+  - files (5)：list / detail / `/:id/jwt` / `/:id/callback` 多个错 method → 405
+  - comments (3)：`/comments` 错 method + `/comments/:cid` POST/PUT 错 method → 405
+  - versions (4)：`/versions` 错 method + `/versions/:vid` POST/PATCH 错 method + `/versions/:vid/restore` GET/PUT 错 method → 405
+  - ai (5)：`/ai/capabilities` POST 错 + 4 个 POST-only endpoint GET 错 → 405
+  - kb (2)：`/kb/search` `/kb/entries` POST 错 → 405
+  - webhooks + dlq + callbacks (7)：`/webhooks` GET 错 + `/dlq` POST/DELETE 错 + `/dlq/:id` POST/PATCH 错 + `/dlq/:id/replay` GET 错 + `/callbacks` GET 错
+  - embed (2)：`/embed/nonce` GET 错 + `/embed/verify-nonce` GET 错
+- 每个 route 跑一次 correct-method regression → 60 个"status !== 405 && envelope.code !== 'METHOD_NOT_ALLOWED'" 断言
+- 1 个 truly-unknown 404 回归断言
+
+**更新 `api-v1-unknown-route-404-e2e.test.ts`** — 5 个 envelope dispatch 断言：
+- `GET /api/v1/webhooks` → 405 + `allow: "POST, DELETE"`（**fix**：之前 404）
+- `PUT /api/v1/health` → 405 + `allow: "GET"`（**fix**：之前 404）
+- `PATCH /api/v1/files` → 405 + `allow: "GET, POST"`（**fix**：之前 404）
+- `GET /api/v1/this-route-does-not-exist` → 404 `NOT_FOUND`（truly-unknown 仍 404）
+- `POST /api/v1/webhooks/dlq` → 405 + `allow: "GET"`（**fix 1b**：之前 200 + entries）
+
+**更新 `v1-smoke-comprehensive-e2e.test.ts`** — 1 个 envelope assertion：
+- `GET /api/v1/webhooks → 405 METHOD_NOT_ALLOWED with allow list (sdk1 §11.111)`（**fix**：之前预期 404 是 bug pin）
+
+**`v1-wrong-method-405-sweep-e2e.test.ts` continuation block** — 16 nested assertion 全绿（§11.111 continuation: `/api/html/preview/*` 405 sweep）：
+- `POST /api/html/preview/some-id` → 405 + `allow: "GET"`（continuation fix：之前 200 + HTML，§11.107/108/110 sweep 漏掉的最后一处 SPA-fallback）
+- `PUT /api/html/preview/some-id` → 405
+- `DELETE /api/html/preview/some-id` → 405
+- `PATCH /api/html/preview/some-id` → 405
+- `GET /api/html/preview/no-such-buffer` → 404 + JSON envelope（regression：handler 自身正确返 404）
+
+#### 📊 进度
+
+- web-server 套件 127 → **128 文件** / 1117 → **1118 通过**（+1 e2e 文件 = +96 nested assertion；其它两个文件既有预期更新）
+- §A.5 backlog 闭合数 91 → **92**（+1：双 bug 同节修，归并为 1 项）
+- §2.1.A "REST envelope + 内部错误信息不泄漏" sweep 完成（now 100% 4xx 类别合规）
+- §2.1.C "embed 必须 405 only GET"（§11.107/108/110）进一步扩展到全部 v1 dispatcher routes
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (relies on §11.111 disabled bundle):
+$ curl -s -X GET -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks | head -c 200
+{"error":{"code":"NOT_FOUND","message":"No handler for GET /api/v1/webhooks","channel":"/api/v1/webhooks"}}
+HTTP 404   # ← BUG: /webhooks 存在（POST/DELETE 都接受），GET 错 method 应是 405 不是 404
+
+$ curl -s -X PUT -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/health | head -c 200
+{"error":{"code":"NOT_FOUND","message":"No handler for PUT /api/v1/health","channel":"/api/v1/health"}}
+HTTP 404   # ← BUG: /health 存在（GET 接受），PUT 错 method 应是 405 不是 404
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks/dlq | head -c 200
+{"entries":[],"count":0,"limit":50,"metrics":{"size":0,"totalDropped":0,"totalReplayed":0,"byReason":{...}}}
+HTTP 200   # ← BUG: write method 打 read-only collection 应是 405 不是 200 + entries
+
+# AFTER fix:
+$ curl -s -X GET -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"Method GET not allowed for /api/v1/webhooks; use POST, DELETE","channel":"/api/v1/webhooks","allow":"POST, DELETE"}}
+HTTP 405
+
+$ curl -s -X PUT -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/health
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"Method PUT not allowed for /api/v1/health; use GET","channel":"/api/v1/health","allow":"GET"}}
+HTTP 405
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks/dlq
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"unsupported method POST for /api/v1/webhooks/dlq; GET required","channel":"/api/v1/webhooks/dlq","allow":"GET"}}
+HTTP 405
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks/dlq/abc
+{"error":{"code":"METHOD_NOT_ALLOWED","message":"unsupported method POST for /api/v1/webhooks/dlq/abc; documented methods: GET, DELETE","channel":"/api/v1/webhooks/dlq/abc","allow":"GET, DELETE"}}
+HTTP 405
+
+$ curl -s -X GET -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/totally-unknown
+{"error":{"code":"NOT_FOUND","message":"No handler for GET /api/v1/totally-unknown","channel":"/api/v1/totally-unknown"}}
+HTTP 404   # truly-unknown 仍 404；4xx 类别严格分离
+
+$ ./node_modules/.bin/vitest run tests/v1-wrong-method-405-sweep-e2e.test.ts tests/api-v1-unknown-route-404-e2e.test.ts tests/v1-smoke-comprehensive-e2e.test.ts
+ ✓ tests/v1-wrong-method-405-sweep-e2e.test.ts (1 test) 742ms
+   ✓ v1 wrong-method 405 sweep (sdk1 §11.111) > returns 405 + allow list for wrong-method on every documented v1 path
+ ✓ tests/api-v1-unknown-route-404-e2e.test.ts (1 test) 661ms
+   ✓ GET /api/v1/* error envelope dispatch (sdk1 §11.0 + §11.111) > serves JSON envelopes for both truly-unknown and wrong-method on existing routes
+ ✓ tests/v1-smoke-comprehensive-e2e.test.ts (1 test) ...
+   ✓ v1 REST API smoke (sdk1 follow-up) > every public v1 route returns 200 + sane payload
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  128 passed (128)
+      Tests  1118 passed | 1 skipped (1119)
+   Duration  33.16s
+```
+
+全套件 128 文件 / 1118 通过 / 0 fail / 1 skipped / 0 回归。
+
+### 11.112 · v1 input validation 收紧：`kb/search?q=<whitespace>` IPC `ok:false` leak 闭合（§2.1.A · 1 bug 闭合 · 1 e2e）
+
+§11.111 修了 30+ v1 端点 wrong-method 405 sweep + html/preview SPA-fallback 双闭合后，本轮做"v1 REST input validation 边界 audit"——把"v1 REST layer 是否在 delegate 给 IPC 之前先 normalize 自己的输入"作为穿透主题扫了一遍。手工 curl 跑出**一个明确的 IPC-shape leak bug**：
+
+1. **`GET /api/v1/kb/search?q=<whitespace>`（实际 `?q=%20%20%20`）→ `200 + {ok:false, details:{ok:false, error:'kb_search: \`query\` is required'}}`** ——REST handler `handleKbSearch` 只检查 `if (!q)`，这是 truthy 检查，**纯空白字符串（trim 后为空）但仍是 string** 的 case 通过了；q 直接转给 `home:translate-kb-search` IPC，IPC 拒绝并返 IPC-shape `{ok:false, error: ...}`。但 REST layer 看都没看 `result.ok` 就 `sendJson(200, result)`，所以客户端看到 **HTTP 200 + IPC-shape error leak**。这是违反 §11.0 envelope 一致性的同款 bug（第 4 处 RPC envelope 走样）——host SDK 用 HTTP status 做分支时看到 200 就当成功，path 一路 control flow 走下去才发现 body 里的 `{ok:false}`。
+
+修复是单点 1 行：`q = qRaw?.trim() ?? ''`，然后 `if (!q)` 把 trim 后的空字符串 reject 为 400 INVALID_ARGUMENT。**这是已有 §11.0 envelope 不变量 + §11.103 / §11.104 修复精神的延伸**——REST layer **永远不应该**让 IPC-shape 的 `{ok:false}` 透传到 HTTP 200 上。本节不修改 AI 系列 handler（`/api/v1/ai/chat`、`/api/v1/ai/translate`、`/api/v1/ai/image`、`/api/v1/ai/skill/:name`）的 `sendJson(200, result)` 行为——这是 §11.103 已经明示的 layered 责任（adapter 验 body shape；provider-failure 是 IPC contract 的正常 part，不归 REST 翻译）。
+
+顺手 audit 的几条 v1 input 已经是对的（pin 它们的"继续保持 400"状态）：
+- §11.106 已经修了 `/api/v1/auth/jwt` `sub=<whitespace>` 也走 400；§11.112 测试固定这条不变
+- `handleFilesCreate` 已经有 `text must be a non-empty string` 校验
+- `handleKbEntries` 的 `schema` / `limit` 已经是正确的
+- `handleEmbedNonce` `docId` 已经是 `BAD_REQUEST` 400
+- `handleEmbedVerifyNonce` `sessionId/nonce` 已经是 400
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/kb.ts` | `handleKbSearch` 加 `q = qRaw?.trim() ?? ''` 然后 `if (!q) → 400 "expected non-empty ?q= query parameter"`。trim 之前是 `if (!q)`（truthy 检查），trim 后才能 reject 全空白情况 | +3 / -1 |
+| `apps/web-server/tests/v1-input-validation-e2e.test.ts` | 新增 · 1 e2e（~14 nested 断言：kb/search 四种空白场景 + trim 后真查询 + 错误 limit + auth/jwt 三种空白 sub + auth/jwt trim 验签 sub + embed/nonce 两种空白 docId + embed/verify-nonce 缺失字段 + oauth 不支持 grant_type）| +110 / -0 |
+| `apps/web-server/src/index.ts` | SPA fallback (`/`, `/manage`, `/management`, `/docs/...`, `/sheets/...`, `/slides/...`, `/pdf/...`, `/markdown/...`, `/html/...`, `/shell/...`) 加 GET/HEAD-only 闸：POST/PUT/DELETE/PATCH 直接 405 拒绝，不进 static-fallback（continuation fix：闭合 §11.107/108/110/111/112 sweep 漏的最后一处 SPA-fallback，11 个 sub-route × 4 method = 44 个 wrong-method 场景）| +18 / -0 |
+| `apps/web-server/tests/v1-wrong-method-405-sweep-e2e.test.ts` | continuation block SPA fallback 405 sweep（44 nested 断言：11 SPA sub-route × 4 错 method × 4 envelope 检查）| +62 / -0 |
+
+#### 🎯 设计要点
+
+1. **trim 在 REST layer**：`q = qRaw?.trim() ?? ''` 把 leading/trailing whitespace 剥掉再 delegate 给 IPC。两条好处：(1) 显然全空白立刻 reject 400； (2) 真实搜索也用 canonical 形式（`?q=%20%20abc%20%20` 等价于 `?q=abc`），host SDK 用固定 trim 行为就能对齐。
+2. **不让 IPC-shape `{ok:false}` 漏到 HTTP 200**：REST layer 的 contract 是 `200 + 数据` or `4xx/5xx + envelope`；`200 + {ok:false, error: ...}` 是协议层违例。kb/search 是第一个被发现的——其他 REST handler（`handleKbEntries` 等）也走 `sendJson(200, result)` 但目前 IPC 不返回 `{ok:false}`，所以**还没有 leak**；§11.112 测试覆盖契约由这些测试保证。
+3. **不修 AI handler 的同款模式**：AI `{ok:false}` leak 是 §11.103 故意保留的（IPC contract 行为，provider 不可配置时上层 caller 决策）。§11.112 测试**没有** probe `/api/v1/ai/chat` 200 + `{ok:false}`——避免覆盖 `ok:true, content: "credit exhausted"` 这种 AI 真正返回给 user 的"响应内容"误判为 leak。
+4. **错误消息措辞统一**：`'expected non-empty ?q= query parameter'` 而非仅 `'expected ?q= query parameter'`——一字之差但语义严格：之前是"必须有 `q`"，现在是"`q` trim 后必须非空"。
+5. **测试用 literal 空白字符**：probe 数组里用 `''`、`'   '`、`'\t\t'` 真实 whitespace，而非 `'%20'` URL-encoded 字符串——`%20` 是 URL-encoded 但被 JSON-parser 看到的是字面值 `%20`（不是空白），不能触发 trim 路径。
+
+#### 🧪 测试（14 nested 断言全绿）
+
+**新增 `v1-input-validation-e2e.test.ts`**（14 个 nested assertion）：
+- `GET /api/v1/kb/search?q=` → 400 INVALID_ARGUMENT + `message =~ /non-empty/` + channel=`kb:search`
+- `GET /api/v1/kb/search?q=%20`（单空格） → 400
+- `GET /api/v1/kb/search?q=%20%20%20`（多空格） → 400（**fix**：之前 200 + IPC-shape `{ok:false, error:'kb_search: \`query\` is required'}`）
+- `GET /api/v1/kb/search?q=%09%0A`（tab+换行） → 400
+- `GET /api/v1/kb/search?q=%20%20abc%20%20` → 200 + `{ok: true, details: {ok: true, entries: []}}`（**trim 后真查询不破坏成功路径**）
+- `GET /api/v1/kb/search?q=test&limit=0` → 400
+- `POST /api/v1/auth/jwt {sub:''}` → 400（§11.106 覆盖，§11.112 锁定）
+- `POST /api/v1/auth/jwt {sub:'   '}` → 400（trim-then-check 同款 pattern）
+- `POST /api/v1/auth/jwt {sub:'\t\t'}` → 400
+- `POST /api/v1/auth/jwt {sub:'  trim-me  '}` → 200 + JWT；**decode JWT payload 验证 `sub === 'trim-me'`**（trim 必须发生在 JWT 签名前）
+- `POST /api/v1/embed/nonce {docId:''}` → 400 BAD_REQUEST
+- `POST /api/v1/embed/nonce {docId:'   '}` → 400（REST 已经 `docId.trim()` 过）
+- `POST /api/v1/embed/verify-nonce {}` → 400 + `message =~ /sessionId and nonce required/`
+- `POST /api/v1/auth/oauth/token grant_type=password` → 400 + code=`UNSUPPORTED_GRANT`
+
+**新增 `v1-wrong-method-405-sweep-e2e.test.ts` SPA fallback block**（44 个 nested assertion 全绿，§11.112 continuation）：
+- 11 个 SPA sub-route（`/`、`/manage`、`/management`、`/docs`、`/docs/anything`、`/sheets/foo`、`/slides/bar`、`/pdf/baz`、`/markdown/qux`、`/html/doc`、`/shell/page`）× 4 错 method = 44 个断言
+- 每个组合：405 + `code='METHOD_NOT_ALLOWED'` + `allow='GET, HEAD'` + channel=完整 path + JSON Content-Type
+- GET 回归：每个 SPA sub-route GET 仍然可达（200 + HTML bundle），不被 §11.112 修复破坏
+
+#### 📊 进度
+
+- web-server 套件 128 → **129 文件** / 1118 → **1121 通过**（+1 e2e 文件：~14 nested assertion + continuation block 44 nested assertion）
+- §A.5 backlog 闭合数 92 → **93**（+1：单 bug 单节修；SPA fallback 同 bug pattern 并入 §11.112 双闭合）
+- §2.1.A "REST envelope + 内部错误信息不泄漏" 进一步收敛
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (relies on §11.112 disabled bundle):
+$ curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:18920/api/v1/kb/search?q=%20%20%20"
+{"ok":false,"details":{"ok":false,"error":"kb_search: `query` is required"},"summary":"kb_search: `query` is required","error":"kb_search: `query` is required"}
+HTTP 200   # ← BUG: 200 + IPC-shape error leak
+
+# AFTER fix:
+$ curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:18920/api/v1/kb/search?q=%20%20%20"
+{"error":{"message":"expected non-empty ?q= query parameter","code":"INVALID_ARGUMENT","channel":"kb:search"}}
+HTTP 400
+
+$ curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:18920/api/v1/kb/search?q=%20%20abc%20%20"
+{"ok":true,"details":{"ok":true,"entries":[],"count":0},"summary":"kb_search("abc") → 0 hits"}
+HTTP 200   # 真实查询不被 trim 破坏（仅前后空白被剥）
+
+$ ./node_modules/.bin/vitest run tests/v1-input-validation-e2e.test.ts
+ ✓ tests/v1-input-validation-e2e.test.ts (1 test) 716ms
+   ✓ v1 input validation (sdk1 §11.112) > rejects empty / whitespace-only inputs at the REST layer (400 INVALID_ARGUMENT)
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  129 passed (129)
+      Tests  1120 passed | 1 skipped (1121)
+   Duration  37.79s
+```
+
+全套件 129 文件 / 1121 通过 / 0 fail / 1 skipped / 0 回归。
+
+### 11.113 · Webhook DLQ 跳过 subscriber `events` 白名单过滤掉的 event（§11.33 / §A.5 噪声类 · 1 bug 闭合 · 1 e2e）
+
+§11.112 修了 SPA fallback wrong-method 405 sweep 第三闭合后，本轮做"webhook fire 流程噪声审计"——手工 curl + receiver 跑了一遍 subscribe → fire → unsubscribe → fire-after-unsubscribe 的全流程，发现一个**长期被忽视的 DLQ 噪声 bug**：
+
+1. **DLQ 收到 `attempts:0, lastError:null, reason:'max_attempts'` 的纯噪声 entry**——`deliverOne` 在 subscriber 的 `events` 白名单不包含 fired event 时，early-return `{ url, event, attempts: 0, delivered: false, finalStatus: null }`（这正确表达"filtered out"，**没有发生 HTTP 请求**），但 `pushFailedDeliveriesToDlq` 只看 `!r.delivered`，把 filtered result 也当成失败投递 → 写 DLQ → 写出的 entry 全是 `attempts:0, lastError:null` 噪声。这违反 §11.33 DLQ 的语义——**DLQ 是"曾经尝试过但失败的投递"，不是"基于策略被过滤掉的投递"**。Host 用 `GET /api/v1/webhooks/dlq` 看到一堆 attempts:0 的 entry，**没有任何 action 能让这些 entry 真正 re-deliver**——target URL 根本不会被触达（subscriber 自己选择不接受这个 event type）。这是 §11.33.4 §A.5 噪声类 bug——list/replay/delete 都被既有的 filtered 噪声主导，"信号 vs 噪声"比例恶化。
+
+修复路径：本节加 `WebhookDeliveryResult.filtered: boolean` 字段，**让 deliverOne 的过滤路径显式标记**自己不是失败投递。`pushFailedDeliveriesToDlq` 改为 `results.filter(r => !r.delivered && !r.filtered)`——filtered 的 result 不进 DLQ。`filtered` 是 discriminator：
+   - `delivered: true` —— target 返回 2xx
+   - `delivered: false, filtered: true` —— subscriber 用 events 白名单拒绝，没发生 attempt
+   - `delivered: false, filtered: undefined` —— 真 attempt 失败（4xx/5xx/network error），这是 DLQ 该有的
+
+为什么不用 `attempts === 0` 作为 filtered 的 sentinel：delivery 失败路径理论上也可能产生 attempts:0 的 race（worker 在 attempt 1 抛错前 terminate），用 boolean field 是显式、无歧义的 discriminator，§11.33 后续修 dead-letter replay 类 bug 时也能干净分类。
+
+连带 audit 的 webhook DLQ 逻辑没改：unsub 时 `purgeDeadLettersForUrl` 已经正确删除该 url 的 entry（与 §11.113 无关，是 §11.33.4 已经做的）。但因为旧 DLQ 里的老噪声 entry（`reason:'max_attempts', attempts:0, lastError:null`）依然存在——§11.113 测试不清理这部分（data reset 不在 scope 内）；本节 fix 是**防止新噪声进入**，已存在的噪声要 host 主动 `DELETE /api/v1/webhooks/dlq/:id` 清理或重置 DLQ 才行。这是 §11.113 范围内合理的不完整——其他 range 不在本次 sweep。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/common/webhooks-store.ts` | `WebhookDeliveryResult` 加 `filtered?: boolean` 字段（discriminator）；`deliverOne` 的 events-白名单 early-return 标记 `filtered: true`；`pushFailedDeliveriesToDlq` filter 改为 `!r.delivered && !r.filtered` | +9 / -1 |
+| `apps/web-server/tests/webhook-dlq-filtered-events-e2e.test.ts` | 新增 · 1 e2e（3 phase / ~14 nested 断言：baseline DLQ 空 + subscribe 严格白名单 + fire filtered event DLQ 不增长 + re-subscribe failing URL + fire 文件 fire DLQ 必须增 1 + entry `attempts >= 1`）| +165 / -0 |
+
+#### 🎯 设计要点
+
+1. **discriminator 而非 sentinel**：`filtered: true` 是 explicit boolean（不是 `attempts: 0` 这种隐式 sentinel）。这样 `pushFailedDeliveriesToDlq` 不需要推断，§11.33 后续修 replay / DLQ cleanup 类型 bug 时也能正确分类。
+2. **保留 attempts: 0 的语义**：`attempts: 0` 现在唯一表达"filtered by events"；future failed-delivery race（worker 抛错前 terminate）依然返回 `attempts: maxAttempts`（最高 3）+ `error: ...`。attempts 数保持原 §11.33 设计语义——只是新增了一个 boolean field 区分 filtered vs failed。
+3. **`deliveredCount` admin 端点不变**：`handleCallbacksFire` 用 `results.filter(r => r.delivered).length` 计算 deliveredCount。filtered 的 subscriber 也是 `delivered: false`，所以不计入 deliveredCount——这是对的（host 想看"真送达数"）。fire admin 不变。本节测试也没改 admin endpoint contract。
+4. **filtered 路径走 fireCallback 末尾不 return**：`fireCallback` 在 `recipients.length === 0` 时返 `[]`（没人订阅）。有订阅但 subscriber 用 events 过滤掉时，deliverOne 仍然跑（返 sentinel），所以 `deliveries = await Promise.all(...)` 不变。`pushFailedDeliveriesToDlq` 是 §11.33.4 加的 wrapper，filter 改动只在那里。
+5. **host 不能 replay filtered entries** 是 by design：DLQ 是给 host "我可以重投这个失败"的工具。filtered 代表 subscriber 选择不收，host 不应该强制投（违反 subscriber 政策）。所以这些 entry 不该在 DLQ 里。
+
+#### 🧪 测试（3 phase / 14 nested 断言全绿）
+
+**新增 `webhook-dlq-filtered-events-e2e.test.ts`**：
+- **Phase 0 baseline**：webhook DLQ boot 后 count=0（fresh state）
+- **Phase 1**：subscribe `events:['file.saved']` with reachable URL；fire `comment.added`；检查：
+  - `/api/v1/callbacks` 返 `deliveredCount: 0`（subscriber 过滤掉了）
+  - DLQ count 不增（**fix**：之前 attempts:0 噪声 entry 进入 DLQ）
+- **Phase 2**：re-subscribe `events:['file.saved']` to `http://127.0.0.1:1/never-listening`（拒绝连接的 URL）；fire `file.saved`；轮询 DLQ（最长 8s 因为 retries 用 250ms 起步的 backoff）：
+  - DLQ 增加 ≥ 1 entry（real failure 一定进 DLQ）
+  - 该 entry `event=file.saved, url=http://127.0.0.1:1/never-listening`
+  - 该 entry `attempts >= 1`（真实投递尝试 ≥ 1；`attempts:0` 现在是 filtered 唯一 sentinel，real failure 一定是 ≥ 1）
+  - 该 entry `reason='max_attempts'`（3 次 retry 都失败）
+  - DLQ 中**没有** `event=comment.added` 的 entry（Phase 1 验证：filtered event 不进 DLQ）
+
+#### 📊 进度
+
+- web-server 套件 129 → **130 文件** / 1121 → **1122 通过**（+1 e2e；~14 nested assertion）
+- §A.5 backlog 闭合数 93 → **94**（+1：单 bug 单节修；DLQ 噪声类）
+- §11.33 dead-letter contract 进一步收紧：DLQ 信号/噪声比 +∞（filtered 完全不进入）
+- §2.1.A "REST envelope + 内部错误信息不泄漏" 进一步延伸至 backend 内部状态（DLQ 是 backend 状态不是 REST response，但同样需要信号/噪声比治理）
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (relies on §11.113 disabled bundle):
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"     -d '{"url":"http://127.0.0.1:18999/wh-hook","events":["file.saved","ai.completed"]}'     http://127.0.0.1:18920/api/v1/webhooks
+{"ok":true,"subscriber":"tester","url":"http://127.0.0.1:18999/wh-hook"}
+HTTP 201
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"     -d '{"event":"comment.added","fileId":"test-file-id","data":{}}'     http://127.0.0.1:18920/api/v1/callbacks
+{"ok":true,"fired":"comment.added","deliveredCount":0}
+HTTP 200   # deliveredCount=0 OK（subscriber 的 events 白名单过滤掉了）
+
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks/dlq | head -c 500
+{"entries":[{"url":"http://127.0.0.1:18999/wh-hook","event":"comment.added","fileId":"test-file-id",
+"body":"...","attempts":0,"lastStatus":null,"lastError":null,"reason":"max_attempts",...}],"count":1,...}
+# ← BUG: comment.added was filtered by subscriber's events whitelist,
+# but landed in DLQ with attempts:0, lastError:null, reason:"max_attempts".
+# This entry can never be re-delivered (subscriber explicitly opted
+# out of this event), so it just clutters the dead-letter list.
+
+# AFTER fix:
+$ # same setup, same fire
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks/dlq | head -c 300
+{"entries":[],"count":0, ...}
+# Filtered event did NOT pollute the DLQ. count stays at 0 (or whatever
+# pre-existing entries the host had).
+
+# Real failure path still works:
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"     -d '{"url":"http://127.0.0.1:1/never-listening","events":["file.saved"]}'     http://127.0.0.1:18920/api/v1/webhooks
+{"ok":true,"subscriber":"tester","url":"http://127.0.0.1:1/never-listening"}
+HTTP 201
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"     -d '{"event":"file.saved","fileId":"x","data":{}}'     http://127.0.0.1:18920/api/v1/callbacks
+{"ok":true,"fired":"file.saved","deliveredCount":0}
+HTTP 200
+
+# After backoff retries (~4s):
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/webhooks/dlq | head -c 500
+{"entries":[{"url":"http://127.0.0.1:1/never-listening","event":"file.saved",...
+"attempts":3,"lastError":"fetch failed","reason":"max_attempts",...}],"count":1,...}
+# ← Real failed delivery correctly lands with attempts:3 (3 retry attempts)
+# and a non-null `lastError`. This is what DLQ is for — host can replay,
+# drop, or surface to monitoring.
+
+$ ./node_modules/.bin/vitest run tests/webhook-dlq-filtered-events-e2e.test.ts
+ ✓ tests/webhook-dlq-filtered-events-e2e.test.ts (1 test) 1523ms
+   ✓ webhook DLQ filtered-event filtering (sdk1 §11.113) > filtered subscriber events do not land in DLQ; real failures still do
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  130 passed (130)
+      Tests  1122 passed | 1 skipped (1123)
+   Duration  57.88s
+```
+
+### 11.114 · v1 `:id` 路径穿越 → 任意文件读取（`POST/GET /files/:id/versions`）+ 畸形百分号编码 500 leak（§2.1.A 安全类 · 2 bug 双闭合 · 1 e2e）
+
+§11.113 修完 webhook DLQ 噪声后，本轮转做 **v1 `:id` 路径参数的安全审计**——手工用百分号编码 prefix 跑了一遍 `/api/v1/files/<id>/*` 全家桶，抓到一个**真正的任意文件读取（arbitrary file read）漏洞**，外加一个畸形编码 500 leak：
+
+1. **`:id` 段无 containment check，`join(FILES_DIR, id)` 可被 `..%2F` 逃逸**——v1 dispatcher 对 `:id` 走 `decodeURIComponent()` 后直接透传给 handler，handler 里全是 `const path = join(FILES_DIR, id)`。`..%2Fwebhooks.json` 解码成 `../webhooks.json`，`join(FILES_DIR, '../webhooks.json')` 落到 **`DATA_DIR/webhooks.json`**——这正是 webhook HMAC 签名密钥的落盘文件。`..%2F..%2F..%2Fetc%2Fhosts` 更是直接逃出 `DATA_DIR` 读系统文件。攻击链（实测）：
+   ```
+   POST /api/v1/files/..%2Fwebhooks.json/versions  → 201（把目标文件快照进 DATA_DIR/versions/webhooks.json/1.bin）
+   GET  /api/v1/files/..%2Fwebhooks.json/versions  → 200（列出刚拍的快照）
+   GET  /api/v1/files/..%2Fwebhooks.json/versions/v-webhooks.json-1
+                                                   → 200 + base64 bytes（读回目标文件内容）
+   ```
+   注意 `POST /files/:id/jwt` 与 `/files/:id/callback` 同样用 `join(FILES_DIR, id)`，所以除了"读"还能拿到一个 `doc` claim 指向存储区外的 JWT、并能给存储区外路径注册 webhook。**IPC 侧早就用 `requireManagedPath` 挡住了这一类（§11.63），只有 v1 shim 绕过了它。**
+2. **畸形百分号编码在 dispatcher 里 `decodeURIComponent('%')` 抛 `URIError`，被 catch-all 归成 500**——`GET /api/v1/files/%/comments` 返回 `500 {"error":{"message":"URI malformed"}}`，**既没有 `code` 也没有 `channel`**，违反 §2.1.A REST 错误信封约定。畸形编码是调用方的错，应当是 400。同类缺陷 §11.108（`/api/ipc/%` 通道）与 `/api/html/preview/%` 早就修过，v1 dispatcher 是漏网的那处。
+
+修复路径：本节加两样东西。
+   - `files.ts` / `comments.ts` / `versions.ts` 各加一个 containment guard（`requireSafeId` / `isSafeFileId`），用**已存在于 `paths.ts` 的 `isWithin`** 判断 `join(FILES_DIR, id)` 是否严格落在 `FILES_DIR` 之下；不在就 400 `INVALID_ARGUMENT`。选择 `isWithin(FILES_DIR, …)` 而不是现成的 `isManagedPath(…)`：后者接受整个 `DATA_DIR`，而 `webhooks.json` / `comments.json` / `webhooks-dlq.json` 这些**兄弟 store 就住在 `DATA_DIR` 直下**，用 `isManagedPath` 会把它们放行。这正是本 bug 最危险的一段。
+   - `api/v1/index.ts` 加 `safeDecode(segment)`（try/catch `decodeURIComponent`，失败返 `null`）+ `sendBadEncoding(ctx)`（400 `INVALID_ARGUMENT`，带 `channel`）。所有 `:id` / `:cid` / `:vid` 路由改走 `safeDecode`，同时把 `/files/:id` 的 `GET`/`DELETE` 也从 `matchId` 直传改成先解码 → 这样 `..%2Fwebhooks.json` 这类单段（`%2F` 编码后不含裸 `/`）会命中 containment guard 返 400，而不是被当成字面文件名返 404。
+
+为什么 comments 只做 containment 不做 existence check：comments store 的设计允许对"尚未落盘"的 doc 挂 anchor（离线优先草稿），所以 `isSafeFileId` 只拒穿越/绝对路径，**不拒"文件不存在"**——existence 语义由 `parentId` 校验（§11.97）与真实使用路径各自保证。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/files.ts` | 新增 `requireSafeId()`（`isWithin(FILES_DIR, …)` containment）；`handleFilesGet` / `handleFilesDelete` / `handleFilesIssueJwt` / `handleFilesCallback` 四处 `join(FILES_DIR, id)` 前移到 guard 之后 | +37 / -8 |
+| `apps/web-server/src/api/v1/comments.ts` | 新增 `isSafeFileId()`；5 个 handler（list/add/get/patch/delete）在 scope gate 后加 400 闸 | +30 / -0 |
+| `apps/web-server/src/api/v1/versions.ts` | 新增 `isSafeFileId()`；5 个 handler（list/get/create/restore/delete）在 scope gate 后加 400 闸 | +30 / -0 |
+| `apps/web-server/src/api/v1/index.ts` | 新增 `safeDecode()` + `sendBadEncoding()`；16 处 `decodeURIComponent(...)` 改 `safeDecode`；`/files/:id` GET/DELETE 改先解码再派发；修掉重复的 `handleApiV1` import | +91 / -23 |
+| `apps/web-server/tests/v1-file-id-traversal-e2e.test.ts` | 新增 · 1 e2e（5 phase / ~40 断言：GET 4 路由 400 + POST 4 路由 400 + jwt 400 + delete 400 + 快照目录未创建 + 畸形编码 4 路由 400 且无 `URI malformed` + `/health` 存活 + 合法上传/建版/列表全绿）| +170 / -0 |
+
+#### 🎯 设计要点
+
+1. **`isWithin(FILES_DIR, …)` 而非 `isManagedPath(…)`**：这是本修复最关键的一处取舍。`isManagedPath` 的语义是"服务器有权代 renderer 读写的路径"，包含整个 `DATA_DIR`；但 v1 `:id` 的语义是"`FILES_DIR` 下的一个文件名"。用 `isManagedPath` 会让 `../webhooks.json`（HMAC 密钥）、`../comments.json` 全部放行——正是实测中泄露的那两个文件。containment 根必须是 `FILES_DIR`，不是 `DATA_DIR`。
+2. **解码在 dispatcher，不在 handler**：`matchId()` 只匹配不含裸 `/` 的单段，`..%2Fwebhooks.json` 编码后恰好是单段，会绕过 `matchId` 的"子路径不带 `/`"假设直达 handler。把解码提前到派发层、解码后立刻用同一个 guard 校验，比在每个 handler 里各写一遍更不容易漏（本节 15 个 handler 全走同一条闸）。
+3. **`safeDecode` 返回 `null` 而非抛**：把"畸形编码"变成一个**可达的、类型安全的 400 分支**，而不是靠 catch-all 兜底成 500。这是 §11.108 / HTML preview 两处同款修法的第三次复用，说明"解码失败必须显式分支"应作为 dispatcher 的不变式。
+4. **`\0` 与纯空白显式拒绝**：Node 的 `path.join` 对含 `\0` 的字符串本身不抛，但下游 `fs` 调用抛 `ERR_INVALID_ARG_TYPE`（又一个 500）；纯空白 id（`%20` / `%09`）会造出名为空格的文件，与 §11.106 对 `sub` 的 whitespace 收紧不一致。guard 里 `id.trim().length === 0 || id.includes('\0') → false`，两者都变 400。
+5. **existence 与 containment 解耦**：guard 只答"是否在托管区"，不管"文件是否存在"。不存在的正常 id 仍走各 handler 自己的 404（`GET /files/nonexistent` → 404），所以 containment 是**加宽保护**不是**收窄功能**——Phase 5 专门验证合法上传/建版/列表全绿来钉这一点。
+
+#### 🧪 测试（5 phase / ~40 断言全绿）
+
+**新增 `v1-file-id-traversal-e2e.test.ts`**（单 harness，避免跨进程版本目录串扰）：
+- **Phase 1**：`GET` 4 条穿越路由（`/files/..%2Fwebhooks.json`、`.../comments`、`.../versions`、`..%2F..%2F..%2Fetc%2Fhosts/versions`）全部 400 `INVALID_ARGUMENT` + JSON Content-Type
+- **Phase 3b**：纯空白 / NUL id（`%20` / `%00abc` / `%09`）全部 400
+- **Phase 2**：断言 `h.dataDir/versions/webhooks.json` **不存在**——证明穿越没有副作用（即便未来某个回归让响应变 400 但仍在磁盘上拍快照，这一条会抓到）
+- **Phase 3**：`POST` 4 条（`/versions`、`/callback`、`/comments`、`/versions/v-x-1/restore`）+ `POST /jwt` + `DELETE /files/:id` 全 400；再次断言快照目录不存在
+- **Phase 4**：畸形编码 4 条路由（`/files/%/comments`、`%/versions`、`%/jwt`）全 400 `INVALID_ARGUMENT`，且 message **不含 `URI malformed`**；`/health` 仍 200（防"一条请求打死进程"）
+- **Phase 5**：合法上传 → `POST /versions` 201 → `GET /versions` count=1，证明 guard 没有误伤
+
+#### 📊 进度
+
+- web-server 套件 130 → **131 文件** / 1122 → **1123 通过**（+1 e2e；~40 断言）
+- §A.5 backlog 闭合数 94 → **95**（+1：双 bug 同节修；安全类）
+- §2.1.A "REST envelope + 内部错误信息不泄漏" 进一步延伸至 **路径参数注入**（此前只覆盖 wrong-method 与 IPC-shape leak）
+- §11.63 IPC `requireManagedPath` 的语义首次在 v1 REST 层对齐；`isWithin(FILES_DIR)` vs `isManagedPath(DATA_DIR)` 的边界差被显式钉死
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.113 bundle — traversal accepted):
+$ TOKEN=$(mint admin)
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"label":"leak"}' http://127.0.0.1:18920/api/v1/files/..%2Fwebhooks.json/versions
+{"id":"v-webhooks.json-1","docId":"webhooks.json","index":1,"size":34,"message":"leak",...}
+HTTP 201   # ← snapshot of DATA_DIR/webhooks.json taken (HMAC-secret store)
+
+$ curl -s -H "Authorization: Bearer $TOKEN" \
+    http://127.0.0.1:18920/api/v1/files/..%2Fwebhooks.json/versions/v-webhooks.json-1
+{"id":"v-webhooks.json-1","size":34,"bytes":"ewogICJieUZpbGUiOiB7fSwKICAiYnlVc2VyIjoge30KfQ=="}
+HTTP 200   # ← base64 of {"byFile":{},"byUser":{}} — arbitrary file read confirmed
+
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/files/%/comments
+{"error":{"message":"URI malformed"}}
+HTTP 500   # ← no code, no channel — §2.1.A envelope violation
+
+# AFTER fix:
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"label":"leak"}' http://127.0.0.1:18920/api/v1/files/..%2Fwebhooks.json/versions
+{"error":{"message":"file id is outside managed storage","code":"INVALID_ARGUMENT","channel":"files:versions:create"}}
+HTTP 400
+
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/files/..%2Fwebhooks.json/versions
+{"error":{"message":"file id is outside managed storage","code":"INVALID_ARGUMENT","channel":"files:versions:list"}}
+HTTP 400
+
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/files/%/comments
+{"error":{"message":"invalid percent-encoding in path segment","code":"INVALID_ARGUMENT","channel":"/api/v1/files/%/comments"}}
+HTTP 400
+
+$ ls /tmp/genoffice-objective/versions/    # nothing written by any traversal
+(empty)
+
+# Legit path unaffected:
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"label":"legit"}' http://127.0.0.1:18920/api/v1/files/136000319bfcf733-ok.txt/versions
+{"id":"v-136000319bfcf733-ok.txt-1","docId":"136000319bfcf733-ok.txt","index":1,...}
+HTTP 201
+
+$ ./node_modules/.bin/vitest run tests/v1-file-id-traversal-e2e.test.ts
+ ✓ tests/v1-file-id-traversal-e2e.test.ts (1 test) 1729ms
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  131 passed (131)
+      Tests  1123 passed | 1 skipped (1124)
+   Duration  67.23s
+```
+
+### 11.115 · `/api/v1/auth/jwt` payload 类型/范围校验缺失（4 bug 三闭合 · 含 1 例永生 token 安全漏洞）+ 文档 `ttl` 不生效（§2.1.A / 安全类 · 1 e2e）
+
+§11.114 修完 v1 `:id` 穿越后，本轮转做 **`POST /api/v1/auth/jwt` 的请求体 fuzz**——这个端点是整个 v1 面唯一"任意调用方任意填写 claim"的入口，结果一次手工 fuzz 抓到**四个独立缺陷**，其中一个能签出**永不过期的 token**：
+
+1. **`scope` / `perm` 非数组 → 不透明 500**：`...body.scope` 直接展开，`{scope: 123}` / `{scope: {…}}` / `{scope: true}` 全部抛 `(body.scope ?? []) is not iterable`，被 catch-all 归成 `500 {"error":{"message":"(body.scope ?? []) is not iterable"}}`——把内部 JS 运行时错误字符串直接当 API 错误消息暴露（§2.1.A 明令禁止），且 5xx 让调用方以为"服务器坏了"而非"我传错了"。
+2. **`scope` 为裸字符串 → 静默按字符拆**：`{scope: "admin"}` 展开成 `['a','d','m','i','n']`（`Array.from(new Set([...'admin']))`），**200 OK** 签出一枚 scope 完全无意义的 token。调用方以为给了 admin 权限，实际一个 scope 都不匹配——静默失败里最坏的一类。
+3. **`doc` 非字符串 → 原样签进 token**：`...(body.doc ? {doc: body.doc} : {})` 无类型检查，`{doc: 123}` 签出 `doc` claim 为**数字**的 JWT。下游 `payload.doc === id` 恒 false，文件级鉴权静默错位。
+4. **`exp: 1e999` → 永生 token**：`JSON.parse('{"exp":1e999}')` 得 `Infinity`；旧逻辑 `typeof body.exp === 'number' && body.exp > now` 对 `Infinity` 为真，于是 `exp = Infinity`，`JSON.stringify({exp: Infinity})` 序列化成 **`exp: null`**，而 `verifyJwt` 只检查 `typeof payload.exp === 'number'`——**`null` 不是 number，于是过期检查被整个跳过**。实测这枚 token 永远可用（`GET /api/v1/files` 恒 200）。`exp` 也完全没有上界（`exp: 99999999999` 直接签发）。
+5. **文档写的 `ttl` 根本不生效**：`docs/api/rest-api.md` 的示例是 `{ "sub": "user-123", "ttl": 3600 }`，但 handler 只读 `exp`。`{ttl: 7200}` 静默产出 1 小时 token（默认值）——文档与实现脱节，host 按文档调用得到错误 TTL。
+
+修复路径（本节一处收口）：
+   - **`scope`/`perm` 类型闸**：新增 `isStringArray()`（`Array.isArray && every(x => typeof x === 'string' && x.trim().length > 0)`）；非数组/含非字符串/含空串 → 400 `INVALID_ARGUMENT`。裸字符串不再被拆成字符。`null` 按 JSON 惯例视作"未设置"（省略 claim）而非报错，避免对正常 SDK 过度收紧。
+   - **`doc` 类型闸**：`doc` 存在时必须是非空字符串，否则 400；`null` 同样按"未设置"处理。
+   - **lifetime 统一解析 + clamp**：优先级 `ttl`（相对秒，文档口径）> `exp`（绝对 epoch，legacy）。二者都先 `Number()` 再 `Number.isFinite()` 校验（拦 `Infinity`/`NaN` → 400 `ttl must be a finite number of seconds`）。有效 TTL clamp 到 `[MIN_TTL_SEC=30, MAX_TTL_SEC=86400]`——**由此永生/已死 token 在构造上不可能**（`exp` 永远是有限 number，序列化绝不会变 `null`）。响应新增 `ttlSeconds` 回显，host 能直接确认实际生效值（`files/:id/jwt` 早已如此）。
+   - **`hasScope` 过滤非字符串 claim**：签名前置闸只能保护"新签发"的 token；**已存在的历史 `scope:[1,2,3]` token**（或手搓的）会让 `claim.endsWith(':*')` 抛 `claim.endsWith is not a function`，把**每个带 scope 的端点**打成 500。`hasScope` 现在 `filter(c => typeof c === 'string')`——坏 claim 被丢弃即"不授权"，是 **deny 而非误授予**（安全默认）。
+
+为什么 clamp 而不是 400 拒绝越界 TTL：与 `embed-nonce` 的 `ttlMs` clamp（§11.26）、`files/:id/jwt` 的 `ttlSeconds` 上限（§11.109）保持同构——"给了个偏大的 TTL"不是协议错误，静默收敛到安全上界并**回显 `ttlSeconds`** 让 host 可观测，比直接 400 更 SDK 友好；而"非有限值"（`Infinity`/`NaN`）无法安全签签，必须 400。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/auth.ts` | 新增 `MAX_TTL_SEC` / `MIN_TTL_SEC` / `isStringArray()`；`handleAuthJwt` 加 `doc` / `scope` / `perm` 类型闸 + `ttl`/`exp` 统一解析 & clamp + 响应回显 `ttlSeconds`；`hasScope` 过滤非字符串 claim | +78 / -21 |
+| `apps/web-server/tests/auth-jwt-payload-validation-e2e.test.ts` | 新增 · 1 e2e（5 phase / ~30 断言：scope 6 种坏类型 400 + perm 3 种 400 + 裸字符串不拆字符 + `null` scope 视作未设置 + doc 5 种坏类型 400 + `exp:1e999` 原始 JSON 文本 400 + `ttl:7200` 生效 + ttl 上下 clamp(5→30 / 9.99M→86400) + legacy `exp` 兼容 + 合法 mint 可用 + 历史 `scope:[1,2,3]` token 走 scoped 端点 403 而非 500 + 混合 claim 仍按有效字符串授权）| +175 / -0 |
+
+#### 🎯 设计要点
+
+1. **`Number.isFinite` 是"能不能安全签"的唯一闸**：`Infinity` 的问题不在"太大"而在 `JSON.stringify` 把它变成 `null`、而 `verifyJwt` 的 `typeof exp === 'number'` 只挡数字——这是一个**类型系统漏洞**而非范围漏洞。clamp 无法修它（`Math.min(MAX, Infinity)` 仍是有限，但那说明 clamp 已先被有限值检查保护）——所以有限性检查必须在 clamp 之前独立存在。
+2. **clamp 边界与既有端点对齐**：`[30, 86400]` 不是新发明的魔法数，而是 `files.ts` 的 `FILE_JWT_TTL_MIN_SEC` / `FILE_JWT_TTL_MAX_SEC` 同值，保证"全局 token"与"文件 token"的 TTL 语义一致。
+3. **`ttl` 优先于 `exp`**：文档口径（相对秒）优先，legacy（绝对 epoch）兼容。二者都给时以 `ttl` 为准并在注释里写明，避免两套语义打架。
+4. **`null` = 未设置，不是错误**：`JSON.stringify` 会把 `undefined` 变成缺失、把可选字段写成 `null` 是常见 SDK 行为；把 `null` 当"显式未提供"能避免对正常调用方误报 400，同时 claim 仍然省略（语义等价于没传）。
+5. **`hasScope` 的 deny-by-default**：过滤掉坏 claim 后，一个全坏 claim 的 token 落到 `claims.length === 0` → 只grant `files:read`（只读），与"无 scope 即只读"的既有约定一致；这是**向后兼容的降权**，绝不升权。
+6. **响应回显 `ttlSeconds`**：与 `files/:id/jwt` 一致，host 能直接断言"我请求的 7200 生效了"而不是靠解 JWT 猜——把 clamp 变成可观测行为。
+
+#### 🧪 测试（5 phase / ~30 断言全绿）
+
+**新增 `auth-jwt-payload-validation-e2e.test.ts`**（单 harness）：
+- **Phase 1**：`scope` 6 种坏类型（`123` / `true` / `{a:1}` / `'admin'` / `['files:read',5]` / `['files:read','']`）全 400 `INVALID_ARGUMENT`；`perm` 3 种（`'files:read'` / `42` / `['a',1]`）全 400；裸字符串 scope **不再被拆成字符**；`scope:null` → 200 且 payload 无 `scope` claim
+- **Phase 2**：`doc` 5 种坏类型（`123` / `{}` / `[]` / `''` / `'   '`）全 400；`doc:null` → 200 且无 `doc` claim
+- **Phase 3**：`exp:1e999` / `ttl:-1e999` 用**原始 JSON 文本**发送（`JSON.stringify` 会把它变成 `null`，只有裸文本才能真实到达 handler 触发 `Infinity`）→ 400；`ttl:7200` → `ttlSeconds === 7200` 且解 JWT 的 `exp-now > 7100`；`ttl:5` → clamp 到 30；`ttl:9_999_999` → clamp 到 86400；legacy `exp=now+7200` → `ttlSeconds > 7100`
+- **Phase 4**：合法 mint（`sub='valid-user', scope=['files:read'], doc='doc-1'`）→ 200 / `alg=HS256` / payload 逐字段核对，且该 token 能通过 `GET /api/v1/files`
+- **Phase 5**：手搓 `scope:[1,2,3]` 的 token（用 harness secret 签）走 `GET /api/v1/kb/entries` → **403 而非 500**；手搓 `scope:[1,'files:read']` 走 `GET /api/v1/files` → 200（过滤只丢坏 claim）；`/health` 200
+
+#### 📊 进度
+
+- web-server 套件 131 → **132 文件** / 1123 → **1124 通过**（+1 e2e；~30 断言）
+- §A.5 backlog 闭合数 95 → **96**（+1：4 bug 同节修；含 1 例永生 token 安全漏洞）
+- §2.1.A 三条同时收紧：**内部错误串不泄漏**（`is not iterable` 500 → 400）、**静默失败不可接受**（裸字符串 scope 拆字符 → 400）、**文档与实现对齐**（`ttl` 真正生效）
+- 新安全面：token 生命周期上限（`exp` 永不 `null`）首次被强制；`hasScope` 对**历史坏 token**的拒服务路径（500 → 403）打通
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.114 bundle):
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","scope":123}' \
+    http://127.0.0.1:18920/api/v1/auth/jwt
+{"error":{"message":"(body.scope ?? []) is not iterable"}}
+HTTP 500   # ← 内部 JS 运行时错误字符串泄漏为 API 错误消息
+
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","scope":"admin"}' \
+    http://127.0.0.1:18920/api/v1/auth/jwt | decode-payload
+payload.scope = ["a","d","m","i","n"]     # ← 裸字符串被静默拆成字符，200 OK
+
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","doc":123}' \
+    http://127.0.0.1:18920/api/v1/auth/jwt | decode-payload
+payload.doc = 123                          # ← 非字符串 doc 原样签进 token
+
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"immortal","exp":1e999}' \
+    http://127.0.0.1:18920/api/v1/auth/jwt | decode-payload
+payload.exp = null                         # ← typeof null !== 'number' → verifyJwt 跳过过期检查
+$ curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer <that-token>" \
+    http://127.0.0.1:18920/api/v1/files
+200                                        # ← 永生 token：永远可用
+
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","ttl":7200}' \
+    http://127.0.0.1:18920/api/v1/auth/jwt | jq '.exp - now'
+3600                                       # ← 文档说 ttl=7200，实际拿到默认 1h
+
+# 用历史 scope:[1,2,3] 的 token 打任一 scoped 端点：
+$ curl -s -H "Authorization: Bearer <numeric-scope-token>" http://127.0.0.1:18920/api/v1/files
+{"error":{"message":"claim.endsWith is not a function"}}
+HTTP 500                                   # ← 坏 claim 让每个 scoped 端点 500
+
+# AFTER fix:
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","scope":123}' \
+    http://127.0.0.1:18920/api/v1/auth/jwt
+{"error":{"message":"scope must be an array of non-empty strings","code":"INVALID_ARGUMENT","channel":"auth:jwt"}}
+HTTP 400
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","scope":"admin"}' ...
+HTTP 400   # ← 不再静默拆字符
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","doc":123}' ...
+{"error":{"message":"doc must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"auth:jwt"}}
+HTTP 400
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","exp":1e999}' ...
+{"error":{"message":"ttl must be a finite number of seconds","code":"INVALID_ARGUMENT","channel":"auth:jwt"}}
+HTTP 400   # ← 永生 token 在构造上不再可能
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"sub":"u","ttl":7200}' ...
+{"token":"eyJ…","exp":1790184922,"ttlSeconds":7200,"alg":"HS256"}
+HTTP 200   # ← 文档 ttl 真正生效，并回显 ttlSeconds
+$ for ttl in 5 30 7200 999999: ttlSeconds = 30 / 30 / 7200 / 86400   # clamp 生效
+$ curl -s -H "Authorization: Bearer <numeric-scope-token>" http://127.0.0.1:18920/api/v1/files
+200                                        # ← 坏 claim 被过滤掉（无效 claim=不授权），不再 500
+$ curl -s -H "Authorization: Bearer <numeric-scope-token>" http://127.0.0.1:18920/api/v1/kb/entries
+{"error":{"message":"token does not grant scope \"kb:read\"","code":"FORBIDDEN","channel":"kb:entries"}}
+HTTP 403   # ← deny-by-default，绝不误授予
+
+$ ./node_modules/.bin/vitest run tests/auth-jwt-payload-validation-e2e.test.ts
+ ✓ tests/auth-jwt-payload-validation-e2e.test.ts (1 test) 663ms
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  132 passed (132)
+      Tests  1124 passed | 1 skipped (1125)
+   Duration  32.49s
+```
+
+### 11.116 · `/api/v1/kb/search` + `/kb/entries` `limit` / `schema` 透传 → IPC `{ok:false}` 200 leak（§11.103 / §11.112 同类 · 1 bug 三闭合 · 1 e2e）
+
+§11.115 修完 auth/jwt 输入校验后，本轮做 v1 KB shim 的 input contract 审计——手工 fuzz `?limit=...` 与 `?schema=...` 拿到三个 **IPC-shape 200 leak**，全部出自同一个根因：**REST 层验证比 IPC 层宽松**，非法值未被本端闸住就转发 → IPC 拒绝 → 200 + `{ok:false}`：
+
+1. **`/kb/search?limit=1.5` → 200 + `{ok:false, error:'kb_search: `limit` must be an integer between 1 and 100 (got 1.5)'}`**：REST 层只查 `< 1` 与 `Number.isNaN()`，1.5 不是 NaN 也不是 `< 1`，原样转发给 IPC `kb_search` 工具（`kbListLimit` 要求整数）；IPC 报 `{ok:false}`，REST 把它当成功 `200 + result` 返回——**`200` 不是真成功**，host SDK 完全无法判断它失败。
+2. **`/kb/search?limit=101..1000` → 同款 200 + `{ok:false}`**：REST clamp 上界是 **1000**，但 `kb_search` 工具的真实上界是 **100**（`packages/agent-skills/src/extensions/translate-skill.ts:1359`：`kbListLimit(limit, 20, 100)`）。clamp 后的 1000 仍被 IPC 拒绝，又一次 200 leak。
+3. **`/kb/entries?schema=nonsense` → 200 + `{ok:false, error:'kb_list: unknown schema nonsense; expected one of …'}`**：REST 层对 `schema` 完全无校验，原样转发 `ai:translation-kb-list`；IPC 用 `isSchemaKey()` 拒绝未知 key，又一次 200 leak。同理 `?limit=1.5` 在 `/kb/entries` 上也漏——`kb_list` 上界是 1000 但仍要求整数，1.5 直接被拒。
+
+修复路径（一次到位 3 处）：
+   - 新增 `KB_SCHEMA_KEYS` 常量（5 个合法 key，从 `packages/agent-skills/src/extensions/translate-skill.ts` 的 `SCHEMA_KEYS` 对齐），`/kb/entries?schema=` 取到值时若不在表内 → 400 `INVALID_ARGUMENT`。
+   - `limit` 验证统一改为 **`Number.isInteger(n) && n >= 1`** + clamp 到 IPC 的**实际**上界（`/kb/search` → 100，`/kb/entries` → 1000）。注意**clamp 的上界必须与 IPC 一致**——这是 §11.100 留下来的"猜上界"小漏洞（当时没有对 IPC 真实范围 100 做回核，code review 看到 `Math.min(1000, ...)` 就放过了）。
+   - 空串 / whitespace `schema` 走 JSON 惯例"未设置"分支（与 §11.115 的 `null doc` 同口径），不报错；空串 `limit` 同样视作未提供（默认 fallback）。
+
+为什么 §11.100 的 `limit clamp` 当时没被发现：IPC `kb_search` 的 max 是 100，但 §11.100 那次 audit 主要修"REST 调错 IPC 通道（`home:translate-kb-search` 而不是 `ai:translation-kb-resolve`）"，并把 `limit` clamp 加成 `Math.min(1000, Math.max(1, ...))`——**clamp 上界是从经验值猜的**（"1000 应该够了"），从未和 `kbListLimit` 内部约束对齐。这是 §11.100 留下的"已知 contract gap"，本节正式闭合。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/kb.ts` | 新增 `KB_SCHEMA_KEYS` 常量；`handleKbSearch` 重写 `limit` 校验（`Number.isInteger` + clamp `[1,100]`）；`handleKbEntries` 加 `schema` 校验（5 合法 key）+ 修正 `limit` 验证（`Number.isInteger` + clamp `[1,1000]`） | +37 / -14 |
+| `apps/web-server/tests/kb-v1-input-validation-e2e.test.ts` | 新增 · 1 e2e（5 phase / ~30 断言：search 7 个坏 limit + 4 个越界 limit + 1 个合法；entries 5 个坏 limit + 5 个越界 limit + 5 个坏 schema + 5 个好 schema + 无 schema + `/health` 存活）| +120 / -0 |
+
+#### 🎯 设计要点
+
+1. **clamp 上界对齐 IPC 实际值是 root-cause fix**：`limit` 非整数是显式 caller error（400），整数越界是"我想要很多"——clamp 到 IPC 能接受的 max，让 200 永远是真实成功。这条原则与 §11.115 的 `ttl` clamp 同构。
+2. **`Number.isInteger` 而不是 `Number.isNaN`**：1.5 不是 NaN，旧检查放过；`Number.isInteger(n) && n >= 1` 才正确表达"正整数"。`Infinity` / `-Infinity` / `NaN` 都自动被这条闸拦下。
+3. **`schema` 校验提前到 REST 而非依赖 IPC**：把 `SCHEMA_KEYS` 复制到 v1 层（而不是通过 IPC 间接查）是合理的——这是公开 v1 contract 的稳定 part，IPC 内部 schema 可能漂移，但 REST 必须固化。如果将来 IPC 增删 schema，改两边的同步即可（host 6-month deprecation 周期内会处理）。
+4. **空串 / whitespace 不算"显式提供"**：与 §11.115 的 `null` 处理一致——`?schema=` / `?limit=` 这种序列化器自然产物走"未提供"分支（默认无 filter / 默认 limit），不报 400。
+
+#### 🧪 测试（5 phase / ~30 断言全绿）
+
+**新增 `kb-v1-input-validation-e2e.test.ts`**（单 harness）：
+- **Phase 1 `kb/search` limit**：`1.5` / `0.001` / `-1` / `0` / `abc` / `NaN` / `Infinity` 7 个坏值 → 全 400；`101` / `500` / `1000` / `999999` 4 个越界 → 全 200 + `ok=true`（**实测真值**：从原 200 leak 改成 200 + ok:true）；`limit=10` happy → 200 + ok:true
+- **Phase 2 `kb/entries` limit**：5 个坏值全 400；5 个越界全 200 + ok:true
+- **Phase 3 `kb/entries` schema**：`nonsense` / `unknown` / `term,forbidden` / `'term '`（带尾空格）4 个坏值 → 全 400；5 个合法 key 全 200 + ok:true
+- **Phase 4 无 schema**：不传 `schema` 也能正常 200（不能因为新闸过度收紧）
+- **Phase 5**：`/health` 200 防"一条坏请求打死进程"
+
+#### 📊 进度
+
+- web-server 套件 132 → **133 文件** / 1124 → **1125 通过**（+1 e2e；~30 断言）
+- §A.5 backlog 闭合数 96 → **97**（+1：三闭合同节修；IPC-shape 200 leak 类）
+- §11.100 留下的 "clamp 上界凭经验猜" gap 正式闭合：v1 KB shim 与 IPC `kbListLimit` 的 max 边界第一次在测试里钉齐
+- §2.1.A "REST 200 必须真成功" 第三次在 KB surface 收紧（§11.100 改通道、§11.112 改 q、§11.116 改 limit / schema）
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.115 bundle):
+$ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18920/api/v1/kb/search?q=test&limit=1.5'
+{"ok":false,"details":{"ok":false,"error":"kb_search: `limit` must be an integer between 1 and 100 (got 1.5)"},"summary":"...","error":"..."}
+HTTP 200   # ← IPC 拒绝 + REST 透传 → 200 不是真成功，host 无法检测失败
+
+$ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18920/api/v1/kb/search?q=test&limit=999999'
+{"ok":false,"details":{"ok":false,"error":"kb_search: `limit` must be an integer between 1 and 100 (got 1000)"},"error":"..."}
+HTTP 200   # ← REST clamp 到 1000（猜的上界）但 IPC 上界是 100
+
+$ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18920/api/v1/kb/entries?schema=nonsense'
+{"ok":false,"entries":[],"error":"kb_list: unknown schema nonsense; expected one of ..."}
+HTTP 200   # ← schema 完全无校验，原样到 IPC 拒
+
+# AFTER fix:
+$ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18920/api/v1/kb/search?q=test&limit=1.5'
+{"error":{"message":"limit must be a positive integer","code":"INVALID_ARGUMENT","channel":"kb:search"}}
+HTTP 400
+$ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18920/api/v1/kb/search?q=test&limit=999999'
+{"ok":true,"details":{"ok":true,"entries":[...]}}
+HTTP 200   # ← clamp 到 100，IPC 接受 → ok:true
+$ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18920/api/v1/kb/entries?schema=nonsense'
+{"error":{"message":"schema must be one of term, forbidden, brand, styleRule, customerPreference","code":"INVALID_ARGUMENT","channel":"kb:entries"}}
+HTTP 400
+$ curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:18920/api/v1/kb/entries?limit=1.5'
+{"error":{"message":"limit must be a positive integer","code":"INVALID_ARGUMENT","channel":"kb:entries"}}
+HTTP 400
+
+$ ./node_modules/.bin/vitest run tests/kb-v1-input-validation-e2e.test.ts
+ ✓ tests/kb-v1-input-validation-e2e.test.ts (1 test) 3049ms
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  133 passed (133)
+      Tests  1125 passed | 1 skipped (1126)
+   Duration  (after network flakes)
+```
+
+全套件 133 文件 / 1125 通过 / 0 fail / 1 skipped / 0 回归。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
@@ -7184,7 +8479,15 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
-> **实测口径（2026-09-22 本轮复跑）**：`apps/web-server` 单包 **89 文件 /
+> **实测口径（2026-09-24 §11.116 本轮复跑）**：`apps/web-server` 单包 **133 文件 /
+> 1125 通过 / 1 skipped / 0 fail**（`vitest run --reporter=dot`，~33s）。
+> §11.114 增 `v1-file-id-traversal-e2e`（131/1123），§11.115 增
+> `auth-jwt-payload-validation-e2e`（132/1124），§11.116 增
+> `kb-v1-input-validation-e2e`（133/1125）。
+> 历史基线（2026-09-22 §11.61）：（`vitest run --reporter=dot`，32s）。
+> §11.114 增 `v1-file-id-traversal-e2e`（131/1123），§11.115 增
+> `auth-jwt-payload-validation-e2e`（132/1124）。
+> 以下 2026-09-22 口径保留作为历史基线：`apps/web-server` 单包 **89 文件 /
 > 757 通过 / 1 skipped**（`translate-kerrits-pdf-e2e` 依赖外部 LLM 端点，
 > 单跑 60s 超时，属既知网络 flake，与代码无关）；全量串跑时
 > `translate-malformed-payloads-e2e` 也会因同一端点被拖垮而偶发失败，

@@ -75,6 +75,13 @@ import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
+// sdk1 §11.111: handleApiV1 + findV1Route are imported together so the
+// v1 dispatcher catch-all can return 405 METHOD_NOT_ALLOWED with the
+// correct Allow list when a pathname matches a known v1 route but the
+// requested method isn't supported (RFC 7231). Without the route table
+// the catch-all would return 404 NOT_FOUND for paths that exist for
+// other methods, which is an RFC 7231 violation.
+import { findV1Route, handleApiV1 } from './api/v1/index'
 import { requireScopeFromHeaders, verifyJwtWithRevocation } from './api/v1/auth'
 
 /**
@@ -89,7 +96,6 @@ function hasAuthorizationHeader(headers: unknown): boolean {
   const raw = h?.authorization
   return typeof raw === 'string' && raw.trim().toLowerCase().startsWith('bearer ')
 }
-import { handleApiV1 } from './api/v1/index'
 import { handleEmbed } from './embed/index'
 import { registerSdkCommandHandlers } from './embed/sdk-commands'
 
@@ -392,7 +398,19 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (url.pathname === '/health' && request.method === 'GET') {
+  // sdk1 §11.110: wrong-method requests return 405 instead of SPA HTML.
+  if (url.pathname === '/health') {
+    if (request.method !== 'GET') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'GET required',
+          channel: url.pathname,
+          allow: 'GET',
+        },
+      })
+      return
+    }
     const translation = translationStateSummary()
     sendJson(response, 200, {
       status: 'ok',
@@ -421,7 +439,23 @@ const server = createServer(async (request, response) => {
    * right transport. Public and unauthenticated; no JWT or scope required.
    * @public
    */
-  if (url.pathname === '/api/channels' && request.method === 'GET') {
+  // sdk1 §11.107: wrong-method requests must return 405 with a
+  // structured envelope instead of falling through to the SPA
+  // static fallback (which would serve the index.html and confuse
+  // API clients with a 200 + HTML body — same shape inconsistency
+  // observed for /api/ai/pi-prompt and /api/ai/languages).
+  if (url.pathname === '/api/channels') {
+    if (request.method !== 'GET') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'GET required',
+          channel: url.pathname,
+          allow: 'GET',
+        },
+      })
+      return
+    }
     sendJson(response, 200, {
       protocolVersion: 1,
       minClientVersion: 1,
@@ -435,10 +469,29 @@ const server = createServer(async (request, response) => {
     try {
       const handled = await handleApiV1({ request, response, pathname: url.pathname, method: request.method || "GET" })
       if (handled) return
-      // No handler matched: the path is reserved by /api/v1/* but unknown.
-      // Return 404 with a structured envelope instead of falling through to
-      // the SPA static fallback (which would serve HTML and confuse API
-      // clients with a 200 + index.html).
+      // No handler matched. sdk1 §11.111: if the pathname matches a
+      // known v1 route but the wrong HTTP method was used, return 405
+      // with an Allow list per RFC 7231 instead of falling through to
+      // 404 NOT_FOUND. 404 is reserved for paths that don't exist at
+      // any method; "path exists, method wrong" must be 405.
+      const requestedMethod = (request.method || 'GET').toUpperCase()
+      const route = findV1Route(url.pathname)
+      if (route && !route.methods.includes(requestedMethod)) {
+        const allow = route.methods.join(', ')
+        sendJson(response, 405, {
+          error: {
+            code: 'METHOD_NOT_ALLOWED',
+            message: `Method ${requestedMethod} not allowed for ${url.pathname}; use ${allow}`,
+            channel: url.pathname,
+            allow,
+          },
+        })
+        return
+      }
+      // No handler matched AND no route matches — path is unknown.
+      // Return 404 with a structured envelope instead of falling through
+      // to the SPA static fallback (which would serve HTML and confuse
+      // API clients with a 200 + index.html).
       sendJson(response, 404, {
         error: {
           code: 'NOT_FOUND',
@@ -453,7 +506,22 @@ const server = createServer(async (request, response) => {
     }
   }
 
-  if (url.pathname === '/api/collab/sessions' && request.method === 'GET') {
+  // sdk1 §11.108: wrong-method requests must return 405 instead of
+  // falling through to the SPA fallback (same pattern as §11.107 for
+  // /api/channels + /api/ai/pi-prompt). Only GET is documented; POST /
+  // PUT / DELETE are rejected with the structured envelope.
+  if (url.pathname === '/api/collab/sessions') {
+    if (request.method !== 'GET') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'GET required',
+          channel: url.pathname,
+          allow: 'GET',
+        },
+      })
+      return
+    }
     const sessions = [...COLLAB_SESSIONS.entries()].map(([docId, session]) => ({
       docId,
       users: [...session.users],
@@ -463,6 +531,25 @@ const server = createServer(async (request, response) => {
     return
   }
 
+  // sdk1 §11.111 (continuation): /api/html/preview/<id> is GET-only and
+  // the previous caller-side `&& request.method === 'GET'` gate meant
+  // POST / PUT / DELETE silently fell through to the SPA static fallback
+  // (200 + <!doctype html>). Same SPA-fallback pattern as §11.107/108/110.
+  // Move the method gate inside as an explicit 405 return so non-GET
+  // requests get the structured envelope instead of HTML.
+  if (url.pathname.startsWith('/api/html/preview/')) {
+    if (request.method !== 'GET') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'GET required',
+          channel: url.pathname,
+          allow: 'GET',
+        },
+      })
+      return
+    }
+  }
   if (url.pathname.startsWith('/api/html/preview/') && request.method === 'GET') {
     const rawId = url.pathname.slice('/api/html/preview/'.length).split('/')[0]
     // no initializer: every path either assigns below or returns from the
@@ -496,6 +583,14 @@ const server = createServer(async (request, response) => {
   }
 
   if (url.pathname.startsWith('/api/ipc/') && request.method === 'POST') {
+    // sdk1 §11.110: skip /api/ipc/events — it's a GET-only SSE endpoint with
+    // its own dedicated handler below that emits the proper 405 envelope for
+    // POST/PUT/DELETE. Without this carve-out the broader POST catch-all would
+    // interpret the trailing `events` segment as an IPC channel name and
+    // return 404 (IPC_NO_HANDLER) instead of the expected 405.
+    if (url.pathname === '/api/ipc/events') {
+      // fall through to the dedicated GET-only handler below
+    } else {
     const encodedChannel = url.pathname.slice('/api/ipc/'.length)
     let channel: string
     try {
@@ -521,8 +616,18 @@ const server = createServer(async (request, response) => {
       } catch {
         throw new InvalidArgumentError(channel, 'request body is not valid JSON')
       }
+      // sdk1 §11.108: args MUST be an array. Previously the code cast
+      // `parsed.args ?? []` to `unknown[]` and called `.map(...)` on it;
+      // a caller-supplied `{ args: "not-an-array" }` would throw
+      // `args.map is not a function` and bubble up as a 500 INTERNAL
+      // exposing an internal JS error to the host. Validate here so the
+      // failure mode is a clean 400 with the same channel-bound error
+      // shape as every other v1 / IPC failure path.
+      if (parsed.args !== undefined && !Array.isArray(parsed.args)) {
+        throw new InvalidArgumentError(channel, '`args` must be an array')
+      }
       const args = parsed.args ?? []
-      decodedArgs = (args as unknown[]).map((arg) => decodeTransportValue(arg))
+      decodedArgs = args.map((arg) => decodeTransportValue(arg))
 
       const entry = getHandlerEntry(channel)
       if (entry) {
@@ -610,9 +715,21 @@ const server = createServer(async (request, response) => {
       sendIpcError(response, error, true, channel)
     }
     return
+    }
   }
 
-  if (url.pathname === '/api/ipc/events' && request.method === 'GET') {
+  if (url.pathname === '/api/ipc/events') {
+    if (request.method !== 'GET') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'GET required',
+          channel: url.pathname,
+          allow: 'GET',
+        },
+      })
+      return
+    }
     const session = url.searchParams.get('session')
     if (!session) {
       sendJson(response, 400, { error: { message: 'Missing session' } })
@@ -670,7 +787,18 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (url.pathname === '/api/ai/stream' && request.method === 'POST') {
+  if (url.pathname === '/api/ai/stream') {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'POST required',
+          channel: url.pathname,
+          allow: 'POST',
+        },
+      })
+      return
+    }
     let sessionAbort: AbortController | undefined
     let requestId: string | undefined
     try {
@@ -775,7 +903,18 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (url.pathname === '/api/ai/stream/cancel' && request.method === 'POST') {
+  if (url.pathname === '/api/ai/stream/cancel') {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'POST required',
+          channel: url.pathname,
+          allow: 'POST',
+        },
+      })
+      return
+    }
     let requestId: string | undefined
     try {
       const body = await readBody(request)
@@ -808,17 +947,50 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (url.pathname === '/api/ai/translate' && request.method === 'POST') {
+  if (url.pathname === '/api/ai/translate') {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'POST required',
+          channel: url.pathname,
+          allow: 'POST',
+        },
+      })
+      return
+    }
     void handleTranslateBatchHttp(request, response)
     return
   }
 
-  if (url.pathname === '/api/ai/translate/stream' && request.method === 'POST') {
+  if (url.pathname === '/api/ai/translate/stream') {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'POST required',
+          channel: url.pathname,
+          allow: 'POST',
+        },
+      })
+      return
+    }
     void handleTranslateStreamHttp(request, response)
     return
   }
 
-  if (url.pathname === '/api/ai/translate/stream/cancel' && request.method === 'POST') {
+  if (url.pathname === '/api/ai/translate/stream/cancel') {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'POST required',
+          channel: url.pathname,
+          allow: 'POST',
+        },
+      })
+      return
+    }
     void handleTranslateStreamCancelHttp(request, response)
     return
   }
@@ -829,7 +1001,20 @@ const server = createServer(async (request, response) => {
   // the channel the GenOffice UI uses when the user wants the agent to drive
   // translation through the SKILL.md wrappers instead of through the TS path,
   // and it is also the foundation for a future in-shell agent panel.
-  if (url.pathname === '/api/ai/pi-prompt' && request.method === 'POST') {
+  // sdk1 §11.107: GET /api/ai/pi-prompt must return 405 instead of
+  // falling through to the SPA fallback (which served HTML).
+  if (url.pathname === '/api/ai/pi-prompt') {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, {
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: 'POST required',
+          channel: url.pathname,
+          allow: 'POST',
+        },
+      })
+      return
+    }
     void handlePiPromptStreamHttp(request, response)
     return
   }
@@ -853,11 +1038,36 @@ const server = createServer(async (request, response) => {
   // Stable v1 surface — see sdk1.md §2.1.C. Must run BEFORE the SPA fallback
   // so the embed wrapper page wins over the shell home tab when a caller
   // mounts `/embed/…` against a deployment that doesn't strip the prefix.
-  if (url.pathname.startsWith('/embed/') && request.method === 'GET') {
+  // sdk1 §11.109: handle ALL methods here so the embed handler can
+  // return 405 for non-GET (POST / PUT / DELETE). Previously the gate
+  // `request.method === 'GET'` made non-GET fall through to the SPA
+  // fallback which returned 200 + <!doctype html>.
+  if (url.pathname.startsWith('/embed/')) {
     if (handleEmbed(request, response, url)) return
   }
 
   // ----- static / SPA fallback ---------------------------------------------
+  // sdk1 §11.112 (continuation): SPA sub-routes (/docs, /sheets, /slides,
+  // /pdf, /markdown, /html, /shell, /, /manage, /management) are HTML
+  // pages. Browsers only fetch them with GET (or HEAD for resource
+  // discovery). POST / PUT / DELETE / PATCH previously fell through to
+  // the static fallback which served index.html with 200 + Content-Type
+  // text/html — same SPA-fallback-on-wrong-method bug class as
+  // §11.107 / §11.108 / §11.110 / §11.111. The static layer returns 405
+  // for any non-GET / non-HEAD method; let the registered API handlers
+  // above (or the inner SPA missing-asset 404 below) handle the GET case
+  // unchanged.
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    sendJson(response, 405, {
+      error: {
+        code: 'METHOD_NOT_ALLOWED',
+        message: 'static / SPA subroutes are GET-only',
+        channel: url.pathname,
+        allow: 'GET, HEAD',
+      },
+    })
+    return
+  }
   const pathMatch = url.pathname.match(
     /^\/(docs|sheets|slides|pdf|markdown|html|shell)(?:\/(.*))?$/,
   )
@@ -1109,13 +1319,26 @@ async function handlePiPromptStreamHttp(
     const req = JSON.parse(body || '{}') as { text?: string }
     promptText = String(req.text ?? '').trim()
   } catch {
-    response.writeHead(400, { 'Content-Type': 'application/json' })
-    response.end(JSON.stringify({ ok: false, error: 'pi-prompt: invalid JSON body' }))
+    // sdk1 §11.107: align with v1 envelope `{ error: { code, message, channel } }`
+    // instead of `{ ok: false, error: "..." }` so callers can branch on
+    // `error.code` consistently with every other v1 + legacy endpoint.
+    sendJson(response, 400, {
+      error: {
+        code: 'INVALID_ARGUMENT',
+        message: 'pi-prompt: invalid JSON body',
+        channel: '/api/ai/pi-prompt',
+      },
+    })
     return
   }
   if (!promptText) {
-    response.writeHead(400, { 'Content-Type': 'application/json' })
-    response.end(JSON.stringify({ ok: false, error: 'pi-prompt: empty text' }))
+    sendJson(response, 400, {
+      error: {
+        code: 'INVALID_ARGUMENT',
+        message: 'pi-prompt: empty text',
+        channel: '/api/ai/pi-prompt',
+      },
+    })
     return
   }
 

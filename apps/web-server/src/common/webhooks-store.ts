@@ -157,6 +157,16 @@ export interface WebhookDeliveryResult {
   delivered: boolean
   finalStatus: number | null
   error?: string
+  /**
+   * sdk1 §11.113: `true` when the recipient was skipped because the
+   * event isn't on its `events` allow-list. Distinct from
+   * `delivered: false` after a real attempt — the recipient never saw
+   * the request, so it must NOT surface in the DLQ (`pushFailedDeliveriesToDlq`
+   * silently drops filtered-out entries; otherwise the DLQ fills with
+   * `attempts:0, lastError:null, reason:"max_attempts"` noise for events
+   * the subscriber explicitly opted out of).
+   */
+  filtered?: boolean
 }
 
 export interface WebhookDeliveryOptions {
@@ -220,7 +230,15 @@ async function deliverOne(
   // 'ai.completed']. Empty array means "all events" — preserved for
   // backwards compatibility with any caller that explicitly opts in.
   if (wh.events.length > 0 && !wh.events.includes(event)) {
-    return { url: wh.url, event, attempts: 0, delivered: false, finalStatus: null }
+    // sdk1 §11.113: marker for the DLQ filter — see WebhookDeliveryResult.filtered
+    return {
+      url: wh.url,
+      event,
+      attempts: 0,
+      delivered: false,
+      finalStatus: null,
+      filtered: true,
+    }
   }
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3)
   const initialBackoffMs = Math.max(0, opts.initialBackoffMs ?? 250)
@@ -341,7 +359,14 @@ export async function pushFailedDeliveriesToDlq(
   fileId: string,
   data: Record<string, unknown>,
 ): Promise<void> {
-  const failed = results.filter((r) => !r.delivered)
+  // sdk1 §11.113: skip results the recipient filtered out via its
+  // `events` allow-list — those never produced a real attempt and don't
+  // belong in the dead-letter queue (which is for failed deliveries
+  // ready for re-attempt). Without this filter the DLQ accumulates
+  // `{attempts:0, lastError:null, reason:"max_attempts"}` noise for
+  // every non-matching event, then list/replay/delete are dominated by
+  // entries the user can't act on.
+  const failed = results.filter((r) => !r.delivered && !r.filtered)
   if (failed.length === 0) return
   const { pushDeadLetter } = await import('./webhooks-dlq')
   for (const result of failed) {

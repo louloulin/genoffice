@@ -21,7 +21,13 @@ Content-Type: application/json
 { "sub": "user-123", "ttl": 3600 }
 ```
 
-Response: `{ "token": "eyJ…", "exp": 1700003600, "alg": "HS256" }`.
+Response: `{ "token": "eyJ…", "exp": 1700003600, "ttlSeconds": 3600, "alg": "HS256" }`.
+
+`ttl` is the lifetime in seconds and is clamped to `[30, 86400]` (`exp` —
+absolute epoch-seconds — is accepted for backward compatibility and clamped
+the same way). `scope` and `perm` must be arrays of non-empty strings; `doc`
+must be a non-empty string when present. Mistyped fields are rejected with
+`400 INVALID_ARGUMENT` rather than signed verbatim. (sdk1 §11.115)
 
 Configure the signing secret with `GENOFFICE_JWT_SECRET`. RS256 is
 available by setting `GENOFFICE_JWT_ALG=RS256` + `GENOFFICE_JWT_PRIVATE_KEY`.

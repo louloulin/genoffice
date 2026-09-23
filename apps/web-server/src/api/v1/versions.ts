@@ -27,6 +27,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
 import { requireScopeFromHeaders } from './auth'
+import { FILES_DIR, isWithin } from '../../common/index'
+import { join } from 'node:path'
 import {
   listVersions,
   readVersion,
@@ -48,6 +50,24 @@ function serverError(response: ServerResponse, op: string, err: unknown): void {
 }
 
 /**
+ * Containment guard for a decoded `:id` path segment.
+ *
+ * The versions surface is the highest-risk reader in the v1 shim: it
+ * snapshots a live file into `DATA_DIR/versions/<basename>/N.bin` and
+ * streams the bytes back base64-encoded. A percent-encoded traversal
+ * (`..%2F..%2Fetc%2Fpasswd`) previously escaped `FILES_DIR`, so
+ * `POST /files/<traversal>/versions` + `GET .../<vid>` was an
+ * arbitrary-file-read primitive covering `/etc/*` and DATA_DIR siblings
+ * like `webhooks.json` (HMAC secrets). Reject anything not strictly
+ * beneath `FILES_DIR` (sdk1 §11.114). Existence is checked separately by
+ * each handler so a not-found id still returns 404, not 400.
+ */
+function isSafeFileId(id: string): boolean {
+  if (typeof id !== 'string' || id.trim().length === 0 || id.includes('\0')) return false
+  return isWithin(FILES_DIR, join(FILES_DIR, id))
+}
+
+/**
  * GET /api/v1/files/:id/versions
  * @public
  */
@@ -59,6 +79,10 @@ export async function handleFilesVersionsList(
   const gate = requireScopeFromHeaders(ctx.request.headers, 'files:read')
   if (!gate.ok) {
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
+    return true
+  }
+  if (!isSafeFileId(fileId)) {
+    badRequest(ctx.response, op, 'file id is outside managed storage')
     return true
   }
   const versions = listVersions(fileId)
@@ -103,6 +127,10 @@ export async function handleFilesVersionsGet(
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
     return true
   }
+  if (!isSafeFileId(fileId)) {
+    badRequest(ctx.response, op, 'file id is outside managed storage')
+    return true
+  }
   const snap = readVersion(fileId, versionId)
   if (!snap) {
     notFound(ctx.response, op, `unknown version id: ${versionId}`)
@@ -140,6 +168,10 @@ export async function handleFilesVersionsCreate(
   const gate = requireScopeFromHeaders(ctx.request.headers, 'files:write')
   if (!gate.ok) {
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
+    return true
+  }
+  if (!isSafeFileId(fileId)) {
+    badRequest(ctx.response, op, 'file id is outside managed storage')
     return true
   }
   let body: { label?: unknown } = {}
@@ -206,6 +238,10 @@ export async function handleFilesVersionsRestore(
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
     return true
   }
+  if (!isSafeFileId(fileId)) {
+    badRequest(ctx.response, op, 'file id is outside managed storage')
+    return true
+  }
   try {
     const result = restoreVersion(fileId, versionId)
     if (!result.ok) {
@@ -235,6 +271,10 @@ export async function handleFilesVersionsDelete(
   const gate = requireScopeFromHeaders(ctx.request.headers, 'files:restore')
   if (!gate.ok) {
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
+    return true
+  }
+  if (!isSafeFileId(fileId)) {
+    badRequest(ctx.response, op, 'file id is outside managed storage')
     return true
   }
   const ok = deleteVersion(fileId, versionId)

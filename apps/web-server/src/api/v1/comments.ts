@@ -22,6 +22,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
 import { requireScopeFromHeaders } from './auth'
+import { FILES_DIR, isWithin } from '../../common/index'
+import { join } from 'node:path'
 import {
   addComment,
   getComment,
@@ -45,6 +47,26 @@ function serverError(response: ServerResponse, op: string, err: unknown): void {
 }
 
 /**
+ * Containment guard for a decoded `:id` path segment.
+ *
+ * The comments routes key their store on `fileId` rather than a joined
+ * path, so a raw traversal does not read disk directly — but accepting
+ * `../../etc` as a valid fileId still lets a caller mint comment threads
+ * against files that do not exist and pollute the store with entries the
+ * file listing can never surface. Reject anything that would escape
+ * `FILES_DIR` before it reaches the store. Mirrors the §11.114 guard in
+ * `files.ts` / `versions.ts`.
+ *
+ * Note: this rejects traversal and absolute paths, not "file does not
+ * exist" — the comment store intentionally allows anchors on not-yet-saved
+ * documents (offline-first drafts), so existence is NOT checked here.
+ */
+function isSafeFileId(id: string): boolean {
+  if (typeof id !== 'string' || id.trim().length === 0 || id.includes('\0')) return false
+  return isWithin(FILES_DIR, join(FILES_DIR, id))
+}
+
+/**
  * GET /api/v1/files/:id/comments?resolved=true|false
  * @public
  */
@@ -56,6 +78,10 @@ export async function handleFilesCommentsList(
   const gate = requireScopeFromHeaders(ctx.request.headers, 'files:read')
   if (!gate.ok) {
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
+    return true
+  }
+  if (!isSafeFileId(fileId)) {
+    sendError(ctx.response, 400, 'file id is outside managed storage', 'INVALID_ARGUMENT', op)
     return true
   }
   // URL query parsing: `?resolved=true|false`. parentId filter not
@@ -85,6 +111,10 @@ export async function handleFilesCommentsAdd(
   const gate = requireScopeFromHeaders(ctx.request.headers, 'files:comment')
   if (!gate.ok) {
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
+    return true
+  }
+  if (!isSafeFileId(fileId)) {
+    sendError(ctx.response, 400, 'file id is outside managed storage', 'INVALID_ARGUMENT', op)
     return true
   }
   let body: { anchor?: CommentAnchor; text?: string; parentId?: string }
@@ -155,6 +185,10 @@ export async function handleFilesCommentsPatch(
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
     return true
   }
+  if (!isSafeFileId(fileId)) {
+    sendError(ctx.response, 400, 'file id is outside managed storage', 'INVALID_ARGUMENT', op)
+    return true
+  }
   let body: { resolved?: unknown }
   try {
     const raw = await readBody(ctx.request)
@@ -193,6 +227,10 @@ export async function handleFilesCommentsDelete(
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
     return true
   }
+  if (!isSafeFileId(fileId)) {
+    sendError(ctx.response, 400, 'file id is outside managed storage', 'INVALID_ARGUMENT', op)
+    return true
+  }
   const ok = removeComment(fileId, commentId)
   if (!ok) {
     notFound(ctx.response, op, `unknown comment id: ${commentId}`)
@@ -219,6 +257,10 @@ export async function handleFilesCommentsGet(
   const gate = requireScopeFromHeaders(ctx.request.headers, 'files:read')
   if (!gate.ok) {
     sendError(ctx.response, gate.status, gate.message, gate.code, op)
+    return true
+  }
+  if (!isSafeFileId(fileId)) {
+    sendError(ctx.response, 400, 'file id is outside managed storage', 'INVALID_ARGUMENT', op)
     return true
   }
   const c = getComment(fileId, commentId)

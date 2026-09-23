@@ -54,14 +54,14 @@ describe('handleEmbed', () => {
   it('returns false for non-/embed paths', async () => {
     const handleEmbed = await loadHandler()
     const resp = fakeResponse()
-    const handled = handleEmbed({} as Incoming, resp.res, new URL('http://x/docs/index.html'))
+    const handled = handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL('http://x/docs/index.html'))
     expect(handled).toBe(false)
   })
 
   it('rejects missing token with 400', async () => {
     const handleEmbed = await loadHandler()
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL('http://x/embed/doc_abc'))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL('http://x/embed/doc_abc'))
     expect(resp.status()).toBe(400)
     expect(JSON.parse(resp.chunks.join('')).error.code).toBe('INVALID_ARGUMENT')
   })
@@ -69,7 +69,7 @@ describe('handleEmbed', () => {
   it('coerces an unknown app parameter to the docs default and serves 200', async () => {
     const handleEmbed = await loadHandler()
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL('http://x/embed/doc_abc?token=t&app=garbage'))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL('http://x/embed/doc_abc?token=t&app=garbage'))
     // docs is built in this repo → 200; the coercion must not 500.
     expect([200, 503]).toContain(resp.status())
   })
@@ -77,7 +77,7 @@ describe('handleEmbed', () => {
   it('injects token meta tag + bridge script when serving a built app', async () => {
     const handleEmbed = await loadHandler()
     const resp = fakeResponse()
-    handleEmbed({} as Incoming, resp.res, new URL('http://x/embed/doc_abc?token=jwt-xyz&app=docs&theme=dark&lang=zh-CN'))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL('http://x/embed/doc_abc?token=jwt-xyz&app=docs&theme=dark&lang=zh-CN'))
     if (resp.status() !== 200) return // docs not built in this env — skip
     const body = resp.chunks.join('')
     expect(body).toContain('<meta name="genoffice-token" content="jwt-xyz">')
@@ -91,7 +91,7 @@ describe('handleEmbed', () => {
     const handleEmbed = await loadHandler()
     const resp = fakeResponse()
     const evil = '"><script>alert(1)</script>'
-    handleEmbed({} as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${encodeURIComponent(evil)}&app=docs`))
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${encodeURIComponent(evil)}&app=docs`))
     if (resp.status() !== 200) return // skip if docs not built
     const body = resp.chunks.join('')
     expect(body).not.toContain('<script>alert(1)</script>')

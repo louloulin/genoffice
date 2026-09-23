@@ -38,8 +38,30 @@ function gateScope(request: IncomingMessage, response: ServerResponse):
   return { ok: false }
 }
 
-function handleDlqList(ctx: { request: IncomingMessage; response: ServerResponse; pathname: string }): boolean {
+function handleDlqList(ctx: { request: IncomingMessage; response: ServerResponse; pathname: string; method: string }): boolean {
   if (ctx.pathname !== '/api/v1/webhooks/dlq') return false
+  // sdk1 §11.111: GET is the only documented method for the collection
+  // listing. POST / PUT / PATCH previously fell through and returned 200
+  // + the entries array, which is a contract bug — write/collection-
+  // mucking methods to a read-only collection must return 405 with the
+  // standard envelope. (The dispatcher would otherwise emit a wrong-
+  // method 404 catch-all for the resource-as-a-whole, but this handler
+  // is dispatched explicitly without consulting findV1Route since it
+  // owns the path entirely.)
+  if (ctx.method !== 'GET') {
+    // §11.111 keeps the allow-list contract uniform across all 405
+    // envelopes: include `allow: 'GET'` so SDK clients can branch on
+    // the same field they see from §11.107/108/110-style gates.
+    sendJson(ctx.response, 405, {
+      error: {
+        code: 'METHOD_NOT_ALLOWED',
+        message: `unsupported method ${ctx.method} for ${ctx.pathname}; GET required`,
+        channel: ctx.pathname,
+        allow: 'GET',
+      },
+    })
+    return true
+  }
   const gate = gateScope(ctx.request, ctx.response)
   if (!gate.ok) return true
   const url = new URL(ctx.request.url ?? '/', 'http://placeholder')
@@ -132,7 +154,20 @@ function handleDlqEntry(ctx: { request: IncomingMessage; response: ServerRespons
     return true
   }
 
-  sendError(ctx.response, 405, `unsupported method ${ctx.method} for ${ctx.pathname}`, 'METHOD_NOT_ALLOWED', 'webhooks:dlq')
+  // sdk1 §11.111: enumerate the documented methods for the matched
+  // segment shape so 405 envelopes carry an Allow list. The list
+  // routes (segment 0 = entry, action = null / 'replay') are defined
+  // statically; this catch-all fires only when the request method
+  // isn't one of the documented ones for the matched shape.
+  const entryAllow = action === null ? 'GET, DELETE' : action === 'replay' ? 'POST' : 'GET, POST, DELETE'
+  sendJson(ctx.response, 405, {
+    error: {
+      code: 'METHOD_NOT_ALLOWED',
+      message: `unsupported method ${ctx.method} for ${ctx.pathname}; documented methods: ${entryAllow}`,
+      channel: ctx.pathname,
+      allow: entryAllow,
+    },
+  })
   return true
 }
 

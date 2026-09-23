@@ -153,9 +153,11 @@ describe('POST /api/ai/pi-prompt', () => {
   it('returns 400 with a structured body for empty text', async () => {
     const res = await postJson('/api/ai/pi-prompt', { text: '' })
     expect(res.status).toBe(400)
-    const parsed = JSON.parse(res.body) as { ok: boolean; error: string }
-    expect(parsed.ok).toBe(false)
-    expect(parsed.error).toMatch(/empty text/)
+    // sdk1 §11.107: aligned with v1 envelope `{ error: { code, message, channel } }`
+    const parsed = JSON.parse(res.body) as { error: { code: string; message: string; channel: string } }
+    expect(parsed.error.code).toBe('INVALID_ARGUMENT')
+    expect(parsed.error.message).toMatch(/empty text/)
+    expect(parsed.error.channel).toBe('/api/ai/pi-prompt')
   })
 
   it('returns 400 with a structured body for invalid JSON', async () => {
@@ -181,7 +183,11 @@ describe('POST /api/ai/pi-prompt', () => {
       req.end()
     })
     expect(res.status).toBe(400)
-    expect(JSON.parse(res.body).error).toMatch(/invalid JSON/i)
+    // sdk1 §11.107: aligned with v1 envelope `{ error: { code, message, channel } }`
+    const parsed = JSON.parse(res.body) as { error: { code: string; message: string; channel: string } }
+    expect(parsed.error.code).toBe('INVALID_ARGUMENT')
+    expect(parsed.error.message).toMatch(/invalid JSON/i)
+    expect(parsed.error.channel).toBe('/api/ai/pi-prompt')
   })
 
   it('streams a `start` event and at least one agent-side event before terminating', async () => {

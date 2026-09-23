@@ -103,7 +103,7 @@ describe('handleEmbed: server-side nonce session binding (sdk1.md §11.27)', () 
     const token = signJwt(basePayload())
     const resp = fakeResponse()
     handleEmbed(
-      {} as Incoming,
+      { method: "GET" } as unknown as Incoming,
       resp.res,
       new URL(`http://x/embed/doc_ok?token=${token}&sessionId=${session.sessionId}&nonce=${session.nonce}&app=docs`),
     )
@@ -122,7 +122,7 @@ describe('handleEmbed: server-side nonce session binding (sdk1.md §11.27)', () 
     const token = signJwt(basePayload())
     const resp = fakeResponse()
     handleEmbed(
-      {} as Incoming,
+      { method: "GET" } as unknown as Incoming,
       resp.res,
       new URL(`http://x/embed/doc_mismatch?token=${token}&sessionId=${session.sessionId}&nonce=forged&app=docs`),
     )
@@ -136,7 +136,7 @@ describe('handleEmbed: server-side nonce session binding (sdk1.md §11.27)', () 
     const token = signJwt(basePayload())
     const resp = fakeResponse()
     handleEmbed(
-      {} as Incoming,
+      { method: "GET" } as unknown as Incoming,
       resp.res,
       new URL(`http://x/embed/doc_unknown?token=${token}&sessionId=never-minted&nonce=never&app=docs`),
     )
@@ -154,7 +154,7 @@ describe('handleEmbed: server-side nonce session binding (sdk1.md §11.27)', () 
     const token = signJwt(basePayload())
     const resp = fakeResponse()
     handleEmbed(
-      {} as Incoming,
+      { method: "GET" } as unknown as Incoming,
       resp.res,
       new URL(`http://x/embed/doc_expired?token=${token}&sessionId=${session.sessionId}&nonce=${session.nonce}&app=docs`),
     )
@@ -171,7 +171,7 @@ describe('handleEmbed: server-side nonce session binding (sdk1.md §11.27)', () 
     const token = signJwt(basePayload())
     const resp = fakeResponse()
     handleEmbed(
-      {} as Incoming,
+      { method: "GET" } as unknown as Incoming,
       resp.res,
       new URL(`http://x/embed/doc_partial?token=${token}&sessionId=${session.sessionId}&app=docs`),
     )
@@ -185,7 +185,7 @@ describe('handleEmbed: server-side nonce session binding (sdk1.md §11.27)', () 
     const token = signJwt(basePayload())
     const resp = fakeResponse()
     handleEmbed(
-      {} as Incoming,
+      { method: "GET" } as unknown as Incoming,
       resp.res,
       new URL(`http://x/embed/doc_legacy?token=${token}&app=docs`),
     )

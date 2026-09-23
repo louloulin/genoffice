@@ -9,9 +9,10 @@
  * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { sendJson, sendError, readBody } from './http-utils'
+import { InvalidArgumentError } from '../../ai/errors'
+import { sendJson, sendError, readBody, isValidWebhookUrl, isValidEventList } from './http-utils'
 import { recordRecentDoc } from '../../common/document-stores'
-import { FILES_DIR } from '../../common/index'
+import { FILES_DIR, isWithin } from '../../common/index'
 import { existsSync, statSync, unlinkSync, writeFileSync, readdirSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -45,6 +46,40 @@ function requireFilesScope(
   const gate = requireScopeFromHeaders(headers, scope)
   if (!gate.ok) return gate
   return { ok: true, payload: gate.payload }
+}
+
+/**
+ * Containment guard for a decoded `:id` path segment.
+ *
+ * Every `:id` route joins the raw segment onto `FILES_DIR` (`join(FILES_DIR,
+ * id)`). Without validation a percent-encoded traversal (`..%2F..%2Fetc%2F
+ * passwd`) escapes the managed storage area and the versions surface becomes
+ * an arbitrary-file-read primitive:
+ *
+ *   - `POST /api/v1/files/<traversal>/versions` snapshots the *target* file
+ *     into `DATA_DIR/versions/<basename>/N.bin`
+ *   - `GET  /api/v1/files/<traversal>/versions/<vid>` streams those bytes back
+ *     base64-encoded — revealing `/etc/*` and DATA_DIR siblings such as
+ *     `webhooks.json` (HMAC signing secrets).
+ *
+ * The IPC surface already refuses this via `requireManagedPath` (sdk1 §11.63);
+ * the v1 shim bypassed it. `isWithin` is the same predicate `isManagedPath`
+ * uses, scoped to `FILES_DIR` so the sibling stores that live directly under
+ * DATA_DIR (`comments.json`, `webhooks.json`, `webhooks-dlq.json`) are also
+ * out of bounds even though `isManagedPath` would accept them.
+ *
+ * Returns `{ ok: true, path }` (the resolved, contained absolute path) or
+ * `{ ok: false, message }` for the 400 envelope.
+ */
+function requireSafeId(id: string): { ok: true; path: string } | { ok: false; message: string } {
+  if (typeof id !== 'string' || id.trim().length === 0 || id.includes('\0')) {
+    return { ok: false, message: 'file id must be a non-empty path segment' }
+  }
+  const path = join(FILES_DIR, id)
+  if (!isWithin(FILES_DIR, path)) {
+    return { ok: false, message: 'file id is outside managed storage' }
+  }
+  return { ok: true, path }
 }
 
 /**
@@ -185,7 +220,12 @@ export async function handleFilesGet(ctx: { request: IncomingMessage; response: 
     sendError(ctx.response, 403, 'token is not authorized for this file', 'FORBIDDEN', 'files:get')
     return true
   }
-  const path = join(FILES_DIR, id)
+  const safe = requireSafeId(id)
+  if (!safe.ok) {
+    sendError(ctx.response, 400, safe.message, 'INVALID_ARGUMENT', 'files:get')
+    return true
+  }
+  const path = safe.path
   if (!existsSync(path)) {
     sendError(ctx.response, 404, `file not found: ${id}`, 'NOT_FOUND', 'files:get')
     return true
@@ -224,7 +264,12 @@ export async function handleFilesDelete(ctx: { request: IncomingMessage; respons
     sendError(ctx.response, 403, 'token is not authorized for this file', 'FORBIDDEN', 'files:delete')
     return true
   }
-  const path = join(FILES_DIR, id)
+  const safe = requireSafeId(id)
+  if (!safe.ok) {
+    sendError(ctx.response, 400, safe.message, 'INVALID_ARGUMENT', 'files:delete')
+    return true
+  }
+  const path = safe.path
   if (!existsSync(path)) {
     sendError(ctx.response, 404, `file not found: ${id}`, 'NOT_FOUND', 'files:delete')
     return true
@@ -328,16 +373,31 @@ export async function handleFilesIssueJwt(ctx: { request: IncomingMessage; respo
     sendError(ctx.response, scopeGate.status, scopeGate.message, scopeGate.code, 'files:jwt')
     return true
   }
-  const path = join(FILES_DIR, id)
+  const safe = requireSafeId(id)
+  if (!safe.ok) {
+    sendError(ctx.response, 400, safe.message, 'INVALID_ARGUMENT', 'files:jwt')
+    return true
+  }
+  const path = safe.path
   if (!existsSync(path)) {
     sendError(ctx.response, 404, `file not found: ${id}`, 'NOT_FOUND', 'files:jwt')
     return true
   }
   // Parse the optional request body (POST without body is fine). Accept
   // either JSON or x-www-form-urlencoded so legacy form-style callers
-  // keep working.
+  // keep working. Malformed JSON now surfaces as 400 via the
+  // InvalidArgumentError thrown by parseBody (sdk1 §11.109).
   const body = await readBody(ctx.request)
-  const params = parseBody(body)
+  let params: Record<string, string>
+  try {
+    params = parseBody(body)
+  } catch (err) {
+    if (err instanceof InvalidArgumentError) {
+      sendError(ctx.response, 400, err.message, 'INVALID_ARGUMENT', 'files:jwt')
+      return true
+    }
+    throw err
+  }
   const ttlRaw = params.ttlSeconds
   let ttlSec = FILE_JWT_DEFAULT_TTL_SEC
   if (ttlRaw !== undefined) {
@@ -387,22 +447,34 @@ function parseBody(raw: string | null): Record<string, string> {
   const trimmed = raw.trim()
   if (!trimmed) return {}
   if (trimmed.startsWith('{')) {
+    // sdk1 §11.109: reject malformed JSON with 400 instead of silently
+    // returning `{}` (which would make `issue-jwt` succeed with all
+    // defaults — host SDK thinks it sent `{ttlSeconds:30}` but actually
+    // got `3600`).
+    let obj: Record<string, unknown>
     try {
-      const obj = JSON.parse(trimmed) as Record<string, unknown>
-      const out: Record<string, string> = {}
-      for (const [k, v] of Object.entries(obj)) {
-        if (v == null) continue
-        out[k] = typeof v === 'string' ? v : String(v)
-      }
-      return out
+      obj = JSON.parse(trimmed) as Record<string, unknown>
     } catch {
-      return {}
+      throw new InvalidArgumentError('files:jwt', 'request body is not valid JSON')
     }
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(obj)) {
+      if (v == null) continue
+      out[k] = typeof v === 'string' ? v : String(v)
+    }
+    return out
   }
-  // x-www-form-urlencoded fallback.
+  // x-www-form-urlencoded fallback. Reject malformed bodies (any pair
+  // without `=` other than the empty pair from a trailing `&`) so
+  // host SDK bugs surface as 400 rather than silently yielding defaults
+  // (sdk1 §11.109).
   const out: Record<string, string> = {}
   for (const pair of trimmed.split('&')) {
+    if (!pair) continue
     const eq = pair.indexOf('=')
+    if (eq < 0) {
+      throw new InvalidArgumentError('files:jwt', 'request body is not valid form data')
+    }
     if (eq < 0) continue
     const k = decodeURIComponent(pair.slice(0, eq).replace(/\+/g, ' '))
     const v = decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, ' '))
@@ -440,8 +512,22 @@ export async function handleFilesCallback(ctx: { request: IncomingMessage; respo
     sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'files:callback')
     return true
   }
-  if (typeof body.url !== 'string' || !body.url) {
-    sendError(ctx.response, 400, 'expected { url, events? }', 'INVALID_ARGUMENT', 'files:callback')
+  if (!isValidWebhookUrl(body.url)) {
+    sendError(ctx.response, 400, 'url must be a string with http: or https: scheme', 'INVALID_ARGUMENT', 'files:callback')
+    return true
+  }
+  // §11.117: validate events is an array of non-empty strings. null /
+  // undefined / omitted → use the default ['file.saved'] (per-file
+  // subscription). Without this gate, hosts could register
+  // `events:[1,2,3]` which stores verbatim and silently never matches
+  // any real event — registered-but-broken webhook.
+  let events: string[]
+  if (body.events === undefined || body.events === null) {
+    events = ['file.saved']
+  } else if (isValidEventList(body.events)) {
+    events = body.events
+  } else {
+    sendError(ctx.response, 400, 'events must be an array of non-empty strings', 'INVALID_ARGUMENT', 'files:callback')
     return true
   }
   // Validate file exists before registering a per-file subscription.
@@ -449,7 +535,12 @@ export async function handleFilesCallback(ctx: { request: IncomingMessage; respo
   // and the response says "ok:true" — but the callback never fires
   // because notifyFileSaved only fires for files that actually got
   // saved. Same 404 contract as `/files/:id/jwt` (sdk1 §11.101).
-  const path = join(FILES_DIR, id)
+  const safe = requireSafeId(id)
+  if (!safe.ok) {
+    sendError(ctx.response, 400, safe.message, 'INVALID_ARGUMENT', 'files:callback')
+    return true
+  }
+  const path = safe.path
   if (!existsSync(path)) {
     sendError(ctx.response, 404, `file not found: ${id}`, 'NOT_FOUND', 'files:callback')
     return true
@@ -459,7 +550,7 @@ export async function handleFilesCallback(ctx: { request: IncomingMessage; respo
     saveCallback({
       fileId: id,
       url: body.url,
-      events: Array.isArray(body.events) ? body.events : ['file.saved'],
+      events,
       createdAt: Date.now(),
     })
     sendJson(ctx.response, 201, { ok: true, fileId: id, url: body.url })
