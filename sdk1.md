@@ -5458,8 +5458,10 @@ sessionId 必须路由到 open 时那个 worker 才有效。
 | §11.78 | soft-scope + marketplace / update / prefs | +3 | 71 |
 | §11.79 | auth JWT rotation IPC + sensitive surfaces | +1 | 72 |
 | §11.83 | collab + history + comments + templates scope gate | +1 | 73 |
-| §11.84 | web-server `slides:open-path` 默认启用 hash-based id | +1 | **74** |
-| §A.5 backlog 闭合总数 |  |  | **74** |
+| §11.84 | web-server `slides:open-path` 默认启用 hash-based id | +1 | 74 |
+| §11.87 | xlsx-sidecar multi-process pool（sheets P1-3）| +1 | 75 |
+| §11.89 | slides master-edit 8 通道全真做 | +1 | **76** |
+| §A.5 backlog 闭合总数 |  |  | **76** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -5555,6 +5557,62 @@ op（`target.part`）直接解析元素。`flushTouchedParts` 写回
   + reopen + 重新 `parseMasterPart` 三步断言落地。
 - `master-close` 不保留 `masterEdit`：保存后 archive 是新字节，旧的
   `me.slide` 对象指向旧 entries，reopen 必须重新 `master-enter`。
+
+### 11.90 · slides:media-data 真实现 + 3 个 clipboard 通道改诚实 null/false（§E.8 P1 #6 收口）
+
+§E.8 P1 #6 列出 8 个 slides get-* 通道。前 4 个（`font-catalog` /
+`font-missing` / `font-download` / `font-install-local`）已在 §11.45–11.50
+接力闭合。本节闭合剩余 4 个：
+
+| 通道 | 旧形状 | 新形状 | 原因 |
+|---|---|---|---|
+| `slides:clipboard-probe` | `{}`（truthy）| **`false`** | `App.tsx` 把返值当 boolean 用 `.then(setHasClipboard)`，truthy 的 `{}` 让 Paste 菜单永远 enabled |
+| `slides:clipboard-external` | `{}` | **`null`** | server 没有 native clipboard；honest null 让 renderer 走 browser Clipboard API |
+| `slides:native-clipboard` | `{}` | **`null`** | 同上；web-bridge.ts 加 override 返 null 让 IPC 不被真调到 |
+| `slides:media-data` | `{}` | **`null` 或 `{kind, dataUrl}`** | 真实现 —— mirror desktop `slides-main.ts:3550` 逐行 |
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/slides/state.ts` | 4 个 handler 改写 + 注释澄清 + `AV_MIME` 表复制 | +90 / -25 |
+| `apps/slides/src/renderer/web-bridge.ts` | 新增 `nativeClipboard` override 返 `null`（与 `clipboardExternal` 对齐）| +7 |
+| `apps/web-server/tests/slides-media-data-e2e.test.ts` | 新增 · 9 测试 | +217 |
+| `apps/web-server/tests/slides-read-model-e2e.test.ts` | 8 个旧 `{}` 断言改写为诚实形状 | -27 / +28 |
+
+#### 🎯 设计要点
+
+1. **mirror desktop 逐行**：`slides:media-data` 的实现直接抄 `apps/slides/src/main/slides-main.ts:3550` — `AV_MIME` 表复制过来、`opened.archive.readBytes(media.target)` 读字节、`data:${mime};base64,…` 输出 — 让 renderer 不需要区分 transport。
+2. **external 链接**：当 `media.external === true` 时返 `{kind, dataUrl: media.target}` —— `<video src="…">` 可直接挂上去，避免 base64 一遍 50 MB 视频。
+3. **空 archive entry**：返回 null 而不是 `{ok:true}`（后者会误导 renderer 当作"读到了"）。
+4. **`native-clipboard` 双重保险**：handler 返 `null`，web-bridge.ts 也 override 返 `null` —— IPC 永远不被真调到，老 renderer code path 也吃到诚实答案。
+5. **`clipboard-probe` 的关键修复**：从 `{}`（truthy）改 `false`。`App.tsx:103` 的 `setHasClipboard(r)` 把 truthy 当 true 用，clipboard probe 永远成功 → Paste 菜单永远 enabled 即使 clipboard 是空的。这是 silent UX bug，不是 fake-ok 但更糟糕。
+
+#### 🧪 测试（9 e2e 全绿）
+
+- `media-data returns null for an unknown sourceId` — 找不到 element 时返 null（不是 `{}`）
+- `media-data returns null for an out-of-range slideIndex` — slideIndex 越界返 null
+- `media-data returns null for a non-number slideIndex` — 类型守门
+- `clipboard-probe returns false` — §11.90 关键修复
+- `clipboard-external returns null`
+- `native-clipboard returns null for cut/copy/paste`
+- `media-data returns a data: URL with the right mime and base64 payload` —— 注入 mp4 → save → reopen → 找 element id → 调 media-data → 验 `data:video/mp4;base64,...` 与原 bytes 完全一致
+- `media-data looks up wav bytes via the AV_MIME table` —— audio 走 audio/wav mime
+- `media-data accepts an external link and returns it verbatim` —— 边界注释（external path 通过 slides-save-e2e 覆盖）
+
+旧 `slides-read-model-e2e.test.ts` §11.54 块（8 个 `{}` 断言）整体改写为 4 个新通道每个一测试，确认每个通道都返对应的诚实形状（false / null），未来重构不能倒退回 truthy `{}`。
+
+#### 📊 进度
+
+- §E.8 P1 #6 **闭合**（8 个 slides get-* 通道全部真做或诚实 null）
+- §A.5 backlog 闭合数 75 → **76**
+- web-server 套件 104 → **105 文件**（+1 e2e）；1063 → **1068 测试通过**（+5 net，9 new + 8 updated），1 跳过 / 1 失败
+  （1 失败为 pre-existing：`translate-pi-agent-e2e` env pollution，本节不引入）
+
+#### 🔍 已知差异
+
+- **§11.54 的"documented renderer-owned stubs"注释**：原文 4 个通道写"returning `{}` keeps the channel registered (so the renderer doesn't fail with 'no handler' on legacy code paths) but produces no observable side-effect"。新注释把这一段改成"honest null/false"语义，并明确 `App.tsx` 的 truthy 风险。`§11.54` 文档部分保留（renderer-owned 概念仍适用），handler 行为改写。
+- **bridge 端 `slides:add-media-bytes` 与 `slides:add-image-bytes` 的 `bytes`/`base64` 字段名不一致**：bridge 发送 `base64`，handler 读 `o.bytes`。这是 pre-existing bug，不在 §11.90 范围（修复需要 1 行 bridge 改动 + 文档一致化，列入后续 follow-up）。
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

@@ -189,6 +189,15 @@ if (!isElectronRuntime()) {
       // the native clipboard probe returns nothing usable over HTTP
       return null
     },
+    nativeClipboard: async () => {
+      // Mirrors clipboardExternal — cut/copy/paste go through the browser's
+      // own Clipboard API, not the server. Without this override the renderer
+      // would hit `slides:native-clipboard` IPC and the server handler would
+      // return `null`, which is the same end-state but pays an HTTP round-trip
+      // and races the focus event on each cut/copy/paste. Pin the behaviour
+      // locally so the bridge contract matches what `App.tsx` already assumes.
+      return null
+    },
     fontInstallLocal: async () => null,
     pickAttachments: async () => {
       const picked = await pickFileBytes(undefined, true)

@@ -839,31 +839,71 @@ export function registerSlidesStateHandlers(): void {
       })),
     ]
   })
-  // Documented renderer-owned stubs (sdk1 §11.54): these channels are
-  // fundamentally desktop/browser-environment features that have no
-  // meaningful server-side implementation. Recording the boundary
-  // explicitly so the M4 backlog list stays honest about WHY they're
-  // not implemented here (not "we forgot").
-  //
-  //   - clipboard-external / clipboard-probe / native-clipboard:
-  //       OS-native clipboard write/read. Desktop writes through
-  //       Electron's clipboard API; web writes through the browser's
-  //       async Clipboard API. The server has no clipboard, so a
-  //       server-side implementation would be theatre. The renderer's
-  //       `web-bridge` should resolve these locally and not hit IPC.
-  //       Returning `{}` keeps the channel registered (so the renderer
-  //       doesn't fail with "no handler" on legacy code paths) but
-  //       produces no observable side-effect.
-  //
-  //   - media-data: binary bytes for an embedded media asset (audio /
-  //       video inside a slide). Desktop has the file system; web has
-  //       the iframe blob URL the user just dropped. Same situation —
-  //       the server has neither. Renderer fetches bytes from its own
-  //       blob store.
-  registerHandle('slides:clipboard-external', () => ({}))
-  registerHandle('slides:clipboard-probe', () => ({}))
-  registerHandle('slides:native-clipboard', () => ({}))
-  registerHandle('slides:media-data', () => ({}))
+  // Honest ack-only (sdk1 §11.90): these three channels are
+  // OS-native clipboard write/read probes. The server has no clipboard
+  // so a server-side implementation would be theatre; the renderer's
+  // web-bridge resolves them locally (browser Clipboard API). Returning
+  // `{}` here used to confuse `App.tsx` — `clipboardProbe()` does
+  // `.then(setHasClipboard)` on the return, so a truthy `{}` made
+  // `hasClipboard` flip true and the Paste menu stayed enabled even
+  // when the browser clipboard was empty. The fixed shape matches the
+  // renderer's own boolean contract:
+  //   - `clipboard-probe`    -> false (renderer falls back to its own
+  //                            `navigator.clipboard.read()` probe)
+  //   - `clipboard-external` -> null  (no native clipboard outside Electron)
+  //   - `native-clipboard`   -> null  (server never performs cut/copy/paste;
+  //                            web-bridge overrides this in `web-bridge.ts`
+  //                            to keep IPC quiet and let the browser handle it)
+  registerHandle('slides:clipboard-probe', () => false)
+  registerHandle('slides:clipboard-external', () => null)
+  registerHandle('slides:native-clipboard', () => null)
+  // Real media-data (sdk1 §11.90): mirrors desktop
+  // `apps/slides/src/main/slides-main.ts:3550`. The renderer double-clicks
+  // a video/audio element on a slide and asks the host for the bytes so the
+  // <video>/<audio> tag can mount. Desktop reads from the on-disk .pptx
+  // archive; web-server reads from the in-memory `opened.archive` (the same
+  // archive the open-path / apply-txn pipeline materializes — no extra parse).
+  // External links (`media.external === true`) are returned verbatim so the
+  // renderer can hand them straight to the <video src="…"> attribute.
+  // Embedded media gets base64'd into a `data:` URL — same shape desktop
+  // returns, so the renderer doesn't branch on transport.
+  // Returns null for unknown session / out-of-range slide / non-picture
+  // element / missing archive entry, mirroring desktop's contract exactly.
+  const AV_MIME: Record<string, string> = {
+    mp4: 'video/mp4',
+    m4v: 'video/mp4',
+    // Chromium refuses to load video/quicktime but demuxes QuickTime bytes
+    // through ISO-BMFF when served as video/mp4 — keep parity with desktop.
+    mov: 'video/mp4',
+    webm: 'video/webm',
+    avi: 'video/x-msvideo',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    m4a: 'audio/mp4',
+    aac: 'audio/aac',
+    ogg: 'audio/ogg',
+  }
+  registerHandle('slides:media-data', (event: unknown, slideIndex: unknown, sourceId: unknown) => {
+    const rm = resolveSlidesReadModel(event)
+    if (!rm || typeof slideIndex !== 'number' || typeof sourceId !== 'string') return null
+    const slide = rm.deck.slides[slideIndex]
+    if (!slide) return null
+    const el = slide.elements.find((x: { id: string }) => x.id === sourceId)
+    if (!el || (el as { type?: string }).type !== 'picture') return null
+    const media = (el as {
+      media?: { kind: 'video' | 'audio'; target?: string; external?: boolean }
+    }).media
+    if (!media?.target) return null
+    if (media.external) return { kind: media.kind, dataUrl: media.target }
+    const bytes = rm.opened.archive.readBytes(media.target)
+    if (!bytes) return null
+    const ext = media.target.split('.').pop()?.toLowerCase() ?? ''
+    const mime = AV_MIME[ext] ?? (media.kind === 'video' ? 'video/mp4' : 'audio/mpeg')
+    return {
+      kind: media.kind,
+      dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`,
+    }
+  })
   // Real private-font-data: re-walk listEmbeddedFonts(archive) so the
   // renderer can fetch one face's sfnt bytes by index. Each face is
   // typically 100-300 KB (TTF/OTF) so we never broadcast the whole

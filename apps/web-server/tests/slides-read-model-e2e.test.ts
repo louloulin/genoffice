@@ -1241,7 +1241,7 @@ describe.skipIf(skip)('slides:font-catalog + font-missing real impl (sdk1 §11.5
   })
 })
 
-describe.skipIf(skip)('slides:clipboard + media-data documented renderer-owned stubs (sdk1 §11.54)', () => {
+describe.skipIf(skip)('slides:clipboard + media-data honest answers (sdk1 §11.90)', () => {
   let server: ChildProcess | undefined
   let base: string
   let dataDir: string
@@ -1273,27 +1273,46 @@ describe.skipIf(skip)('slides:clipboard + media-data documented renderer-owned s
     return body.result
   }
 
-  // Each of these channels is documented (sdk1 §11.54) as a
-  // renderer-owned stub: the server has no clipboard / no media store,
-  // so the registered handler returns {} as a no-op shape. The renderer
-  // is expected to short-circuit these on web (use the browser Clipboard
-  // API / blob URLs directly) rather than going through IPC. The test
-  // pins the contract so a future "fix" can't accidentally start
-  // shipping data the server doesn't have.
-  for (const channel of [
-    'slides:clipboard-external',
-    'slides:clipboard-probe',
-    'slides:native-clipboard',
-    'slides:media-data',
-  ]) {
-    it(`${channel} returns {} (renderer-owned stub)`, async () => {
-      expect(await invoke(channel, [])).toEqual({})
-    })
-    it(`${channel} returns {} even with arbitrary args`, async () => {
-      // The handler must ignore any payload — server has no business
-      // doing anything with these arguments.
-      expect(await invoke(channel, ['arbitrary', 42, { foo: 'bar' }])).toEqual({})
-    })
-  }
+  // The original §11.54 contract pinned `{}` as the no-op shape for these
+  // four channels (server has no clipboard, no media store). The §11.90 fix
+  // changes those answers to honest shapes:
+  //   - clipboard-probe    -> false  (so App.tsx's setHasClipboard(false)
+  //                                leaves the Paste menu disabled; the
+  //                                renderer can probe the browser
+  //                                clipboard itself when it cares)
+  //   - clipboard-external -> null   (no native clipboard outside Electron)
+  //   - native-clipboard   -> null   (the web-bridge overrides this so IPC
+  //                                is never hit; the server-side null is
+  //                                the safety net for legacy code paths)
+  //   - media-data         -> null   when no element / no media / wrong
+  //                                type; `{ kind, dataUrl }` otherwise.
+  //                                Pinned here so a future refactor can't
+  //                                regress to truthy `{}` (which silently
+  //                                flipped the Paste menu on).
+  it('clipboard-probe returns false', async () => {
+    expect(await invoke('slides:clipboard-probe', [])).toBe(false)
+    expect(await invoke('slides:clipboard-probe', ['arbitrary', 42, { foo: 'bar' }])).toBe(false)
+  })
+
+  it('clipboard-external returns null', async () => {
+    expect(await invoke('slides:clipboard-external', [])).toBeNull()
+    expect(await invoke('slides:clipboard-external', ['arbitrary'])).toBeNull()
+  })
+
+  it('native-clipboard returns null for cut/copy/paste', async () => {
+    for (const op of ['cut', 'copy', 'paste'] as const) {
+      expect(await invoke('slides:native-clipboard', [op])).toBeNull()
+    }
+    expect(await invoke('slides:native-clipboard', ['garbage'])).toBeNull()
+  })
+
+  it('media-data returns null without a session-bound deck', async () => {
+    // These calls don't carry an x-ipc-session, so resolveSlidesReadModel
+    // returns null and the handler answers null — the renderer's truthy
+    // guard now correctly skips the side-effect rather than playing the
+    // truthy `{}` stub.
+    expect(await invoke('slides:media-data', [0, 'no-such-element'])).toBeNull()
+    expect(await invoke('slides:media-data', [])).toBeNull()
+  })
 })
 })
