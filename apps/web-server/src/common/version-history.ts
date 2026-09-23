@@ -108,6 +108,34 @@ function computeSha(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
+/**
+ * In-memory cache of the newest snapshot per docId. Saves the auto-save
+ * hot path from doing readdirSync + readFileSync(newest) + O(n) byte
+ * equals on every call. Cache stores sha + size + the already-built
+ * FileVersionMeta so a dedup hit is a single Map lookup.
+ *
+ * Lifecycle:
+ *   - populated by captureBeforeSave after a successful write
+ *   - invalidated by deleteVersion (any snapshot may now be the newest)
+ *   - cold cache (process restart / first save for a docId) falls
+ *     through to the filesystem scan, then warms
+ */
+const newestSnapshotCache = new Map<
+  string,
+  { sha: string; size: number; meta: FileVersionMeta }
+>()
+
+/** Test-only reset. Clears the in-memory cache so test fixtures start cold. */
+export function _resetNewestSnapshotCacheForTests(): void {
+  newestSnapshotCache.clear()
+}
+
+/** Drop the cache entry for a docId. Called after any mutation that
+ *  could change which snapshot is the newest (deleteVersion). */
+function invalidateNewestSnapshotCache(safeId: string): void {
+  newestSnapshotCache.delete(safeId)
+}
+
 /** Drop the oldest snapshots so the directory holds at most
  *  MAX_VERSIONS_PER_FILE entries. The newest entry is the one we just
  *  wrote, so trimming happens AFTER the write. */
@@ -155,9 +183,29 @@ export function captureBeforeSave(docId: string, bytes: Buffer, message?: string
     const safeId = safeDocId(docId)
     const root = versionsRootFor(safeId)
     if (!existsSync(root)) mkdirSync(root, { recursive: true })
+
     // Dedupe against the newest snapshot: an autosave that lands the
     // exact same bytes as the prior version wastes disk and confuses
     // the renderer ("why is there a v3 of unchanged content?").
+    //
+    // Fast path (cache hit): sha + size of the new bytes match the
+    // cached newest snapshot. We return the cached meta with zero
+    // filesystem reads. The cache is keyed on safeId, populated on
+    // every successful write, and invalidated by deleteVersion (see
+    // §A.5 #? §11.86 follow-up to the v0.9-beta perf regression).
+    //
+    // Cold path (cache miss): the process just started, the doc was
+    // never saved before, or someone cleared the cache. We do one
+    // readdirSync + readFileSync(newest) + byte-by-byte equals — the
+    // exact scan the previous implementation did on every save — and
+    // warm the cache so subsequent calls of unchanged content take
+    // the fast path.
+    const sha = computeSha(bytes)
+    const size = bytes.byteLength
+    const cached = newestSnapshotCache.get(safeId)
+    if (cached && cached.sha === sha && cached.size === size) {
+      return cached.meta
+    }
     const newest = readdirSync(root)
       .filter((n) => /^\d+\.bin$/.test(n))
       .map((n) => parseInt(/^(\d+)/.exec(n)![1]!, 10))
@@ -165,17 +213,22 @@ export function captureBeforeSave(docId: string, bytes: Buffer, message?: string
     if (newest) {
       const prevBytes = readFileSync(snapshotPath(safeId, newest))
       if (prevBytes.equals(bytes)) {
-        return listVersions(safeId)[listVersions(safeId).length - 1] ?? null
+        // Cold-path dedup: cache the just-discovered meta so the next
+        // call (likely the next keystroke) hits the cache.
+        const existing = listVersions(safeId)[listVersions(safeId).length - 1]
+        if (existing) {
+          newestSnapshotCache.set(safeId, { sha, size, meta: existing })
+          return existing
+        }
       }
     }
     const idx = nextIndexFor(safeId)
-    const sha = computeSha(bytes)
     const meta: FileVersionMeta = {
-      id: `v-${safeId}-${idx}-${randomUUID().slice(0, 8)}`,
+      id: `v-${safeId}-${idx}`,
       docId: safeId,
       index: idx,
       timestamp: Date.now(),
-      size: bytes.byteLength,
+      size,
       ...(message ? { message } : {}),
       sha256: sha,
     }
@@ -192,6 +245,9 @@ export function captureBeforeSave(docId: string, bytes: Buffer, message?: string
     const metaPath = join(root, `${idx}.meta.json`)
     writeFileSync(metaPath, JSON.stringify({ message, timestamp: meta.timestamp }))
     trimToCap(safeId)
+    // Warm the cache so the next save with the same bytes takes the
+    // zero-I/O fast path.
+    newestSnapshotCache.set(safeId, { sha, size, meta })
     return meta
   } catch {
     // Snapshot failures must NEVER break the save pipeline. Log and
@@ -299,6 +355,11 @@ export function deleteVersion(docId: string, versionId: string): boolean {
   if (!existsSync(path)) return false
   try {
     unlinkSync(path)
+    // The deleted snapshot may have been the newest, so the cache's
+    // {sha, size, meta} could now point at a missing file. Drop the
+    // entry and let the next captureBeforeSave fall through to the
+    // filesystem scan.
+    invalidateNewestSnapshotCache(safeId)
     return true
   } catch {
     return false
