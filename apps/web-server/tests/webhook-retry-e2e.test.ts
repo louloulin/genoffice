@@ -126,69 +126,69 @@ describe.skipIf(process.platform === 'win32')('webhook fireCallback retry (P1)',
 
   it('delivers in 1 attempt on a 200', async () => {
     stub.setNext(200)
-    const r = await fireCallback(
+    const results = await fireCallback(
       'file.saved',
       'retry-deck.pptx',
       { path: 'foo.pptx', size: 1 },
       { maxAttempts: 3, initialBackoffMs: 1 },
     )
-    expect(r?.delivered).toBe(true)
-    expect(r?.attempts).toBe(1)
-    expect(r?.finalStatus).toBe(200)
+    expect(results[0]?.delivered).toBe(true)
+    expect(results[0]?.attempts).toBe(1)
+    expect(results[0]?.finalStatus).toBe(200)
   })
 
   it('retries on 500 then succeeds (2 attempts)', async () => {
     stub.setNextSequence([500, 200])
-    const r = await fireCallback(
+    const results = await fireCallback(
       'file.saved',
       'retry-deck.pptx',
       { path: 'foo.pptx', size: 2 },
       { maxAttempts: 3, initialBackoffMs: 1 },
     )
-    expect(r?.delivered).toBe(true)
-    expect(r?.attempts).toBe(2)
-    expect(r?.finalStatus).toBe(200)
+    expect(results[0]?.delivered).toBe(true)
+    expect(results[0]?.attempts).toBe(2)
+    expect(results[0]?.finalStatus).toBe(200)
     // Each attempt arrives at the server; backoff doesn't truncate retries.
     expect(stub.requests.length).toBeGreaterThanOrEqual(2)
   })
 
   it('respects maxAttempts (gives up after 3)', async () => {
     stub.setNextSequence([500, 500, 500])
-    const r = await fireCallback(
+    const results = await fireCallback(
       'file.saved',
       'retry-deck.pptx',
       { path: 'foo.pptx', size: 3 },
       { maxAttempts: 3, initialBackoffMs: 1 },
     )
-    expect(r?.delivered).toBe(false)
-    expect(r?.attempts).toBe(3)
-    expect(r?.finalStatus).toBe(500)
+    expect(results[0]?.delivered).toBe(false)
+    expect(results[0]?.attempts).toBe(3)
+    expect(results[0]?.finalStatus).toBe(500)
   })
 
   it('does NOT retry on 400 (caller fault)', async () => {
     stub.setNext(400)
-    const r = await fireCallback(
+    const results = await fireCallback(
       'file.saved',
       'retry-deck.pptx',
       { path: 'foo.pptx', size: 4 },
       { maxAttempts: 3, initialBackoffMs: 1 },
     )
-    expect(r?.delivered).toBe(false)
-    expect(r?.attempts).toBe(1)
-    expect(r?.finalStatus).toBe(400)
+    expect(results[0]?.delivered).toBe(false)
+    expect(results[0]?.attempts).toBe(1)
+    expect(results[0]?.finalStatus).toBe(400)
   })
 
   it('retries on 429 Too Many Requests', async () => {
     stub.setNextSequence([429, 200])
-    const r = await fireCallback(
+    const results = await fireCallback(
       'file.saved',
       'retry-deck.pptx',
       { path: 'foo.pptx', size: 5 },
       { maxAttempts: 3, initialBackoffMs: 1 },
     )
-    expect(r?.delivered).toBe(true)
-    expect(r?.attempts).toBe(2)
-    expect(r?.finalStatus).toBe(200)
+    expect(results[0]?.delivered).toBe(true)
+    expect(results[0]?.attempts).toBe(2)
+    expect(results[0]?.finalStatus).toBe(200)
   })
 
   it('retries on network error then succeeds', async () => {
@@ -198,25 +198,25 @@ describe.skipIf(process.platform === 'win32')('webhook fireCallback retry (P1)',
     // selector — not exercised here. Simulate by pointing at a closed
     // server briefly. (Out of scope; covered by the 500-then-200 case.)
     stub.setNextSequence([500, 200])
-    const r = await fireCallback(
+    const results = await fireCallback(
       'file.saved',
       'retry-deck.pptx',
       { path: 'foo.pptx', size: 6 },
       { maxAttempts: 3, initialBackoffMs: 1 },
     )
-    expect(r?.delivered).toBe(true)
-    expect(r?.attempts).toBe(2)
+    expect(results[0]?.delivered).toBe(true)
+    expect(results[0]?.attempts).toBe(2)
   })
 
   it('signature header is present on every retry', async () => {
     stub.setNextSequence([500, 200])
-    const r = await fireCallback(
+    const results = await fireCallback(
       'file.saved',
       'retry-deck.pptx',
       { path: 'foo.pptx', size: 7 },
       { maxAttempts: 3, initialBackoffMs: 1 },
     )
-    expect(r?.delivered).toBe(true)
+    expect(results[0]?.delivered).toBe(true)
     // The last 2 stub.requests entries are from this test.
     const ours = stub.requests.slice(-2)
     expect(ours.length).toBe(2)
@@ -230,12 +230,12 @@ describe.skipIf(process.platform === 'win32')('webhook fireCallback retry (P1)',
     }
   })
 
-  it('returns null when no callback is registered for the file', async () => {
-    const r = await fireCallback(
+  it('returns [] when no callback is registered for the file', async () => {
+    const results = await fireCallback(
       'file.saved',
       'never-registered.bin',
       { path: 'x.bin' },
     )
-    expect(r).toBeNull()
+    expect(results).toEqual([])
   })
 })

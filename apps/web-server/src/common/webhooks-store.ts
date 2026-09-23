@@ -46,6 +46,14 @@ export interface FileWebhook {
 
 interface Store {
   byFile: Record<string, FileWebhook>
+  /**
+   * User-wide (a.k.a. org-wide) subscriptions. Keyed by the JWT subject of
+   * the registering caller (`sub`). Each subscription receives a copy of
+   * every event that names its subscriber in any way (file-scoped or
+   * comment events). Subscriptions here are independent of `byFile` —
+   * both indexes are scanned per `fireCallback`.
+   */
+  byUser: Record<string, FileWebhook>
 }
 
 let cache: Store | null = null
@@ -55,13 +63,13 @@ function load(): Store {
   try {
     if (existsSync(FILE)) {
       const parsed = JSON.parse(readFileSync(FILE, 'utf8')) as Store
-      cache = { byFile: parsed.byFile ?? {} }
+      cache = { byFile: parsed.byFile ?? {}, byUser: parsed.byUser ?? {} }
       return cache
     }
   } catch {
     /* fall through */
   }
-  cache = { byFile: {} }
+  cache = { byFile: {}, byUser: {} }
   return cache
 }
 
@@ -89,6 +97,49 @@ export function deleteCallback(fileId: string): boolean {
   const store = load()
   if (!store.byFile[fileId]) return false
   delete store.byFile[fileId]
+  persist()
+  return true
+}
+
+/**
+ * Register (or replace) a user-wide webhook subscription. Unlike
+ * `saveCallback`, which is keyed by a specific fileId and only receives
+ * events for that file, a user-wide subscription receives a copy of
+ * every event the server fires — comment events for any file the
+ * subscriber has access to, `file.saved` for any save path, etc.
+ *
+ * The caller (typically the `/api/v1/webhooks` REST handler) is
+ * responsible for scope-gating before invoking this; the function does
+ * NOT authenticate. The `userSub` argument is the JWT `sub` of the
+ * subscribing user, used both as the lookup key and as the event
+ * payload's `userSub` field so receivers can route on it.
+ *
+ * This is the v1 subscription shape for org-wide hooks. The previous
+ * implementation crammed user subs into the `byFile` map under a
+ * synthetic `user:<sub>` key (see git history of `handleWebhooksUpsert`
+ * prior to sdk1.md §11.93), which meant `fireCallback(event, fileId)`
+ * could never reach them. Splitting the index makes the routing
+ * obvious and removes the basename ambiguity for user subs.
+ */
+export function saveCallbackForUser(userSub: string, webhook: Omit<FileWebhook, 'fileId'>): void {
+  if (!userSub) throw new Error('userSub required to register a user-wide subscription')
+  const store = load()
+  store.byUser[userSub] = { ...webhook, fileId: `user:${userSub}` }
+  persist()
+}
+
+export function getCallbackForUser(userSub: string): FileWebhook | undefined {
+  return load().byUser[userSub]
+}
+
+export function listUserCallbacks(): FileWebhook[] {
+  return Object.values(load().byUser)
+}
+
+export function deleteCallbackForUser(userSub: string): boolean {
+  const store = load()
+  if (!store.byUser[userSub]) return false
+  delete store.byUser[userSub]
   persist()
   return true
 }
@@ -138,13 +189,49 @@ export async function fireCallback(
   fileId: string,
   data: Record<string, unknown>,
   opts: WebhookDeliveryOptions = {},
-): Promise<WebhookDeliveryResult | null> {
-  const wh = getCallback(fileId)
-  if (!wh) return null
-  if (wh.events.length > 0 && !wh.events.includes(event)) return null
+): Promise<WebhookDeliveryResult[]> {
+  // Build the deduped recipient list. A user-wide subscription receives
+  // every event regardless of `fileId`; a file-scoped subscription only
+  // receives events for its own fileId. Both indexes are scanned per
+  // delivery so an org-wide subscriber doesn't have to re-register for
+  // every file they care about (sdk1.md §11.93).
+  const recipients: Array<{ wh: FileWebhook; userSub?: string }> = []
+  const fileWh = getCallback(fileId)
+  if (fileWh) recipients.push({ wh: fileWh })
+  for (const [sub, wh] of Object.entries(load().byUser)) {
+    if (recipients.some((r) => r.wh.url === wh.url)) continue
+    recipients.push({ wh, userSub: sub })
+  }
+  if (recipients.length === 0) return []
+  const deliveries = await Promise.all(recipients.map((r) => deliverOne(r.wh, r.userSub, event, fileId, data, opts)))
+  return deliveries
+}
+
+async function deliverOne(
+  wh: FileWebhook,
+  userSub: string | undefined,
+  event: string,
+  fileId: string,
+  data: Record<string, unknown>,
+  opts: WebhookDeliveryOptions,
+): Promise<WebhookDeliveryResult> {
+  // Each recipient evaluates events on its own whitelist. The file-scoped
+  // shape defaults to ['file.saved']; user-wide defaults to ['file.saved',
+  // 'ai.completed']. Empty array means "all events" — preserved for
+  // backwards compatibility with any caller that explicitly opts in.
+  if (wh.events.length > 0 && !wh.events.includes(event)) {
+    return { url: wh.url, event, attempts: 0, delivered: false, finalStatus: null }
+  }
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3)
   const initialBackoffMs = Math.max(0, opts.initialBackoffMs ?? 250)
-  const body = JSON.stringify({ v: '1.0', event, ts: Math.floor(Date.now() / 1000), fileId, data })
+  const body = JSON.stringify({
+    v: '1.0',
+    event,
+    ts: Math.floor(Date.now() / 1000),
+    fileId,
+    ...(userSub ? { userSub } : {}),
+    data,
+  })
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (wh.secret) {
     headers['X-GenOffice-Signature'] = signWebhookBody(wh.secret, body)
@@ -163,6 +250,12 @@ export async function fireCallback(
       if (res.ok) {
         return { url: wh.url, event, attempts: attempt, delivered: true, finalStatus: res.status }
       }
+      // (deliverOne-specific: a user-wide sub that happens to be filtered
+      // out by `events` returns a sentinel { attempts: 0, delivered: false,
+      // finalStatus: null } above and never reaches here. Below this line
+      // we know the recipient accepted the event but the target didn't
+      // respond 2xx yet.)
+
       lastStatus = res.status
       // 4xx other than 429 are caller-fault; no retry.
       const retryable = res.status >= 500 || res.status === 429
@@ -194,6 +287,9 @@ export async function fireCallback(
   }
 }
 
+/** @deprecated retained for back-compat — `fireCallback` now returns an array. */
+export type FireCallbackSingleResult = WebhookDeliveryResult | null
+
 /**
  * Save-path integration helper. Maps a saved file path to its REST v1 file
  * id (basename — the same id the REST API surfaces at /api/v1/files) and
@@ -215,32 +311,36 @@ export async function fireCallback(
  */
 export function notifyFileSaved(filePath: string, extra: { size?: number; format?: string } = {}): void {
   const fileId = filePath.split(/[\\/]/).pop() ?? filePath
-  // fire-and-forget; on failure the entry is pushed to the DLQ so hosts
-  // can replay/inspect it. The DLQ import is deferred (dynamic) so this
-  // module stays circular-import-free with webhooks-dlq.ts.
-  void fireCallback('file.saved', fileId, { path: filePath, ...extra }).then(async (result) => {
-    if (!result || result.delivered) return
+  // fire-and-forget; on failure each delivery attempt is pushed to the DLQ
+  // individually so hosts can replay / inspect / drop them per-recipient.
+  // The DLQ import is deferred (dynamic) so this module stays
+  // circular-import-free with webhooks-dlq.ts.
+  void fireCallback('file.saved', fileId, { path: filePath, ...extra }).then(async (results) => {
+    if (!results || results.length === 0) return
     // Lazy require: avoids the cyclic-import dance and only loads DLQ
     // code paths when something actually fails.
     const { pushDeadLetter } = await import('./webhooks-dlq')
-    // Caller-fault 4xx (other than 429) is non-retryable — fireCallback
-    // exits after a single attempt. We surface those as `non_retryable_4xx`
-    // so operators can branch their tooling (e.g. fix the URL / auth
-    // header) without confusing them with transient server-side failures.
-    const reason: 'max_attempts' | 'non_retryable_4xx' =
-      result.attempts === 1 && result.finalStatus !== null && result.finalStatus >= 400 && result.finalStatus < 500 && result.finalStatus !== 429
-        ? 'non_retryable_4xx'
-        : 'max_attempts'
-    pushDeadLetter({
-      url: result.url,
-      event: result.event,
-      fileId,
-      body: JSON.stringify({ v: '1.0', event: result.event, ts: Math.floor(Date.now() / 1000), fileId, data: { path: filePath, ...extra } }),
-      attempts: result.attempts,
-      lastStatus: result.finalStatus,
-      lastError: result.error ?? null,
-      reason,
-    })
+    for (const result of results) {
+      if (result.delivered) continue
+      // Caller-fault 4xx (other than 429) is non-retryable — fireCallback
+      // exits after a single attempt. We surface those as `non_retryable_4xx`
+      // so operators can branch their tooling (e.g. fix the URL / auth
+      // header) without confusing them with transient server-side failures.
+      const reason: 'max_attempts' | 'non_retryable_4xx' =
+        result.attempts === 1 && result.finalStatus !== null && result.finalStatus >= 400 && result.finalStatus < 500 && result.finalStatus !== 429
+          ? 'non_retryable_4xx'
+          : 'max_attempts'
+      pushDeadLetter({
+        url: result.url,
+        event: result.event,
+        fileId,
+        body: JSON.stringify({ v: '1.0', event: result.event, ts: Math.floor(Date.now() / 1000), fileId, data: { path: filePath, ...extra } }),
+        attempts: result.attempts,
+        lastStatus: result.finalStatus,
+        lastError: result.error ?? null,
+        reason,
+      })
+    }
   }).catch(() => {
     // DLQ push itself is best-effort; if even that fails the original
     // failure is already logged by fireCallback.

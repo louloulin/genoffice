@@ -9,7 +9,12 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
-import { saveCallback, listCallbacks, deleteCallback, fireCallback } from '../../common/webhooks-store'
+import {
+  saveCallbackForUser,
+  deleteCallbackForUser,
+  getCallbackForUser,
+  fireCallback,
+} from '../../common/webhooks-store'
 import { requireScopeFromHeaders } from './auth'
 
 /**
@@ -41,13 +46,15 @@ export async function handleWebhooksUpsert(ctx: { request: IncomingMessage; resp
     sendError(ctx.response, 400, 'expected { url, events? }', 'INVALID_ARGUMENT', 'webhooks:upsert')
     return true
   }
-  // Org-wide subs use `caller.sub` as the bucket id so a user's subscriptions
-  // are addressable by `sub` later. This is the same key shape `home:recents`
-  // uses for per-user storage.
-  saveCallback({
-    fileId: `user:${caller.sub}`,
+  // Org-wide subs are keyed by JWT `sub`. We use a dedicated
+  // `byUser` index in webhooks-store (sdk1.md §11.93) so they receive
+  // every event the server fires, not just per-file ones. The previous
+  // implementation crammed them into the `byFile` map under a synthetic
+  // `user:<sub>` key, which meant comment / file.saved events for any
+  // other fileId would skip the receiver entirely.
+  saveCallbackForUser(caller.sub, {
     url: body.url,
-    events: Array.isArray(body.events) ? body.events : ['file.saved', 'ai.completed'],
+    events: Array.isArray(body.events) ? body.events : ['file.saved', 'ai.completed', 'comment.added', 'comment.resolved', 'comment.removed'],
     createdAt: Date.now(),
   })
   sendJson(ctx.response, 201, { ok: true, subscriber: caller.sub, url: body.url })
@@ -71,7 +78,7 @@ export async function handleWebhooksDelete(ctx: { request: IncomingMessage; resp
     return true
   }
   const caller = { sub: gate.payload.sub }
-  const removed = deleteCallback(`user:${caller.sub}`)
+  const removed = deleteCallbackForUser(caller.sub)
   sendJson(ctx.response, 200, { ok: true, removed })
   return true
 }
@@ -81,7 +88,7 @@ export async function handleWebhooksDelete(ctx: { request: IncomingMessage; resp
  * registered callbacks. Exported for the integration tests as well.
  * @public
  */
-export { fireCallback, listCallbacks }
+export { fireCallback, getCallbackForUser }
 
 /**
  * `POST /api/v1/callbacks/fire`

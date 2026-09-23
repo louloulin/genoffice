@@ -5703,6 +5703,75 @@ JSONL dump:
 
 `'system'` 不再出现在认证调用产生的记录里。
 
+### 11.93 · Comment events 派发到 org-wide webhook subscription（§11.37.6 #5 闭合）
+
+§11.37.6 backlog 最后一项：`webhooks:upsert` 之前把 user-wide subscription 存到 `webhooks.json` 的 `byFile` 索引下，key 为合成 `user:<sub>`。这导致 `notifyComment` 触发 `fireCallback(event, fileId)` 时永远查不到 org-wide subscriber —— 因为 fileId 是 `verify-doc.docx`，没有 `user:alice@acme.com` 这样的 key。于是 `comment.added` / `comment.resolved` / `comment.removed` 三个 webhook 对 org-wide 订阅者**永远静默**。本节修复此 gap。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/common/webhooks-store.ts` | Store 加 `byUser` 索引 + `saveCallbackForUser` / `getCallbackForUser` / `listUserCallbacks` / `deleteCallbackForUser` 4 个公开 API；`fireCallback` 改为多 recipient 派发（per-file + 每个 byUser）；`notifyFileSaved` 按 delivery 数组逐条 push DLQ | +95 / -18 |
+| `apps/web-server/src/api/v1/webhooks.ts` | `handleWebhooksUpsert` 用 `saveCallbackForUser(caller.sub, ...)`（默认 events 加 `comment.added/resolved/removed`）；`handleWebhooksDelete` 用 `deleteCallbackForUser`；re-export `getCallbackForUser` 替掉 `listCallbacks` | +18 / -10 |
+| `apps/web-server/tests/webhook-user-wide.test.ts` | 新增 · 8 e2e | +225 |
+| `apps/web-server/tests/webhook-retry-e2e.test.ts` | 改 `const r = await fireCallback(...)` → `results[0]?`；空 case `r === null` → `results === []` | +5 / -7 |
+
+#### 🎯 设计要点
+
+1. **独立 `byUser` 索引（不是 byFile 的合成 key）**：`byFile` 索引按 fileId 派发，`byUser` 索引按 JWT sub 派发。两者各自独立，互不干扰。把 user subs 挤进 byFile 的合成 key 看起来省事但语义错位：将来要做"按 tenant 派发"或"按 group 派发"就要再加合成 key，反而比独立索引更难扩展。
+3. **多 recipient 派发 + URL 去重**：`fireCallback(event, fileId, data)` 现在返 `WebhookDeliveryResult[]` 而不是 `WebhookDeliveryResult | null`。每个 recipient 独立走 events 过滤 / 重试 / DLQ，不会因为一个失败 short-circuit 别的。同一 URL 同时被 per-file + byUser 注册时只 deliver 一次（避免 webhook target 收到重复事件）。
+4. **payload 加 `userSub`**：user-wide 派发的 webhook 多了 `userSub` 字段（接收方可按 sub 路由）；per-file 派发没有这个字段（最小 diff，向后兼容）。
+5. **URL 验证仍归 webhooks.ts**：`saveCallbackForUser` 不做 URL 校验，由 `handleWebhooksUpsert` 的 `body.url` 字符串类型校验兜底；与 `saveCallback`（per-file）行为一致。
+6. **breaking change 范围**：`fireCallback` 签名从 `Promise<X | null>` 变成 `Promise<X[]>`。所有内部 caller 已迁移（webhooks-dlq / webhooks / notifyFileSaved）。仅有的直接 await 测试是 `webhook-retry-e2e.test.ts`，已逐条改成 `results[0]?.x`；`webhook-signing.test.ts` / `webhooks-dlq.test.ts` 不读返回值。
+7. **events 默认值扩张**：org-wide 默认从 `['file.saved', 'ai.completed']` 扩到 `['file.saved', 'ai.completed', 'comment.added', 'comment.resolved', 'comment.removed']`。如果 caller 想严格只收某几个事件，显式传 `events` 即可。
+
+#### 🧪 测试（8 新增 e2e 全绿）
+
+- `saveCallbackForUser stores under byUser, not byFile` —— user sub 不再泄漏到 byFile 索引
+- `deleteCallbackForUser removes only the user sub` —— 删除 user sub 不影响 per-file sub
+- `fireCallback dispatches comment.added to user-wide subscriber even when no per-file sub exists` —— **核心 gap** 闭合
+- `fireCallback delivers to BOTH per-file AND user-wide recipients` —— 双 receiver 派发
+- `fireCallback URL-dedupes when per-file and user-wide subs point at the same URL` —— 同 URL 一次投递
+- `fireCallback user-wide subscriber ignores events not in its whitelist` —— per-recipient events 过滤
+- `fireCallback returns [] when neither per-file nor user-wide subs exist` —— 新空值形状（back-compat null → []）
+- `fireCallback fans out to multiple user-wide subscribers` —— 多 byUser 同时派发
+- `fireCallback on user-wide sub retries per-recipient (one failing does not short-circuit others)` —— 失败隔离
+
+外加 5 个 webhook-retry-e2e 适配新签名。
+
+#### 📊 进度
+
+- §11.37.6 #5 **闭合**（comment events → org-wide subscriber）
+- §11.37.6 整族 5 项**全部闭合**（workbook error code / auth:revoke-jti / audit-log / colab-scope / comment events）
+- §A.5 backlog 闭合数 78 → **79**
+- web-server 套件 107 → **108 文件**（+1 e2e）；1078 → **1086 测试通过**（+8 net），7 skipped / 0 fail
+  （本轮自跑：1 失败是 pre-existing `translate-pi-agent-e2e` env pollution，与本节无关；上一 baseline 1 失败是同一 case）
+- tsc 干净
+
+#### 🔍 Live 验证（port 18905，HS256 JWT + 真实 stub receiver）
+
+```
+=== Step 1: webhooks:upsert ===
+(201, '{"ok":true,"subscriber":"alice@verify.com","url":"http://127.0.0.1:18801/hook"}')
+
+=== Step 2: webhooks.json (确认 byFile 不再有 user:<sub>) ===
+{ "byFile": {}, "byUser": { "alice@verify.com": { ... } } }
+
+=== Step 3: comments:add (201, commentId=cm_fhxIAKgBEZk) ===
+
+=== Step 4: webhook received (核心：comment.added 现在 fire 到 org-wide) ===
+{ "v":"1.0", "event":"comment.added", "ts":1790158298,
+  "fileId":"verify-doc.docx",
+  "userSub":"alice@verify.com",
+  "data":{"commentId":"cm_fhxIAKgBEZk", "author":"alice@verify.com", "text":"review me", ...} }
+
+=== Step 5: webhooks:delete (200, removed:true) → webhooks.json: { "byFile": {}, "byUser": {} } ===
+
+=== Step 6: 再 add comment → Total received after delete: 0 ===
+```
+
+修复前同样 case 只会让 `comments:add` 返 201、receiver 0 事件、user 看不到任何 webhook —— 这就是 §11.37.6 #5 长期挂账的"假订阅"。修复后 org-wide subscriber 立即收到 `comment.added`，payload 含 `userSub` 用于路由；DELETE 后立即停止投递，行为正确。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
