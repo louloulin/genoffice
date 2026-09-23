@@ -264,11 +264,19 @@ export function registerSheetsHandlers(): void {
     if (!req?.sessionId || !req.sheetId || !range) {
       return emptyRange(range?.endRow ?? 0, rows)
     }
+    // Look the session up in the registry so the sidecar pool can route by
+    // source path (the xlsx-sidecar keeps sessions in-process; with the
+    // §11.87 multi-process pool, a session opened on worker A is only
+    // readable on worker A). The sessionId is timestamp-derived and would
+    // hash to a different worker ~3/4 of the time — the empty-cell flake
+    // the workbook-save e2e suite had been racing against.
+    const session = getSession(req.sessionId)
     try {
       const result = (await sheetsSidecar.readRange({
         sessionId: req.sessionId,
         sheetId: req.sheetId,
         range,
+        ...(session?.sourcePath ? { path: session.sourcePath } : {}),
       })) as Record<string, unknown>
       return normalizeRangeResult(result, range.endRow)
     } catch (err) {

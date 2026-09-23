@@ -104,8 +104,19 @@ export class WebSheetsSidecarPool {
     readonly sessionId: string
     readonly sheetId: string
     readonly range: { startRow: number; endRow: number; startColumn: number; endColumn: number }
+    /** Optional source path. When supplied (the typical case after
+     *  `workbook:open-path` registers the session in the workbook
+     *  registry), the pool routes by path so the request lands on
+     *  the same worker that handled `open(path)` — the per-process
+     *  Rust sessions map is non-replicated across the pool. Falls
+     *  back to the sessionId hash for callers that don't have the
+     *  path handy (legacy / cache-warm path). */
+    readonly path?: string
   }): Promise<unknown> {
-    return this.pickBySessionId(input.sessionId).readRange(input)
+    const worker = input.path
+      ? this.pickByPath(input.path)
+      : this.pickBySessionId(input.sessionId)
+    return worker.readRange(input)
   }
 
   async archiveManifest(path: string): Promise<unknown> {
