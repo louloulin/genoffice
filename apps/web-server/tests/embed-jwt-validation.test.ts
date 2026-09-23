@@ -138,9 +138,19 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
 
     const handleEmbed = await loadHandler()
     const token = signJwt(basePayload())
-    // Flip the last character of the signature segment.
+    /* Flip a MIDDLE character of the signature segment, not the last one.
+     *
+     * A 32-byte HMAC encodes to 43 base64url characters, and the final
+     * character carries only the 2 leftover bits of the 256-bit digest.
+     * Changing it may therefore decode to the identical byte sequence:
+     * measured empirically, flipping the last char left 1265 of 20 000
+     * signatures bit-identical, so ~6 % of runs signed a *valid* token and
+     * this test failed with 200 instead of 401. A middle character always
+     * contributes a full 6 bits, so mutating it can never be a no-op. */
     const parts = token.split('.')
-    parts[2] = parts[2].slice(0, -1) + (parts[2].endsWith('A') ? 'B' : 'A')
+    const sig = parts[2]!
+    const mid = Math.floor(sig.length / 2)
+    parts[2] = sig.slice(0, mid) + (sig[mid] === 'A' ? 'B' : 'A') + sig.slice(mid + 1)
     const tampered = parts.join('.')
 
     const resp = fakeResponse()

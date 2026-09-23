@@ -53,6 +53,7 @@ import {
   WorkbookOpenFailedError,
   WorkbookSaveFailedError,
 } from './errors'
+import { MAX_RANGE_CELLS, validateRangeRequest } from './range-bounds'
 
 
 export function registerSheetsHandlers(): void {
@@ -252,29 +253,38 @@ export function registerSheetsHandlers(): void {
   // the Electron main process owns); the empty fallback only fires if the
   // sidecar is unreachable or the session expired.
   registerHandle('workbook:read-range', async (_event: unknown, request: unknown) => {
-    const req = request as
-      | {
-          sessionId?: string
-          sheetId?: string
-          range?: { startRow: number; endRow: number; startColumn: number; endColumn: number }
-        }
-      | undefined
-    const range = req?.range
-    const rows = range ? range.endRow - range.startRow + 1 : 0
-    if (!req?.sessionId || !req.sheetId || !range) {
-      return emptyRange(range?.endRow ?? 0, rows)
+    /* Validate before anything else touches the bounds. The two failure
+     * modes this prevents are both reachable from an untrusted HTTP client:
+     *
+     *   1. `emptyRange` below materialises one record per row, so an
+     *      unclamped `endRow - startRow + 1` is an allocation the caller
+     *      sizes. `{ startRow: -1, endRow: 999999 }` produced a ~30 MB
+     *      response and ~300 MB RSS; four concurrent calls exceeded 1 GB.
+     *   2. A negative bound fails the sidecar's `usize` deserialisation,
+     *      which replies `invalid_json` with an empty `requestId`. The
+     *      client correlates by id, drops the reply, and stalls for the
+     *      full timeout — answering a read took 30 s.
+     *
+     * Every other layer (renderer `parseRangeRequest`, desktop main process
+     * `workbookRangeRequestSchema`, Rust `CellRange::validate`) already
+     * rejects these inputs, so this is the web build catching up rather than
+     * a new contract. See ./range-bounds.ts. */
+    const validated = validateRangeRequest(request)
+    if (!validated.ok) {
+      throw new WorkbookInvalidArgumentError('workbook:read-range', validated.reason)
     }
+    const { sessionId, sheetId, range } = validated.request
     // Look the session up in the registry so the sidecar pool can route by
     // source path (the xlsx-sidecar keeps sessions in-process; with the
     // §11.87 multi-process pool, a session opened on worker A is only
     // readable on worker A). The sessionId is timestamp-derived and would
     // hash to a different worker ~3/4 of the time — the empty-cell flake
     // the workbook-save e2e suite had been racing against.
-    const session = getSession(req.sessionId)
+    const session = getSession(sessionId)
     try {
       const result = (await sheetsSidecar.readRange({
-        sessionId: req.sessionId,
-        sheetId: req.sheetId,
+        sessionId,
+        sheetId,
         range,
         ...(session?.sourcePath ? { path: session.sourcePath } : {}),
       })) as Record<string, unknown>
@@ -284,7 +294,7 @@ export function registerSheetsHandlers(): void {
       // process restart, so we may have lost the session. Return empty cells
       // rather than a hard error so the workbook metadata still shows up.
       console.warn('[sheets] read-range sidecar failed:', err)
-      return emptyRange(range.endRow, rows)
+      return emptyRange(range.startRow, range.endRow)
     }
   })
 
@@ -752,11 +762,21 @@ export function registerSheetsHandlers(): void {
   registerHandle('workbook:auto-rename', () => null)
 }
 
-function emptyRange(endRow: number, rows: number): Record<string, unknown> {
+/**
+ * Empty-cells reply for a range the sidecar could not answer.
+ *
+ * `rows` is derived from the caller's `[startRow, endRow]` rather than taken
+ * as a separate count so the two cannot disagree, and the span is capped at
+ * `MAX_RANGE_CELLS` as a backstop: the handler validates the request before
+ * reaching here (see ./range-bounds.ts), but this function is the one that
+ * turns a bad bound into an allocation, so it enforces its own ceiling too.
+ */
+function emptyRange(startRow: number, endRow: number): Record<string, unknown> {
+  const rows = Math.min(Math.max(0, endRow - startRow + 1), MAX_RANGE_CELLS)
   return {
     cells: [],
-    rows: Array.from({ length: Math.max(0, rows) }, (_, i) => ({
-      row: Math.max(0, endRow - rows + 1) + i,
+    rows: Array.from({ length: rows }, (_, i) => ({
+      row: Math.max(0, startRow) + i,
       hidden: false,
     })),
     merges: [],

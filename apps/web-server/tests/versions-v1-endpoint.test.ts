@@ -18,20 +18,46 @@
  * NOT implied by `files:write`. A `files:write`-only token cannot
  * restore, even though it can create manual snapshots.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-vi.hoisted(() => {
+/* Env must be set inside `vi.hoisted`, not in the module body.
+ *
+ * Vitest hoists `import` statements above every other statement in the file,
+ * so a module-body `process.env.DATA_DIR = TMP` runs *after*
+ * `common/state.ts` has already resolved `DATA_DIR` at import time. The
+ * assignment therefore did nothing: `FILES_DIR` stayed at the shared
+ * `/tmp/genoffice-data/files`, and this suite wrote its `doc-*` fixtures into
+ * a directory other suites also scan. That is the patch of ground on which
+ * `file-management.test.ts` and this suite raced.
+ *
+ * Mirrors the pattern (and the env-restore discipline) in
+ * `tests/webhooks-dlq.test.ts`. */
+const { TMP, RESTORE } = vi.hoisted(() => {
+  const fs = require('node:fs')
+  const os = require('node:os')
+  const path = require('node:path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'versions-v1-'))
+  const KEYS = [
+    'GENOFFICE_JWT_SECRET',
+    'GENOFFICE_TEST_DATA_DIR',
+    'DATA_DIR',
+    'GENOFFICE_DATA_DIR',
+    'GENOFFICE_WEB_DATA_DIR',
+  ] as const
+  // Vitest reuses worker processes across files and `DATA_DIR` is read at
+  // module-init time, so a leaked value here becomes the next file's data
+  // directory — pointing at a temp dir this file has already deleted.
+  const restore = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
   process.env.GENOFFICE_JWT_SECRET = 'versions-v1-test-secret'
+  process.env.GENOFFICE_TEST_DATA_DIR = dir
+  process.env.DATA_DIR = dir
+  process.env.GENOFFICE_DATA_DIR = dir
+  process.env.GENOFFICE_WEB_DATA_DIR = dir
+  return { TMP: dir, RESTORE: restore as Record<string, string | undefined> }
 })
-
-const TMP = mkdtempSync(join(tmpdir(), 'versions-v1-'))
-process.env.GENOFFICE_TEST_DATA_DIR = TMP
-process.env.DATA_DIR = TMP
-vi.stubEnv('DATA_DIR', TMP)
 
 import { handleApiV1 } from '../src/api/v1'
 import { FILES_DIR } from '../src/common'
@@ -140,11 +166,21 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetVersionHistory()
-  // FILES_DIR is shared across tests; clean only the fileIds we touched.
+  // FILES_DIR is now this suite's own temp dir, but the ids are reused across
+  // cases, so clear the ones we touched to keep each case independent.
   for (const id of ['doc-1', 'doc-2', 'doc-3']) {
     const p = join(FILES_DIR, id)
     if (existsSync(p)) rmSync(p, { force: true })
   }
+})
+
+afterAll(() => {
+  // Put the worker's env back before the next file imports `common/state.ts`.
+  for (const [k, v] of Object.entries(RESTORE)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  rmSync(TMP, { recursive: true, force: true })
 })
 
 // ── Tests ────────────────────────────────────────────────────────────────────
