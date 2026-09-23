@@ -64,7 +64,7 @@ function deckDefaultFont(opened: OpenedPptx): string | undefined {
 /** web-server-only media resolver (no theme-tint rewrite, no electron deps).
  *  Decodes TIFF → PNG inline, neutralises EXIF orientation for JPEG, base64
  *  everything else as `data:` URLs the renderer can `<img src=>` directly. */
-function makeWebMediaResolver(opened: OpenedPptx, _slidePath?: string) {
+export function makeWebMediaResolver(opened: OpenedPptx, _slidePath?: string) {
   const cache = new Map<string, string | undefined>()
   return (mediaRef: string): string | undefined => {
     if (cache.has(mediaRef)) return cache.get(mediaRef)
@@ -87,7 +87,7 @@ function makeWebMediaResolver(opened: OpenedPptx, _slidePath?: string) {
 
 /** Web-server renderer: deterministic heuristic metrics (no font parsing).
  *  Matches the desktop fallback when `createSystemFontMetrics` hasn't initialised. */
-const webMetrics = new HeuristicMetrics()
+export const webMetrics = new HeuristicMetrics()
 
 export function buildWebRenderSlides(opened: OpenedPptx, fitWidthPx: number) {
   return opened.deck.slides.map((s: Slide, i: number) =>

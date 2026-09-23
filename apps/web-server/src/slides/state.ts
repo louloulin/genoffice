@@ -154,6 +154,17 @@ export interface SlidesSessionInfo {
   }
   /** Rollback points the AI panel lists, keyed by id. */
   aiSnapshots?: Map<number, SlidesHistorySnapshot>
+  /**
+   * Master-view edit target: the part being edited + its parsed slide. Held
+   * across edits so parse-time element ids stay stable for the renderer's
+   * selection / editing state — re-parsing on every master-edit call would
+   * remint ids and break selection, the same defect §A.5 #7 closed for the
+   * outer deck. Part-addressed ops (`target.part`) mutate `slide` in place;
+   * the executor's `flushTouchedParts` re-serialises it to `archive.entries`
+   * and then re-materialises every deck slide so the inheritance chain picks
+   * up the chrome changes.
+   */
+  masterEdit?: { partPath: string; slide: Slide }
 }
 
 /** Whole-deck snapshot — mirrors the desktop `HistorySnapshot`. */
@@ -366,6 +377,21 @@ export function registerSlidesSession(
   evictIfNeeded()
 }
 
+/** Bind the master-view edit target on the session. The same part object is
+ *  reused across edits so element ids stay stable; `master-open` and
+ *  `master-enter` both go through this so a re-open always re-parses from
+ *  disk (in case the renderer re-mounted after a save). */
+export function setSlidesMasterEdit(
+  path: string,
+  edit: { partPath: string; slide: Slide } | undefined,
+): void {
+  const info = sessions.get(path)
+  if (!info) return
+  if (edit) info.masterEdit = edit
+  else delete info.masterEdit
+  touch(info)
+}
+
 /** Update the canvas width for a live session (the renderer re-fits on zoom). */
 export function setSlidesFitWidth(path: string, fitWidthPx: number): void {
   const info = sessions.get(path)
@@ -418,6 +444,10 @@ export function replaceSlidesSession(path: string, opened: OpenedPptx): void {
     fitWidthPx: previous?.fitWidthPx ?? DEFAULT_SLIDES_FIT_WIDTH,
     undoStack: previous?.undoStack ?? [],
     redoStack: previous?.redoStack ?? [],
+    // Drop masterEdit on replace — the slide model pointed at the OLD
+    // archive's entries; reusing it after save would leave the new save
+    // silent (op mutations land on a detached model). The renderer must
+    // re-enter master view after a save to refresh, which matches desktop.
     ...(previous?.historyBatch ? { historyBatch: previous.historyBatch } : {}),
     ...(previous?.aiSnapshots ? { aiSnapshots: previous.aiSnapshots } : {}),
   })

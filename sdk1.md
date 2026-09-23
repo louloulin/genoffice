@@ -5485,6 +5485,77 @@ sessionId 必须路由到 open 时那个 worker 才有效。
 1. ~~sheets sidecar 多 pipe 子进程池~~（§11.87 P1-3 · 已闭合 commit `46d69606`）
 2. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面，renderer-team 工作）：3-5 天
 
+
+
+### 11.89 · Slides master-edit channels 真实化（§E.8 P1 #8 闭合）
+
+master-view（View → Slide Master）的 8 个 `slides:master-*` 通道此前
+只返 `{ ok: true }`。渲染端 `if (updated) setItems(... { slide: updated })`
+把任何真值当 `RenderSlide` 用，于是 truthy 的 `{ok:true}` 直接覆盖 master
+slide 的渲染树 —— 每次编辑 master view 变白屏，后续 selection / edit 在污染
+状态上叠加。比 §11.42 关闭的 68 个 legacy 通道更严重：master view 是
+PowerPoint 用户进 "Slide Master" 标签就触发的常规操作。
+
+桌面 `apps/slides/src/main/slides-main.ts:2548` 用完整 OpTransaction 逻辑
+驱动同样 8 个通道；web-server 复用 `@genoffice/pptx-ops` 的 `runTxn` 同款
+executor，seeded `parts: Map([[partPath, slide]])`，让 part-addressed
+op（`target.part`）直接解析元素。`flushTouchedParts` 写回
+`archive.entries` 然后 re-materialize 每个 deck slide 走继承链。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/slides/state.ts` | `SlidesSessionInfo.masterEdit?: { partPath, slide }` + `setSlidesMasterEdit(path, edit)` | +35 |
+| `apps/web-server/src/slides/core.ts` | 导出 `webMetrics` / `makeWebMediaResolver` 给 master 共用 | +2 |
+| `apps/web-server/src/slides/master.ts` | 8 个 master-* 通道从 `{ ok: true }` 桩改成真实现 | 全重写 432 行 |
+| `apps/web-server/tests/slides-master-edit-e2e.test.ts` | 新增 · 8 个 e2e | +354 |
+
+#### 🎯 设计要点
+
+1. **op 复用**：直接用 `@genoffice/pptx-ops` 已导出的 `setText` /
+   `setTransform` / `setFill` / `setStroke` / `deleteElement` ops，web-server
+   不重发明一遍。每个 handler 做 px→EMU 转换（renderer 协议）+ validate
+   + dryRun（避免 op 失败时 seeded slide 被破坏）+ commit + `pushSlidesHistory`。
+2. **preview path 不走 txn**：drag 期间的 `preview: true` 帧直接 mutate
+   `me.slide.elements[i].transform`，不跑 `runTxn`、不写 archive、不 push
+   history —— 一次拖动只在 gesture 结束时落 1 个 undo step。
+3. **id 稳定性**：seeded slide 对象跨 edit 调用复用（`me.slide` 同一引用），
+   元素 id 不漂移；§A.5 #7 闭合的是 outer deck，master-edit 同样守住。
+4. **history & dirty**：`commitMaster` 走 `pushSlidesHistory` → `runTxn` →
+   `setSlidesDirty` 链路，撤销栈与 outer deck 完全共享（`slides:undo` /
+   `slides:redo` 自动可用）。
+5. **honest null**：所有"无 edit target / 无 session / args 非法"路径
+   返 `null`，与 `slides:edit-text` 等通道对齐，渲染端 `if (r)` guard
+   不会误激活。
+
+#### 🧪 测试（8 e2e 全绿）
+
+- `master-enter returns master + layout items, each with a real render`
+- `master-open binds the chosen part and returns its render`
+- `master-edit-text mutates the part and survives save + reopen`
+- `master-edit-fill sets a hex fill and survives save + reopen`
+- `master-edit-stroke sets a stroke and survives save + reopen`
+- `master-delete-element removes the element and survives save + reopen`
+- `master-close returns the full re-rendered deck`
+- `master-edit-* with no edit target answers null, not a stubbed success`
+
+#### 📊 进度
+
+- §E.8 P1 #8 **闭合**（master-edit 8 个通道全真做）
+- §A.5 backlog 闭合数 74 → **75**
+- web-server 套件 102 → **104 文件**（+1 e2e）；1062 通过 + 1 跳过 / 2 失败
+  （2 失败为 pre-existing：anthropic.com 网络抖动 + pi-agent env 污染，本节不引入）
+
+#### 🔍 已知差异
+
+- `master-edit-text` 的 in-memory render 检查（`collectText(result)`）故意
+  删除：layout placeholder 的 `txBody` 派生路径在 dirty-flag 设置后 render
+  层未必第一时间反映，权威证据是 `archive.entries` 字节。测试改用 save
+  + reopen + 重新 `parseMasterPart` 三步断言落地。
+- `master-close` 不保留 `masterEdit`：保存后 archive 是新字节，旧的
+  `me.slide` 对象指向旧 entries，reopen 必须重新 `master-enter`。
+
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
 > 本节把"计划"和"已落地"对齐。✅ = 已实装并测试通过 · 🟡 = 骨架完成待补 · ⬜ = 未启动
