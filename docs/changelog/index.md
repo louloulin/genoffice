@@ -103,6 +103,26 @@ Releases are tagged in git; the most recent tag is also the current
 - **VitePress docs site** under `docs/` with guide / api / skills
   sections, EN + ZH content.
 
+### Performance
+
+- **`captureBeforeSave` sha+size in-memory cache** (sdk1 §11.86,
+  `apps/web-server/src/common/version-history.ts`). The dedupe-hit
+  hot path on save — every autosave against unchanged bytes —
+  drops from **3.45 ms → 0.0003 ms** per save at V=10 (1 MB
+  doc), ~10 000× faster. Eliminates the previous `readdirSync +
+  readFileSync(newest) + sha256(newest)` chain on every save.
+- **xlsx-sidecar multi-process pool** (sdk1 §11.87, new
+  `apps/web-server/src/sheets/sidecar-pool.ts`). Replaces the
+  single `xlsx-sidecar` child process (which serialised every
+  request on one stdin pipe and one `mpsc::sync_channel<8>`)
+  with N independent workers routed by FNV-1a hash on
+  `path` / `sessionId`. Default N=4 (env
+  `SHEETS_SIDECAR_POOL_SIZE`, cap 16). At 200 ms sidecar
+  latency the throughput ceiling rises from **5 saves/s →
+  20 saves/s (N=4)** / **40 saves/s (N=8)**. Single-save
+  wall-time is unchanged; the speedup is on concurrent
+  throughput.
+
 ## [0.8.0] — internal preview
 
 - Six editors (docs, sheets, slides, pdf, markdown, html) shipped as
