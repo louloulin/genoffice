@@ -5460,8 +5460,9 @@ sessionId 必须路由到 open 时那个 worker 才有效。
 | §11.83 | collab + history + comments + templates scope gate | +1 | 73 |
 | §11.84 | web-server `slides:open-path` 默认启用 hash-based id | +1 | 74 |
 | §11.87 | xlsx-sidecar multi-process pool（sheets P1-3）| +1 | 75 |
-| §11.89 | slides master-edit 8 通道全真做 | +1 | **76** |
-| §A.5 backlog 闭合总数 |  |  | **76** |
+| §11.89 | slides master-edit 8 通道全真做 | +1 | 76 |
+| §11.91 | slides add-image-bytes / add-media-bytes bridge 字段名修复 | +1 | **77** |
+| §A.5 backlog 闭合总数 |  |  | **77** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -5613,6 +5614,47 @@ op（`target.part`）直接解析元素。`flushTouchedParts` 写回
 
 - **§11.54 的"documented renderer-owned stubs"注释**：原文 4 个通道写"returning `{}` keeps the channel registered (so the renderer doesn't fail with 'no handler' on legacy code paths) but produces no observable side-effect"。新注释把这一段改成"honest null/false"语义，并明确 `App.tsx` 的 truthy 风险。`§11.54` 文档部分保留（renderer-owned 概念仍适用），handler 行为改写。
 - **bridge 端 `slides:add-media-bytes` 与 `slides:add-image-bytes` 的 `bytes`/`base64` 字段名不一致**：bridge 发送 `base64`，handler 读 `o.bytes`。这是 pre-existing bug，不在 §11.90 范围（修复需要 1 行 bridge 改动 + 文档一致化，列入后续 follow-up）。
+
+### 11.91 · slides add-image-bytes / add-media-bytes bridge 字段名修复（§11.90 follow-up 闭合）
+
+§11.90 留下了一个 follow-up：`slides:add-image-bytes` 和 `slides:add-media-bytes` 在生产中实际不可用 —— web-bridge.ts 的 `insertImage` / `insertMedia` 发 `base64: bytesToBase64(bytes)`，但 web-server 的两个 handler 读 `o.bytes`。每次 IPC 调用 deref undefined → `reqBytes` 抛 GuidedError → handler 返 `null`，图片和媒体插入在生产中完全静默失败。
+
+确认：本节**不是改 bridge**，bridge 是对的 —— `AddImageBytesOp` / `AddMediaBytesOp`（`apps/slides/src/shared/ipc.ts:910, 935`）的契约就是 `base64: string`，desktop main handler (`slides-main.ts:1187, 3619`) 也读 `op.base64`。**bug 在 web-server handler**。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/slides/elements.ts` | `add-image-bytes` / `add-media-bytes` 读 `o.base64` + 类型加 `base64` + 守门 + add-media-bytes 顺便去掉 `...o` spread 和重写 offset（mirror desktop 的 60% × 16:9 居中）| +50 / -20 |
+| `apps/web-server/tests/slides-add-bytes-e2e.test.ts` | 新增 · 6 测试 | +215 |
+
+#### 🎯 设计要点
+
+1. **bridge 不动**：bridge 发 `base64` 是对的（与 desktop、契约类型一致）。修复点只在 web-server handler。
+2. **守门而非 throw**：handler 现在 `typeof o.base64 !== 'string'` 时返 `badArgs(...)`，renderer `if (r)` guard 不激活，错误可观察。
+3. **addMedia 顺手清理**：原 handler 用 `...o` spread，把 bridge 的 px-shaped 字段（`xPx` / `yPx` / `wPx` / `hPx`）也透传进了 EMU-shaped 的 executor op。这次只 forward executor 实际消费的字段，offset 改用 desktop 的 60% deck width × 16:9 居中（`slides-main.ts:3627`）—— 与 desktop 行为完全一致。
+4. **badArgs 路径独立**：5 个 validation 测试覆盖 missing/empty/wrong-kind，handler 不会让 reqBytes throw，错误以 null 形式回到 renderer 而非 stderr noise。
+
+#### 🧪 测试（6 e2e 全绿）
+
+- `add-image-bytes accepts the bridge shape (base64 + px-coords) and persists` —— 发 bridge 实际形状 → 期望 `{slide, sourceId}` 非 null → save → reopen → 验证 PNG bytes 嵌入 archive
+- `add-media-bytes accepts the bridge shape and persists video bytes` —— mp4 base64 → save → reopen → 验证 mp4 bytes 嵌入 archive
+- `add-image-bytes answers null when base64 is missing`
+- `add-image-bytes answers null when base64 is empty`
+- `add-media-bytes answers null when kind is missing`
+- `add-media-bytes answers null when kind is garbage`
+
+#### 📊 进度
+
+- §11.90 follow-up **闭合**（bridge 字段名 bug 修复）
+- §A.5 backlog 闭合数 76 → **77**
+- web-server 套件 105 → **106 文件**（+1 e2e）；1068 → **1074 测试通过**（+6 net），1 跳过 / 1 失败
+  （1 失败为 pre-existing `translate-pi-agent-e2e` env pollution，本节不引入）
+- 8 个 slides-* 文件 121 → **127 测试通过**（+6 e2e）
+
+#### 🔍 已知差异
+
+- **handler 签名是窄接口**：现在只接受 `base64`，不再静默兼容 `bytes`。这是有意的 —— 任何 caller（renderer、SDK、自动化测试）都应遵守 `AddImageBytesOp` / `AddMediaBytesOp` 契约。如果有外部 caller 偷偷用了 `bytes`，会立刻看到 badArgs（404-ish）而不是静默 null。
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

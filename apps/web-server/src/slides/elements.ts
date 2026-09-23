@@ -572,10 +572,17 @@ export function registerSlidesElementHandlers(): void {
       o.slideIndex,
     )
   })
+  // sdk1 §11.91 — the AddImageBytesOp contract (shared/ipc.ts:910) and the
+  // desktop main handler (slides-main.ts:1187) both read `op.base64`, and
+  // the web bridge (web-bridge.ts:147) sends `base64: bytesToBase64(bytes)`.
+  // Reading `o.bytes` here dereferenced undefined, so `reqBytes` always
+  // threw and the channel answered null — every web image insert silently
+  // failed. Validate the field up front so the error is at least visible.
   registerHandle('slides:add-image-bytes', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & {
       slideIndex?: number
       fitWidthPx?: number
+      base64?: string
       ext?: string
       xPx?: number
       yPx?: number
@@ -585,6 +592,9 @@ export function registerSlidesElementHandlers(): void {
     if (typeof o.slideIndex !== 'number') {
       return badArgs('slides:add-image-bytes requires { slideIndex, ... }')
     }
+    if (typeof o.base64 !== 'string' || !o.base64) {
+      return badArgs('slides:add-image-bytes requires { base64 } (non-empty string)')
+    }
     return commitCreated(
       event,
       'slides:add-image-bytes',
@@ -593,7 +603,7 @@ export function registerSlidesElementHandlers(): void {
         return {
           op: 'addPicture',
           target: { slide: o.slideIndex as number },
-          bytes: o.bytes,
+          bytes: o.base64,
           ext: o.ext,
           offset: {
             x: toEmu(o.xPx ?? 0),
@@ -606,29 +616,50 @@ export function registerSlidesElementHandlers(): void {
       o.slideIndex,
     )
   })
+  // sdk1 §11.91 — same root cause as slides:add-image-bytes above:
+  // AddMediaBytesOp contract (shared/ipc.ts:935) declares base64, the
+  // desktop reads op.base64 (slides-main.ts:3619), the bridge sends
+  // base64 (web-bridge.ts:166), but this handler was reading o.bytes
+  // AND doing `...o` which leaked the bridge's px-shaped fields into the
+  // EMU-shaped executor op. The fix forwards only the fields the executor
+  // consumes and centres at 60% deck width / 16:9 to mirror desktop.
   registerHandle('slides:add-media-bytes', (event: unknown, op: unknown) => {
     const o = (op ?? {}) as Record<string, unknown> & {
       slideIndex?: number
-      fitWidthPx?: number
+      kind?: 'video' | 'audio'
+      base64?: string
+      ext?: string
+      name?: string
     }
     if (typeof o.slideIndex !== 'number') {
       return badArgs('slides:add-media-bytes requires { slideIndex, ... }')
+    }
+    if (typeof o.base64 !== 'string' || !o.base64) {
+      return badArgs('slides:add-media-bytes requires { base64 } (non-empty string)')
+    }
+    if (o.kind !== 'video' && o.kind !== 'audio') {
+      return badArgs('slides:add-media-bytes requires { kind: "video" | "audio" }')
     }
     return commitCreated(
       event,
       'slides:add-media-bytes',
      (session) => {
-        const toEmu = makeToEmu(session.opened, o.fitWidthPx ?? session.fitWidthPx)
+        const deckSize = session.opened.deck.size
+        const cx = Math.round(deckSize.cx * 0.6)
+        const cy = Math.round((cx * 9) / 16)
         return {
           op: 'addMedia',
           target: { slide: o.slideIndex as number },
-          ...o,
+          kind: o.kind,
+          bytes: o.base64,
+          ext: o.ext,
           offset: {
-            x: toEmu((o.xPx as number) ?? 0),
-            y: toEmu((o.yPx as number) ?? 0),
-            cx: toEmu((o.wPx as number) ?? 0),
-            cy: toEmu((o.hPx as number) ?? 0),
+            x: Math.round((deckSize.cx - cx) / 2),
+            y: Math.round((deckSize.cy - cy) / 2),
+            cx,
+            cy,
           },
+          ...(typeof o.name === 'string' && o.name ? { name: o.name } : {}),
         } as unknown as Op
       },
       o.slideIndex,
