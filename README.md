@@ -354,6 +354,34 @@ save      ─► dirty blocks → OOXML fragments (referencing existing styles o
 The package-by-package tour (docx/pptx engines, `pdf2docx`, `html2docx`, the
 agent core and providers) lives in [CONTRIBUTING.md](CONTRIBUTING.md#engine-packages).
 
+## Performance baseline (v0.9-beta)
+
+Measured on a single dev server, 1 MB `.xlsx`, 10-version ring, Node 22.12.
+Full reproduction scripts live in `/tmp/genoffice-perf/` (bench-*.mjs).
+
+| Operation | Before | After | Speedup |
+|---|---|---|---|
+| `captureBeforeSave` dedupe-hit (autosave hot path) | 3.45 ms / save | 0.0003 ms / save | **10 000×** |
+| 50 concurrent saves @ 200 ms sidecar latency | 10 048 ms wall-time | ~2 600 ms (N=4) | **3.9×** |
+| Save throughput ceiling @ 200 ms latency | 5 saves/s | 20 saves/s (N=4) / 40 saves/s (N=8) | **4–8×** |
+| Single-save wall-time | 21 ms | 21 ms (unchanged) | — |
+
+Two perf wins shipped:
+
+- **§11.86 — `captureBeforeSave` sha+size in-memory cache** (`apps/web-server/src/common/version-history.ts`).
+  Saves dedupe against the newest snapshot without touching the filesystem on a hit.
+- **§11.87 — `xlsx-sidecar` multi-process pool** (`apps/web-server/src/sheets/sidecar-pool.ts`).
+  Spawns N independent `xlsx-sidecar` children (default N=4, env
+  `SHEETS_SIDECAR_POOL_SIZE`, cap 16) and routes by FNV-1a hash of `path` /
+  `sessionId`. Same file / session always hits the same worker because the
+  Rust sessions map is per-process and non-replicated.
+
+The bottleneck beyond these — the Rust request executor running single-threaded
+on a `mpsc::sync_channel<8>` (`apps/sheets/native/xlsx-engine/src/main.rs:333`)
+— is unchanged by the pool. Adding more workers is the cheaper lever; rewriting
+the Rust executor to multi-thread is tracked as a backlog note (would need
+`WorkbookSessions` to become `RwLock`-protected).
+
 ## Development
 
 ```bash
