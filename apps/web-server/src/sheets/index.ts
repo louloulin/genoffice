@@ -24,6 +24,17 @@ import { captureBeforeSave } from '../common/version-history'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
 import { WebSheetsSidecar } from './sidecar'
+import { getSidecarPool, type WebSheetsSidecarPool } from './sidecar-pool'
+
+/**
+ * Module-level singleton of the sidecar pool. Each call routes to one
+ * of N independent `xlsx-sidecar` child processes — see sidecar-pool.ts
+ * (sdk1 §11.87 P1-3) for why a single sidecar is a 99.7% save-pipeline
+ * wall-clock bottleneck. The pool's surface mirrors `WebSheetsSidecar`
+ * so existing call sites (`saveWorkbookViaSidecar({client, ...})` etc.)
+ * work without changes.
+ */
+const sheetsSidecar: WebSheetsSidecarPool = getSidecarPool()
 import {
   detectFormat,
   getSession,
@@ -43,7 +54,6 @@ import {
   WorkbookSaveFailedError,
 } from './errors'
 
-const sheetsSidecar = new WebSheetsSidecar()
 
 export function registerSheetsHandlers(): void {
   registerHandle('sheets:new-blank', async (_event: unknown, options: unknown) => {
