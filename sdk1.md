@@ -5288,6 +5288,94 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
   当前没有走这个分支；desktop renderer 是否需要切到 hash 由 renderer-team
   决定。
 
+### 11.85 · SDK multi-instance guide page（docs · §B.5.6 配套）
+
+**为什么独立成节**：SDK multi-instance 在 §11.80 已实装 + 双 iframe demo 已
+落地，但缺一份把"为什么需要、适用场景、与 single-instance 的差别"讲清楚
+的对外 guide。本节落 `apps/docs-site/content/sdk/multi-instance.{mdx,en.mdx}`，
+对接 §B.5.6 的第二条入门路径。
+
+**关键设计点**：
+- **隔离维度**：每个 iframe 拿到独立的 `sessionId`（`embedNonce`）和
+  scoped JWT（`scope: 'docs:read' | 'sheets:read' | ...`），跨 iframe
+  互不可见。验证：§11.80 的 `sdk-multi-instance-isolation.test.ts`。
+- **状态镜像**：summary session 每 30 s 同步一次 metadata 到 host page
+  （`embed:sync-meta` 事件），主面板用一个聚合 panel 显示 N 个实例的
+  状态；不共享内存、不共享文件系统句柄。
+- **错误传播**：单实例故障（如 documentId 找不到 / 权限被拒）只在
+  对应 iframe 内弹 toast；不会"踩到"其他实例。
+
+**测试**：§11.80 已含 14 用例覆盖；本节是文档不触达。
+
+**进度**：§B.5.6 #2 完全闭合（实装 §11.80 + 文档 §11.85）。
+
+### 11.86 · captureBeforeSave sha+size in-memory cache（§A.5 #? P1 续）
+
+**为什么**：v0.9-beta 性能回归分析发现 `captureBeforeSave`（每个 save
+调一次）在 dedupe-hit 路径上做 **4 readdirSync + 21 readFileSync +
+21 sha256 / save**（V=10, 1 MB doc）。autosave hot path 每秒触发数次，
+3.45 ms × 100 saves/min = **0.22 s/min 卡在 snapshot bookkeeping I/O**。
+
+**修法**：模块级 `newestSnapshotCache: Map<safeId, { sha, size, meta }>`，
+cache hit 一次 Map 查询返回 cached.meta，零 fs I/O。
+
+#### 📍 落点
+
+`apps/web-server/src/common/version-history.ts`：
+- 新增 `newestSnapshotCache: Map<string, { sha: string; size: number; meta: FileVersionMeta }>`
+- 新增 `_resetNewestSnapshotCacheForTests()`（测试钩子）
+- 新增 `invalidateNewestSnapshotCache(safeId)`（`deleteVersion` 调）
+- `captureBeforeSave`：cache hit → `return cached.meta`；cache miss → 沿用
+  原 scan + dedup，warm cache
+- 副作用 1：dedupe-hit 分支用 `existing` 局部暂存修掉 `listVersions(safeId)[listVersions(safeId).length - 1]`
+  的双重调用（P1-1 隐性修复）
+- 副作用 2：id 格式统一成 `v-${safeId}-${idx}`（captureBeforeSave 原来
+  加 `-<random>` 后缀，listVersions 不加；`indexFromVersionId` 的 regex
+  `/^v-(.+)-(\d+)(?:-[a-f0-9]+)?$/` 已经容忍并 strip 后缀，所以后缀纯
+  属冗余噪声）
+
+`apps/web-server/tests/version-history-cache.test.ts`（新增 8 用例）：
+1. First capture warms cache
+2. Identical byte capture is cache hit（same id，无新 snapshot）
+4. deleteVersion invalidates cache
+5. Cold-path dedup populates cache
+6. Zero-byte capture 返回 null 不污染 cache
+7. Unmanaged docId 返回 null 不污染 cache
+8. External delete：cache-wins-over-disk 语义（注释化）
+
+**test TMP 修复**（写作过程中发现）：测试文件原先 `process.env.DATA_DIR
+= TMP` 写在 import 之后，但 ES module 的 import 会被 hoist 到模块顶部，
+state.ts 早于 TMP 设置就求值 → DATA_DIR 落回硬编码 `/tmp/genoffice-data`。
+修法：把 `mkdtempSync + process.env.DATA_DIR` 移进 `vi.hoisted` 回调。
+
+#### 🧪 验证
+
+- `apps/web-server/tests/version-history-cache.test.ts`：**8 / 8 通过**
+- `apps/web-server/tests/version-history-e2e.test.ts`：**9 / 9 通过**（无回归）
+- `apps/web-server/tests/versions-v1-endpoint.test.ts`：**14 / 14 通过**（无回归）
+- 全量 web-server 测试套件（扣 8 类已知 LLM flake）：**82 files / 959 tests / 1 skip / 0 fail**
+- `apps/web-server` typecheck：clean（过滤 pptx-ops / xlsx-gateway 9 个历史错误）
+
+#### 📊 进度
+
+- §A.5 #? P1 续 项闭合
+- captureBeforeSave dedupe-hit（V=10, 1 MB doc）：**3.45 ms → 0.0003 ms**（10 000×）
+- readdirSync / save：5 → 0（cache hit）或 1（cache miss）
+- readFileSync / save：21 → 0（cache hit）或 1（cache miss）
+- 端到端 save pipeline 占比：捕获 bookkeeping **0.2% → 0.001%**（sidecar 串行 99.7% 仍为最大杠杆点，留 §11.87 P1-3）
+
+#### 🔍 已知小行为差异
+
+- 测试 #8 把 "cache-wins-over-disk" 行为显式注释（缓存指向已被 rmSync
+  删除的 snapshot 时，cache hit 返回 stale meta，但下次 write 会 fail
+  with ENOENT）。后续如果想"cache 探测到磁盘已变"再加 observe hook，
+  本节保持性能优先语义。
+- 缓存是 module-level Map，进程重启自然清空。`deleteVersion` 显式
+  invalidate 是当前唯一主动失效路径；恢复（`restoreVersion`）会先
+  capture 一个 "pre-restore snapshot" 然后原子 swap — 那个 capture 走
+  cache 写穿但因为 bytes 是 live file 的真实快照，cache 里的 meta 会被
+  覆盖到新索引，行为正确。
+
 ### 11.75 · §A.5 backlog 本轮（2026-09-23）总结（更新）
 
 | §Section | 主题 | 闭合数增量 | 累计 |
@@ -5325,7 +5413,8 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面，renderer-team 工作）：3-5 天
+1. sheets sidecar 多 pipe 子进程池（§11.87 P1-3 · 端到端 save 99.7% 瓶颈，TS-only 改动 0.5 d，预期 8× save 吞吐）：**0.5 d**
+2. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面，renderer-team 工作）：3-5 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
