@@ -63,5 +63,13 @@ Full event / command surface: [SDK Reference](/api/sdk-typescript).
 ## Examples
 
 - [`examples/embed-basic/`](https://github.com/genspark-ai/genoffice/tree/main/examples/embed-basic/) — vanilla HTML + UMD.
+- [`examples/sdk-multi-instance/`](https://github.com/genspark-ai/genoffice/tree/main/examples/sdk-multi-instance/) — dual-iframe demo (mount two editors side-by-side). See [SDK Multi-instance](/guide/sdk-multi-instance) for the full guide.
 - `examples/embed-react/` — React component (planned).
 - `examples/embed-vue/` — Vue 3 component (planned).
+
+## Mounting multiple editors on one page
+
+See [SDK Multi-instance](/guide/sdk-multi-instance) for the per-instance
+id contract, the iframe `name` dispatch guarantee, and the
+`getEditor()` / `listEditors()` lookup pattern. The dual-iframe demo at
+`examples/sdk-multi-instance/` is a runnable end-to-end check.

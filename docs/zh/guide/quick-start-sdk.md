@@ -62,5 +62,6 @@ editor.destroy()
 ## 示例
 
 - [`examples/embed-basic/`](https://github.com/genspark-ai/genoffice/tree/main/examples/embed-basic/) — 纯 HTML + UMD。
+- [`examples/sdk-multi-instance/`](https://github.com/genspark-ai/genoffice/tree/main/examples/sdk-multi-instance/) — 双 iframe demo（并排挂载两个编辑器）。详见 [SDK 多实例](/zh/guide/sdk-multi-instance)。
 - `examples/embed-react/` — React 组件。
 - `examples/embed-vue/` — Vue 3 组件。

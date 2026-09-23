@@ -5325,8 +5325,7 @@ S3 promote / audit scope gate / CRDT collab / mobile H5 —— 都是引擎级
 
 **后续可立即接的 bounded P1（按工时排序）**：
 
-1. SDK multi-instance demo 配套：在 docs 站加一段 multi-instance 截图 + GIF（与 §11.80 demo 配套）：0.5 天
-2. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面）：3-5 天
+1. 文件版本历史 / restore UI（与 §B.5.1 #6 对齐的 P1 表面，renderer-team 工作）：3-5 天
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

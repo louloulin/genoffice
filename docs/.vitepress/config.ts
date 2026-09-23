@@ -51,6 +51,7 @@ export default defineConfig({
           { text: 'Quick Start — Web', link: '/guide/quick-start-web' },
           { text: 'Quick Start — Embed', link: '/guide/quick-start-embed' },
           { text: 'Quick Start — SDK', link: '/guide/quick-start-sdk' },
+          { text: 'SDK Multi-instance', link: '/guide/sdk-multi-instance' },
           { text: 'Getting Started', link: '/guide/getting-started' },
         ] },
         { text: 'Deployment', items: [
@@ -132,6 +133,7 @@ export default defineConfig({
           { text: '快速上手 — Web', link: '/zh/guide/quick-start-web' },
           { text: '快速上手 — 嵌入', link: '/zh/guide/quick-start-embed' },
           { text: '快速上手 — SDK', link: '/zh/guide/quick-start-sdk' },
+          { text: 'SDK 多实例', link: '/zh/guide/sdk-multi-instance' },
           { text: '快速开始', link: '/zh/guide/getting-started' },
         ] },
         { text: '部署', items: [
