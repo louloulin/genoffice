@@ -67,6 +67,20 @@ async function invoke(channel, args = []) {
 /** Binary values travel as the codec's tagged envelope, not raw JSON. */
 const asBytes = (u8) => ({ __ipcBytes: 'ab', b64: Buffer.from(u8).toString('base64') })
 
+/** Resolve a `storage://<backend>/<key>` URI to the local-FS path the
+ *  default `local` backend writes to. The smoke test must be storage-aware
+ *  because the renderer-facing identifier is the URI, not the canonical
+ *  FILES_DIR path — the bytes live at `<FILES_DIR>/<key>`. */
+function resolveStorageUri(uri) {
+  if (typeof uri !== 'string') return uri
+  if (!uri.startsWith('storage://')) return uri
+  const rest = uri.slice('storage://'.length)
+  const slash = rest.indexOf('/')
+  const key = slash === -1 ? rest : rest.slice(slash + 1)
+  return join(FILES_DIR, key)
+}
+
+
 /**
  * A recents file as a JSON array, or `null` when it exists but does not parse.
  * The distinction matters: an unparseable recents file is a defect the caller
@@ -126,8 +140,15 @@ await suite('documents: save really lands on disk', async () => {
 
   // docs:save-new answers the raw { id, path, name } shape; the web bridge's
   // saveDocxAs/saveDocxNew overrides normalize it to { ok, path } for the
-  // renderer, so assert on the path the server allocated.
-  const docx = await invoke('docs:save-new', [{ suggestedName: `smoke-${stamp}.docx` }])
+  // renderer, so assert on the path the server allocated. The handler is
+  // positional `(defaultName, data)`, so send the docx bytes as the second
+  // arg — an object shape gets read as a literal defaultName and the data
+  // slot stays undefined.
+  const docxBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, ...new Array(60).fill(0)])
+  const docx = await invoke('docs:save-new', [
+    `smoke-${stamp}.docx`,
+    asBytes(docxBytes),
+  ])
   const docxPath = docx.body?.result?.path
   check(typeof docxPath === 'string' && docxPath.endsWith('.docx'), `allocated → ${docxPath}`)
   check(String(docxPath).startsWith(`${FILES_DIR}/`), 'allocated inside FILES_DIR')
@@ -138,18 +159,35 @@ await suite('unsupported writes refuse honestly instead of faking success', asyn
   // xlsx sidecar has no save command and the server holds no opened deck model.
   // A bare { ok: true } here is the bug — the renderer then reports "saved"
   // over a file that never changed.
-  for (const [channel, args] of [
-    ['slides:save', []],
-    ['slides:save-as', ['deck.pptx']],
-    ['workbook:save', []],
+  //
+  // Two different shapes are in play (deliberate):
+  //   - slides:save / slides:save-as → return { ok: false, error: 'WEB_UNSUPPORTED…' }
+  //     because the renderer-side `slidesApi.save()` always resolves a path
+  //     from the SSE session, so the no-session case is a build limitation.
+  //   - workbook:save → throws `WorkbookInvalidArgumentError`, the IPC layer
+  //     surfaces it as { error: { code: 'WORKBOOK_INVALID_ARGUMENT' } } (HTTP
+  //     400). Tests in tests/workbook-error-codes.test.ts rely on this shape
+  //     to distinguish a malformed save from a build capability gap.
+  for (const [channel, args, mode] of [
+    ['slides:save', [], 'result'],
+    ['slides:save-as', ['deck.pptx'], 'result'],
+    ['workbook:save', [], 'envelope'],
   ]) {
     const res = await invoke(channel, args)
-    const result = res.body?.result
-    check(result?.ok === false, `${channel} answers ok:false (got ${JSON.stringify(result?.ok)})`)
-    check(
-      String(result?.error || '').includes('WEB_UNSUPPORTED'),
-      `${channel} names WEB_UNSUPPORTED → ${result?.error}`,
-    )
+    if (mode === 'envelope') {
+      check(res.status === 400, `${channel} answers HTTP 400 (got ${res.status})`)
+      check(
+        res.body?.error?.code === 'WORKBOOK_INVALID_ARGUMENT',
+        `${channel} names WORKBOOK_INVALID_ARGUMENT → ${JSON.stringify(res.body?.error)}`,
+      )
+    } else {
+      const result = res.body?.result
+      check(result?.ok === false, `${channel} answers ok:false (got ${JSON.stringify(result?.ok)})`)
+      check(
+        String(result?.error || '').includes('WEB_UNSUPPORTED'),
+        `${channel} names WEB_UNSUPPORTED → ${result?.error}`,
+      )
+    }
   }
 })
 
@@ -279,11 +317,17 @@ await suite('uploads: picked bytes land in FILES_DIR and appear in recents', asy
 
   const saved = await invoke('web:save-file', [{ name, bytes: asBytes(bytes) }])
   const savedPath = saved.body?.result?.path
-  check(typeof savedPath === 'string' && savedPath.startsWith(`${FILES_DIR}/`), `→ ${savedPath}`)
+  check(typeof savedPath === 'string' && savedPath.startsWith('storage://'), `→ ${savedPath}`)
   check(!String(savedPath).startsWith(WEB_TEMP_ROOT), 'not in WEB_TEMP_ROOT (the old behaviour)')
   if (typeof savedPath !== 'string') return
-  check(existsSync(savedPath), 'exists on disk')
-  const onDisk = readFileSync(savedPath)
+  /* web:save-file returns a storage:// URI by design (the canonical
+   * renderer-facing identifier). The local backend maps the URI to a real
+   * path under FILES_DIR, so resolve before checking disk presence — the
+   * recents row carries the URI too, which is why the home grid needs the
+   * URI to round-trip a click back to bytes via the backend. */
+  const resolvedPath = resolveStorageUri(savedPath)
+  check(existsSync(resolvedPath), `exists on disk → ${resolvedPath}`)
+  const onDisk = readFileSync(resolvedPath)
   check(onDisk.length === bytes.length, `byte count matches (${onDisk.length})`)
   check(Buffer.compare(onDisk, Buffer.from(bytes)) === 0, 'content is byte-identical')
   check(saved.body?.result?.name === name, 'the original file name comes back')
@@ -377,7 +421,8 @@ await suite('honest failure: a corrupt workbook/deck is refused and not remember
 
     const { status, body } = await invoke(channel, [fixture])
     check(status === 422, `${channel}: a corrupt file is a client error (${status})`)
-    check(body?.error?.code === 'CORRUPT', `${channel}: reports the CORRUPT code`)
+    const code = body?.error?.code
+    check(code === 'CORRUPT' || code === 'WORKBOOK_CORRUPT', `${channel}: reports the CORRUPT code (got ${code})`)
 
     const recents = readRecents(join(DATA_DIR, recentsFile))
     check(recents !== null, `${channel}: ${recentsFile} is readable JSON`)
