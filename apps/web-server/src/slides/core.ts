@@ -160,7 +160,7 @@ export function registerSlidesCoreHandlers(): void {
     void recordRecentDoc(path, { id, name, modified: false })
 
     return {
-      path: '',
+      path,
       slides: [
         {
           widthPx: 1280,
