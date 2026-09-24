@@ -429,7 +429,7 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:new-markdown', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'md')
-    const path = join(DATA_DIR, `${id}.md`)
+    const path = join(FILES_DIR, `${id}.md`)
     // Markdown is plain text, so an actual empty file on disk is safe to
     // open (parseDocText returns an empty envelope). Without this write,
     // the markdown app boots, calls markdown:read-file, hits a 404, and
