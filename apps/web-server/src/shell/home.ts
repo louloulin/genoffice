@@ -6,6 +6,56 @@
  * declared in `common/state.ts` (`DOCS_RECENT`, `DOCS_STARRED`).
  */
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+
+/**
+ * Web-only preferences store. The Electron main process persists these in
+ * `app-settings.json`; the web build uses its own atomic JSON file at
+ * `<DATA_DIR>/preferences.json`. Atomic writes (write-temp + rename) keep
+ * the file crash-safe; the cache (`prefCache`) avoids re-reading the JSON
+ * on every channel call. Settings read at startup use the cache so the
+ * shell renderer's `Promise.all([getLanguage, onboardingSeen, getTheme])`
+ * sees the persisted values without a disk hit on the second call.
+ */
+type Preferences = {
+  theme?: 'light' | 'dark' | 'system'
+  cloudOpenMode?: 'tab' | 'window' | 'external'
+  language?: string
+}
+
+const PREFERENCES_FILE = join(DATA_DIR, 'preferences.json')
+let prefCache: Preferences | null = null
+
+function readPreferences(): Preferences {
+  if (prefCache) return prefCache
+  try {
+    if (existsSync(PREFERENCES_FILE)) {
+      const parsed = JSON.parse(readFileSync(PREFERENCES_FILE, 'utf8'))
+      prefCache = (parsed && typeof parsed === 'object') ? parsed as Preferences : {}
+    } else {
+      prefCache = {}
+    }
+  } catch {
+    /* A corrupt preferences file is a defect but not fatal — fall back to
+     * defaults so the home page still renders. The next write will
+     * overwrite the broken file with a valid one. */
+    prefCache = {}
+  }
+  return prefCache!
+}
+
+function writePreferences(prefs: Preferences): void {
+  prefCache = prefs
+  try {
+    const tmp = `${PREFERENCES_FILE}.tmp-${process.pid}-${Date.now()}`
+    writeFileSync(tmp, JSON.stringify(prefs, null, 2), 'utf8')
+    renameSync(tmp, PREFERENCES_FILE)
+  } catch {
+    /* Preference persistence is best-effort: a failing disk must not block
+     * the renderer from updating its in-memory copy or applying the change
+     * for the current session. */
+  }
+}
+
 /** Map a DocInfo record to the RecentEntry shape the home renderer expects,
  *  stat-ing the file for size/mtime. Files that fail to stat are flagged
  *  `missing` instead of being dropped (mirrors the desktop behaviour). */
@@ -176,14 +226,53 @@ export function registerHomeHandlers(): void {
    * gesture stack and after the popup grant window has already closed. */
   registerHandle('home:get-data-paths', () => ({ dataDir: DATA_DIR, filesDir: FILES_DIR }))
 
-  registerHandle('home:get-theme', () => 'light')
-  registerHandle('home:set-theme', (_event: unknown, theme: unknown) => ({ ok: true, theme }), { scope: 'soft:preferences:write' })
+  registerHandle('home:get-theme', () => {
+    const prefs = readPreferences()
+    return prefs.theme || 'system'
+  })
+  registerHandle('home:set-theme', (_event: unknown, theme: unknown) => {
+    /* Whitelist: the renderer (and `applyTheme` in SettingsModal) only
+     * emit 'light' | 'dark' | 'system'; anything else falls back to the
+     * current value rather than persisting garbage. */
+    const allowed = ['light', 'dark', 'system'] as const
+    type Allowed = typeof allowed[number]
+    const next: Allowed = (allowed as readonly string[]).includes(String(theme))
+      ? (theme as Allowed)
+      : readPreferences().theme || 'system'
+    const prefs = readPreferences()
+    prefs.theme = next
+    writePreferences(prefs)
+    return { ok: true, theme: next }
+  }, { scope: 'soft:preferences:write' })
 
   registerHandle('home:get-language', () => 'zh-CN')
   registerHandle('home:set-language', (_event: unknown, lang: unknown) => ({
     ok: true,
     language: lang,
   }), { scope: 'soft:preferences:write' })
+
+  /* Cloud-open-mode: how the renderer should open a file picked from the
+   * cloud (e.g. download, recents cloud row). The renderer reads this from
+   * Settings → Integrations on mount and broadcasts changes via
+   * home:set-cloud-open-mode + 'app:cloud-open-mode-changed'. The Electron
+   * main process persists the choice in app-settings.json; the web build
+   * keeps it in memory + on-disk JSON so a restart keeps the user's pick.
+   * Without these two handlers, the Settings dialog throws
+   * `IpcBridgeError: No handler for 'home:get-cloud-open-mode'` every time
+   * it mounts, which is the console error the renderer logs on every
+   * open. */
+  registerHandle('home:get-cloud-open-mode', () => ({ mode: readPreferences().cloudOpenMode || 'tab' }))
+  registerHandle('home:set-cloud-open-mode', (_event: unknown, mode: unknown) => {
+    const allowed = ['tab', 'window', 'external'] as const
+    type Allowed = typeof allowed[number]
+    const next: Allowed = (allowed as readonly string[]).includes(String(mode))
+      ? (mode as Allowed)
+      : 'tab'
+    const prefs = readPreferences()
+    prefs.cloudOpenMode = next
+    writePreferences(prefs)
+    return { ok: true, mode: next }
+  }, { scope: 'soft:preferences:write' })
 
   registerHandle('home:recents', async (_event: unknown, args: unknown) => {
     const {
