@@ -357,10 +357,15 @@ export function registerSlidesCoreHandlers(): void {
         resolvedPath = getCurrentSlidesPath(sessionId)
       }
       if (!resolvedPath) {
+        /* No path AND no open-path session: the web build cannot serialise
+         * a deck from nothing. Returning WEB_UNSUPPORTED (instead of the
+         * generic "expects path" message) lets the renderer branch on a
+         * single string and read the save as "this build cannot save",
+         * which matches the user-facing copy on the save button. */
         return {
           ok: false,
           canceled: true,
-          error: 'slides:save expects { path: string } or an open-path session',
+          error: 'WEB_UNSUPPORTED: slides:save needs an open-path session or explicit bytes — web build cannot serialise a deck from nothing',
         }
       }
       // Use a string-typed local — the IPC param `path` is typed `unknown`
@@ -493,7 +498,7 @@ export function registerSlidesCoreHandlers(): void {
           return {
             ok: false,
             canceled: true,
-            error: 'slides:save-as expects { sourcePath: string } or an open-path session',
+            error: 'WEB_UNSUPPORTED: slides:save-as needs an open-path session or explicit bytes — web build cannot serialise a deck from nothing',
           }
         }
         const sourceSession = getSlidesSession(sourcePath)
