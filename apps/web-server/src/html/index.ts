@@ -72,12 +72,68 @@ const ATTACHMENT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 // preview buffer store: id -> last pushed HTML. Set by html:preview-update,
 // read by the HTTP GET route in apps/web-server/src/index.ts.
-const PREVIEW_BUFFERS: Map<string, string> = ((
-  globalThis as { __HTML_PREVIEW__?: Map<string, string> }
-).__HTML_PREVIEW__ ??= new Map<string, string>())
+// Bounded to MAX_PREVIEW_BUFFERS entries; the least-recently used is evicted
+// when the cap is exceeded. Entries also expire after PREVIEW_TTL_MS so a
+// tab that sends one update and never closes does not leak indefinitely.
+const MAX_PREVIEW_BUFFERS = 100
+const PREVIEW_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
+interface BufferEntry { text: string; lastUsed: number }
+const _previewBuffers = new Map<string, BufferEntry>()
+const _previewTouch = new Map<string, number>() // for TTL sweep
+
+function evictLru(): void {
+  let oldest: string | null = null
+  let oldestTime = Infinity
+  for (const [id, entry] of _previewBuffers) {
+    if (entry.lastUsed < oldestTime) {
+      oldestTime = entry.lastUsed
+      oldest = id
+    }
+  }
+  if (oldest) {
+    _previewBuffers.delete(oldest)
+    _previewTouch.delete(oldest)
+  }
+}
+
+function setPreview(id: string, text: string): void {
+  if (_previewBuffers.size >= MAX_PREVIEW_BUFFERS && !_previewBuffers.has(id)) {
+    evictLru()
+  }
+  const now = Date.now()
+  _previewBuffers.set(id, { text, lastUsed: now })
+  _previewTouch.set(id, now)
+}
 
 export function getHtmlPreviewBuffer(id: string): string | null {
-  return PREVIEW_BUFFERS.get(id) ?? null
+  const entry = _previewBuffers.get(id)
+  if (!entry) return null
+  // Refresh LRU order on access.
+  entry.lastUsed = Date.now()
+  return entry.text
+}
+
+/** Evict all preview entries older than PREVIEW_TTL_MS.
+ *  Called from the SSE heartbeat interval so a single timer handles
+ *  both PENDING_FRAMES and PREVIEW_BUFFERS cleanup. */
+export function sweepPreviewBuffers(): number {
+  const cutoff = Date.now() - PREVIEW_TTL_MS
+  let evicted = 0
+  for (const [id, touched] of _previewTouch) {
+    if (touched < cutoff) {
+      _previewBuffers.delete(id)
+      _previewTouch.delete(id)
+      evicted++
+    }
+  }
+  return evicted
+}
+
+/** Remove a specific preview buffer — called when a tab is closed. */
+export function deleteHtmlPreviewBuffer(id: string): void {
+  _previewBuffers.delete(id)
+  _previewTouch.delete(id)
 }
 
 function safeAssetName(name: string): string {
@@ -289,7 +345,7 @@ export function registerHtmlHandlers(): void {
   // preview buffer store (web-bridge writes via updatePreview)
   registerHandle('html:preview-update', (_event: unknown, text: unknown, previewId: unknown) => {
     if (typeof text !== 'string' || typeof previewId !== 'string') return { ok: false }
-    PREVIEW_BUFFERS.set(previewId, text)
+    setPreview(previewId, text)
     return { ok: true }
   })
   registerHandle('html:preview-info', (_event: unknown, previewId: unknown) => {

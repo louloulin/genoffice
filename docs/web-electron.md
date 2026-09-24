@@ -16,7 +16,7 @@ renderer pushes use an isolated server-sent events stream.
   `ArrayBuffer` and typed-array payloads across JSON.
 - Each HTTP caller owns a session. `event.sender.send` frames route only to
   that session's SSE stream. Pending frames are buffered for reconnection and
-  expire after 60 seconds.
+  expire after 60 seconds (TTL sweeper runs on each heartbeat interval).
 - Development pages are served by Vite and proxy `/api` to the bridge.
 
 ## Known web-server limitations
@@ -25,8 +25,8 @@ renderer pushes use an isolated server-sent events stream.
 |--------|-------|--------|
 | `home:delete-files` refused `storage://` URIs (renderer hands back the URI from `web:save-file`, but the channel only accepted FILES_DIR paths — every fresh upload was undeletable from the home grid) | `apps/web-server/src/shell/home.ts:377` | fixed in this revision |
 | `html:read-file` returned 500 for traversal paths because `LocalStorageBackend.pathFor` raises an `Error` for keys with `..` segments instead of the channel throwing `InvalidArgumentError` | `apps/web-server/src/common/storage-read.ts:46` | fixed in this revision |
-| `PENDING_FRAMES` Map has no TTL sweeper — documents claim "expire after 60 seconds" but the Map only deletes on reconnect, so an orphan session id accumulates frames forever | `apps/web-server/src/index.ts:262` | open — see code comment |
-| `PREVIEW_BUFFERS` Map never deletes — every unique previewId accumulates forever (verified by E3: 500 × 50KB = 23.8MB reachable indefinitely) | `apps/web-server/src/html/index.ts:75-81` | open — needs `html:close` hook or bounded LRU |
+| `PENDING_FRAMES` Map had no TTL sweeper — docs claimed "expire after 60 seconds" but the Map only deleted on reconnect, so an orphan session id accumulated frames forever | `apps/web-server/src/index.ts:262` | fixed — sweeper added to heartbeat interval |
+| `PREVIEW_BUFFERS` Map had no TTL sweeper — every unique previewId accumulated forever (verified by E3: 500 × 50KB = 23.8MB reachable indefinitely) | `apps/web-server/src/html/index.ts:75-81` | fixed — bounded to 100 entries (LRU) + 5min TTL sweeper |
 | `slides:save` / `slides:save-as` return `WEB_UNSUPPORTED` under the web build (renderer can't serialise a deck from nothing — the build has no PowerPoint writer) | `apps/slides/src/...` | known — desktop-only feature |
 | `home:delete-files` does not move the `<file>.meta.json` sidecar along with the file (cosmetic; orphan sidecars accumulate in `files/`) | `packages/file-management/src/trash.ts:174` | open — separate from the storage:// fix |
 - Production web mode is served by the bridge from each app's `out/renderer`.

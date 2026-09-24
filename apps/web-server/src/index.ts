@@ -66,7 +66,7 @@ import { registerSheetsHandlers } from './sheets/index'
 import { registerSlidesHandlers } from './slides/index'
 import { registerPdfHandlers } from './pdf/index'
 import { registerMarkdownHandlers } from './markdown/index'
-import { getHtmlPreviewBuffer, registerHtmlHandlers } from './html/index'
+import { getHtmlPreviewBuffer, registerHtmlHandlers, sweepPreviewBuffers } from './html/index'
 import { registerShellHandlers } from './shell/index'
 import { registerCollabHandlers } from './collab/index'
 import { registerEnterpriseHandlers } from './enterprise/index'
@@ -134,6 +134,29 @@ try {
   }
 } catch (error) {
   console.warn('[genoffice] temp-root sweep failed:', error)
+}
+
+// PENDING_FRAMES TTL sweeper. Frames are documented as expiring after 60 s;
+// the Map previously only deleted on reconnect so orphan session ids held
+// frames indefinitely. An entry is eligible for eviction when its age exceeds
+// TTL_FRAMES_MS. Eviction runs on the heartbeat interval so a single timer
+// handles both concerns without extra overhead.
+const PENDING_FRAMES_TTL_MS = 60_000
+const PENDING_FRAMES_TOUCH = new Map<string, number>()
+function touchPendingSession(session: string): void {
+  PENDING_FRAMES_TOUCH.set(session, Date.now())
+}
+function sweepPendingFrames(): void {
+  const cutoff = Date.now() - PENDING_FRAMES_TTL_MS
+  let evicted = 0
+  for (const [session, touched] of PENDING_FRAMES_TOUCH) {
+    if (touched < cutoff) {
+      PENDING_FRAMES.delete(session)
+      PENDING_FRAMES_TOUCH.delete(session)
+      evicted++
+    }
+  }
+  if (evicted > 0) console.log(`[genoffice] evicted ${evicted} stale SSE pending-frame entries`)
 }
 
 initRecentState()
@@ -283,6 +306,7 @@ function pushSseEvent(session: string, channel: string, args: unknown[]): void {
     pending.push(frame)
     if (pending.length > 100) pending.shift()
     PENDING_FRAMES.set(session, pending)
+    touchPendingSession(session)
   }
 }
 
@@ -757,16 +781,21 @@ const server = createServer(async (request, response) => {
     if (pending) {
       for (const frame of pending) response.write(frame)
       PENDING_FRAMES.delete(session)
+      PENDING_FRAMES_TOUCH.delete(session)
     }
 
     if (!sessionConnections.has(session)) {
       sessionConnections.set(session, new Set())
     }
     sessionConnections.get(session)!.add(response)
+    touchPendingSession(session)
 
     const heartbeat = setInterval(() => {
       try {
         response.write(': heartbeat\n\n')
+        sweepPendingFrames()
+        const evicted = sweepPreviewBuffers()
+        if (evicted > 0) console.log(`[genoffice] evicted ${evicted} stale preview buffers`)
       } catch {
         clearInterval(heartbeat)
       }
