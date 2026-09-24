@@ -91,7 +91,7 @@ export function ipcErrorStatus(code: string | undefined): number {
       return 422
     case 'WORKBOOK_OPEN_FAILED':
     case 'WORKBOOK_SAVE_FAILED':
-      return 500
+      return 422
     case 'WORKBOOK_INVALID_ARGUMENT':
       return 400
     case 'PAYLOAD_TOO_LARGE':

@@ -29,7 +29,13 @@ renderer pushes use an isolated server-sent events stream.
 | `PREVIEW_BUFFERS` Map had no TTL sweeper — every unique previewId accumulated forever (verified by E3: 500 × 50KB = 23.8MB reachable indefinitely) | `apps/web-server/src/html/index.ts:75-81` | fixed — bounded to 100 entries (LRU) + 5min TTL sweeper |
 | `slides:save` / `slides:save-as` return `WEB_UNSUPPORTED` under the web build (renderer can't serialise a deck from nothing — the build has no PowerPoint writer) | `apps/slides/src/...` | known — desktop-only feature |
 | `home:delete-files` did not move the `<file>.meta.json` sidecar along with the file (cosmetic; orphan sidecars accumulated in `files/`) | `packages/file-management/src/trash.ts:174` | fixed — sidecar now moved to `.trash/` alongside the payload |
-- Production web mode is served by the bridge from each app's `out/renderer`.
+| `home:delete-files` did not remove the deleted path from `DOCS_STARRED`, leaving a ghost star on the starred tab | `apps/web-server/src/shell/home.ts:431` | fixed — starred key checked against FILES_DIR path when caller passed a `storage://` URI |
+| `home:starred` filtered out files not yet in `DOCS_RECENT`, silently dropping newly-uploaded files from the starred list | `apps/web-server/src/shell/home.ts:332` | fixed — fallback to a synthetic entry when DOCS_RECENT has no match |
+| `AI_STREAM_SESSIONS` entry not removed when `/api/ai/stream` threw before the `request.on('close')` event fired | `apps/web-server/src/index.ts:936` | fixed — `AI_STREAM_SESSIONS.delete` moved into `finally` block |
+| `WORKBOOK_OPEN_FAILED` / `WORKBOOK_SAVE_FAILED` returned HTTP 500 instead of 422 (client data error) | `apps/web-server/src/ai/errors.ts:92` | fixed — both now return 422 |
+| `DOCS_RECENT` and `DOCS_STARRED` Maps grew indefinitely with no eviction | `apps/web-server/src/common/document-stores.ts:117`, `apps/web-server/src/shell/home.ts:357` | fixed — DOCS_RECENT capped at 500 (LRU), DOCS_STARRED capped at 200 |
+| `TRANSLATE_STREAM_SESSIONS` had no size cap — a malicious client could grow it unbounded | `apps/web-server/src/ai/translate-http.ts:107` | fixed — cap of 64 with oldest-session eviction |
+| Production web mode is served by the bridge from each app's `out/renderer`.
 
 ## Start the web version
 

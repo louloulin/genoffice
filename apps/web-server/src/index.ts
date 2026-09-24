@@ -938,6 +938,7 @@ const server = createServer(async (request, response) => {
       } catch (error) {
         // Already closed by the peer or by a prior error; nothing to do.
       }
+      AI_STREAM_SESSIONS.delete(streamId)
     }
     return
   }

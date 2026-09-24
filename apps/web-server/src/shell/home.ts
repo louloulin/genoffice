@@ -327,11 +327,16 @@ export function registerHomeHandlers(): void {
       limit = 50,
       ext,
     } = (args || {}) as { offset?: number; limit?: number; ext?: string }
-    // DOCS_STARRED is now a Map<path, starredAt>; spread the keys, then
-    // resolve against DOCS_RECENT to attach the user-visible fields.
-    const all = Array.from(DOCS_STARRED.keys())
-      .map((p) => DOCS_RECENT.get(p))
-      .filter((d): d is NonNullable<typeof d> => Boolean(d))
+    // DOCS_STARRED is a Map<path, starredAt>. Map each path to its DOCS_RECENT
+    // entry if present, otherwise build a minimal recent-like object so a
+    // newly-uploaded file that has never been opened still appears in the
+    // starred tab rather than being silently dropped.
+    const all = Array.from(DOCS_STARRED.keys()).map((p) => {
+      const d = DOCS_RECENT.get(p)
+      if (d) return d
+      const name = p.split(/[\\/]/).pop() ?? p
+      return { id: name, path: p, name, openedAt: DOCS_STARRED.get(p) }
+    })
     const filtered = ext ? all.filter((d) => d.path.toLowerCase().endsWith('.' + ext)) : all
     const sliced = filtered.slice(offset, offset + limit)
     const entries = await Promise.all(sliced.map((d) => toRecentEntry(d)))
@@ -349,6 +354,14 @@ export function registerHomeHandlers(): void {
       DOCS_STARRED.delete(path)
       starred = false
     } else {
+      // Cap starred list at 200 entries — evict the oldest when full.
+      if (DOCS_STARRED.size >= 200) {
+        let oldest: string | null = null
+        for (const [p, t] of DOCS_STARRED) {
+          if (!oldest || t < (DOCS_STARRED.get(oldest) ?? Infinity)) oldest = p
+        }
+        if (oldest) DOCS_STARRED.delete(oldest)
+      }
       DOCS_STARRED.set(path, Date.now())
       starred = true
     }
@@ -417,6 +430,15 @@ export function registerHomeHandlers(): void {
          * present. */
         forgetRecentDoc(path)
         await unifiedRecents.remove(path)
+        /* Also remove from the starred list so a deleted file does not linger
+         * as a ghost star on the starred tab. The key in DOCS_STARRED is the
+         * FILES_DIR path (what toggle-star is called with); when the caller
+         * passes a storage:// URI we need to check targetPath instead. */
+        const starredKey = isStorageUri ? targetPath : path
+        if (starredKey && DOCS_STARRED.has(starredKey)) {
+          DOCS_STARRED.delete(starredKey)
+          saveStarredDocs(DOCS_STARRED)
+        }
       }
     }
     // `deleted` is the count that actually happened, not the count requested.

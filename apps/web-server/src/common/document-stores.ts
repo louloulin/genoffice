@@ -114,6 +114,20 @@ export function flushFileManagementState(): void {
  * restart. Every save path goes through these two helpers so the mirror can
  * never drift again.
  */
+const MAX_RECENT_DOCS = 500
+
+function evictOldestRecentDoc(): void {
+  let oldestPath: string | null = null
+  let oldestTime = Infinity
+  for (const [p, d] of DOCS_RECENT) {
+    if ((d.openedAt ?? 0) < oldestTime) {
+      oldestTime = d.openedAt ?? 0
+      oldestPath = p
+    }
+  }
+  if (oldestPath) DOCS_RECENT.delete(oldestPath)
+}
+
 export function mirrorRecentDoc(
   path: string,
   fields: { name?: string; id?: string; modified?: boolean } = {},
@@ -126,6 +140,7 @@ export function mirrorRecentDoc(
     openedAt: Date.now(),
     modified: fields.modified ?? existing?.modified ?? false,
   })
+  if (!existing && DOCS_RECENT.size > MAX_RECENT_DOCS) evictOldestRecentDoc()
   saveRecentDocs([...DOCS_RECENT.values()])
 }
 

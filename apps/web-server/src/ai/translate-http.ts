@@ -105,6 +105,18 @@ interface TranslateBatchHttpRequest {
 }
 
 const TRANSLATE_STREAM_SESSIONS = new Map<string, AbortController>()
+const MAX_TRANSLATE_STREAMS = 64
+
+function evictOldestTranslateSession(): void {
+  let oldest: string | null = null
+  for (const [id] of TRANSLATE_STREAM_SESSIONS) {
+    if (!oldest) oldest = id
+  }
+  if (oldest) {
+    TRANSLATE_STREAM_SESSIONS.get(oldest)?.abort()
+    TRANSLATE_STREAM_SESSIONS.delete(oldest)
+  }
+}
 
 function pickSettings(req: TranslateBatchHttpRequest): AiSettings {
   return req.settings || defaultSettings
@@ -354,6 +366,7 @@ export async function handleTranslateStreamHttp(
   })
 
   const abort = new AbortController()
+  if (TRANSLATE_STREAM_SESSIONS.size >= MAX_TRANSLATE_STREAMS) evictOldestTranslateSession()
   TRANSLATE_STREAM_SESSIONS.set(effectiveRequestId, abort)
   request.on('close', () => {
     abort.abort()
