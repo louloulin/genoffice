@@ -181,6 +181,16 @@ export class Trash {
     const name = path.split('/').pop() ?? path
     const storedName = `${id}-${name}`
     renameSync(path, join(trashDir, storedName))
+    // Move the .meta.json sidecar alongside the payload so the two stay
+    // together in the trash and a future restore is complete.
+    const metaPath = `${path}.meta.json`
+    if (existsSync(metaPath)) {
+      try {
+        renameSync(metaPath, join(trashDir, `${id}-${name}.meta.json`))
+      } catch {
+        // A missing or locked sidecar must not fail the whole delete.
+      }
+    }
     const entry: TrashEntry = {
       id,
       originalKey: path,

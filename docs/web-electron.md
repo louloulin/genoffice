@@ -28,7 +28,7 @@ renderer pushes use an isolated server-sent events stream.
 | `PENDING_FRAMES` Map had no TTL sweeper — docs claimed "expire after 60 seconds" but the Map only deleted on reconnect, so an orphan session id accumulated frames forever | `apps/web-server/src/index.ts:262` | fixed — sweeper added to heartbeat interval |
 | `PREVIEW_BUFFERS` Map had no TTL sweeper — every unique previewId accumulated forever (verified by E3: 500 × 50KB = 23.8MB reachable indefinitely) | `apps/web-server/src/html/index.ts:75-81` | fixed — bounded to 100 entries (LRU) + 5min TTL sweeper |
 | `slides:save` / `slides:save-as` return `WEB_UNSUPPORTED` under the web build (renderer can't serialise a deck from nothing — the build has no PowerPoint writer) | `apps/slides/src/...` | known — desktop-only feature |
-| `home:delete-files` does not move the `<file>.meta.json` sidecar along with the file (cosmetic; orphan sidecars accumulate in `files/`) | `packages/file-management/src/trash.ts:174` | open — separate from the storage:// fix |
+| `home:delete-files` did not move the `<file>.meta.json` sidecar along with the file (cosmetic; orphan sidecars accumulated in `files/`) | `packages/file-management/src/trash.ts:174` | fixed — sidecar now moved to `.trash/` alongside the payload |
 - Production web mode is served by the bridge from each app's `out/renderer`.
 
 ## Start the web version
