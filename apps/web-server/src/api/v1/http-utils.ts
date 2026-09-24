@@ -112,3 +112,32 @@ export function isValidEventList(events: unknown): events is string[] {
   }
   return true
 }
+
+/**
+ * Validate a comment anchor.
+ *
+ * Accepts only a plain object (`Record<string, unknown>`):
+ *   - `typeof === 'object'` filters primitives (string, number, boolean)
+ *   - `!Array.isArray(...)` filters arrays — `typeof [] === 'object'`
+ *     but a comment anchor is conceptually a location descriptor
+ *     (`{ range, cell, slideId, ... }`), never an indexed sequence.
+ *     Storing an array would break downstream renderer code that
+ *     accesses named properties (`anchor.range`, `anchor.cell`,
+ *     `anchor.slideId`) and would silently produce UI that cannot
+ *     resolve the comment's location.
+ *   - non-null filters JSON `null` (the §11.115/§11.116/§11.117
+ *     convention: "not provided" stays valid, but "explicit null" for a
+ *     required object field is caller error).
+ *
+ * Note: this does NOT validate the inner shape — `range` / `cell` /
+ * `slideId` are app-specific. The CommentAnchor contract is
+ * intentionally open (`[key: string]: unknown`) so new apps can add
+ * fields without a schema bump. The store validates only that the
+ * outer shape is an object.
+ */
+export function isPlainAnchor(anchor: unknown): anchor is Record<string, unknown> {
+  if (anchor === null || anchor === undefined) return false
+  if (typeof anchor !== 'object') return false
+  if (Array.isArray(anchor)) return false
+  return true
+}

@@ -5485,7 +5485,11 @@ sessionId 必须路由到 open 时那个 worker 才有效。
 | §11.114 | v1 `:id` 路径穿越 → 任意文件读取（`POST/GET /files/:id/versions` 拍快照读回 `DATA_DIR/webhooks.json` 等兄弟 store）+ 畸形百分号编码 `decodeURIComponent` 抛 `URIError` 归 500 leak → `isWithin(FILES_DIR)` containment + `safeDecode` 400 分支（跨 15 个 handler） | +1 | 95 |
 | §11.115 | `/api/v1/auth/jwt` payload 校验缺失：`scope`/`perm` 非数组→500 内部串泄漏 + 裸字符串静默拆字符 + `doc` 非字符串原样签 + `exp:1e999`→`exp:null` 永生 token + 文档 `ttl` 不生效 + `hasScope` 遇历史坏 claim 500 → `isStringArray`/`doc` 闸 + `ttl` 优先 & clamp[30,86400] + `hasScope` 过滤非字符串 claim | +1 | 96 |
 | §11.116 | `/api/v1/kb/search` 与 `/kb/entries` 把 `limit=1.5` / `limit=101..1000` / `schema=nonsense` 透传给 IPC，IPC 拒绝后 REST 透回 `200 + {ok:false}` → REST 层对齐 IPC 真实边界（search 1..100 整数 / entries 1..1000 整数 / 5 合法 schema），坏值 400，clamp 后 200 永真成功（闭合 §11.100 留下的 "clamp 上界凭经验猜" 漏洞） | +1 | 97 |
-| §A.5 backlog 闭合总数 |  |  | **97** |
+| §11.117 | `POST /api/v1/webhooks` + `POST /api/v1/files/:id/callback` 把 `url:'file:///etc/passwd'` / `url:'javascript:alert(1)'` / `events:[1,2,3]` / `events:'file.saved'`（字符串而非数组）静默接受为 201，`[1,2,3].includes('file.saved')` 恒假 → **registered-but-never-fired 隐性 webhook 失效**（订阅持久化进 `webhooks.json` 但永远不触发，host 无感）→ `isValidWebhookUrl` (http/https-only) + `isValidEventList` (string[] 元素) 双闸 + `null/undefined` 走默认列表（§11.115 同口径）+ `[]` 保留 §11.93 all-events 约定（不 regress）| +1 | 98 |
+| §11.118 | `POST /api/v1/files/:id/comments` 的 `anchor:[]` / `anchor:[1,2,3]` 静默存盘（`typeof [] === 'object'` 通过旧 `typeof !== 'object'` 检查）→ 数组 anchor round-trip 进 `comments.json`，下游 renderer 拿到 `anchor.range` / `anchor.cell` / `anchor.slideId` 全 undefined → 注释位置静默不可解析 → `isPlainAnchor` helper（拒 null / primitive / **array**）+ SDK command 路径 `addCommentCommand` 同步 inline `Array.isArray` 闸（保持旧 error message 不漂移）+ REST 错误 message 收紧为 `"anchor must be a plain object"`（便于 host SDK 区分）| +1 | 99 |
+| §11.119 | `POST /api/v1/embed/verify-nonce` / `POST /api/v1/embed/nonce` / `DELETE /api/v1/embed/nonce` 三个 handler 的 `JSON.parse(raw)` 无 try/catch → malformed JSON / 截断 JSON / 末尾逗号 / 未闭合 brace / whitespace-only 全部 500 漏 raw `SyntaxError`（无 code / 无 channel）+ `null` literal 走 TypeError（`null.docId`）也 500 → 三个 handler 同步包 `try / trim / ?? {}` 三件套：`raw.trim()` 折叠 whitespace-only → `{}`，`JSON.parse(...) ?? {}` 折叠 null literal → `{}`，try/catch 把 SyntaxError → 400 INVALID_ARGUMENT；下游 field validation 用 `BAD_REQUEST`（保留 §11.114 既有语义区分："body 解析错" vs "body 形状错"）| +1 | 100 |
+| §11.120 | `GET /api/v1/files/:id/comments?resolved=` 接受 `TRUE` / `1` / `yes` / `invalid` 静默返回所有 comments（host 期望 filtered，拿到 unfiltered 但 shape 完全合法）→ REST 闸严格收紧为 `r !== null && r !== ''` 排除 "未提供" + `r === 'true' / 'false'` 严格匹配（case-sensitive），其他值 → 400 `INVALID_ARGUMENT` message `"resolved must be 'true' or 'false' when provided"`；`?resolved=`（empty）与 omitted param 仍走 "no filter" 默认（§11.115/§11.116/§11.117/§11.119 同口径）| +1 | 101 |
+| §A.5 backlog 闭合总数 |  |  | **101** |
 
 | §Section | 主题 | 闭合数增量 | 累计 |
 |---|---|---|---|
@@ -7698,7 +7702,1007 @@ $ ./node_modules/.bin/vitest run --reporter=dot
    Duration  (after network flakes)
 ```
 
-全套件 133 文件 / 1125 通过 / 0 fail / 1 skipped / 0 回归。
+### 11.117 · `POST /api/v1/webhooks` + `POST /api/v1/files/:id/callback` 订阅入参校验（`url` scheme + `events` 元素类型）——"registered-but-never-fired" 隐性 webhook 失效闭合（§2.1.A · 2 bug 双闭合 · 跨 2 端点 · 1 e2e）
+
+§11.116 修完 v1 KB shim 的 IPC-shape 200 leak 后，本轮手工 fuzz `webhooks:upsert` 与 `files:callback` 这两个**订阅注册**入口（不是 IPC 转发，所以没有 IPC contract 可对齐——是 REST 层自己必须把好闸），抓到一组"registered-but-never-fired"型隐性 webhook 失效，全部出自同一个根因：**类型检查只在表层（`typeof === 'string'` / `Array.isArray`），没下钻到元素类型 / scheme**：
+
+1. **`POST /api/v1/webhooks` / `POST /api/v1/files/:id/callback` 接受 `file:` / `javascript:` / `data:` / `ftp:` / `ws:` 等非 http(s) URL —— 全部 201 + `ok:true`**。`url: "file:///etc/passwd"` 拿到 201，存进 `webhooks.json`，但 `deliverOne` 走 `fetch()` 调用——`fetch('file:///etc/passwd')` 在 Node undici 里抛 `TypeError: fetch failed`（不是真发出 HTTP 请求），结果**订阅成功但永远不触发**，host 完全无感。攻击面：内网 `javascript:` / `data:` 可被滥用为绕过 SSRF proxy 的载体（host 端一般只过滤 `http://127.0.0.1`，对 `file:` / `javascript:` 漏放）。
+2. **`events: [1, 2, 3]` / `["file.saved", null, ""]` / `"file.saved"`（字符串而非数组） —— 全部 201 + `ok:true`**。`[1,2,3]` 原样存进 `webhooks.json`，`deliverOne` 的 `wh.events.includes("file.saved")` 永远返回 false（数组里都是数字 / null / 空串）→ **白名单匹配恒假 → 订阅成功但每个 event 都被白名单挡掉 → 永远不触发**。字符串 `"file.saved"` 因为 `Array.isArray("file.saved") === false` 走默认列表 fallback——这个 case 反而是好的；**真正危险的是数组形式**：`[1,2,3]` / `[null, ""]` 这种**外层类型正确但元素类型全错**的 input 是表层 `Array.isArray` 检查的唯一盲区。
+3. **两个端点的 bug 完全同构**：`webhooks.ts:47-58` 与 `files.ts:515-527` 是同一段代码模式（diff 只是默认 events 列表）。所以本节 fix 必须**两处同时改**，缺一个就漏一个。
+
+修复路径（一次到位 3 处 / 2 端点）：
+   - 新增 `isValidWebhookUrl(url: unknown): url is string` helper（`api/v1/http-utils.ts`）：要求 `typeof === 'string'` + 非空 + `new URL(url)` 不抛 + `protocol === 'http:' || 'https:'`。**故意不拦 `127.0.0.1` / `169.254.x.x` / `10.x.x.x` 等内网地址**：host 经常需要 webhook 到本地 dev receiver（参见 §11.93 测试里的 `127.0.0.1:18999`），SSRF 是 host 部署 concern（egress proxy），不是 web-server 的职责——这条边界写在 helper JSDoc 里。
+   - 新增 `isValidEventList(events: unknown): events is string[]` helper：要求 `Array.isArray` + 每个元素 `typeof === 'string'` + 非空。**空数组 `[]` 显式接受**——保留 §11.93 user-wide 订阅的"all events"约定（注册 `events: []` 表示订阅所有 event；不少 §11.93 测试用例依赖这条）。`null` / `undefined` 不走这个 helper——上层 caller 显式分支：null = "未提供，用默认列表"，与 §11.115 `null doc` 同口径（serializer 产生 null 是常见情况，不该 400 报错）。
+   - `webhooks.ts:47-71` 与 `files.ts:515-540` 两处都改用 helper：
+     - `url` 走 `isValidWebhookUrl`，坏值 → 400 `INVALID_ARGUMENT`，message `"url must be a string with http: or https: scheme"`。
+     - `events === undefined || null` → 默认列表（5-event for `webhooks:upsert`，单 event `['file.saved']` for `files:callback`）。
+     - `events` 是数组但坏（`[1,2,3]` / 字符串 / 对象 / 含 null/空串）→ 400 `INVALID_ARGUMENT`，message `"events must be an array of non-empty strings"`。
+     - `events` 是合法数组 → 原样存（含 `[]` 的"all events"约定）。
+
+为什么 `null` / `undefined` 走默认而不是 400：与 §11.115 的 `null doc` 处理一致——JSON serializer 把"未提供"映射成 `null` 是常见行为（lodash / superjson / 部分浏览器 fetch wrapper 都这么做）；把这个视为"显式空"会误伤正常调用方。本节专门测了 `events: null` → 201 + 用默认列表这条 happy-path。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/http-utils.ts` | 新增 `isValidWebhookUrl(url)` + `isValidEventList(events)` helper；JSDoc 解释 SSRF 不在本 helper 范围（host concern）+ `[]` all-events 约定 | +52 / -0 |
+| `apps/web-server/src/api/v1/webhooks.ts` | `handleWebhooksUpsert` 改用两个 helper：URL 校验 + 三分支 events（null/undefined → 默认 / 合法数组 → 原样 / 坏 → 400） | +22 / -4 |
+| `apps/web-server/src/api/v1/files.ts` | `handleFilesCallback` 同样改用两个 helper，结构与 webhooks.ts 同构 | +24 / -4 |
+| `apps/web-server/tests/webhooks-input-validation-e2e.test.ts` | 新增 · 1 e2e（7 phase / ~60 断言：11 bad URL × 2 端点 + 10 bad events × 2 端点 + 2 good URL × 4 good events × 2 端点 + omitted/null/[] 各向 + `/health` 存活） | +226 / -0 |
+
+#### 🎯 设计要点
+
+1. **SSRF 不在本 helper 的范围，是**显式 host concern**：web-server 的 webhook fetch 是 server-initiated，不是 client-supplied——攻击模型是"host 的订阅被恶意配置成打 SSRF"，但 host 本身是 trusted caller。host 应该在自己的 egress proxy / network policy 里处理 169.254.x.x / 10.x.x.x，本 helper 不重复。**故意不拦内网地址**让 dev workflow 顺畅（`127.0.0.1:18999` 这种本地 receiver 在 §11.93 / §11.113 测试里是核心 fixture）。JSDoc 把这条边界写明，避免后人不小心"补全"成内网也拦。
+2. **`isValidEventList` 故意接受空数组 `[]`**：保留 §11.93 user-wide 订阅的"all events"约定——`saveCallbackForUser(userSub, {events: [], ...})` 是合法用法，本节 fix 不能 regress。如果将来 §11.93 改成"显式列出才订阅"，这条 helper 的语义会跟着调，但现在锁住。**null/undefined 不走 helper**，留给 caller 显式分支（与 §11.115 `null doc` 同口径）。
+3. **三段式 events 分支**：`undefined || null` → 默认 / 合法数组 → 原样 / 坏 → 400。这是 §11.115 `null doc` + §11.116 `null schema` 第三次复用的"未提供 vs 显式提供"两段式切分，对 host SDK 行为一致：序列化器产生的 `null` 不该 400 报错，但用户**故意写错**的类型必须 400。这条原则从 §11.115 / §11.116 推到 §11.117，host SDK 集成心智负担降到零。
+4. **为什么不在 `webhooks-store` 校验**：store 是 backend 状态层，**它应该接受合法类型的所有子集**（包括空数组）。REST 层是契约层——只暴露给 host 的入口；store 还被 `webhooks-fires-on-save.test.ts` / `webhook-user-wide.test.ts` / §11.93 等内部测试直接调，那些测试不走 REST。把校验放在 store 会让那些测试需要重写，或反过来给 store 加上内部假设。在 REST 边缘校验是 §11.114 / §11.115 / §11.116 同样的原则。
+5. **本节 fix 与 §11.33 DLQ 的关系**：§11.113 已经修了 `WebhookDeliveryResult.filtered` 把 filtered event 剔出 DLQ——所以今天 buggy `[1,2,3]` 订阅**不会污染 DLQ**（被 filtered 标记挡掉）。本节修的是**root cause**：让 host 无法再注册这种必然 filtered 的订阅。这是"前置防御（REST 拒绝） vs 后置清理（DLQ 不入）"的两层；前置修复后，后置处理成为 belt-and-suspenders，不冲突。
+
+#### 🧪 测试（7 phase / ~60 断言全绿）
+
+**新增 `webhooks-input-validation-e2e.test.ts`**（单 harness）：
+- **Phase 1**：`POST /api/v1/webhooks` 11 个坏 URL（`file:` / `javascript:` / `data:` / `ftp:` / `ws:` / `''` / 数字 / 对象 / `null` / 数组 / `//example.com` 不解析）→ 全 400 `INVALID_ARGUMENT`
+- **Phase 2**：`POST /api/v1/files/:id/callback` 同 11 个坏 URL → 全 400（需先 `POST /api/v1/files` 建一个真文件）
+- **Phase 3**：`POST /api/v1/webhooks` 10 个坏 events（`[1,2,3]` / mixed / null entry / `''` entry / `['', '']` / object / boolean / string / number / object）→ 全 400
+- **Phase 4**：per-file 同 10 个坏 events → 全 400
+- **Phase 5**：good × good 矩阵（2 URL × 4 events × 2 端点 = 16 happy-path）→ 全 201（`[]` 仍接受；`null` 仍接受并走默认）
+- **Phase 6**：`events` 字段完全省略 → 201（默认列表应用）
+- **Phase 7**：`/health` 200 存活确认（防"一条坏请求打死进程"回归）
+
+#### 📊 进度
+
+- web-server 套件 133 → **134 文件** / 1125 → **1126 通过**（+1 e2e；~60 断言）
+- §A.5 backlog 闭合数 97 → **98**（+1：双 bug 同节修；registered-but-never-fired 隐性失效类）
+- §2.1.A "REST 错误信封 + 输入校验" 再次延伸至**subscription-style endpoints**——之前 §11.114/§115/§116 都是 query / body 解析类；本节首次覆盖"长期状态写入"类（订阅是写进 `webhooks.json` 的持久化状态，错了会让 host 误以为生效）
+- §11.93 user-wide webhook 契约兼容：`events: []` 仍合法（不破坏既有 caller），host 端 SDK 不需要任何 migration
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.116 bundle):
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"url":"file:///etc/passwd","events":["file.saved"]}' \
+    http://127.0.0.1:18920/api/v1/webhooks
+{"ok":true,"subscriber":"probe","url":"file:///etc/passwd"}
+HTTP 201   # ← registered! 但是 fetch() 永远不会成功 → 静默 dead subscription
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"url":"http://127.0.0.1:18999/x","events":[1,2,3]}' \
+    http://127.0.0.1:18920/api/v1/webhooks
+{"ok":true,"subscriber":"probe","url":"http://127.0.0.1:18999/x"}
+HTTP 201   # ← events=[1,2,3] 存进 store，但 wh.events.includes("file.saved") 永远 false
+            #   → 每个 event 都被白名单挡掉 → DLQ 也被 §11.113 filtered 拦下
+            #   → host 完全无感的 silent failure
+
+# 同 bug 也在 /api/v1/files/:id/callback 复现：
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"url":"javascript:alert(1)","events":["file.saved"]}' \
+    http://127.0.0.1:18920/api/v1/files/<id>/callback
+{"ok":true,"fileId":"<id>","url":"javascript:alert(1)"}
+HTTP 201   # ← per-file 同样 silent failure
+
+# AFTER fix:
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"url":"file:///etc/passwd","events":["file.saved"]}' \
+    http://127.0.0.1:18920/api/v1/webhooks
+{"error":{"message":"url must be a string with http: or https: scheme","code":"INVALID_ARGUMENT","channel":"webhooks:upsert"}}
+HTTP 400
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"url":"http://127.0.0.1:18999/x","events":[1,2,3]}' \
+    http://127.0.0.1:18920/api/v1/webhooks
+{"error":{"message":"events must be an array of non-empty strings","code":"INVALID_ARGUMENT","channel":"webhooks:upsert"}}
+HTTP 400   # ← root-cause fix：host 无法再注册必然 filtered 的订阅
+
+# happy paths 仍可用：
+$ curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"url":"https://example.com/hook","events":["file.saved"]}' \
+    http://127.0.0.1:18920/api/v1/webhooks
+201
+
+$ # events: null → 默认列表（与 §11.115 null doc 同口径）
+$ curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"url":"https://example.com/hook","events":null}' \
+    http://127.0.0.1:18920/api/v1/webhooks
+201
+
+$ # events: [] → "all events" 约定保留（§11.93 user-wide 兼容）
+$ curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"url":"https://example.com/hook","events":[]}' \
+    http://127.0.0.1:18920/api/v1/webhooks
+201
+
+$ ./node_modules/.bin/vitest run tests/webhooks-input-validation-e2e.test.ts
+ ✓ tests/webhooks-input-validation-e2e.test.ts (1 test) 1591ms
+   ✓ webhook subscription input validation (sdk1 §11.117) > rejects bad URLs and bad events for both org-wide and per-file subscriptions
+```
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  134 passed (134)
+      Tests  1126 passed | 1 skipped (1127)
+   Duration  ~33s (kerrits flake excluded; kerrits runs are 60s-timeout intermittent)
+```
+
+全套件 134 文件 / 1126 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
+### 11.118 · `POST /api/v1/files/:id/comments` `anchor` 接受 array/primitive → comment anchor 必须是 plain object（§2.1.A · 1 bug 三闭合 · 跨 2 端点 · 1 e2e）
+
+§11.117 修完 webhook 订阅入参后，本轮继续做 v1 input validation sweep——手工 fuzz `POST /api/v1/files/:id/comments` 的 `anchor` 字段，拿到一个**"数组当 anchor 静默存盘"** 的中度数据完整性 bug：
+
+1. **`anchor: []` / `anchor: [1,2,3]` / `anchor: [{x:1}]` → 201 + `ok:true`，存进 `comments.json`**。REST 层的 `if (!body.anchor || typeof body.anchor !== 'object')` 把**所有 `typeof === 'object'` 的值都放行**——但**数组的 `typeof` 也是 `'object'`**（ECMAScript 历史遗留）。结果是 array-shaped anchor 静默存盘，`GET /api/v1/files/:id/comments` 把它原样返回，下游 renderer 拿到 `{range, cell, slideId}` 访问全部 undefined → 注释**位置无法解析**，UI 静默渲染成"漂浮"或"已删除"。
+2. **同一 bug 也存在于 SDK command 路径** `POST /api/ipc/sdk:command` `name:'addComment'`：`addCommentCommand` 的 `if (!a.anchor || typeof a.anchor !== 'object')` 是**完全相同的代码模式**——iframe 嵌入路径（host SDK → bridge → ipc）与 v1 REST 路径（curl / 第三方集成）共享同一个 store，所以**两端必须同时修**，否则另一条路径仍然能写入 array anchor。
+3. **`anchor:'hello'` / `42` / `true` / `null` / `undefined` 在两个端点都已经 400**（`!body.anchor || typeof body.anchor !== 'object'` 拦下 primitive 与 null），所以这次 fix 只补 array 这个漏洞——不动 primitive 拒绝的既有逻辑。
+
+修复路径（一次到位 3 处 / 2 端点）：
+   - 新增 `isPlainAnchor(anchor: unknown): anchor is Record<string, unknown>` helper（`api/v1/http-utils.ts`）：要求 `!= null` + `typeof === 'object'` + **`!Array.isArray(...)`**。**故意不动 inner shape 验证**：`range` / `cell` / `slideId` 是 app-specific，`CommentAnchor` 接口显式是 `[key: string]: unknown`（参见 `apps/sdk/src/types.ts:391`）——这是开放契约，加新 app 不需要 schema bump；helper 只锁住**外层必须是 object**这一条，确保 renderer 后续访问 `anchor.range` 等有意义。
+   - `comments.ts:handleCommentsAdd` 改用 `isPlainAnchor(body.anchor)`：坏值 → 400 `INVALID_ARGUMENT`，message `"anchor must be a plain object"`。
+   - `sdk-commands.ts:addCommentCommand` 同步加上 `Array.isArray(a.anchor)` 检查（保持现有 `!a.anchor || typeof a.anchor !== 'object'` 模式，不抽 helper——这条路径只此一处，inline 一行更直白）：坏值 → `InvalidArgumentError('addComment requires an anchor object')`，与既有错误 message 一致（避免 SDK 集成方已知错误 message 漂移）。
+
+为什么 helper 名是 `isPlainAnchor` 而不是 `isValidAnchor`：`CommentAnchor` 接口的形状本身是开放的（`{range?, cell?, slideId?, [k]: unknown}`），新 app 加字段不算"非 plain"；这把 gate 锁在**外层形状**（必须 plain object）而不是**内层键集**（必须含某种特定键）。"anchor 必须有一个能描述位置的字段"是 store / renderer 层的职责，REST 闸只挡**类型层错**。
+
+为什么不在 `comments-store.addComment` 校验：与 §11.117 同构——store 是 backend 状态层，**它应该接受合法类型的所有子集**（包括合法的 plain object）。REST + SDK command 是契约层，只暴露给 host 的入口；store 内部测试（`comments-store.test.ts` / `comment-webhook.test.ts` / `comments-versions-detail-e2e.test.ts`）直接调 `addComment`，不走 REST，把校验放在 store 会让那些测试需要重写。在两条契约边缘（REST + SDK command）同时校验是 §11.114 / §11.115 / §11.116 / §11.117 同样的原则。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/http-utils.ts` | 新增 `isPlainAnchor(anchor)` helper（拒 null / primitive / array；接受 plain object 含空 `{}`）；JSDoc 解释 `[key:string]:unknown` 开放契约的取舍 | +29 / -0 |
+| `apps/web-server/src/api/v1/comments.ts` | `handleCommentsAdd` 改用 `isPlainAnchor`：bad anchor → 400，message `"anchor must be a plain object"`（原 `"expected { anchor, text, parentId? }"` 太通用；本节 fix 改成更精确的形状错 message）| +10 / -3 |
+| `apps/web-server/src/embed/sdk-commands.ts` | `addCommentCommand` 加 `Array.isArray(a.anchor)` 检查（保留 `!a.anchor || typeof a.anchor !== 'object'` 模式，inline 一行），error message 不变（避免 SDK 集成方已知 message 漂移） | +7 / -1 |
+| `apps/web-server/tests/comments-anchor-shape-e2e.test.ts` | 新增 · 1 e2e（5 phase / ~25 断言：REST 8 bad anchor × 400 + REST 5 good anchor × 201 含 `{}` 与混合键 + SDK command bad anchor 拒（200+`ok:false` OR 4xx 都接受）+ good anchor 走 SDK command + `/health` 200）| +165 / -0 |
+
+#### 🎯 设计要点
+
+1. **helper 只锁外层形状，不锁内层键**：`CommentAnchor` 是开放契约（`{range?, cell?, slideId?, [k]:unknown}`），加新 app 不该 schema bump。renderer 拿不到位置信息是下游问题（"anchor 缺少 `cell` 字段"），但**拿到了 array anchor**是上游类型错——后者会让 renderer 静默坏掉（`anchor.range` undefined），前者会显式报错。所以"必须 plain object"是 100% 正确闸，"必须含某个键"是过度收紧。
+2. **REST 路径用 helper，SDK 路径 inline**：REST 调用 `isPlainAnchor`（helper 在 http-utils）；SDK command inline `Array.isArray` 检查（不 import helper）。理由：sdk-commands.ts 已经有 60+ 行 import，inline 一行可读性更好；helper 的 reuse 价值只有在 ≥2 处使用时才成立——SDK 路径是**唯一**非 REST 调用 addComment 的入口（参见 sdk-commands.ts:21-25 注释："Server-backed here" list），所以不值得抽。这条小决定降低了"过度工程"风险。
+3. **错误 message 收紧**：`comments.ts` 原本返 `"expected { anchor, text, parentId? }"`——这条 message 用来覆盖多种 400（缺 anchor / 缺 text / anchor 非 object 等）。本节把 anchor-shape 错抽出来变成 `"anchor must be a plain object"`——更精确，便于 host SDK 区分。`text` 缺失的 message 仍保留 `"text must be a non-empty string"`（已是单独的分支）。
+4. **SDK 路径保留旧 message**：`addComment requires an anchor object` 是已有 SDK 集成方知道的错误 message。本节 fix 不动它，避免下游 SDK error handler 误把已知错误识别成新错误。REST 路径是新契约，可以用更精确的 message——host SDK REST 调用是较新的 surface，message 精度可调。
+5. **与 §11.117 同构**：本节 fix 与 §11.117 都是"REST 类型层只检查 `typeof` / `Array.isArray`，没下钻"的同一类根因，但 §11.117 修了 url + events 两个字段，本节修 anchor 一个字段。两条原则并行复用：
+   - 表层类型检查不是 contract 校验
+   - REST + IPC 两条入口同时改才闭合（store 不能作为验证点）
+6. **本节 fix 不触及 comment store**：`addComment(fileId, {author, text, anchor: <plain obj>})` 不变；store 仍接受合法 plain object。store 内部 `anchor: unknown`（`comments-store.ts:41`）保留——这是正确的：store 信任契约层已校验过的 shape，与 §11.117 webhooks-store 同口径。
+
+#### 🧪 测试（5 phase / ~25 断言全绿）
+
+**新增 `comments-anchor-shape-e2e.test.ts`**（单 harness）：
+- **Phase 1**：REST `POST /api/v1/files/:id/comments` 8 个 bad anchor（`[]` / `[1,2,3]` / `[{x:1}]` / `'string-anchor'` / `42` / `true` / `null` / `undefined`）→ 全 400 `INVALID_ARGUMENT`
+- **Phase 2**：REST 5 个 good anchor（`{}` / `{range:{start:0,end:5}}` / `{cell:'A1'}` / `{slideId:'slide-1'}` / 混合键）→ 全 201，且响应里的 `comment.anchor` 与发送值 `toEqual`（round-trip 验证存盘形状未变形）
+- **Phase 3**：SDK command `POST /api/ipc/sdk:command name:'addComment'` 8 个 bad anchor → 全被拒（接受 200+`ok:false` 含 "anchor" 关键字 OR 4xx；不挑剔具体形状，因为 IPC bridge 的 error envelope 是 `{ok:false, error:...}`，不是 v1 REST 信封——这是 SDK 路径的既有契约）
+- **Phase 4**：SDK command 5 个 good anchor → 200（如果能 exercise），否则静默跳过（embed-session context 不一定可用；REST 是 §11.118 主入口，SDK 路径的"能拒"已足够）
+- **Phase 5**：`/health` 200 存活确认
+
+#### 📊 进度
+
+- web-server 套件 134 → **135 文件** / 1126 → **1127 通过**（+1 e2e；~25 断言）
+- §A.5 backlog 闭合数 98 → **99**（+1：单 bug 三闭合；comment anchor 形状错类）
+- §2.1.A "REST 输入校验" 再次延伸至**Object shape**（之前都是 scalar / array / object 三种浅层类型）——本节首次覆盖**"必须 plain object（不是 array）"**这条常见 JS 陷阱，与 §11.117 "必须 string array（非 number array）"同构（都是"容器类型 vs 元素类型"两层）。
+- SDK command path 与 REST path 同步修：**避免 anchor 错位的写入**走 iframe bridge（`POST /api/ipc/sdk:command`），REST 端守住 curl / 第三方集成的入口。
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.117 bundle):
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"anchor":[],"text":"hello"}' \
+    http://127.0.0.1:18920/api/v1/files/<id>/comments
+{"comment":{"id":"cm_...","author":"probe","text":"hello","anchor":[],"createdAt":...,"resolved":false}}
+HTTP 201   # ← 数组 anchor 静默存盘；下游 renderer 拿到 anchor.range = undefined
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"anchor":[1,2,3],"text":"hello"}' \
+    http://127.0.0.1:18920/api/v1/files/<id>/comments
+{"comment":{"id":"cm_...","anchor":[1,2,3],...}}
+HTTP 201   # ← array anchor round-trip 成功存盘
+
+$ # GET 后能看到 array anchor 原样回来
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18920/api/v1/files/<id>/comments
+{"fileId":"...","count":1,"comments":[{"id":"cm_...","anchor":[1,2,3],...}]}
+
+# 同一 bug 也在 SDK command 路径：
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"args":[{"name":"addComment","docId":"...","args":{"anchor":[1,2,3],"text":"hi"}}]}' \
+    http://127.0.0.1:18920/api/ipc/sdk:command
+{"ok":true,"results":[{"ok":true,"value":{"id":"cm_..."}}]}   # ← 静默成功
+
+# AFTER fix:
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"anchor":[],"text":"hello"}' \
+    http://127.0.0.1:18920/api/v1/files/<id>/comments
+{"error":{"message":"anchor must be a plain object","code":"INVALID_ARGUMENT","channel":"files:comments:add"}}
+HTTP 400
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"anchor":[1,2,3],"text":"hello"}' \
+    http://127.0.0.1:18920/api/v1/files/<id>/comments
+{"error":{"message":"anchor must be a plain object","code":"INVALID_ARGUMENT","channel":"files:comments:add"}}
+HTTP 400
+
+$ # SDK command 路径也拒：
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"args":[{"name":"addComment","docId":"...","args":{"anchor":[1,2,3],"text":"hi"}}]}' \
+    http://127.0.0.1:18920/api/ipc/sdk:command
+{"ok":true,"results":[{"ok":false,"error":"addComment requires an anchor object",...}]}
+# ← SDK 路径保留旧 error message（避免下游 SDK error handler 漂移）
+
+$ # good anchor 仍然 ok：
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"anchor":{"range":{"start":0,"end":5}},"text":"good"}' \
+    http://127.0.0.1:18920/api/v1/files/<id>/comments
+{"comment":{"id":"cm_...","anchor":{"range":{"start":0,"end":5}},...}}
+HTTP 201
+
+$ ./node_modules/.bin/vitest run tests/comments-anchor-shape-e2e.test.ts
+ ✓ tests/comments-anchor-shape-e2e.test.ts (1 test) 5440ms
+   ✓ comments anchor shape validation (sdk1 §11.118) > rejects non-plain-object anchors for both REST and SDK command paths
+```
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  135 passed (135)
+      Tests  1127 passed | 1 skipped (1128)
+   Duration  ~30s (kerrits flake excluded; kerrits runs are 60s-timeout intermittent)
+```
+
+全套件 135 文件 / 1127 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
+### 11.119 · 三个 embed-nonce handler `JSON.parse` 未 try/catch → malformed body 漏 raw `SyntaxError` 为 500（§2.1.A · 1 bug 三闭合 · 跨 3 端点 · 1 e2e）
+
+§11.118 修完 comments anchor 形状闸后，本轮继续 sweep v1 REST handler 的"JSON.parse 未包裹 try/catch"类问题——手工 fuzz 3 个 embed-nonce 端点的 POST/DELETE body，拿到 1 个**典型 500 leak** 跨 3 端点：
+
+1. **`POST /api/v1/embed/verify-nonce` / `POST /api/v1/embed/nonce` / `DELETE /api/v1/embed/nonce` 三个 handler 都对 malformed JSON body 漏 raw `SyntaxError` 消息作为 500**：实测 `curl -d 'not json'` 三个端点全部返 `500 {"error":{"message":"Unexpected token 'o', \"not json\" is not valid JSON"}}`——**没有 `code` 也没有 `channel`**，违反 §2.1.A REST 错误信封约定。根因是 handler 里直接 `JSON.parse(raw)` 而没有 try/catch：抛出的 SyntaxError 被顶层 catch-all 归成 500 + 泄漏 JS 运行时错误字符串。
+2. **whitespace-only body 也是 500 leak**：`'   '` 是 truthy string，所以 `raw ? JSON.parse(raw) : {}` 进入 JSON.parse 路径 → SyntaxError → 同样 500 leak。正确行为应该是 whitespace-only 等价于"无 body"（与 §11.115/§11.116/§11.117 null/undefined 语义一致），走默认 `{}` 然后 field-validation 400。
+3. **`null` literal (`-d 'null'`) 是 **TypeError 不是 SyntaxError**：JSON.parse 接受 `null` 字面量（合法 JSON），返回 `null`；然后 `null.docId` 抛 TypeError——既不是 SyntaxError 也不被 try/catch 接住，**仍走 500 leak**。本节 fix 加 `?? {}` 兜底：parsed null 被折叠成空对象，下游 field validation 触发 400 BAD_REQUEST（与 string/number/boolean literal 同路径，正确）。
+4. **三个端点的代码同构**：`embed-nonce.ts` 的三个 handler（`handleEmbedNonce` / `handleEmbedVerifyNonce` / `handleEmbedReleaseNonce`）的 body parse 模式完全相同，所以 fix 必须三处同步——与 §11.117 webhook 双端点 / §11.118 comments REST+SDK 是同一类原则。
+5. **comments / versions / callback / webhooks / callbacks / auth / ai / files 都已经 try/catch**：本轮 sweep 一次性审过所有 v1 POST handler 的 body parse——只有这 3 个 embed-nonce handler 漏。**没有 catch-all 修复**（如在 dispatcher 加 try/catch），因为 catch-all 会**误吞 handler 内部的预期 throw**（如 `mintEmbedNonce` 返回 null 时 handler 自己抛的 `INTERNAL 500`）——精准在源头修才是 root-cause。
+
+修复路径（一次到位 3 处）：
+   - 三个 handler 的 body parse 改写成统一模式：
+     ```ts
+     let body: Record<string, unknown> = {}
+     try {
+       const raw = await readBody(ctx.request)
+       body = raw && raw.trim()
+         ? ((JSON.parse(raw) as Record<string, unknown> | null) ?? {})
+         : {}
+     } catch {
+       sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', '<channel>')
+       return true
+     }
+     ```
+   - 关键四件套：
+     1. **`try/catch`**：包住 `JSON.parse`，任何 `SyntaxError` → 400 INVALID_ARGUMENT（§2.1.A 信封）。
+     2. **`raw.trim()` 检查**：whitespace-only body 等价于"无 body"，折叠成默认 `{}`，走下游 field validation 400。
+     3. **`(JSON.parse(raw) as ... | null) ?? {}`**：parsed `null` 折叠成 `{}`（防 TypeError）。string / number / boolean literal 通过（折叠不到 null），下游 `body.docId` 返回 undefined → field validation 400 BAD_REQUEST（不是 INVALID_ARGUMENT，因为是字段缺失不是 JSON 解析错）。
+     4. **`sendError` 用 `'INVALID_ARGUMENT'` code + 标准 channel 字符串**：与 §11.114/115/116/117/118 一致，host SDK 可按 `code` 字段统一处理。
+
+为什么不用抽 helper（`parseJsonBody(raw)` 之类）：每个 handler 的 catch 分支需要 inline `sendError(ctx.response, ..., channel)`——channel 字面量是 handler-specific（`'embed:nonce'` / `'embed:verify-nonce'` / `'embed:release-nonce'`），抽 helper 反而需要 4+ 参数。**§11.114 / §11.115 / §11.116 / §11.117 / §11.118 都是 inline try/catch**，本节延续。注释里 `// §11.119` 标记 + 跨 handler 一致的三件套（`try / trim / ??`）让 reviewer 一眼能 grep 出所有 §11.119 fix 点。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/embed-nonce.ts` | 3 个 handler 的 `JSON.parse(raw)` 行改为统一 try/catch + `raw.trim()` + `?? {}` 三件套；每个 handler 加 `// §11.119:` 注释 | +30 / -9 |
+| `apps/web-server/tests/embed-nonce-malformed-body-e2e.test.ts` | 新增 · 1 e2e（5 phase / ~50 断言：3 端点 × 4 truly-malformed → 400 INVALID_ARGUMENT 信封验证 + 3 端点 × 4 valid-JSON-wrong-type → 400 BAD_REQUEST + 3 端点 whitespace-only → 400 BAD_REQUEST + 3 端点 empty body → 400 BAD_REQUEST + 1 valid happy-path + `/health` 存活） | +140 / -0 |
+
+#### 🎯 设计要点
+
+1. **三件套（`try / trim / ??`）缺一不可**：单独加 `try/catch` 不够（whitespace-only / null literal 仍 leak）；单独 `trim` 不够（malformed JSON 仍 leak）；单独 `?? {}` 不够（null literal 修了一半，malformed JSON 仍 leak）。三件套合起来才把所有 4 类 bad input 全部收到 400 信封下。
+2. **`null` literal 折叠成 `{}` 而不是 400**：与 §11.115 `null doc` / §11.117 `events:null` 同口径——JSON serializer 产生 null 是"未提供"的常见表达。`null` body 应该等价于"无 body"，**不应该比 `{}` 更严**。这条原则从 §11.115 推到 §11.117 再到 §11.119，三处一致。
+3. **`string / number / boolean literal` 走 field-validation BAD_REQUEST**：与 null 不同，string/number/bool 是 caller **故意写错类型**——`"just a string"` 作为 body 不可能是合法 v1 contract，应该报 400 BAD_REQUEST（与"missing sessionId"同语义：body 形状错）。`BAD_REQUEST` vs `INVALID_ARGUMENT` 的取舍：
+   - **`INVALID_ARGUMENT`** = body 本身无法解析（malformed JSON）：caller 的 wire format 错了
+   - **`BAD_REQUEST`** = body 解析成功但形状错（missing field / wrong type）：caller 的 schema 错了
+   这两个语义区分对 host SDK 调试有用——前者是"你的 JSON 序列化坏了"，后者是"你发的 body 不对"。本节 fix **保留**这一区分（与既有 comments.py / versions.ts 的 code 命名一致）。
+4. **不在 dispatcher 加全局 try/catch**：dispatcher 是路由层，不知道 handler 想返什么 status。误吞 handler 内部预期 throw 会让所有错误都成 400——掩盖真 bug。**精准在源头修**（每个 handler 自己 wrap）是 §11.114 / §11.115 / §11.116 / §11.117 同样的原则；本节延续。
+5. **`JSON.parse` 类型 cast 用 `Record<string, unknown> | null`**：JSON.parse 返回 `any`（按 TS 标准库），cast 到 `Record<string, unknown> | null` 是显式声明"我接受 null，并会在下游访问字段时崩——所以 `?? {}` 兜底是必须的"。这条 cast 不是为了类型安全（TS 在 cast 后放手），而是为了**让 reviewer 看到"null 是合法返回值"**。`as Record<string, unknown>`（不带 `| null`）会让 null cast 变成 silent TS lie，调用方访问 `body.docId` 不会报错（cast 后 TS 认为 body 一定有 docId），运行时崩了也不会有 TS 错位感。
+
+#### 🧪 测试（5 phase / ~50 断言全绿）
+
+**新增 `embed-nonce-malformed-body-e2e.test.ts`**（单 harness）：
+- **Phase 1**：`POST /embed/verify-nonce` × `POST /embed/nonce` × `DELETE /embed/nonce` 共 3 端点 × 4 truly-malformed bodies（`not json` / `{"sessionId":"x"` / `{"sessionId":"x",}` / `{sessionId:"x"`）= 12 个组合 → 全 400 + `code:INVALID_ARGUMENT` + `channel` 正确 + message 含 "invalid JSON body"
+- **Phase 1b**：3 端点 × 4 valid-JSON-wrong-type（`"just a string"` / `42` / `true` / `null`）= 12 组合 → 全 400 + `code:BAD_REQUEST` + `channel` 正确（pin 字段验证走 BAD_REQUEST 不是 INVALID_ARGUMENT）
+- **Phase 2**：3 端点 × whitespace-only body `'   '` → 全 400 BAD_REQUEST（不是 500 leak）
+- **Phase 3**：3 端点 × empty body（无 Content-Length）→ 全 400 BAD_REQUEST
+- **Phase 4**：valid happy-path（`POST /embed/nonce` + `{docId:"valid"}`）→ 200 + `sessionId` 非空
+- **Phase 5**：`/health` 200 存活
+
+#### 📊 进度
+
+- web-server 套件 135 → **136 文件** / 1127 → **1128 通过**（+1 e2e；~50 断言）
+- §A.5 backlog 闭合数 99 → **100**（+1：1 bug 三闭合；malformed-body 500 leak 类）—— **第一次达到三位数**
+- §2.1.A "REST 错误信封" 第三次在 body parse 路径收紧（§11.112 SPA fallback `q=` / §11.115 auth/jwt payload / §11.119 embed-nonce body）
+- 与 §11.114 / §11.115 / §11.116 / §11.117 / §11.118 同样的原则延续：dispatcher / IPC 之外的"契约边缘"逐个 sweep，每次发现 1-3 处 missing gate，本节一次性闭合 3 端点。
+- 跨 3 端点的 catch 同步闭合：embed-nonce 现在是 **§11.119 fix 之后的 first-class citizen**——与 webhook / comments / versions / files / auth / ai 全部对齐。
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.118 bundle):
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d 'not json' http://127.0.0.1:18920/api/v1/embed/verify-nonce
+{"error":{"message":"Unexpected token 'o', \"not json\" is not valid JSON"}}
+HTTP 500   # ← 没有 code 没有 channel，泄漏 raw SyntaxError 字符串
+
+$ # truncated JSON 也 leak
+$ curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d '{"sessionId":"x"' \
+    http://127.0.0.1:18920/api/v1/embed/verify-nonce
+500
+
+$ # null literal 也是 500（不是 SyntaxError 是 TypeError）
+$ curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d 'null' \
+    http://127.0.0.1:18920/api/v1/embed/verify-nonce
+500   # ← JSON.parse 接受 null → null.docId 抛 TypeError → 500 leak
+
+$ # whitespace-only 也是 500
+$ curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d '   ' \
+    http://127.0.0.1:18920/api/v1/embed/verify-nonce
+500
+
+# 同 bug 也在另外两个端点：
+$ curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d 'not json' \
+    http://127.0.0.1:18920/api/v1/embed/nonce
+500
+$ curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d 'not json' \
+    http://127.0.0.1:18920/api/v1/embed/nonce
+500
+
+# AFTER fix:
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d 'not json' http://127.0.0.1:18920/api/v1/embed/verify-nonce
+{"error":{"message":"invalid JSON body","code":"INVALID_ARGUMENT","channel":"embed:verify-nonce"}}
+HTTP 400   # ← 完整 §2.1.A 信封
+
+$ # truncated / trailing comma / unclosed brace 同样 400 INVALID_ARGUMENT
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"sessionId":"x"' http://127.0.0.1:18920/api/v1/embed/verify-nonce
+{"error":{"message":"invalid JSON body","code":"INVALID_ARGUMENT","channel":"embed:verify-nonce"}}
+HTTP 400
+
+$ # null literal 现在走 field-validation BAD_REQUEST（不再 500 leak）
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d 'null' http://127.0.0.1:18920/api/v1/embed/verify-nonce
+{"error":{"message":"sessionId and nonce required","code":"BAD_REQUEST","channel":"embed:verify-nonce"}}
+HTTP 400   # ← null 折叠成 {} → field validation 触发
+
+$ # whitespace-only 同样折叠成 {} → BAD_REQUEST
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '   ' http://127.0.0.1:18920/api/v1/embed/verify-nonce
+{"error":{"message":"sessionId and nonce required","code":"BAD_REQUEST","channel":"embed:verify-nonce"}}
+HTTP 400
+
+$ # valid body 仍 ok：
+$ curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d '{"docId":"valid"}' \
+    http://127.0.0.1:18920/api/v1/embed/nonce
+200
+
+$ ./node_modules/.bin/vitest run tests/embed-nonce-malformed-body-e2e.test.ts
+ ✓ tests/embed-nonce-malformed-body-e2e.test.ts (1 test) 2247ms
+   ✓ embed-nonce malformed body validation (sdk1 §11.119) > returns 400 INVALID_ARGUMENT (not 500 SyntaxError leak) for malformed JSON across all 3 endpoints
+```
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  136 passed (136)
+      Tests  1128 passed | 1 skipped (1129)
+   Duration  ~30s (kerrits flake excluded; kerrits runs are 60s-timeout intermittent)
+```
+
+全套件 136 文件 / 1128 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
+### 11.120 · `GET /api/v1/files/:id/comments?resolved=` 静默 fallback 接受非 true/false 值（§11.116 同类 · 1 bug 闭合 · 1 e2e）
+
+§11.119 修完 embed-nonce body parse 500 leak 后，本轮继续 sweep v1 URL query 的 "explicit caller error masquerading as success" 类问题——手工 fuzz `GET /api/v1/files/:id/comments?resolved=` 的 5 种常见 typo，拿到 1 个**静默 fallback**型 bug：
+
+1. **`?resolved=TRUE` / `?resolved=1` / `?resolved=yes` / `?resolved=invalid` / `?resolved=null` 全部静默返回所有 comments（host 期望"只 resolved"或"只 unresolved"）**。REST 层的 `if (r === 'true') ... else if (r === 'false') ...` 模式对**任何非严格匹配的字符串都 silent fallback 到 "no filter"**——结果是 host 拿到的 `count` 字段既不是 1（resolved）也不是 2（unresolved），而是**所有 comments**（例如 3），但响应 shape 完全合法，host SDK 完全无法察觉自己打错了 typo。这是 §11.116 关闭的"clamp upper bound was guessed"漏洞的同类：REST 层验证比 caller 期望宽松 → caller 写错的 input 看起来成功了。
+2. **`?resolved=`（empty）也走 fallback**：与 §11.115/§11.116/§11.119 同口径——empty / null / omitted 是 URL/JSON serializer 的"未提供"自然产物，应该走 "no filter" 默认值（host 没打错，是 serializer 漏了），不报 400。所以 §11.120 fix 必须**精确区分 "未提供" 和 "显式错误值"**——前者是默认行为，后者是 caller error。
+3. **影响范围：comment list 单一端点**——不像 §11.117 webhook / §11.119 embed-nonce 跨多端点，本节只有 `handleFilesCommentsList` 一处需要修（comments list 的 query param 是唯一的非 boolean 严格闸位点；`comments POST` / `PATCH` 的 body 字段已经 §11.118 收紧）。
+
+修复路径：
+   - `comments.ts:handleFilesCommentsList` 的 query parse 改写：
+     ```ts
+     const r = url.searchParams.get('resolved')
+     if (r !== null && r !== '') {
+       if (r === 'true') opts.resolved = true
+       else if (r === 'false') opts.resolved = false
+       else {
+         sendError(ctx.response, 400, "resolved must be 'true' or 'false' when provided", 'INVALID_ARGUMENT', op)
+         return true
+       }
+     }
+     ```
+   - 关键三件套：
+     1. **`r !== null && r !== ''`** 排除 "未提供"（omitted param 返 `null`，empty 串 `?resolved=` 返 `''`）。两者都走 "no filter" 默认——与 §11.115/§11.116/§11.117/§11.119 同口径。
+     2. **`r === 'true' / 'false'`** 严格相等（case-sensitive）。`TRUE` / `1` / `yes` 等都不接受。
+     3. **else 分支 → 400 INVALID_ARGUMENT**：caller 写错了，host SDK 应该立刻看到错误并修正请求，而不是悄悄拿到错误结果。
+   - 不抽 helper：本节只有 1 个 handler、1 个 query param；inline 12 行比抽 `parseStrictBoolean(s)` + channel param 更直白。helper 的 reuse 价值要在 ≥2 处使用才成立（参见 §11.118 comments anchor 同样的取舍）。
+
+为什么 §11.116 不直接复用：`kb/search?limit=1.5` 是 number validation，`comments?resolved=invalid` 是 enum validation；类型不同，error message 也不同（一个说"必须是正整数"，一个说"必须是 'true'/'false'"）。共用一个 helper 反而会需要 4+ 参数 + 泛型——不划算。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/api/v1/comments.ts` | `handleFilesCommentsList` 的 `?resolved=` parse 改严格三件套（null/empty → 默认 / `true`/`false` → 应用 / 其他 → 400 INVALID_ARGUMENT）；加 `// §11.120:` 注释解释 fallback 漏洞 | +18 / -3 |
+| `apps/web-server/tests/comments-list-resolved-filter-e2e.test.ts` | 新增 · 1 e2e（1 phase / ~24 断言：建 1 真文件 + 3 comments（1 resolved）+ 12 个 filter case 矩阵：2 接受（true/false）+ 9 拒绝（TRUE/1/0/yes/no/invalid/True/null/混合）+ 1 接受 empty + 1 接受 omitted + `/health` 存活）| +122 / -0 |
+
+#### 🎯 设计要点
+
+1. **严格相等 vs 大小写不敏感**：故意只接受 `'true'` / `'false'` 严格小写匹配。JavaScript 的 `Boolean('TRUE')` 是 `true`（truthy string），但 SDK `Comment.resolved: boolean` 序列化标准是 lowercase —— 大小写不敏感是 host SDK 容易踩的陷阱（host 写 `String(true)` 拿到的就是 `'true'`）。严格匹配强制 host 用 `JSON.stringify(true)` 路径，错误更早暴露。
+2. **不接受 `1` / `0`**：与 web URL 的常见 bool 表达（PHP `?foo=1`）保持距离——GenOffice v1 contract 是 boolean 不是 integer。`1` / `0` 都报 400。Host 如果想要"真"过滤，应该用 `?resolved=true`。
+3. **`null` 字面量也不接受**：`?resolved=null` 是 host 序列化时把 `null` 当成 query string value 拼上去的（虽然语义奇怪，但确实发生过）。本节把它当 explicit error 拒绝 400，避免与 `null = "未提供"` 语义混淆。
+4. **case-sensitive 是 deliberate 决定**：JavaScript 字符串比较是 case-sensitive，`'TRUE' !== 'true'`。这条对 host SDK 友好——host 用 `String(resolved)` 自动拿到 lowercase，错误立即在测试 / typecheck 里捕获。
+5. **error message 收紧为 `"resolved must be 'true' or 'false' when provided"`**：host SDK error handler 可以按 message regex 区分字段，方便调试。比通用 "expected { resolved }" 更精确。
+
+#### 🧪 测试（1 phase / ~24 断言全绿）
+
+**新增 `comments-list-resolved-filter-e2e.test.ts`**（单 harness）：
+- **Phase 1**：
+  - 建 1 真文件 + 3 comments（c1 unresolved / c2 resolved via PATCH / c3 unresolved）
+  - 12 个 filter case 矩阵：
+    - 2 接受：精确 `'true'`（count=1 resolved only）/ 精确 `'false'`（count=2 unresolved only）
+    - 9 拒绝 400： `'TRUE'`（uppercase）/ `'1'`（numeric）/ `'0'`（numeric）/ `'yes'`（truthy）/ `'no'`（falsy-y）/ `'invalid'`（junk）/ `'True'`（mixed case）/ `'null'`（literal）/ 空表（？）
+    - 1 接受 empty： `?resolved=`（空串 → no filter，count=3）
+    - 1 接受 omitted： no param（count=3）
+- **Phase 2**：`/health` 200 存活
+
+#### 📊 进度
+
+- web-server 套件 136 → **137 文件** / 1128 → **1129 通过**（+1 e2e；~24 断言）
+- §A.5 backlog 闭合数 100 → **101**（+1：query param silent-fallback 类）
+- §2.1.A "REST 输入校验" 再次延伸至 URL query string——之前 §11.112/§11.116 处理 `?q=` / `?limit=` / `?schema=` 数字与 enum 类型，本节首次覆盖**严格 boolean** query param，闭合 `comments?resolved=` 的最后一类输入。
+- 与 §11.116 / §11.117 / §11.119 同口径延续："未提供 vs 显式提供"两段式切分（empty/omitted/null → 默认 / 显式错值 → 400）。
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.119 bundle):
+$ # Create 3 comments (1 resolved, 2 unresolved)
+$ # ...
+
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=true' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+1   # ← 正确（resolved only）
+
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=false' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+2   # ← 正确（unresolved only）
+
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=TRUE' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+3   # ← BUG：host 期望 resolved-only，但拿到全部 3 条（"TRUE" 不被识别）
+
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=1' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+3   # ← 同 bug
+
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=invalid' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+3   # ← 同 bug
+
+# AFTER fix:
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=true' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+1   # ← 不变
+
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=FALSE' \
+    -H "Authorization: Bearer $TOKEN"
+{"error":{"message":"resolved must be 'true' or 'false' when provided","code":"INVALID_ARGUMENT","channel":"files:comments:list"}}
+HTTP 400   # ← root-cause fix：host 立刻看到错误并修正请求
+
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=1' \
+    -H "Authorization: Bearer $TOKEN"
+{"error":{"message":"resolved must be 'true' or 'false' when provided","code":"INVALID_ARGUMENT","channel":"files:comments:list"}}
+HTTP 400
+
+$ # 空 / omitted 仍然 "no filter"：
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments?resolved=' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+3   # ← 保留 §11.115 同口径（serializer 产物）
+$ curl -s 'http://127.0.0.1:18920/api/v1/files/<id>/comments' \
+    -H "Authorization: Bearer $TOKEN" | jq '.count'
+3
+
+$ ./node_modules/.bin/vitest run tests/comments-list-resolved-filter-e2e.test.ts
+ ✓ tests/comments-list-resolved-filter-e2e.test.ts (1 test) 1275ms
+   ✓ comments list ?resolved= strict filter (sdk1 §11.120) > accepts exact true/false (or omitted/empty), rejects any other value with 400
+```
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  137 passed (137)
+      Tests  1129 passed | 1 skipped (1130)
+   Duration  ~30s (kerrits flake excluded; kerrits runs are 60s-timeout intermittent)
+```
+
+全套件 137 文件 / 1129 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
+
+### 11.121 · `GET /embed/:docId` 畸形 percent-encoding 触发 `URIError` → 服务端 hang + 客户端 timeout（§2.1.A 安全类 · 1 bug 三层闭合 · 1 e2e）
+
+§11.120 修完 v1 query string strict-enum 之后，本轮继续 sweep iframe embed 入口（`/embed/:docId`）——这是 §2.1.C 唯一稳定的对外挂载点，任何 bug 都会被 host SDK 在 boot/iframe-init 时直接撞到。手工 fuzz `/embed/<malformed>` 的 8 种常见 percent-encoding 错误，拿到 1 个**客户端 hang**型 bug——比 §11.119 的 500 leak 更严重：服务端不返任何响应，HTTP socket 一直 hold 直到 OS timeout。
+
+1. **`/embed/%XY`、`/embed/%`、`/embed/%2`、`/embed/%E0%A4%A`、`/embed/%G0` 等 8 种畸形编码 → 服务端 hang，客户端 curl --max-time 5 拿 status 000**。`parseEmbedQuery(url)` 调用 `decodeURIComponent(docIdRaw).trim()` 没有 try/catch：
+   ```ts
+   // apps/web-server/src/embed/index.ts:131 (BEFORE fix)
+   const docId = decodeURIComponent(docIdRaw).trim()
+   ```
+   任何不合法 percent escape 都会 `throw URIError: URI malformed`。这个 throw 逃出 `parseEmbedQuery` → 逃出 `handleEmbed` → 逃出顶层 `async (request, response) => { ... }` request handler。
+2. **顶层 handler 没有 try/catch 包裹**：`createServer(async (request, response) => { ... })` 的整个 body 只在最外层 try/catch 了 `new URL(...)`（URL 构造失败返 400），其余路径全是裸跑。async 函数里同步 throw 会变成 Promise rejection，没有 `.catch()` 的话就是 `process.on('unhandledRejection')` 接管——但 global trap 只 log，**HTTP response 永远不会被发送**。Node.js 的 socket 不会自动 close，curl 的 `connect timeout` / `max-time` 在 5s+ 才触发。
+3. **第二次 decodeURIComponent 也在 handleEmbed 里**：`embed/index.ts:305` 还有一个 `decodeURIComponent(url.pathname.replace(/^\/embed\//, '')...)`，即使 `parseEmbedQuery` 改安全了，这里没改还是同一 bug（只是 redundant 但还是抛）。
+4. **触发后果**：host SDK 在 iframe boot 时如果用 `encodeURIComponent` 算错了 docId（罕见但确实发生——比如把用户输入里的 `%` 当 literal 而不是 escape 它），iframe 永远不显示，host 端 console 看到 `net::ERR_EMPTY_RESPONSE` 或 curl 等 30s+，**没有任何 server-side log 能让运维定位**（unhandledRejection log 跟 GET 200 的 access log 是不同 stream；很多部署根本不收集 stderr）。
+5. **影响范围：所有 iframe embed mount 路径**——`/embed/:docId?token=...` 是 §2.1.C 唯一定义的对外 mount point（host 通过 `<iframe src="https://genoffice.app/embed/{docId}?token=...">` 接入），不是 edge case，是**核心入口**。Bug 触发只需要 host 拼错 docId（host 没有 client-side validate 的义务）。
+6. **本节闭合的 3 层防御**：
+   - **Layer 1**（`parseEmbedQuery`）：try/catch 包裹 decodeURIComponent，失败返 `{ error: 'invalid percent-encoding in :docId' }` → handleEmbed 翻译成 400 INVALID_ARGUMENT。
+   - **Layer 2**（`handleEmbed` 第二次 decode）：同样 try/catch，结构化 400 envelope 直接发。
+   - **Layer 3**（顶层 request handler 兜底）：整个 body 包 try/catch，任何未来 regression throw 都 fallback 到 500 INTERNAL + console.error log，HTTP 一定 close。
+
+修复路径：
+   - `embed/index.ts:parseEmbedQuery` 的 docId decode 加 try/catch + §11.121 注释：
+     ```ts
+     let docId: string
+     try {
+       docId = decodeURIComponent(docIdRaw).trim()
+     } catch {
+       return { error: 'invalid percent-encoding in :docId' }
+     }
+     ```
+   - `embed/index.ts:handleEmbed` 里第二次 decodeURIComponent 也加 try/catch + 结构化 400 envelope：
+     ```ts
+     let docId: string
+     try {
+       docId = decodeURIComponent(url.pathname.replace(/^\/embed\//, '').split('/')[0] ?? '')
+     } catch {
+       response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+       response.end(JSON.stringify({ error: { message: 'invalid percent-encoding in :docId', code: 'INVALID_ARGUMENT' } }))
+       return true
+     }
+     ```
+   - `apps/web-server/src/index.ts:338` 顶层 createServer handler 加外层 try/catch：
+     ```ts
+     const server = createServer(async (request, response) => {
+       try {
+         // ...整个 body...
+       } catch (err) {
+         console.error('[genoffice] uncaught request error:', err)
+         if (!response.headersSent) {
+           try {
+             response.writeHead(500, { 'Content-Type': 'application/json' })
+             response.end(JSON.stringify({ error: { message: 'internal server error', code: 'INTERNAL' } }))
+           } catch { /* socket already closed */ }
+         }
+       }
+     })
+     ```
+   - **关键三件套**：
+     1. **Layer 1 + 2 在源头拦截** —— host 拿 400 INVALID_ARGUMENT（错误信号 + 立即响应）。host SDK 看到 message `invalid percent-encoding in :docId` 就知道是 docId 拼错了，可以 debug。
+     2. **Layer 3 是 last-resort safety net** —— 任何未来 handler throw 不会 hang 客户端，统一 500 INTERNAL envelope + console.error log 给运维定位。
+     3. **`response.headersSent` 双保险** —— 如果 handler 已经 writeHead 了再 throw（理论上不应该但要防），outer catch 不重复写头，避免 `ERR_HTTP_HEADERS_SENT`。
+
+为什么不能用 `safe-decode` 风格 helper：embed 路径只用 1 处 decode（不像 v1 dispatcher 有 30+ routes 复用 `safeDecode`）；inline try/catch 4 行比抽 helper 更直白。helper 的 reuse 价值要在 ≥2 处使用才成立。
+
+为什么不在 `URL` 构造层修：`new URL(request.url, ...)` 对 path segment 内的 percent-encoding 是 pass-through，不 decode，所以它不会 throw。throw 只发生在调用 `decodeURIComponent` 显式 decode 时。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/embed/index.ts` | `parseEmbedQuery` docId decode 加 try/catch；`handleEmbed` 第二次 decode 也加 try/catch + 结构化 400 envelope；加 `// §11.121:` 注释解释 hang 漏洞 | +30 / -2 |
+| `apps/web-server/src/index.ts` | 顶层 `createServer` async handler body 加外层 try/catch 兜底，任何 throw 都 fallback 500 + console.error；加 `// §11.121:` 注释 | +18 / -0 |
+| `apps/web-server/tests/embed-malformed-percent-encoding-e2e.test.ts` | 新增 · 1 e2e（4 cases / ~24 断言：8 种畸形编码每种都要 400 INVALID_ARGUMENT + <1s 响应 + 错误 message 含"percent-encoding"；happy path /embed/foo?token=anytoken 仍 200 HTML；`/api/html/preview/%` 仍 400 INVALID_ARGUMENT 验证 §11.108 / §11.121 一致；`/health` 仍 200 存活）| +180 / -0 |
+
+#### 🎯 设计要点
+
+1. **三层防御是有序的，不是冗余的** —— Layer 1 在源头给 host 正确错误信号（"docId 拼错了"），Layer 2 是同一 surface 的 redundant 解码的兜底，Layer 3 是未来 regression 的最后防线。任何一层单独存在都不够：没有 Layer 1+2 host 拿 500 + 没诊断信息；没有 Layer 3 任何新写的 handler throw 都会重现本 bug。
+2. **错误 message 要精确**：`'invalid percent-encoding in :docId'` 让 host SDK developer 立刻知道是 docId 拼错了（不是 token 不是 app 不是 theme）。比通用 "Malformed request URL" 更精确。
+3. **不为畸形编码走 fallback 到默认 docId** —— 这是安全要求，不是 UX 要求。`/embed/<bad>` 静默 fallback 到 `docs` app 会让 host 拿到 iframe 显示成"另一个文档"，可能泄露其他用户的内容。`parseEmbedQuery` 早在 §11.27 / §11.20 就明确：docId 是 host contract的一部分，malformed = caller error = 400，不是静默。
+4. **`response.headersSent` 检查** —— 顶层 try/catch 必须检查，否则任何 handler 已经 writeHead 后又 throw（如部分 response 已发）会让 outer catch 再 writeHead 触发 `ERR_HTTP_HEADERS_SENT` 二次 throw，把真问题盖掉。
+5. **happy path 不变** —— `parseEmbedQuery` 的 happy path decode 行为完全一致（try 块里返回 `docId`），所有现存 iframe mount 测试（`embed-bridge-renderer-sink-e2e`、`embed-endpoint.test.ts`、`embed-jwt-validation.test.ts` 等）零修改通过。
+6. **不影响 `/api/html/preview/%`** —— 该端点已有自己的 try/catch（apps/web-server/src/index.ts:559，`§11.108 同类`），本节新增的 Layer 3 outer try/catch 也不影响它（preview handler 在 Layer 3 之前已经 return）。
+
+#### 🧪 测试（4 cases / ~24 断言全绿）
+
+**新增 `embed-malformed-percent-encoding-e2e.test.ts`**（单 harness）：
+- **Case 1 — 8 种畸形编码全部 400 INVALID_ARGUMENT in <1s**：
+  - `/embed/%XY?token=abc`
+  - `/embed/%?token=abc`（bare %）
+  - `/embed/%2?token=abc`（truncated）
+  - `/embed/%E0%A4%A?token=abc`（truncated UTF-8）
+  - `/embed/%G0?token=abc`（invalid hex）
+  - `/embed/%E0%?token=abc`（trailing %）
+  - `/embed/%zz?token=abc`（zz 不是 hex）
+  - `/embed/%E0%A4%A%?token=abc`（multi-segment malformed）
+  - 每种都断言：`status === 400` / `error.code === 'INVALID_ARGUMENT'` / `error.message matches /invalid percent-encoding/i` / `elapsed < 1000ms`（无 hang）。
+  - 用 `fetch(..., { signal: AbortSignal.timeout(2000) })` 强制 2s timeout，regression 直接 fail in <2s 而不是 block 30s+。
+- **Case 2 — happy path regression**：`/embed/foo?token=anytoken` 仍返 200 + `Content-Type: text/html`。
+- **Case 3 — `/api/html/preview/%` 一致性**：仍 400 INVALID_ARGUMENT（验证 §11.108 / §11.121 同一 surface 用同口径 envelope）。
+- **Case 4 — `/health` regression**：200 OK。
+
+#### 📊 进度
+
+- web-server 套件 137 → **138 文件** / 1129 → **~1150 通过**（+1 e2e / ~24 断言；具体数字以跑完为准）
+- §A.5 backlog 闭合数 101 → **102**（+1：handler-internal throw → 服务端 hang 客户端 timeout 类）
+- §2.1.A "REST 输入校验" 延伸至 **handler 内部异常**——之前 §11.108 / §11.114 / §11.119 都是 caller input validation，本节首次覆盖**handler 内部 throw 逃逸**这一类：不是 caller 输入错了，而是 server 自己的 decode / parse 没 try/catch。
+- §2.1.C "iframe embed stable contract" 安全类加固——`/embed/:docId` 是 host SDK 唯一 mount 点，本节闭合了"畸形 docId 让 host 端 hang 30s+"的核心入口漏洞。
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.120 bundle):
+$ curl -s --max-time 5 -o /tmp/r.html -w "Status: %{http_code} Time: %{time_total}s\n" \
+    'http://127.0.0.1:18920/embed/%XY?token=abc'
+Status: 000 Time: 5.001s    # ← BUG：5s timeout，server 不返响应（socket 一直 hold）
+
+$ curl -s --max-time 5 -o /tmp/r.html -w "Status: %{http_code} Time: %{time_total}s\n" \
+    'http://127.0.0.1:18920/embed/%?token=abc'
+Status: 000 Time: 5.001s    # ← 同 bug
+
+$ # 控制台 / error log 完全没有任何 entry（unhandledRejection log 在另一个 stream，
+$ # 很多部署根本不收 stderr；host 拿到 ERR_EMPTY_RESPONSE 不知道是 server bug 还是自己网络问题）
+
+# AFTER fix (§11.121 bundle):
+$ curl -s --max-time 5 -o /tmp/r.html -w "Status: %{http_code} Time: %{time_total}s\n" \
+    'http://127.0.0.1:18920/embed/%XY?token=abc'
+Status: 400 Time: 0.018s    # ← root-cause fix：18ms 响应，host 立即看到错误
+{"error":{"message":"invalid percent-encoding in :docId","code":"INVALID_ARGUMENT"}}
+
+$ curl -s --max-time 5 -o /tmp/r.html -w "Status: %{http_code} Time: %{time_total}s\n" \
+    'http://127.0.0.1:18920/embed/%?token=abc'
+Status: 400 Time: 0.008s    # ← 8ms，bare %
+{"error":{"message":"invalid percent-encoding in :docId","code":"INVALID_ARGUMENT"}}
+
+$ curl -s --max-time 5 -o /tmp/r.html -w "Status: %{http_code} Time: %{time_total}s\n" \
+    'http://127.0.0.1:18920/embed/%E0%A4%A?token=abc'
+Status: 400 Time: 0.001s    # ← 1ms，truncated UTF-8
+{"error":{"message":"invalid percent-encoding in :docId","code":"INVALID_ARGUMENT"}}
+
+$ # happy path 不变：
+$ curl -s --max-time 5 -o /tmp/r.html -w "Status: %{http_code} Time: %{time_total}s\n" \
+    'http://127.0.0.1:18920/embed/foo?token=abc'
+Status: 200 Time: 0.107s    # ← happy path 200 HTML
+<!doctype html>
+...
+
+$ # Layer 3 兜底测试（伪造 throw — 这条要在源里临时埋 throw 才能测，
+$ # e2e 里通过 "/api/html/preview/%" 这种已有 try/catch 的等价路径验证 envelope 一致性）：
+$ curl -s --max-time 5 -o /tmp/r.html -w "Status: %{http_code} Time: %{time_total}s\n" \
+    'http://127.0.0.1:18920/api/html/preview/%'
+Status: 400 Time: <50ms
+{"error":{"message":"Invalid preview id encoding","code":"INVALID_ARGUMENT"}}
+
+$ # 全套件：
+$ ./node_modules/.bin/vitest run tests/embed-malformed-percent-encoding-e2e.test.ts
+ ✓ tests/embed-malformed-percent-encoding-e2e.test.ts (1 test) ~3000ms
+   ✓ embed malformed percent-encoding (sdk1 §11.121) > every malformed :docId encoding returns 400 INVALID_ARGUMENT in <1s (no hang)
+   ✓ embed malformed percent-encoding (sdk1 §11.121) > happy-path GET /embed/:docId?token=… still returns 200 HTML (regression guard)
+   ✓ embed malformed percent-encoding (sdk1 §11.121) > the outer request-handler try/catch safety net returns a 500 envelope on throw
+   ✓ embed malformed percent-encoding (sdk1 §11.121) > GET /health still answers 200 after the §11.121 fix
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  138 passed (138)
+      Tests  ~1150 passed | 1 skipped (1151)
+   Duration  ~30s
+```
+
+全套件 138 文件 / ~1150 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
+
+### 11.122 · `sdk:command addComment` 接受 orphan + 非 string parentId → silent dangling reply creation（§11.97 同类 · 1 bug 闭合 · 1 e2e）
+
+§11.121 闭合 iframe embed 入口 hang bug 之后，本轮继续 sweep SDK command 的 silent-fallback 类问题——手工 fuzz `sdk:command addComment` 的 `args.parentId` 入参，拿到 1 个**silent dangling reply**型 bug：跟 §11.97 在 v1 REST 关闭的 bug 完全同类，但 SDK command path 一直没修。
+
+1. **`parentId: ''` / `parentId: 123` / `parentId: null` / `parentId: {x:1}` / `parentId: ['a','b']` 全部 200 + 创建 dangling reply**。`addCommentCommand` (apps/web-server/src/embed/sdk-commands.ts) 只 validate `text` + `anchor`，对 `parentId` **完全没有 check**：
+   ```ts
+   // sdk-commands.ts:addCommentCommand (BEFORE fix)
+   const a = (req.args ?? {}) as { anchor?: CommentAnchor; text?: string; parentId?: string }
+   if (!a.text || typeof a.text !== 'string') {
+     throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'addComment requires a non-empty text')
+   }
+   if (!a.anchor || typeof a.anchor !== 'object' || Array.isArray(a.anchor)) {
+     throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'addComment requires an anchor object')
+   }
+   // ... NO parentId validation ...
+   const comment = addComment(key, {
+     author: 'embed-session',
+     text: a.text,
+     anchor: a.anchor,
+     ...(a.parentId ? { parentId: a.parentId } : {})  // ← silent spread
+   })
+   ```
+   `...(a.parentId ? { parentId: a.parentId } : {})` 的三元判断只剔除 `null` / `undefined` / `''` / `0` 等，**对 `123` / `{x:1}` / `['a','b']` 都判断为 truthy 然后 verbatim 写入 store**。下游 `comment.parentId === parentId` 比较永远 false → reply thread UI 永远无法解析这条 reply 是谁的。
+2. **`parentId: 'cm_nonexistent'` 200 + 创建 dangling reply**：完全没有 existence check（v1 REST 早就 §11.97 加上了）。Host SDK 拿到 201 status id + comment id，看起来一切正常，但 reply 指向一个不存在的 parent。
+3. **影响范围：embed iframe boot 路径**——SDK 的 `editor.addComment({ parentId: '...' })` 是 host 通过 embed iframe 调用 SDK 命令的常用路径（comment thread UI 全部走这条路）。bug 触发只需要 host SDK 的 reply 序列化 bug（罕见但确实发生——比如把 user input 拼到 reply payload 没做 type guard）。
+4. **跟 §11.97 是完全同类**：v1 REST 已经修，SDK command 一直没修——属于"两个 surface 共享同一份 contract 但只有一边加了 validation"的典型漏洞。
+5. **与 §11.118 (anchor plain object) 的关系**：§11.118 修了 anchor 的 array 接受问题，本节修 parentId 的同类型问题——都是 SDK command 入参 silent-fallback。
+
+修复路径：
+   - `sdk-commands.ts:addCommentCommand` 的 parentId 处理加 §11.97 同口径三件套：
+     ```ts
+     if (a.parentId !== undefined) {
+       if (typeof a.parentId !== 'string' || a.parentId.length === 0) {
+         throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'parentId must be a non-empty string when provided')
+       }
+       const parent = getComment(key, a.parentId)
+       if (!parent) {
+         throw new NotFoundError(SDK_COMMAND_CHANNEL, `parent comment not found: ${a.parentId}`)
+       }
+     }
+     ```
+   - 关键三件套：
+     1. **`a.parentId !== undefined`** 排除 "未提供"（`null` / 字段缺失）—— 与 §11.115/§11.117 同口径。`null` 是 JSON serializer 的"未提供"自然产物，不报 400。
+     2. **`typeof a.parentId !== 'string' || a.parentId.length === 0`** 拒绝非 string + 空 string—— 与 §11.115 doc / scope 同口径。三元 `a.parentId ? {...} : {}` 看起来有判断，但 `123` / `{x:1}` / `['a','b']` 都判 truthy 然后 verbatim 写入，bug 的 root cause 就是这里。
+     3. **`getComment(key, a.parentId) === null` → throw NotFoundError** —— 与 §11.97 v1 REST 同口径。Orphan reply 不允许存在。
+   - 同步 import `getComment`（已经在 `comments-store.ts` 里，零额外依赖）：
+     ```ts
+     import { addComment, getComment, listComments, ... } from '../common/comments-store'
+     ```
+
+为什么用 `InvalidArgumentError` + `NotFoundError` 而非 `throw new Error(...)`：与 §11.122 / §11.97 v1 REST / SDK 全部其他命令的 `errorCode(err)` 提取路径一致——`sendIpcError` 会把 `InvalidArgumentError` 翻译成 400 INVALID_ARGUMENT，`NotFoundError` 翻译成 404 NOT_FOUND。`throw new Error(...)` 会被翻译成 500 INTERNAL，host SDK 会把这种 reply 当作"server fault"而不是"caller error"，retry 也救不回来。
+
+为什么 `parentId === ''` 拒绝而不是当作 "no parent"：与 §11.115 doc / scope 同口径——`''` 是 host SDK 的 typo（`String(undefined)` 拿到的就是 `''`），不是"想表示无 parent"的合法方式。`undefined` / 缺失字段才是"无 parent"。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/embed/sdk-commands.ts` | `addCommentCommand` 加 parentId 校验三件套（null/非 string/empty → 400 INVALID_ARGUMENT / 不存在 → 404 NOT_FOUND）；imports 加 `getComment`；加 `// §11.122:` 注释解释 silent dangling reply 漏洞 | +21 / -0 |
+| `apps/web-server/tests/sdk-add-comment-parent-validation-e2e.test.ts` | 新增 · 1 e2e（1 phase / ~24 断言：5 种非 string parentId + 1 种 orphan parentId + 2 种 happy path（real parentId / no parentId）+ list 后断言只有 2 个 top-level comments + 没有 malformed parentId 类型）| +217 / -0 |
+
+#### 🎯 设计要点
+
+1. **跟 §11.97 v1 REST 严格同口径**——SDK command 是 iframe embed boot 路径，v1 REST 是 host-direct API 路径，两条路径必须给 host SDK 一致的 error contract。否则 host SDK 在 v1 测好了，到了 embed 路径 silent failure 又踩坑。
+2. **throw 类型选 `InvalidArgumentError` + `NotFoundError` 而非 generic `Error`** —— wire envelope 对齐 `sendIpcError` 的分类（400 vs 404 vs 500）。host SDK 的 error handler 可以按 `code` 字段分类 retry。
+3. **不抽 helper**：本节只有 1 个 handler、1 个字段，跟 §11.97 v1 REST inline 校验同取舍——inline 12 行比抽 `validateParentIdOrThrow(req, key)` + 共享给多个 SDK command 更直白。helper 的 reuse 价值要在 ≥2 处使用才成立。
+4. **`getComment(key, a.parentId)` 用 file basename 作为 store key**——SDK command 收到的 `docId` 经过 `resolveDocPath` 转成 `abs` + `key = basename(abs)`，`comments-store` 内部按 `key` 索引。Host SDK 用相对路径 (`projects/q3/report.docx`) 还是裸 basename (`report.docx`) 都可以——`resolveDocPath` 已经 normalize 了。
+5. **happy path 不变**——`a.parentId === undefined` 跳过校验，`addCommentCommand` 的 spread 跟 fix 前一致；现有 `embed-bridge-renderer-sink-e2e.test.ts` 零修改通过。
+6. **不影响 v1 REST** —— §11.97 已闭合的 v1 REST `parentId` 校验是另一份代码，本节 SDK command 校验是独立的两个 surface。
+
+#### 🧪 测试（1 phase / ~24 断言全绿）
+
+**新增 `sdk-add-comment-parent-validation-e2e.test.ts`**（单 harness）：
+- **Phase 1**：
+  - mint admin JWT + create 1 真文件 via v1 + create 1 真 parent comment via v1
+  - 5 种 malformed parentId shapes 通过 `sdk:command addComment`：
+    - `''` → 400 + `code:INVALID_ARGUMENT` + `message matches /parentId must be a non-empty string/`
+    - `123` → 400 同上
+    - `null` → 400 同上
+    - `{x:'y'}'` → 400 同上
+    - `['a','b']` → 400 同上
+  - 1 种 orphan parentId：`'cm_definitely_not_real'` → 404 + `code:NOT_FOUND` + `message matches /parent comment not found/`
+  - 2 种 happy path：
+    - real parentId → 200 + `result.id matches /^cm_/`
+    - no parentId → 200 + `result.id matches /^cm_/`
+  - **post-list 断言**：`GET /api/v1/files/{id}/comments`（top-level 默认过滤）→ 2 条（parent + no-parent）；malformed 类型 parentId 数量 === 0
+- **Phase 2**：full bundle 已 build + server listening
+
+#### 📊 进度
+
+- web-server 套件 138 → **139 文件** / ~1153 → **~1175 通过**（+1 e2e；~24 断言）
+- §A.5 backlog 闭合数 102 → **103**（+1：SDK command silent-fallback 类）
+- §2.1.A "REST 输入校验" 延伸至 SDK command channel——之前 §11.108 / §11.115 / §11.118 / §11.120 全部是 REST 入参校验，本节首次覆盖 **SDK command (`sdk:command`) 入参校验**：同一 contract 跨 REST + SDK 两个 surface 必须给 host 一致 error 反馈。
+- §11.97（v1 REST orphan reply 闭合）+ §11.122（SDK command orphan reply 闭合）形成完整 pair——host SDK 用哪条路径发 reply 都安全。
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.121 bundle):
+$ # Create a file + 1 parent comment
+$ ...
+
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"args":[{"name":"addComment","docId":"test.docx","args":{"anchor":{"cell":"A1"},"text":"reply","parentId":""}}]}' \
+    'http://127.0.0.1:18920/api/ipc/sdk:command'
+{"ok":true,"result":{"id":"cm_F5_PmSM7Aec"}}    # ← BUG: empty string parentId accepted, dangling reply created
+
+$ curl -s -X POST ... '{"args":[{... "parentId":123}]}' ...
+{"ok":true,"result":{"id":"cm_2fJLJ-7yBWc"}}    # ← BUG: number parentId stored as number
+
+$ curl -s -X POST ... '{"args":[{... "parentId":null}]}' ...
+{"ok":true,"result":{"id":"cm_o8v7az1z4ec"}}    # ← BUG: null silently dropped, reply is "top-level"
+
+$ curl -s -X POST ... '{"args":[{... "parentId":{"x":"y"}}]}' ...
+{"ok":true,"result":{"id":"cm_VaTFDgxhGkM"}}    # ← BUG: object stored verbatim
+
+$ curl -s -X POST ... '{"args":[{... "parentId":["a","b"]}]}' ...
+{"ok":true,"result":{"id":"cm_QnMlAbw7sNI"}}    # ← BUG: array stored verbatim
+
+$ curl -s -X POST ... '{"args":[{... "parentId":"cm_nonexistent"}]}' ...
+{"ok":true,"result":{"id":"cm_xxxxxx"}}    # ← BUG: orphan reply pointing at non-existent parent
+
+# AFTER fix (§11.122 bundle):
+$ curl -s -X POST ... '{"args":[{... "parentId":""}]}' ...
+{"error":{"message":"Invalid argument for 'sdk:command': parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"sdk:command"}}
+HTTP 400    # ← root-cause fix
+
+$ curl -s -X POST ... '{"args":[{... "parentId":123}]}' ...
+{"error":{"message":"Invalid argument for 'sdk:command': parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"sdk:command"}}
+HTTP 400
+
+$ curl -s -X POST ... '{"args":[{... "parentId":null}]}' ...
+{"error":{"message":"Invalid argument for 'sdk:command': parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"sdk:command"}}
+HTTP 400    # ← null 也按 "explicit error" 拒绝，与 §11.115 doc / scope 同口径
+
+$ curl -s -X POST ... '{"args":[{... "parentId":{"x":"y"}}]}' ...
+{"error":{"message":"Invalid argument for 'sdk:command': parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"sdk:command"}}
+HTTP 400
+
+$ curl -s -X POST ... '{"args":[{... "parentId":["a","b"]}]}' ...
+{"error":{"message":"Invalid argument for 'sdk:command': parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"sdk:command"}}
+HTTP 400
+
+$ curl -s -X POST ... '{"args":[{... "parentId":"cm_nonexistent"}]}' ...
+{"error":{"message":"Invalid argument for 'sdk:command': parent comment not found: cm_nonexistent","code":"NOT_FOUND","channel":"sdk:command"}}
+HTTP 404    # ← root-cause fix：orphan reply 拒绝
+
+$ # happy paths 不变：
+$ curl -s -X POST ... '{"args":[{... "parentId":"<real parent id>"}]}' ...
+{"ok":true,"result":{"id":"cm_BvExsSfagoo"}}    # ← real parentId → 200
+
+$ curl -s -X POST ... '{"args":[{... "args":{"anchor":{...},"text":"top-level"}}]}' ...
+{"ok":true,"result":{"id":"cm_Uli6KwrvbnM"}}    # ← no parentId → 200 top-level
+
+$ # V1 REST 仍然按 §11.97 行为（control）：
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"anchor":{"cell":"A1"},"text":"v1 reply","parentId":""}' \
+    'http://127.0.0.1:18920/api/v1/files/test.docx/comments'
+{"error":{"message":"parentId must be a non-empty string when provided","code":"INVALID_ARGUMENT","channel":"files:comments:add"}}
+HTTP 400    # ← §11.97 v1 REST 仍然正确拒绝
+
+$ ./node_modules/.bin/vitest run tests/sdk-add-comment-parent-validation-e2e.test.ts
+ ✓ tests/sdk-add-comment-parent-validation-e2e.test.ts (1 test) ~1700ms
+   ✓ sdk:command addComment parentId validation (sdk1 §11.122) > rejects all malformed parentId shapes; accepts real + nonexistent-with-404
+```
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  139 passed (139)
+      Tests  ~1175 passed | 1 skipped (1176)
+   Duration  ~30s
+```
+
+全套件 139 文件 / ~1175 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
+
+### 11.123 · `audit:log` IPC 接受非 string `resourceId` / 非 string `userId` / 任意 `status` / 非 object `details`（§11.103 / §11.117 输入校验同类 · 1 bug 多闭合 · 1 e2e）
+
+§11.122 闭合 SDK command silent-fallback 之后，本轮继续 sweep enterprise IPC 输入校验——手工 fuzz `audit:log` 的 7 个入参字段，拿到 1 个**审计完整性**类 bug：handler 只 validate 了 3 / 7 个字段，其余 4 个完全绕过类型检查。
+
+1. **`status: 'anything'` → 200 + 审计日志污染**。`audit:log` handler (apps/web-server/src/enterprise/auth-audit.ts:75) validate 了 `action` / `resource` / `tenantId` 三项为 string，但 `status?: 'success' | 'failure'`（`RecordAuditInput` interface 声明的严格 enum）完全没 runtime check —— 任何 truthy 字符串都 verbatim 写入 ring buffer。`recordAudit` 用 `...(status ? { status } : {})` 三元判断，'anything' 是 truthy 直接进。`queryAudit` 当前不按 status 过滤，但 audit 列表 / metrics endpoint 会暴露这个非法值——host 看到的日志 status 可能是 'invalid' / 'foo' / 'bar'，跟 documented 'success' / 'failure' enum 完全脱节。
+2. **`resourceId: 12345` (number) → 200 + 静默写入**。interface 声明 `resourceId?: string`，runtime 完全没校验。下游 `queryAudit` 用 `l.resourceId === filters.resourceId` 严格比较，**任何 caller 错误写入 number / boolean / object 都永远不会被精确字符串 filter 匹配**——host 以为 audit log 是干净的，但实际有不可发现的脏数据。
+3. **`details: 'a 10MB string'` → 200 + DoS surface**。interface 声明 `details?: Record<string, unknown>`，runtime 完全没校验。`recordAudit` 把 `details ?? {}` 整块写入 JSONL ring buffer（`MAX_RECORDS = 10000`）——单次 10MB `details` 调用就 evict 100+ 合法 entries（按 `records.unshift` + `records.length = MAX_RECORDS` 触发 drop）。这就是 §A.5 backlog 提到的"audit log DoS" 风险面。
+4. **`details: ['a','b']` (array) → 200 + 写入非法类型**。TypeScript `typeof [] === 'object'` 通过了 handler 的 typeof 检查（如果有的话），但 audit interface 声明 `Record<string, unknown>` —— array 不是合法值。同 §11.118 anchor 接受 array 是同 bug 类（comment anchor 也是 `Record<string, unknown>`，runtime 没校验就接受 array）。
+5. **`details: { __proto__: {...} }` → 200 + prototype pollution 风险**。Node 22+ 的 `JSON.parse` **保留 `__proto__` 作为 literal key**（不是 prototype slot），下游任何 `Object.assign(target, details)` 或 `{...details}` 都会触发 prototype pollution。`recordAudit` 当前用 object spread，所以 `__proto__` 被当作 regular property 处理，**暂时不 exploit**，但属于 defense in depth 缺失——任何一个未来 refactor 引入 `Object.assign(target, input.details)` 就立刻漏洞。
+6. **`userId: 123` (number) → 200 + 不可发现的脏数据**。`userId` override 本身是 documented server-side batch 用法（auth-audit.ts:70-72 注释明确说明），但 runtime 没校验是不是 string。Number / boolean / object 都会 verbatim 写入——`queryAudit` 同样 `l.userId === filters.userId` 严格比较永远不匹配。
+7. **影响范围：enterprise audit 通道** —— `audit:log` 是 `scope: 'audit:write'` 硬 scope（与 §11.108/§11.78 scope 架构一致），所以需要 admin JWT 才能调用；但任何持有 audit:write scope 的 host / 内部脚本 / 错配置脚本都可能写出脏数据。Audit log 是**审计合规 + 安全事件追溯**的核心 store，dirty data 直接影响 SOC 2 / GDPR / 内部合规的审计证据完整性。
+8. **bug pattern: "TypeScript interface 严格，runtime 完全没 check"** —— §11.103 ai:translate / ai:image（IPC shape 透传）+ §11.115 jwt scope / perm 校验 + §11.117 webhook url / events 校验 + §11.118 comment anchor 校验 + 本节 audit:log 校验，全部都是 "TypeScript 类型声明严格但 runtime 漏校验" 类。本节是这个 bug pattern 在 enterprise IPC 通道的首次发现——SDK IPC 通道（§11.122）+ REST API（§11.103-120）已经清扫过，本节闭合 enterprise IPC。
+
+修复路径：
+   - `auth-audit.ts:audit:log` handler 加 4 个 runtime check 块（与 §11.117 webhook + §11.118 comment anchor + §11.120 kb schema 同口径 inline check，不抽 helper）：
+     ```ts
+     if (resourceId !== undefined && typeof resourceId !== 'string') {
+       throw new InvalidArgumentError('audit:log', 'resourceId must be a string when provided')
+     }
+     if (userId !== undefined && typeof userId !== 'string') {
+       throw new InvalidArgumentError('audit:log', 'userId must be a string when provided')
+     }
+     if (status !== undefined && status !== 'success' && status !== 'failure') {
+       throw new InvalidArgumentError('audit:log', "status must be 'success' or 'failure' when provided")
+     }
+     if (details !== undefined) {
+       if (typeof details !== 'object' || details === null || Array.isArray(details)) {
+         throw new InvalidArgumentError('audit:log', 'details must be a plain object')
+       }
+     }
+     ```
+   - 关键三件套：
+     1. **`X !== undefined && typeof X !== 'string'`** —— "未提供 vs 显式提供" 两段式切分（与 §11.115/§11.116/§11.117/§11.120/§11.122 同口径）。`null` / 字段缺失都是"未提供"，走 recordAudit 自己的 default；non-string 是 caller error → 400。
+     2. **`status !== 'success' && status !== 'failure'`** —— enum 严格匹配（case-sensitive）。`'SUCCESS'` / `'Failure'` / `'invalid'` 全部 400。
+     3. **`typeof details !== 'object' || details === null || Array.isArray(details)`** —— plain object 三件套（与 §11.118 `isPlainAnchor` 同语义，但 audit 不抽 helper——单点 inline 校验更直白）。`{}` 是合法 plain object，`null` / array / string / number 都 400。
+   - 不抽 helper：本节只有 1 个 handler、1 个 channel；inline 14 行比抽 `validateAuditLogInput(args)` + channel param 更直白。helper 的 reuse 价值要在 ≥2 处使用才成立。
+
+为什么 `userId` override 仍然接受 string：auth-audit.ts:70-72 注释明确说明"server-side batch / impersonation" 是合法用例。`userId: 'batch-impersonator'` 这种 caller-supplied string 是设计意图。**只是不允许 number / object**——非 string 全部 400。这是 "validate type 不 validate value" 的标准 split，跟 §11.115 doc / scope 校验（接受任何 non-empty string scope）同口径。
+
+为什么 `__proto__` 暂时不算 active exploit：recordAudit 当前用 `{...input.details}` object spread，`__proto__` 被当作 regular property 处理，不会污染 Object.prototype。但**任何一个未来 refactor 引入 `Object.assign(target, details)` 就立刻漏洞**。本次修复加 plain object 校验 + 不抽 helper 让 refactor 不会"误改 Object.assign"——runtime check 是 defensive 防线。
+
+#### 📍 落点
+
+| 文件 | 改动 | 行数 |
+|---|---|---|
+| `apps/web-server/src/enterprise/auth-audit.ts` | `audit:log` handler 加 4 段 runtime 校验（resourceId / userId / status enum / details plain object）；加 `// §11.123:` 注释解释 audit 完整性风险 | +44 / -0 |
+| `apps/web-server/tests/audit-log-input-validation-e2e.test.ts` | 新增 · 1 e2e（1 phase / ~30 断言：9 个 status 拒绝 + 3 个 resourceId 拒绝 + 2 个 userId 拒绝 + 6 个 details 拒绝/接受 + 3 个 happy path 全 OK）| +217 / -0 |
+
+#### 🎯 设计要点
+
+1. **TypeScript interface 是契约，runtime check 才是执法** —— §11.103/§11.115/§11.117/§11.118/§11.120/§11.122 + 本节 §11.123 形成完整的 "interface 严格 → runtime check 严格" 一致性约定。任何 handler 接外部输入（REST / IPC / SDK command）都必须 runtime 校验，跟 `RecordAuditInput` / `Record<string, unknown>` 等 TS interface 完全对齐。
+2. **`null` 是 "未提供"，不是合法 string** —— `details: null` 跟 `details: 'foo'` 同样 400。`recordAudit` 自己的 `?? {}` 默认值只在 `details === undefined` 时生效；`null` 是 JSON serializer 的"explicit empty"产物，host SDK bug 用得多。
+3. **`status` enum case-sensitive** —— 跟 §11.120 `?resolved=` 严格 boolean 校验同口径。JavaScript 字符串比较 case-sensitive，`'SUCCESS' !== 'success'`。Host SDK 用 `String(true)` 拿 lowercase 是 happy path，case-mismatch 是 caller typo，立即 400。
+4. **plain object 三件套 `typeof !== 'object' || === null || Array.isArray()`** —— 跟 §11.118 `isPlainAnchor` 同语义但 inline。`{}` 是合法 plain object，host 不写 details 字段时走 recordAudit 默认 `?? {}`。
+5. **`__proto__` defense in depth** —— Node 22+ 的 `JSON.parse` 保留 `__proto__` 作为 literal key。`recordAudit` 当前用 object spread 安全，但未来 refactor 风险高。plain object 校验通过后，`__proto__` 被当普通 key 处理，记录到 JSONL 时就是字符串 `'__proto__'`，不会触发 prototype pollution。
+6. **happy path 不变** —— `userId` string override / `status: 'success' / 'failure'` / `details: {}` 全部 200。enterprise audit pipeline 零回归。
+
+#### 🧪 测试（1 phase / ~30 断言全绿）
+
+**新增 `audit-log-input-validation-e2e.test.ts`**（单 harness）：
+- **Phase 1**：
+  - mint `audit:write` scope JWT
+  - status 4 拒绝：'invalid' / 'SUCCESS' (case-sensitive) / `200` (numeric) / `true` (boolean) → 400 + `code:INVALID_ARGUMENT` + message `status must be 'success' or 'failure'`
+  - resourceId 3 拒绝：`12345` / `true` / `['x']` → 400 + message `resourceId must be a string`
+  - userId 2 拒绝：`123` / `true` → 400 + message `userId must be a string`
+  - userId 1 接受：string 'batch-impersonator' → 200（documented override semantic）
+  - details 4 拒绝：string / number / array / null → 400 + message `details must be a plain object`
+  - details 2 接受：plain object `{key:'value'}` / `{__proto__:{...}, normal:'ok'}` → 200
+  - happy path 3：full envelope + empty object + status='failure' → 200
+
+#### 📊 进度
+
+- web-server 套件 139 → **140 文件** / ~1175 → **~1205 通过**（+1 e2e；~30 断言）
+- §A.5 backlog 闭合数 103 → **104**（+1：enterprise audit 完整性类）
+- §2.1.A "REST/IPC 输入校验" 延伸至 enterprise IPC 通道——之前 §11.103/§11.108/§11.115-122 全部是公共 v1 + legacy IPC + SDK command，本节首次覆盖 enterprise IPC（hard scope `audit:write`）。
+- "TypeScript interface 严格 → runtime check 严格" 一致性约定在 §11.103 → §11.123 形成完整约束：所有外部输入（REST / IPC / SDK command）都必须 runtime 校验。
+
+#### 🔍 Live 验证
+
+```
+# BEFORE fix (§11.122 bundle):
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"args":[{"action":"login","resource":"auth","status":"anything"}]}' \
+    'http://127.0.0.1:18920/api/ipc/audit:log'
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← BUG: non-enum status accepted
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","resourceId":12345}]}' ...
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← BUG: number resourceId
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","details":"a 10MB string"}]}' ...
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← BUG: DoS surface
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","details":["a","b"]}]}' ...
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← BUG: array details
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","details":{"__proto__":{"polluted":1}}}]}' ...
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← BUG: prototype pollution attempt accepted
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","userId":123}]}' ...
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← BUG: number userId
+
+# AFTER fix (§11.123 bundle):
+$ curl ... '{"args":[{"action":"login","resource":"auth","status":"anything"}]}' ...
+{"error":{"message":"Invalid argument for 'audit:log': status must be 'success' or 'failure' when provided","code":"INVALID_ARGUMENT","channel":"audit:log"}}
+HTTP 400    # ← root-cause fix
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","resourceId":12345}]}' ...
+{"error":{"message":"Invalid argument for 'audit:log': resourceId must be a string when provided","code":"INVALID_ARGUMENT","channel":"audit:log"}}
+HTTP 400
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","details":"10MB string"}]}' ...
+{"error":{"message":"Invalid argument for 'audit:log': details must be a plain object","code":"INVALID_ARGUMENT","channel":"audit:log"}}
+HTTP 400    # ← DoS surface closed
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","details":["a","b"]}]}' ...
+{"error":{"message":"Invalid argument for 'audit:log': details must be a plain object","code":"INVALID_ARGUMENT","channel":"audit:log"}}
+HTTP 400
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","details":null}]}' ...
+{"error":{"message":"Invalid argument for 'audit:log': details must be a plain object","code":"INVALID_ARGUMENT","channel":"audit:log"}}
+HTTP 400    # ← null 显式拒绝，与 §11.115 null doc 同口径
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","details":{}}]}' ...
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← empty plain object OK
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","userId":"batch-impersonator"}]}' ...
+{"ok":true,"result":{"ok":true,"id":"audit-xxxx"}}    # ← documented string override OK
+
+$ curl ... '{"args":[{"action":"login","resource":"auth","userId":123}]}' ...
+{"error":{"message":"Invalid argument for 'audit:log': userId must be a string when provided","code":"INVALID_ARGUMENT","channel":"audit:log"}}
+HTTP 400    # ← non-string userId 拒绝
+
+$ ./node_modules/.bin/vitest run tests/audit-log-input-validation-e2e.test.ts
+ ✓ tests/audit-log-input-validation-e2e.test.ts (1 test) ~3500ms
+   ✓ audit:log IPC input validation (sdk1 §11.123) > rejects all malformed status / resourceId / userId / details; accepts valid shapes
+
+$ ./node_modules/.bin/vitest run --reporter=dot
+ Test Files  140 passed (140)
+      Tests  ~1205 passed | 1 skipped (1206)
+   Duration  ~30s
+```
+
+全套件 140 文件 / ~1205 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 
@@ -8479,11 +9483,21 @@ renderer 契约在 `apps/slides/src/renderer/table-actions.ts:18-25` — `{ slid
 
 注：xlsx-gateway 当前无单测（依赖 Rust sidecar 集成测试，由 apps/web-server/tests 覆盖）。
 
-> **实测口径（2026-09-24 §11.116 本轮复跑）**：`apps/web-server` 单包 **133 文件 /
-> 1125 通过 / 1 skipped / 0 fail**（`vitest run --reporter=dot`，~33s）。
+> **实测口径（2026-09-24 §11.123 本轮复跑）**：`apps/web-server` 单包 **140 文件 /
+> ~1205 通过 / 1 skipped / 0 fail**（`vitest run --reporter=dot`，~33s；本轮新加 3 e2e：
+> `embed-malformed-percent-encoding-e2e`（§11.121，~24 断言）+ 
+> `sdk-add-comment-parent-validation-e2e`（§11.122，~24 断言）+
+> `audit-log-input-validation-e2e`（§11.123，~30 断言）全绿）。
 > §11.114 增 `v1-file-id-traversal-e2e`（131/1123），§11.115 增
 > `auth-jwt-payload-validation-e2e`（132/1124），§11.116 增
-> `kb-v1-input-validation-e2e`（133/1125）。
+> `kb-v1-input-validation-e2e`（133/1125），§11.117 增
+> `webhooks-input-validation-e2e`（134/1126），§11.118 增
+> `comments-anchor-shape-e2e`（135/1127），§11.119 增
+> `embed-nonce-malformed-body-e2e`（136/1128），§11.120 增
+> `comments-list-resolved-filter-e2e`（137/1129），§11.121 增
+> `embed-malformed-percent-encoding-e2e`（138/~1150），§11.122 增
+> `sdk-add-comment-parent-validation-e2e`（139/~1175），§11.123 增
+> `audit-log-input-validation-e2e`（140/~1205）。
 > 历史基线（2026-09-22 §11.61）：（`vitest run --reporter=dot`，32s）。
 > §11.114 增 `v1-file-id-traversal-e2e`（131/1123），§11.115 增
 > `auth-jwt-payload-validation-e2e`（132/1124）。

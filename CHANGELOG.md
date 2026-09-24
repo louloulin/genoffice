@@ -11,6 +11,50 @@ Releases are tagged in git; the most recent tag is also the current
 
 ### Fixed
 
+- **enterprise `audit:log` IPC accepted malformed `status` /
+  `resourceId` / `userId` / `details`** — the handler validated
+  `action` / `resource` / `tenantId` as strings but skipped runtime
+  type checks for the other four fields declared in
+  `RecordAuditInput`. Concrete bugs: `status: 'anything'` (non-enum)
+  polluted the audit log with values outside the documented
+  'success' | 'failure' set; `resourceId: 12345` (number) silently
+  bypassed the `string` contract and would never match
+  `queryAudit`'s strict-equality filter; `details: '10MB string'`
+  was a DoS surface (single call could evict 100+ legitimate
+  entries via MAX_RECORDS ring overflow); `details: ['a','b']`
+  (array) and `details: { __proto__: {...} }` (prototype pollution
+  attempt) both bypassed the documented `Record<string, unknown>`
+  shape; `userId: 123` (number) was an undocumented caller error
+  on the existing override path. Now: resourceId / userId must be
+  non-empty string; status must be 'success' | 'failure'; details
+  must be a plain object. Empty / omitted fields keep using the
+  recordAudit default. (sdk1 §11.123)
+- **sdk command `sdk:command addComment` accepted orphan + non-string
+  `parentId`** — the SDK command path skipped the `parentId` validation
+  that v1 REST already enforces (§11.97). `parentId: ''` /
+  `parentId: 123` / `parentId: null` / `parentId: {x:1}` /
+  `parentId: ['a','b']` all returned 200 + created dangling replies
+  (the truthy-spread `...(a.parentId ? { parentId } : {})` accepted
+  every non-empty / non-zero / non-null value verbatim and stored it).
+  `parentId: 'cm_nonexistent'` also returned 200 + created a reply
+  pointing at a non-existent parent. Now mirrors the §11.97 v1 REST
+  contract: non-string / empty → 400 INVALID_ARGUMENT; nonexistent
+  parent → 404 NOT_FOUND. (sdk1 §11.122)
+- **embed `GET /embed/:docId` malformed percent-encoding hung the
+  server** — `parseEmbedQuery()` and `handleEmbed()` both called
+  `decodeURIComponent()` on the path segment with no try/catch. Any
+  malformed escape (`/embed/%XY`, `/embed/%`, `/embed/%2`,
+  `/embed/%E0%A4%A`, etc.) threw `URIError: URI malformed` which
+  escaped the request handler and became an unhandled rejection — the
+  HTTP socket was never closed and clients hung until socket timeout
+  (curl --max-time 5 returned status 000). The fix wraps both decodes
+  in try/catch (Layer 1 + 2: structured 400 INVALID_ARGUMENT envelope
+  with message `invalid percent-encoding in :docId`) and adds an outer
+  try/catch around the entire request handler body (Layer 3: 500
+  INTERNAL envelope + console.error as last-resort safety net for any
+  future regression). This is the iframe Embed endpoint (§2.1.C) — the
+  only stable mount point for third-party host SDKs — so the regression
+  surface was the entire embed boot path. (sdk1 §11.121)
 - **comments `:id/comments` POST** — `parentId` must point to an existing
   comment on the same file; orphan replies are now rejected (400 / 404)
   instead of silently creating dangling pointers. (sdk1 §11.97)
@@ -349,6 +393,105 @@ Releases are tagged in git; the most recent tag is also the current
   the standard envelope. This closes the "clamp upper bound was
   guessed" gap that §11.100 left behind — REST and IPC now share the
   same upper bound. (sdk1 §11.116)
+- **`POST /api/v1/webhooks` and `POST /api/v1/files/:id/callback` accepted
+  semantically invalid input silently** — both endpoints only checked
+  `typeof url === 'string'` and `Array.isArray(events)`, then forwarded
+  the result to `saveCallback` / `saveCallbackForUser`. This produced
+  **"registered-but-never-fired" subscriptions**: the REST layer said
+  `201 ok:true`, the entry persisted to `DATA_DIR/webhooks.json`, but
+  `deliverOne`'s `wh.events.includes(event)` always returned false —
+  every event the subscriber thought it was listening for was filtered
+  out, with no DLQ entry either (because `WebhookDeliveryResult.filtered`
+  was set). Host SDKs had no way to detect the failure. Two independent
+  bugs, both surfacing the same broken state:
+  - `url: 'file:///etc/passwd'` / `'javascript:alert(1)'` / `'data:…'`
+    / `'ftp://…'` / `'ws://…'` / unparseable / non-string / array all
+    returned 201. `fetch()` cannot dial any of those schemes, so the
+    subscription was a permanent dead letter.
+  - `events: [1, 2, 3]` / `['file.saved', null, '']` / `'file.saved'`
+    (string instead of array) all returned 201. `[1, 2, 3]` stored
+    verbatim, `[1,2,3].includes('file.saved')` is always false → every
+    real event is whitelist-rejected.
+
+  Fixed with two reusable helpers in `api/v1/http-utils.ts`:
+  `isValidWebhookUrl(url)` (string + non-empty + parses + protocol is
+  `http:` or `https:`; deliberately does NOT block loopback / RFC1918
+  addresses — those are routinely used by dev receivers and SSRF
+  mitigation is the host's egress concern, not the web-server's) and
+  `isValidEventList(events)` (array of non-empty strings; `[]` is
+  accepted to preserve the §11.93 user-wide "all events" convention).
+  Both endpoints now 400 `INVALID_ARGUMENT` on bad input. `null` /
+  `undefined` events still fall back to the default list (matches
+  §11.115 `null doc` / §11.116 `null schema` semantics — JSON
+  serialisers commonly produce `null` for "unset", and that should not
+  be rejected with 400). (sdk1 §11.117)
+- **`POST /api/v1/files/:id/comments` accepted arrays as the `anchor`
+  field** — the existing `typeof body.anchor !== 'object'` check passed
+  arrays through because `typeof [] === 'object'` in JavaScript. An
+  array-shaped anchor (`anchor: []` / `anchor: [1, 2, 3]` /
+  `anchor: [{x: 1}]`) round-tripped into `comments.json` silently, and
+  the renderer's downstream `anchor.range` / `anchor.cell` /
+  `anchor.slideId` accesses returned `undefined` — the comment existed
+  but its location was silently unresolvable. The same loose check
+  was present in the SDK command path
+  (`POST /api/ipc/sdk:command` `name: 'addComment'` via
+  `addCommentCommand`), so iframe-embedded clients could write the
+  same broken state. Fixed by adding a reusable
+  `isPlainAnchor(anchor)` helper in `api/v1/http-utils.ts` (rejects
+  null, primitives, and arrays; accepts plain objects including `{}`)
+  used by `handleCommentsAdd`, plus a parallel `Array.isArray` gate
+  inlined in `addCommentCommand` (the SDK error message is preserved
+  verbatim — `addComment requires an anchor object` — to avoid breaking
+  existing SDK error handlers; the REST surface gets the more
+  precise `"anchor must be a plain object"`). The helper only locks
+  the outer shape — the inner `CommentAnchor` contract is intentionally
+  open (`{ range?, cell?, slideId?, [k: string]: unknown }`) so new
+  app types can add fields without a schema bump. The
+  `comments-store.addComment` validation is intentionally NOT extended;
+  the store continues to accept the post-gate contract and is
+  exercised directly by internal tests that bypass REST. (sdk1 §11.118)
+- **All three embed-nonce handlers leaked `JSON.parse` SyntaxError as
+  500 on malformed bodies** — `POST /api/v1/embed/verify-nonce`,
+  `POST /api/v1/embed/nonce`, and `DELETE /api/v1/embed/nonce` all
+  did `JSON.parse(raw)` without try/catch, so a body like `'not json'`
+  / `'{"sessionId":"x"'` / `'{"sessionId":"x",}'` / `'{sessionId:"x"'`
+  produced `500 {"error":{"message":"Unexpected token 'o', \"not
+  json\" is not valid JSON"}}` — no `code`, no `channel`, violating
+  the §2.1.A REST error envelope convention. Whitespace-only bodies
+  (`'   '`) leaked the same way (`raw ? JSON.parse(raw) : {}` is
+  truthy for `'   '`, so the parser was invoked). The `null` literal
+  (`-d 'null'`) was a different class of leak: `JSON.parse` accepts
+  it as valid JSON, but `null.docId` then throws `TypeError` (not
+  `SyntaxError`, so a partial fix that only added try/catch around the
+  parse would still leak). Fixed by wrapping all three handlers with
+  a uniform three-piece gate: `try/catch` (SyntaxError → 400
+  `INVALID_ARGUMENT`), `raw.trim()` (whitespace-only → treated as
+  `{}`), and `JSON.parse(raw) ?? {}` (`null` literal → treated as
+  `{}`). String / number / boolean literals pass through the parse
+  but get caught by the downstream field-validation 400 `BAD_REQUEST`
+  — preserving the established code distinction between "body
+  unparseable" (`INVALID_ARGUMENT`) and "body parseable but shape
+  wrong" (`BAD_REQUEST`). Comments / versions / callback / webhooks /
+  callbacks / auth / ai / files handlers were already
+  try/catch-wrapped; only the three embed-nonce handlers were
+  missed. (sdk1 §11.119)
+- **`GET /api/v1/files/:id/comments?resolved=` silently accepted any
+  value** — the existing `if (r === 'true') ... else if (r === 'false')
+  ...` pattern silently fell through to "no filter" for any non-match,
+  so a host that typo'd `?resolved=TRUE` (uppercase), `?resolved=1`,
+  `?resolved=yes`, `?resolved=invalid`, or `?resolved=null` got all
+  comments back without any signal that the filter was ignored —
+  same class of "explicit caller error masquerading as success"
+  bug that §11.116 closed for KB `?limit=1.5`. Fixed by tightening
+  the parse to strict equality: empty string (`?resolved=`) and
+  omitted param still mean "no filter" (same §11.115/§11.116/§11.117/§11.119
+  convention for serializer-natural products), but any non-empty
+  value that isn't exactly `'true'` or `'false'` is now rejected
+  with 400 `INVALID_ARGUMENT` and the message
+  `"resolved must be 'true' or 'false' when provided"`. The
+  convention is case-sensitive on purpose — `String(true)` from
+  any JSON serializer is lowercase, so this catches the most common
+  typos immediately. (sdk1 §11.120)
 
 ### Added
 

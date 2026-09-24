@@ -62,9 +62,24 @@ export async function handleEmbedNonce(ctx: {
     sendError(ctx.response, gate.status, gate.message, gate.code, 'embed:nonce')
     return true
   }
-  const raw = await readBody(ctx.request)
-  const body = raw ? JSON.parse(raw) : {}
-  const docId = typeof body?.docId === 'string' ? body.docId.trim() : ''
+  // §11.119: wrap JSON.parse in try/catch so malformed bodies surface as
+  // 400 INVALID_ARGUMENT instead of leaking the raw SyntaxError as a 500.
+  // Whitespace-only bodies are treated as "no body" (same convention as
+  // §11.115/§11.116 null/undefined semantics).
+  let body: Record<string, unknown> = {}
+  try {
+    const raw = await readBody(ctx.request)
+    // `?? {}` collapses the `null` literal (valid JSON) into the empty
+    // object so downstream `body.docId` / `body.sessionId` accesses
+    // don't TypeError. String/number/boolean literals still pass
+    // through and trigger field-validation 400 BAD_REQUEST downstream
+    // — which is correct contract behavior, not a §11.119 leak.
+    body = raw && raw.trim() ? ((JSON.parse(raw) as Record<string, unknown> | null) ?? {}) : {}
+  } catch {
+    sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'embed:nonce')
+    return true
+  }
+  const docId = typeof body.docId === 'string' ? body.docId.trim() : ''
   if (!docId) {
     sendError(ctx.response, 400, 'docId required', 'BAD_REQUEST', 'embed:nonce')
     return true
@@ -115,10 +130,17 @@ export async function handleEmbedVerifyNonce(ctx: {
     sendError(ctx.response, gate.status, gate.message, gate.code, 'embed:verify-nonce')
     return true
   }
-  const raw = await readBody(ctx.request)
-  const body = raw ? JSON.parse(raw) : {}
-  const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
-  const nonce = typeof body?.nonce === 'string' ? body.nonce : ''
+  // §11.119: wrap JSON.parse — see handleEmbedNonce for rationale.
+  let body: Record<string, unknown> = {}
+  try {
+    const raw = await readBody(ctx.request)
+    body = raw && raw.trim() ? ((JSON.parse(raw) as Record<string, unknown> | null) ?? {}) : {}
+  } catch {
+    sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'embed:verify-nonce')
+    return true
+  }
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+  const nonce = typeof body.nonce === 'string' ? body.nonce : ''
   if (!sessionId || !nonce) {
     sendError(ctx.response, 400, 'sessionId and nonce required', 'BAD_REQUEST', 'embed:verify-nonce')
     return true
@@ -163,9 +185,16 @@ export async function handleEmbedReleaseNonce(ctx: {
     sendError(ctx.response, gate.status, gate.message, gate.code, 'embed:release-nonce')
     return true
   }
-  const raw = await readBody(ctx.request)
-  const body = raw ? JSON.parse(raw) : {}
-  const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+  // §11.119: wrap JSON.parse — see handleEmbedNonce for rationale.
+  let body: Record<string, unknown> = {}
+  try {
+    const raw = await readBody(ctx.request)
+    body = raw && raw.trim() ? ((JSON.parse(raw) as Record<string, unknown> | null) ?? {}) : {}
+  } catch {
+    sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'embed:release-nonce')
+    return true
+  }
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
   if (!sessionId) {
     sendError(ctx.response, 400, 'sessionId required', 'BAD_REQUEST', 'embed:release-nonce')
     return true

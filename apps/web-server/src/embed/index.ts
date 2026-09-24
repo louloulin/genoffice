@@ -128,7 +128,20 @@ interface EmbedQuery {
 
 function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
   const docIdRaw = url.pathname.replace(/^\/embed\//, '').split('/')[0] ?? ''
-  const docId = decodeURIComponent(docIdRaw).trim()
+  // sdk1 §11.121: malformed percent-encoding (`/embed/%XY`, `/embed/%E0%A4%A`,
+  // bare `%`) throws `URIError: URI malformed` from `decodeURIComponent`.
+  // Without a try/catch the throw bubbles up to the top-level request handler,
+  // becomes an unhandled rejection, and the HTTP response is never sent — the
+  // client hangs until socket timeout. Mirror the §11.114 / §11.108 / §11.110
+  // pattern (try/catch around the decode, return a structured 400 envelope)
+  // so a malformed docId answers 400 INVALID_ARGUMENT in milliseconds instead
+  // of silently dropping the request.
+  let docId: string
+  try {
+    docId = decodeURIComponent(docIdRaw).trim()
+  } catch {
+    return { error: 'invalid percent-encoding in :docId' }
+  }
   if (!docId) return { error: 'missing :docId in path' }
   const token = url.searchParams.get('token') ?? ''
   if (!token) return { error: 'missing ?token=' }
@@ -302,7 +315,28 @@ export function handleEmbed(request: IncomingMessage, response: ServerResponse, 
     }
   }
 
-  const docId = decodeURIComponent(url.pathname.replace(/^\/embed\//, '').split('/')[0] ?? '')
+  // sdk1 §11.121 (continuation): the same safe-decode is needed here, AFTER
+  // the parseEmbedQuery() gate has already consumed the same segment. If
+  // `parseEmbedQuery` returned an `error` we returned 400 above, but if the
+  // path was clean we still need to re-decode for the `appIndex` lookup —
+  // and any decode failure here must yield the same 400 envelope rather
+  // than crashing the request. The second decode is technically redundant
+  // (parseEmbedQuery already decoded), so on the happy path it returns the
+  // same string; on the malformed-encoding path it now returns a clean 400
+  // instead of an unhandled rejection.
+  let docId: string
+  try {
+    docId = decodeURIComponent(url.pathname.replace(/^\/embed\//, '').split('/')[0] ?? '')
+  } catch {
+    response.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' })
+    response.end(JSON.stringify({
+      error: {
+        message: 'invalid percent-encoding in :docId',
+        code: 'INVALID_ARGUMENT',
+      },
+    }))
+    return true
+  }
   const appIndex = resolveAppIndex(parsed.app)
   if (!appIndex) {
     response.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' })

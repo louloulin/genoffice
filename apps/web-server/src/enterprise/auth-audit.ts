@@ -92,6 +92,43 @@ export function registerAuditHandlers(): void {
     if (resource !== undefined && typeof resource !== 'string') {
       throw new InvalidArgumentError('audit:log', 'resource must be a string')
     }
+    // sdk1 §11.123: type validation for the remaining fields. The
+    // RecordAuditInput interface declares them with strict types
+    // (`status?: 'success' | 'failure'`, `details?: Record<string, unknown>`,
+    // `resourceId?: string`, `userId?: string`) but the IPC handler only
+    // validated three of seven fields. The remaining four accepted ANY
+    // JSON shape, which let callers store:
+    //   - `status: 'anything'` (enum-bypass; `recordAudit` defaults to
+    //   'success' but a truthy non-enum value gets stored verbatim,
+    //   polluting the audit log with values that can never match the
+    //   documented 'success' / 'failure' filter set)
+    //   - `resourceId: 12345` (number stored verbatim; downstream
+    //   queryAudit `.includes()` filters silently fail)
+    //   - `details: 'a 1MB string'` (DoS surface — recordAudit stores
+    //   whatever is sent; nothing caps the size; a 10MB details field
+    //   is happily persisted to the JSONL ring buffer)
+    //   - `details: { __proto__: {...} }` (prototype-pollution
+    //   attempt; Node's JSON.parse preserves `__proto__` as a literal
+    //   key, then any subsequent `Object.assign(target, details)` would
+    //   pollute target's prototype — defense in depth even though
+    //   recordAudit currently uses object spread)
+    //   - `userId: 123` (impersonation by non-string; the existing
+    //   override semantic is documented for server-side batch use, but
+    //   accepting a number as userId is unambiguously caller error)
+    if (resourceId !== undefined && typeof resourceId !== 'string') {
+      throw new InvalidArgumentError('audit:log', 'resourceId must be a string when provided')
+    }
+    if (userId !== undefined && typeof userId !== 'string') {
+      throw new InvalidArgumentError('audit:log', 'userId must be a string when provided')
+    }
+    if (status !== undefined && status !== 'success' && status !== 'failure') {
+      throw new InvalidArgumentError('audit:log', "status must be 'success' or 'failure' when provided")
+    }
+    if (details !== undefined) {
+      if (typeof details !== 'object' || details === null || Array.isArray(details)) {
+        throw new InvalidArgumentError('audit:log', 'details must be a plain object')
+      }
+    }
     // Precedence: args.userId (caller override) > event.userId (JWT sub).
     // recordAudit itself defaults to 'system' when neither is supplied,
     // matching the legacy behaviour for tests / unauthenticated dev mode.

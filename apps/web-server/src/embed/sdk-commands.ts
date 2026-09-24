@@ -57,6 +57,7 @@ import { FILES_DIR, isManagedPath } from '../common/index'
 import { InvalidArgumentError, NotFoundError, WebUnsupportedError } from '../ai/errors'
 import {
   addComment,
+  getComment,
   listComments,
   removeComment,
   resolveComment,
@@ -170,8 +171,36 @@ export function addCommentCommand(req: SdkCommandRequest): { id: string } {
   if (!a.text || typeof a.text !== 'string') {
     throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'addComment requires a non-empty text')
   }
-  if (!a.anchor || typeof a.anchor !== 'object') {
+  // §11.118: anchor must be a plain object — NOT an array. The old
+  // `typeof a.anchor !== 'object'` check accepted arrays because
+  // `typeof [] === 'object'`, but a comment anchor is conceptually a
+  // location descriptor (`{ range, cell, slideId, ... }`), never an
+  // indexed sequence. Storing an array would break downstream renderer
+  // code that accesses named properties (`anchor.range`, `anchor.cell`,
+  // `anchor.slideId`).
+  if (!a.anchor || typeof a.anchor !== 'object' || Array.isArray(a.anchor)) {
     throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'addComment requires an anchor object')
+  }
+  // sdk1 §11.122: parentId must be a non-empty string when provided,
+  // and must point to an existing comment on the SAME file. The v1
+  // REST endpoint closed this exact bug in §11.97 (orphan replies were
+  // silently creating dangling pointers), but the SDK command path
+  // skipped both validations: `addCommentCommand` spread `a.parentId`
+  // verbatim into the store, so `parentId: 123`, `parentId: null`,
+  // `parentId: ''`, `parentId: {x:1}`, `parentId: ['a','b']`, and
+  // `parentId: 'cm_nonexistent'` all returned 200 + created a
+  // dangling reply that no thread UI could resolve. Now reject
+  // non-string / empty upfront and re-use `getComment` (already in
+  // this module's import graph) for the existence check — same
+  // pattern the v1 handler uses.
+  if (a.parentId !== undefined) {
+    if (typeof a.parentId !== 'string' || a.parentId.length === 0) {
+      throw new InvalidArgumentError(SDK_COMMAND_CHANNEL, 'parentId must be a non-empty string when provided')
+    }
+    const parent = getComment(key, a.parentId)
+    if (!parent) {
+      throw new NotFoundError(SDK_COMMAND_CHANNEL, `parent comment not found: ${a.parentId}`)
+    }
   }
   // Author is the embed session, not a trusted client identity — the
   // bridge posts with the iframe's session header, not a bearer token,

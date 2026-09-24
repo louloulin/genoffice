@@ -20,7 +20,7 @@
  * @public
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { sendJson, sendError, readBody } from './http-utils'
+import { sendJson, sendError, readBody, isPlainAnchor } from './http-utils'
 import { requireScopeFromHeaders } from './auth'
 import { FILES_DIR, isWithin } from '../../common/index'
 import { join } from 'node:path'
@@ -84,13 +84,41 @@ export async function handleFilesCommentsList(
     sendError(ctx.response, 400, 'file id is outside managed storage', 'INVALID_ARGUMENT', op)
     return true
   }
-  // URL query parsing: `?resolved=true|false`. parentId filter not
-  // exposed in v1 (renderer fans out replies client-side).
+  // §11.120: URL query parsing — strict on `?resolved=` to prevent
+  // silent-fallback bugs. Accepted forms:
+  //   - `?resolved=true`   → only resolved comments
+  //   - `?resolved=false`  → only unresolved comments
+  //   - omitted / `?resolved=` (empty) → all comments (no filter)
+  // Any other value (`?resolved=TRUE` / `?resolved=1` / `?resolved=yes` /
+  // `?resolved=invalid`) is rejected as 400 INVALID_ARGUMENT. The
+  // previous `if (r === 'true') ... else if (r === 'false') ...`
+  // pattern silently fell through to "no filter" for any non-match,
+  // so a host that typo'd "TRUE" instead of "true" got all comments
+  // back without any signal that the filter was ignored — same class
+  // of "explicit caller error masquerading as success" bug that
+  // §11.116 closed for KB `?limit=1.5`.
+  //
+  // Empty string (from `?resolved=`) is intentionally NOT treated as
+  // explicit error — that's a JSON/URL serializer natural product
+  // (empty value = "unset"), same convention as §11.115/§11.116/§11.117
+  // `null` handling.
   const url = new URL(ctx.request.url ?? '/', 'http://placeholder')
   const opts: { resolved?: boolean } = {}
   const r = url.searchParams.get('resolved')
-  if (r === 'true') opts.resolved = true
-  else if (r === 'false') opts.resolved = false
+  if (r !== null && r !== '') {
+    if (r === 'true') opts.resolved = true
+    else if (r === 'false') opts.resolved = false
+    else {
+      sendError(
+        ctx.response,
+        400,
+        "resolved must be 'true' or 'false' when provided",
+        'INVALID_ARGUMENT',
+        op,
+      )
+      return true
+    }
+  }
   const comments = listComments(fileId, opts)
   sendJson(ctx.response, 200, { fileId, count: comments.length, comments })
   return true
@@ -125,8 +153,13 @@ export async function handleFilesCommentsAdd(
     badRequest(ctx.response, op, 'invalid JSON body')
     return true
   }
-  if (!body.anchor || typeof body.anchor !== 'object') {
-    badRequest(ctx.response, op, 'expected { anchor, text, parentId? }')
+  // §11.118: anchor must be a plain object — NOT an array. `typeof [] === 'object'`
+  // passes the old loose check but a comment anchor is conceptually a
+  // location descriptor (`{ range, cell, slideId, ... }`), never an
+  // indexed sequence. Storing an array breaks downstream renderer code
+  // that accesses named properties.
+  if (!isPlainAnchor(body.anchor)) {
+    badRequest(ctx.response, op, 'anchor must be a plain object')
     return true
   }
   if (typeof body.text !== 'string' || body.text.length === 0) {

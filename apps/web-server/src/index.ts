@@ -336,6 +336,16 @@ function resolveCorsOrigin(requestOrigin: string | string[] | undefined): string
 
 // ----- request handling ----------------------------------------------------
 const server = createServer(async (request, response) => {
+  // sdk1 §11.121: outermost defensive wrapper. ANY unhandled exception
+  // thrown from a downstream handler must not become an unhandled rejection
+  // — that path leaves the HTTP socket open with no response, so the
+  // client hangs until the OS timeout (curl --max-time 5 fails with status
+  // 000). This outer try/catch answers a structured 500 envelope before
+  // the socket can be reaped, and logs the error for the operator.
+  // Specific bugs (e.g. the §11.121 `decodeURIComponent` throw in
+  // `parseEmbedQuery`) are handled closer to the source with structured
+  // 400s; this is the last-resort safety net for any future regression.
+  try {
   // A malformed request target (`GET /api/html/preview/%`, bad percent-encoding)
   // or a missing/HTTP-1.0 Host header makes the URL constructor throw. A throw
   // that escapes the request listener is fatal: the global trap only logs it and
@@ -1216,6 +1226,24 @@ const server = createServer(async (request, response) => {
       `<p>Either run <code>npm run build:all</code> at the repo root and keep it on the same disk layout, ` +
       `or set <code>WEB_STATIC_ROOT=/path/to/apps</code> to point at an apps directory you mounted.</p>`,
   )
+  } catch (err) {
+    // sdk1 §11.121: outer safety net. Log full error for the operator;
+    // answer a structured 500 envelope so the client does NOT hang.
+    console.error('[genoffice] uncaught request error:', err)
+    if (!response.headersSent) {
+      try {
+        response.writeHead(500, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({
+          error: {
+            message: 'internal server error',
+            code: 'INTERNAL',
+          },
+        }))
+      } catch {
+        /* socket already closed */
+      }
+    }
+  }
 })
 
 // Detect whether the renderer apps are available at STATIC_ROOT. When the
