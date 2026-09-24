@@ -381,10 +381,25 @@ export function registerHomeHandlers(): void {
     const refused: string[] = []
     let deleted = 0
     for (const path of values) {
-      // Refuse anything outside managed storage before touching the disk; this
-      // loop used to unlink any path handed to it. Out-of-storage paths are
-      // reported back instead of being silently skipped.
-      if (!isManagedPath(path)) {
+      // Accept both managed filesystem paths and `storage://<backend>/<key>`
+      // URIs. The recents grid hands back whichever shape `web:save-file`
+      // or `files:create` returned (the storage URI under the web build),
+      // so refusing it here would break deletion for every fresh upload.
+      const isStorageUri = path.startsWith('storage://')
+      if (!isStorageUri && !isManagedPath(path)) {
+        refused.push(path)
+        continue
+      }
+      // Translate storage:// URIs to the FILES_DIR path trash.delete expects
+      // under the local backend. The remote backend takes the relative key
+      // directly — see `storageKeyFromPath`.
+      const targetPath = isStorageUri
+        ? (() => {
+            const key = storageKeyFromPath(path)
+            return key ? join(FILES_DIR, key) : null
+          })()
+        : path
+      if (!targetPath) {
         refused.push(path)
         continue
       }
@@ -394,7 +409,7 @@ export function registerHomeHandlers(): void {
       /* The Trash backend moved from sync rename to async
        * (storage.get/put/delete) so remote buckets get the right
        * semantics. Await before reporting success. */
-      if (await trash.delete(path)) {
+      if (await trash.delete(targetPath)) {
         deleted += 1
         /* Drop the path from both the in-session mirror and the restart-safe
          * store, or the home grid keeps offering a row for a file the user

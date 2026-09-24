@@ -30,6 +30,11 @@ export async function readStorageOrManagedBytes(
 ): Promise<Buffer> {
   const key = storageKeyFromPath(filePath)
   if (key) {
+    // Refuse traversal at the call site so a probe gets a 400, not the
+    // 500 the local backend raises from `pathFor`'s `..` check.
+    if (key.split(/[\\/]+/).some((seg) => seg === '..' || seg === '')) {
+      throw new InvalidArgumentError(channel, PATH_OUTSIDE_STORAGE)
+    }
     try {
       const u8 = await getStorageBackend().get(key)
       return Buffer.from(u8)
