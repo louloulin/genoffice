@@ -63,7 +63,9 @@ let sessionPromise: Promise<OfficeSession> | null = null
  *  next `getPiSession()` rebuilds against the fresh skills dir. */
 export function invalidatePiSession(): void {
   if (!sessionPromise) return
-  sessionPromise.then((s) => s.dispose()).catch(() => undefined)
+  sessionPromise.then((s) => s.dispose()).catch((e) =>
+    console.warn('[pi-session] dispose() failed during invalidation:', e),
+  )
   sessionPromise = null
 }
 

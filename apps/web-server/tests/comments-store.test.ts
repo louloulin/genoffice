@@ -37,6 +37,7 @@ import {
   _resetCommentsForTests,
   addComment,
   commentCountForFile,
+  flush,
   getComment,
   listComments,
   removeComment,
@@ -127,12 +128,14 @@ describe('comments-store (sdk1.md §B.5.1 #4 Kestrel M2)', () => {
     expect(getComment('doc-1', 'cm_nope')).toBeNull()
   })
 
-  it('persists comments.json to DATA_DIR (restart-safe)', () => {
+  it('persists comments.json to DATA_DIR (restart-safe)', async () => {
     addComment('doc-A', { author: 'u', text: 'persisted', anchor: { cell: 'A1' } })
     addComment('doc-B', { author: 'u', text: 'other-file', anchor: { cell: 'B1' } })
     // DATA_DIR is resolved at module init from process.env.DATA_DIR
     // (which the setup section stubs to TMP). The store writes to
-    // `${DATA_DIR}/comments.json`.
+    // `${DATA_DIR}/comments.json`.  persist() is deferred via setImmediate
+    // so we must await the flush before checking the file exists.
+    await flush()
     const path = join(DATA_DIR, 'comments.json')
     expect(existsSync(path)).toBe(true)
     const raw = JSON.parse(readFileSync(path, 'utf8'))

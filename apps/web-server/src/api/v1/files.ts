@@ -475,7 +475,6 @@ function parseBody(raw: string | null): Record<string, string> {
     if (eq < 0) {
       throw new InvalidArgumentError('files:jwt', 'request body is not valid form data')
     }
-    if (eq < 0) continue
     const k = decodeURIComponent(pair.slice(0, eq).replace(/\+/g, ' '))
     const v = decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, ' '))
     out[k] = v

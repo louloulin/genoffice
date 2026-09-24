@@ -55,7 +55,9 @@ export function registerWebHandlers(): void {
       { recursive: true },
     ) as string
     const filePath = join(dir, safeName)
-    writeFileSync(filePath, Buffer.from(record.bytes))
+    // atomicWriteFile uses temp+rename so a crash between mkdir and write
+    // leaves either the old complete file or the new complete file.
+    atomicWriteFile(filePath, Buffer.from(record.bytes))
     return filePath
   })
 

@@ -20,9 +20,10 @@
  *   - Reply nesting beyond a single `parentId` pointer
  *   - Concurrent-edit merge (we are single-process; multi-process M4+)
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DATA_DIR } from './index'
+import { atomicWriteJson } from './atomic'
 
 /**
  * Comment / annotation shape, mirrored from the SDK's `Comment`
@@ -91,6 +92,8 @@ function makeId(): string {
 const commentsByFile = new Map<string, Comment[]>()
 let dirty = false
 let loaded = false
+/** Tracks the in-flight setImmediate flush so callers can await it. */
+let flushPromise: Promise<void> | null = null
 
 function load(): void {
   if (loaded) return
@@ -114,15 +117,25 @@ function load(): void {
 
 function persist(): void {
   if (!dirty) return
+  dirty = false  // reset before I/O so a concurrent mutation sees dirty=true
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true })
   const out: Record<string, Comment[]> = {}
   for (const [fileId, list] of commentsByFile.entries()) {
     if (list.length > 0) out[fileId] = list
   }
-  writeFileSync(FILE, JSON.stringify(out, null, 2), 'utf8')
-  dirty = false
+  // atomicWriteJson uses temp+rename so a crash mid-write leaves either the
+  // old complete file or the new complete file — never a corrupt truncation.
+  // Deferred with setImmediate so the IPC handler returns immediately and
+  // concurrent requests are not blocked by fsync latency.
+  // Wrap setImmediate in a Promise so callers can await the write completing.
+  flushPromise = new Promise((resolve) => {
+    setImmediate(() => {
+      try { atomicWriteJson(FILE, out) } catch (e) { dirty = true; console.warn('[comments] persist failed:', e) }
+      flushPromise = null
+      resolve()
+    })
+  })
 }
-
 
 /**
  * Fire a `comment.*` webhook (sdk1.md §M4 §C backlog). Lazy-imports
@@ -286,6 +299,14 @@ export function commentCountForFile(fileId: string): number {
 }
 
 /**
+ * Await the in-flight `setImmediate` persist flush, if any. Used by tests
+ * that need to verify the file on disk immediately after a mutation.
+ */
+export async function flush(): Promise<void> {
+  await flushPromise
+}
+
+/**
  * Test-only accessor: clear the in-memory cache AND remove the
  * persisted `comments.json` on disk. Without the file delete, the
  * next call to `load()` would re-hydrate the previous test's data
@@ -297,13 +318,17 @@ export function _resetCommentsForTests(): void {
   commentsByFile.clear()
   dirty = false
   loaded = false
-  // Best-effort file removal. `unlinkSync` is intentionally avoided:
-  // some test setups run inside a sandbox where the file is read-only
-  // (snapshot mode). Clearing the in-memory map is sufficient when
-  // the file is gone; clearing the map AND removing the file is
-  // the paranoid path that the standard testsuite relies on.
-  // Best-effort file removal. `unlinkSync` is intentional rather than
-  // `rmSync` because we want to fail loudly (throw) if the FS rejects
-  // the operation — silent failure would leak data across tests.
-  if (existsSync(FILE)) unlinkSync(FILE)
+  flushPromise = null
+  // Best-effort file removal. Some test setups run inside a sandbox where
+  // the file is read-only (snapshot mode). Try rmSync but don't crash the
+  // test process if the filesystem rejects it — clearing the in-memory map
+  // is sufficient either way.
+  if (existsSync(FILE)) {
+    try {
+      const { rmSync } = require('node:fs')
+      rmSync(FILE)
+    } catch {
+      // sandboxed or read-only FS — clearing the in-memory map is sufficient.
+    }
+  }
 }

@@ -117,10 +117,17 @@ function authCookieHeader(): string | null {
 // ----- global error traps (must run before any handler so unexpected
 //       failures in the pi session bridge show a stack instead of dying silently)
 process.on('uncaughtException', (err) => {
-  console.error('[genoffice] uncaughtException:', err)
+  console.error('[genoffice] FATAL uncaughtException:', err)
+  // Do NOT continue — the heap may be corrupt (e.g. a throw in a constructor
+  // leaving a half-constructed object). Force exit so the process manager
+  // (systemd/k8s) can restart with a clean slate.
+  process.exit(1)
 })
 process.on('unhandledRejection', (reason) => {
-  console.error('[genoffice] unhandledRejection:', reason)
+  console.error('[genoffice] FATAL unhandledRejection:', reason)
+  // Unhandled rejections in a Map/Set mutating path can corrupt in-memory
+  // state. Exit so the process manager restarts with a clean slate.
+  process.exit(1)
 })
 
 // ----- capability wiring ----------------------------------------------------
@@ -839,6 +846,9 @@ const server = createServer(async (request, response) => {
       return
     }
     let sessionAbort: AbortController | undefined
+    // Declare streamId before try so it's always available in finally/catch
+    // even if JSON.parse (below) throws before the id is first assigned.
+    let streamId = `sse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     let requestId: string | undefined
     try {
       const body = await readBody(request)
@@ -860,8 +870,7 @@ const server = createServer(async (request, response) => {
         // valid JSON` as a 500.
         throw new InvalidArgumentError('/api/ai/stream', 'request body is not valid JSON')
       }
-      const streamId =
-        req.requestId || `sse-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      if (req.requestId) streamId = req.requestId
       requestId = streamId
       // Import inside the handler to grab the live settings the AI module
       // has just persisted (avoids a duplicate cached copy).
@@ -983,7 +992,7 @@ const server = createServer(async (request, response) => {
   //   with Dataflarework (the static list lives in @genoffice/translation-core;
   //   see apps/web-server/src/ai/languages-http.ts for the design rationale).
   if (url.pathname === '/api/ai/languages') {
-    handleLanguagesHttp(request, response)
+    void handleLanguagesHttp(request, response)
     return
   }
 

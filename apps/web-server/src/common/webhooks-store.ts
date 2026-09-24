@@ -5,10 +5,11 @@
  * the storage backend in `file-management` is the canonical home for file
  * metadata, but webhooks are server-local state that doesn't need a backend.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
 import { join } from 'node:path'
 import { DATA_DIR } from './index'
+import { atomicWriteJson } from './atomic'
 
 /**
  * Compute the HMAC-SHA256 signature of a raw body using the given secret.
@@ -76,7 +77,9 @@ function load(): Store {
 function persist(): void {
   if (!cache) return
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true })
-  writeFileSync(FILE, JSON.stringify(cache, null, 2), 'utf8')
+  // atomicWriteJson uses temp+rename so a crash mid-write leaves either the
+  // old complete file or the new complete file — never a corrupt truncation.
+  atomicWriteJson(FILE, cache)
 }
 
 export function saveCallback(webhook: FileWebhook): void {

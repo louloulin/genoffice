@@ -96,11 +96,10 @@ export function registerCollabSessionHandlers(): void {
     if (!docPresence) return []
 
     const now = Date.now()
-    for (const [uid, p] of docPresence) {
-      if (now - p.lastSeen > 60000) {
-        docPresence.delete(uid)
-      }
-    }
+    // Collect stale keys first, then delete — deleting during for...of iteration
+    // shifts the internal cursor and can skip the next entry (V8 behaviour).
+    const stale = [...docPresence.keys()].filter((uid) => now - (docPresence.get(uid)?.lastSeen ?? 0) > 60000)
+    for (const uid of stale) docPresence.delete(uid)
 
     return [...docPresence.values()]
   }, { scope: 'soft:collab:read' })

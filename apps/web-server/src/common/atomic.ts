@@ -1,6 +1,5 @@
 /**
- * Process-wide utilities for stable, collision-free file identifiers and
- * atomic JSON writes.
+ * Process-wide utilities — random file ids, paste quota, temp cleanup.
  *
  * `randomFileId` is what the web build uses in place of the desktop
  * build's deterministic `${timestamp}-${name}` pattern. Two `Date.now()`
@@ -15,16 +14,48 @@
  */
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
-
+import { dirname, join } from 'node:path'
 import { sanitizeFileName } from './paths'
-import { atomicWriteJson } from '@genoffice/file-management'
+import { atomicWriteFile, atomicWriteJson } from '@genoffice/file-management'
+import { mkdirSync, openSync, closeSync, unlinkSync, constants } from 'node:fs'
+export { atomicWriteFile, atomicWriteJson }
 
 /* `atomicWriteFile` is the shared kernel's implementation, not a second copy:
  * the temp+rename dance (including the Windows EPERM retry and the zero-byte
  * guard) is subtle enough that two implementations would drift, and the web
  * build and the desktop build must agree on what a save guarantees.
  * `atomicWriteJson` is re-exported from the same place for the same reason. */
-export { atomicWriteFile, atomicWriteJson } from '@genoffice/file-management'
+
+/**
+ * Acquire an exclusive advisory lock on `lockPath` using `O_EXCL` + rename.
+ * Returns a cleanup function to release the lock. Blocks until acquired.
+ * This serialises concurrent writers to the same resource (e.g. paste quota).
+ */
+/**
+ * Acquire an exclusive advisory lock on `lockPath` using `O_EXCL` + rename.
+ * Blocks until acquired. Serialises concurrent writers to the same resource
+ * (e.g. paste quota). Uses only synchronous fs APIs so callers can stay sync.
+ */
+export function withFileLock<T>(lockPath: string, fn: () => T): T {
+  const parent = dirname(lockPath)
+  if (parent) mkdirSync(parent, { recursive: true })
+  // Spin until we atomically create the lock file (O_EXCL = fails if exists)
+  let fd: number
+  while (true) {
+    try {
+      fd = openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o644)
+      break
+    } catch {
+      // Another process holds the lock; wait and retry.
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    closeSync(fd)
+    try { unlinkSync(lockPath) } catch { /* already gone */ }
+  }
+}
 
 /**
  * Build a stable, filesystem-safe identifier for a renderer-supplied
@@ -56,9 +87,9 @@ function yyyymmddUtc(timestamp: number): string {
 
 /**
  * Reserve `bytes` against the daily cap. Returns the new used total if
-   the reservation succeeds; throws `RangeError` if it would exceed the
-   cap. The cap resets at UTC midnight; we expire the counter file when
-   the day rolls over.
+ * the reservation succeeds; throws `RangeError` if it would exceed the
+ * cap. The cap resets at UTC midnight; we expire the counter file when
+ * the day rolls over.
  */
 export function reserveDailyPasteQuota(
   path: string,
@@ -66,35 +97,35 @@ export function reserveDailyPasteQuota(
   now: number = Date.now(),
 ): number {
   const today = yyyymmddUtc(now)
-  let state: { day: string; used: number } = { day: today, used: 0 }
-  try {
-    if (existsSync(path)) {
-      const parsed = JSON.parse(readFileSync(path, 'utf-8'))
-      if (parsed && typeof parsed.day === 'string' && typeof parsed.used === 'number') {
-        state = parsed
+  // Lock file path alongside the counter file so concurrent pastes from
+  // multiple requests (e.g. paste image in two tabs at the same time)
+  // are serialised and cannot both read the same counter before either writes.
+  const lockPath = `${path}.lock`
+  return withFileLock(lockPath, () => {
+    let state: { day: string; used: number } = { day: today, used: 0 }
+    try {
+      if (existsSync(path)) {
+        const parsed = JSON.parse(readFileSync(path, 'utf-8'))
+        if (parsed && typeof parsed.day === 'string' && typeof parsed.used === 'number') {
+          state = parsed
+        }
       }
+    } catch {
+      /* A corrupt counter file resets to zero — the user gets the day's
+       * full allowance instead of being permanently locked out. */
     }
-  } catch {
-    /* A corrupt counter file resets to zero — the user gets the day's
-     * full allowance instead of being permanently locked out. */
-  }
-  if (state.day !== today) state = { day: today, used: 0 }
-  if (state.used + bytes > DAILY_PASTE_LIMIT_BYTES) {
-    throw new RangeError(
-      `daily paste quota exceeded (${state.used} used + ${bytes} requested > ${DAILY_PASTE_LIMIT_BYTES})`,
-    )
-  }
-  state.used += bytes
-  atomicWriteJson(path, state)
-  return state.used
+    if (state.day !== today) state = { day: today, used: 0 }
+    if (state.used + bytes > DAILY_PASTE_LIMIT_BYTES) {
+      throw new RangeError(
+        `daily paste quota exceeded (${state.used} used + ${bytes} requested > ${DAILY_PASTE_LIMIT_BYTES})`,
+      )
+    }
+    state.used += bytes
+    atomicWriteJson(path, state)
+    return state.used
+  })
 }
-/**
- * Remove `WEB_TEMP_ROOT` upload directories older than `maxAgeMs`
- * (default 24 h). `web:write-temp-file` creates one directory per
- * upload and never deletes it, so without a sweeper the temp root
- * grows without bound. The directory mtime is used as the age signal
-   — every `mkdirSync(..., { recursive: true })` resets it.
- */
+
 /**
  * Remove `WEB_TEMP_ROOT` upload directories older than `maxAgeMs`
  * (default 24 h). `web:write-temp-file` creates one directory per
