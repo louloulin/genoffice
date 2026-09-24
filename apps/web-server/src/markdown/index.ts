@@ -218,5 +218,5 @@ function resolveMarkdownTarget(path: unknown, suggested: unknown): string | null
     typeof suggested === 'string' && suggested.trim()
       ? safeMarkdownName(suggested.trim().replace(/\.md$/i, '') + '.md')
       : `Untitled-${Date.now()}.md`
-  return join(DATA_DIR, base)
+  return join(FILES_DIR, base)
 }

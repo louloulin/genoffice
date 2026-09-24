@@ -656,14 +656,14 @@ if (!isElectronRuntime()) {
       channel: 'home:new-markdown',
       prefix: 'md',
       ext: 'md',
-      serverDir: 'DATA_DIR',
+      serverDir: 'FILES_DIR',
       urlStyle: 'query',
     },
     html: {
       channel: 'home:new-html',
       prefix: 'html',
       ext: 'html',
-      serverDir: 'DATA_DIR',
+      serverDir: 'FILES_DIR',
       urlStyle: 'hash',
     },
   }
