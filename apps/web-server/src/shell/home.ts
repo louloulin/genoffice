@@ -558,7 +558,11 @@ export function registerHomeHandlers(): void {
 
   registerHandle('home:new-html', async (_event: unknown, args: unknown) => {
     const id = pickRendererId(args, 'html')
-    const path = join(DATA_DIR, `${id}.html`)
+    // FILES_DIR, not DATA_DIR: the renderer derives the tab's open path from
+    // NEW_MODULE_SPECS.html.serverDir ('FILES_DIR'), so a file materialised
+    // under DATA_DIR is never found and the tab bounces to "无法打开文件".
+    // Mirrors home:new-{doc,sheet,slide,pdf,markdown}.
+    const path = join(FILES_DIR, `${id}.html`)
     const html = `<!doctype html>
 <html lang="zh-CN">
 <head>

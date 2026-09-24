@@ -551,6 +551,40 @@ await suite('security: outside paths are refused on every path-taking channel', 
   unlinkSync(twinWrite)
 })
 
+await suite('new files: home:new-* lands where the renderer opens it', async () => {
+  /* The renderer predicts the tab's open path from NEW_MODULE_SPECS.serverDir
+   * (apps/shell/src/renderer/web-bridge.ts) and the server writes the file for
+   * the id it echoes back. When the two disagree on directory, the tab opens a
+   * path that does not exist and the editor shows "无法打开文件" while a stray
+   * file piles up in the other directory — exactly what home:new-html did with
+   * DATA_DIR. Assert the echoed path is realised on disk under FILES_DIR. */
+  for (const [channel, prefix, emptyOk] of [
+    ['home:new-doc', 'doc', false],
+    ['home:new-sheet', 'sheet', false],
+    ['home:new-slide', 'slide', false],
+    ['home:new-pdf', 'pdf', false],
+    // home:new-markdown deliberately materialises a 0-byte file: parseDocText
+  // turns that into an empty envelope and the editor boots into a ready-to-type
+  // state, whereas a 404 would bounce the tab to recents. Existence is enough.
+    ['home:new-markdown', 'md', true],
+    ['home:new-html', 'html', false],
+  ]) {
+    const res = await invoke(channel, [])
+    const path = res.body?.result?.path
+    check(typeof path === 'string' && path.startsWith(FILES_DIR), `${channel} → ${path}`)
+    check(
+      typeof path === 'string' && existsSync(path) && (emptyOk || statSync(path).size > 0),
+      `${channel} really wrote a${emptyOk ? ' (possibly empty)' : ' non-empty'} file`,
+    )
+    const stray = path && path.startsWith(FILES_DIR) ? path.slice(FILES_DIR.length + 1) : ''
+    check(
+      !stray || !existsSync(join(DATA_DIR, stray)),
+      `${channel} left no twin in DATA_DIR`,
+    )
+    if (typeof path === 'string' && existsSync(path)) unlinkSync(path)
+  }
+})
+
 // ----- summary --------------------------------------------------------------
 
 console.log(
