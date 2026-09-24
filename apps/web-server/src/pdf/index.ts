@@ -142,12 +142,71 @@ export function registerPdfHandlers(): void {
     throw new InvalidArgumentError(channel, PATH_OUTSIDE_STORAGE)
   }
 
+  /**
+   * Resolve a save target path to the place `savePdfToPath` should write
+   * bytes. The target is allowed to NOT exist yet (save-as to a fresh
+   * path is the whole point of the second parameter), so the only
+   * checks are containment + storage-URI staging for the overwrite-an-
+   * existing-storage-object case.
+   *
+   * Difference from `stagePdfForSave`: the source helper pulls bytes from
+   * the storage backend when the path looks like a storage key, because
+   * the source must already exist. The target helper does NOT — a fresh
+   * save-as path is, by definition, not in the backend yet, and a missing
+   * source-style `get()` would surface as a confusing "target not found"
+   * 404 for the user's deliberate save-as action.
+   */
+  async function stagePdfTarget(channel: string, filePath: string): Promise<string> {
+    // Only `storage://...` URIs get the backend round-trip; FILES_DIR
+    // paths are the local backend's own namespace, and savePdfToPath will
+    // create the file there directly. Splitting on the URI prefix keeps
+    // the helper from accidentally trying to fetch a brand-new path that
+    // was never uploaded.
+    if (filePath.startsWith('storage://')) {
+      const key = storageKeyFromPath(filePath)
+      if (!key) {
+        throw new InvalidArgumentError(channel, `malformed storage URI: ${filePath}`)
+      }
+      try {
+        const u8 = await getStorageBackend().get(key)
+        const staged = join(FILES_DIR, `${basename(key)}.staged-${Date.now()}`)
+        mkdirSync(dirname(staged), { recursive: true })
+        atomicWriteFile(staged, Buffer.from(u8))
+        return staged
+      } catch (err) {
+        if (err instanceof StorageNotFoundError) {
+          throw new NotFoundError(channel, `target not found: ${filePath}`)
+        }
+        throw err
+      }
+    }
+    if (isManagedPdfPath(filePath)) {
+      // Target does not need to exist (save-as), but it must be inside
+      // managed storage. mkdirSync here makes the eventual atomic write
+      // a no-op for the directory step.
+      mkdirSync(dirname(filePath), { recursive: true })
+      return filePath
+    }
+    throw new InvalidArgumentError(channel, PATH_OUTSIDE_STORAGE)
+  }
+
   async function publishPdfAfterSave(
     targetOriginal: string,
     targetStaged: string,
   ): Promise<string> {
-    const key = storageKeyFromPath(targetOriginal)
-    if (key) {
+    // Mirror the stagePdfTarget split: only `storage://...` URIs need the
+    // backend round-trip + staged-file cleanup. FILES_DIR-resident paths
+    // already live in the local backend, so the bytes savePdfToPath wrote
+    // are the final bytes — re-publishing would double-write the file and
+    // unlinking targetStaged would delete the user's actual document.
+    if (targetOriginal.startsWith('storage://')) {
+      const key = storageKeyFromPath(targetOriginal)
+      if (!key) {
+        // Malformed URI that storageKeyFromPath rejected; fall through to
+        // return the staged path so the renderer still has something to
+        // show. publishPdfAfterSave is best-effort by contract.
+        return targetStaged
+      }
       // Read what savePdfToPath just produced and ship it back to the
       // backend under the original key. savePdfToPath writes to `target`,
       // which is the staged path; we then mirror the bytes back to storage.
@@ -176,7 +235,7 @@ export function registerPdfHandlers(): void {
         typeof value.targetPath === 'string' && value.targetPath.length > 0
           ? value.targetPath
           : value.path
-      target = await stagePdfForSave('pdf:save', requestedTarget)
+      target = await stagePdfTarget('pdf:save', requestedTarget)
     } catch (err) {
       if (err instanceof InvalidArgumentError) {
         return { ok: false, error: err.message }
