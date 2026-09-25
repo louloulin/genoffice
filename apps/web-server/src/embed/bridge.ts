@@ -51,12 +51,23 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
   var ENVELOPE_VERSION = '1.0';
   function post(name, payload) {
     try {
-      window.parent.postMessage({
+      // Carry any nonce on the OUTER envelope so the SDK's handshake
+      // guard (which inspects env.payload.nonce for the ready event)
+      // matches the bridge's wire shape. Previously the nonce only
+      // lived on env.payload.payload.nonce (the inner event body), so
+      // the SDK always saw undefined !== expectedNonce and tore the
+      // editor down with HANDSHAKE_FAILED before any ready listener
+      // could run.
+      var outer = {
         v: ENVELOPE_VERSION,
         dir: 'editor→host',
         kind: 'event',
         payload: { name: name, payload: payload }
-      }, '*');
+      };
+      if (payload && typeof payload === 'object' && typeof payload.nonce === 'string') {
+        outer.payload.nonce = payload.nonce;
+      }
+      window.parent.postMessage(outer, '*');
     } catch (e) { /* parent gone, swallow */ }
   }
   function replyCommand(correlationId, ok, result, error) {

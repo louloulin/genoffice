@@ -34,6 +34,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { verifyJwtWithRevocation } from '../api/v1/auth'
 import { WEB_SERVER_VERSION } from '../common/version'
 import { verifyEmbedNonce } from './nonce-store'
@@ -199,7 +200,37 @@ const EMBED_BRIDGE = EMBED_BRIDGE_SOURCE
  * rewriting the body so the editor's existing bundle hashes don't drift.
  */
 export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: string): string {
-  const html = readFileSync(appIndexPath, 'utf-8')
+  let html = readFileSync(appIndexPath, 'utf-8')
+  // Two renderer-side quirks need rewriting before the bridge can boot:
+  //   1. The renderer's CSP meta tag declares `script-src 'self'`. Without
+  //      'unsafe-inline' (or a nonce) the inline bridge script we inject
+  //      below is BLOCKED and the iframe never sends `ready`. Mint a per-
+  //      request nonce, rewrite the meta tag's `script-src` to allow it,
+  //      and stamp the same nonce on the bridge tag.
+  //   2. The renderer's bundle paths are relative (`./assets/index-XYZ.js`).
+  //      When loaded inside the `/embed/:docId` iframe the browser resolves
+  //      them to `/embed/assets/...` which the static layer does not serve
+  //      (returns 400). Inject `<base href="/">` so the relative paths land
+  //      on the real static root.
+  const nonce = randomBytes(16).toString('base64')
+  html = html.replace(
+    /<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i,
+    (m) => m.replace(/script-src 'self'/, `script-src 'self' 'nonce-${nonce}' 'unsafe-inline'`),
+  )
+  if (!html.includes('http-equiv="Content-Security-Policy"')) {
+    // Renderer shipped without a CSP meta tag — inject one so the bridge
+    // tag below has a nonce-aware policy to honour.
+    html = html.replace(
+      /<\/head>/i,
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'nonce-${nonce}' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*">\n</head>`,
+    )
+  }
+  const baseTag = '<base href="/">'
+  // `<base>` only affects URLs that follow it, so inject it as the first
+  // element after `<head>` opens. Inserting it later leaves the renderer's
+  // own `<script src="./assets/…">` tag resolving against the iframe URL
+  // and 400-ing on `/embed/assets/…`.
+  html = html.replace(/<head>/i, (_m) => `<head>\n${baseTag}`)
   const safeToken = q.token.replace(/"/g, '&quot;').replace(/</g, '&lt;')
   const tokenTag = `\n<meta name="genoffice-token" content="${safeToken}">`
   // Mirror the optional handshake nonce so the renderer bridge can echo it
@@ -224,7 +255,7 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   }
   const configTag = `\n<meta name="genoffice-embed-config" content="${escapeAttr(JSON.stringify(embedConfig))}">`
   const sessionTag = `\n<meta name="genoffice-session" content="${sessionId}">`
-  const bridgeTag = `\n<script>window.__GENOFFICE_EMBED__=${JSON.stringify(embedConfig)};${EMBED_BRIDGE}</script>`
+  const bridgeTag = `\n<script nonce="${nonce}">window.__GENOFFICE_EMBED__=${JSON.stringify(embedConfig)};${EMBED_BRIDGE}</script>`
   const injection = tokenTag + nonceTag + configTag + sessionTag + bridgeTag
   // Case-insensitive match against `</head>` so a renderer with a `<HEAD>`
   // tag (rare but possible after build minification) still gets the bridge

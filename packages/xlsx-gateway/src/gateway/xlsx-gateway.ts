@@ -26,14 +26,16 @@ import {
   type ChartAdd,
   type DrawingAnchor,
   type ImageAdd,
+  type VisualAddition,
   relsPathFor,
   resolveRelTarget,
   type ShapeAdd,
 } from './xlsx-drawing-add'
-import { applyTableAdditions, type TableArea } from './xlsx-table-add'
+import { applyTableAdditions, type TableAddition, type TableArea } from './xlsx-table-add'
 import type { PivotFilterDef } from '../domain/pivot-filters'
 import {
   applyPivotAdditions,
+  type PivotAddition,
   type PivotAddGrouping,
   type PivotAddRowLine,
   type PivotValueSpec,
@@ -1072,7 +1074,7 @@ export async function planCellEditsToXlsx(
   // New visuals run after the worksheet XML flush above so the drawing
   // element lands on the final sheet content.
   if (visualAdditions.length > 0) {
-    const resolved = []
+    const resolved: VisualAddition[] = []
     for (const addition of visualAdditions) {
       resolved.push({
         worksheetPath:
@@ -1107,7 +1109,7 @@ export async function planCellEditsToXlsx(
   // New tables also run on the flushed worksheet XML: the <tableParts>
   // element and overlap checks see the final sheet content.
   if (tableAdditions.length > 0) {
-    const resolvedTables = []
+    const resolvedTables: TableAddition[] = []
     for (const addition of tableAdditions) {
       resolvedTables.push({
         worksheetPath:
@@ -1224,7 +1226,7 @@ export async function planCellEditsToXlsx(
   // New pivots run last: their worksheet rels ride the package overlay, and
   // the <pivotCaches> entry lands on the final workbook XML string.
   if (pivotAdditions.length > 0) {
-    const resolvedPivots = []
+    const resolvedPivots: PivotAddition[] = []
     for (const addition of pivotAdditions) {
       resolvedPivots.push({
         worksheetPath:

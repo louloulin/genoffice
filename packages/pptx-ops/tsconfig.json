@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["node"],
+    "skipLibCheck": true,
     "paths": {
       "@genoffice/pptx-engine": ["../pptx-engine/src/index.ts"],
       "@genoffice/pptx-engine/table-grid": ["../pptx-engine/src/table-grid.ts"],
@@ -9,5 +10,5 @@
       "@genoffice/pptx-engine/background-promote": ["../pptx-engine/src/background-promote.ts"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "src/raw.d.ts"]
 }
