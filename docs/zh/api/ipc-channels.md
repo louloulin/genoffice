@@ -6,7 +6,7 @@ GenOffice 暴露 **514 条**类型化 IPC 通道，从主进程（或独立模�
 
 完整列表按能力目录分组，含文件位置与从源码抽取的 JSDoc，每个发布版本由 [`tools/gen-ipc-docs.mjs`](https://github.com/genspark-ai/genoffice/blob/main/tools/gen-ipc-docs.mjs) 重新生成。
 
-> 📄 [浏览全部 514 条通道 →](./ipc-channels-auto.md)
+> 📄 [浏览全部 514 条通道 →](/api/ipc-channels-auto)（生成内容仅英文 —— 通道名与源码 JSDoc 原样保留）
 
 自动生成的文件也会提交进仓库的 `apps/web-server/IPC_CHANNELS.md`，方便本地 grep：
 

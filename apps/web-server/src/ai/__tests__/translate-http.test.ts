@@ -214,7 +214,7 @@ test('POST /api/ai/translate/stream/cancel — missing requestId → 400', async
   }
 })
 
-test('POST /api/ai/translate/stream/cancel — unknown requestId → 200 with aborted:false', async () => {
+test('POST /api/ai/translate/stream/cancel — unknown requestId → 200 with status:"completed"', async () => {
   const { port, close } = await makeServer()
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/ai/translate/stream/cancel`, {
@@ -223,9 +223,61 @@ test('POST /api/ai/translate/stream/cancel — unknown requestId → 200 with ab
       body: JSON.stringify({ requestId: 'does-not-exist' }),
     })
     assert.equal(response.status, 200)
-    const body = (await response.json()) as { ok: boolean; aborted: boolean }
+    const body = (await response.json()) as {
+      ok: boolean
+      status: 'cancelled' | 'completed' | 'unknown'
+      requestId: string
+      aborted: boolean
+    }
     assert.equal(body.ok, true)
+    assert.equal(body.status, 'completed')
+    assert.equal(body.requestId, 'does-not-exist')
+    // Back-compat with callers still reading the boolean.
     assert.equal(body.aborted, false)
+  } finally {
+    close()
+  }
+})
+
+test('POST /api/ai/translate/stream/cancel — active requestId → status:"cancelled"', async () => {
+  const { port, close } = await makeServer()
+  try {
+    // Start a stream that hangs (no provider configured, the SSE pipeline
+    // still registers the session before failing). We use the missing-provider
+    // path because it is deterministic and the session map stays populated
+    // through the SSE emit phase.
+    const streamAbort = new AbortController()
+    void fetch(`http://127.0.0.1:${port}/api/ai/translate/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId: 'cancel-me',
+        sourceLanguage: 'en-US',
+        targetLanguage: 'zh-CN',
+        settings: { provider: 'openai', providers: {} },
+        units: [{ unitId: 'u1', sourceText: 'hello', order: 0 }],
+      }),
+      signal: streamAbort.signal,
+    }).catch(() => undefined)
+    // Give the handler a tick to register the session.
+    await new Promise((r) => setTimeout(r, 30))
+    const response = await fetch(`http://127.0.0.1:${port}/api/ai/translate/stream/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: 'cancel-me' }),
+    })
+    assert.equal(response.status, 200)
+    const body = (await response.json()) as {
+      ok: boolean
+      status: 'cancelled' | 'completed' | 'unknown'
+      requestId: string
+      aborted: boolean
+    }
+    assert.equal(body.ok, true)
+    assert.equal(body.status, 'cancelled')
+    assert.equal(body.requestId, 'cancel-me')
+    assert.equal(body.aborted, true)
+    streamAbort.abort()
   } finally {
     close()
   }

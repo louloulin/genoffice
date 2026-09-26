@@ -13,6 +13,90 @@
 
 import { defineConfig } from 'vitepress'
 
+// zh-CN localized sidebar. This must live under `locales.zh.themeConfig` —
+// VitePress only ever reads `themeConfig.sidebar`, so a root-level sibling
+// key is silently ignored and every /zh/* page renders without a sidebar.
+const sidebarZH = {
+  '/zh/guide/': [
+    { text: '快速上手', items: [
+      { text: '安装', link: '/zh/guide/installation' },
+      { text: '快速上手 — Web', link: '/zh/guide/quick-start-web' },
+      { text: '快速上手 — 嵌入', link: '/zh/guide/quick-start-embed' },
+      { text: '快速上手 — SDK', link: '/zh/guide/quick-start-sdk' },
+      { text: 'SDK 多实例', link: '/zh/guide/sdk-multi-instance' },
+      { text: '快速开始', link: '/zh/guide/getting-started' },
+    ] },
+    { text: '部署', items: [
+      { text: 'Docker', link: '/zh/guide/deployment-docker' },
+      { text: 'Kubernetes', link: '/zh/guide/deployment-kubernetes' },
+    ] },
+    { text: '运维', items: [
+      { text: '安全最佳实践', link: '/zh/guide/security-best-practices' },
+    ] },
+  ],
+  '/zh/integration/': [
+    { text: '集成', items: [
+      { text: '嵌入会话（一次调用）', link: '/zh/integration/dataflarework-embed-session' },
+      { text: 'SDK 契约验证', link: '/zh/integration/sdk-verification' },
+    ] },
+  ],
+  '/zh/api/': [
+    { text: '公开 API', items: [
+      { text: 'REST API v1', link: '/zh/api/rest-api' },
+      { text: 'JavaScript SDK', link: '/zh/api/sdk-typescript' },
+      { text: '嵌入会话', link: '/zh/api/sdk-embed-session' },
+      { text: 'postMessage 协议', link: '/zh/api/postmessage-protocol' },
+      { text: '市场', link: '/zh/api/marketplace' },
+    ] },
+    { text: '扩展性', items: [
+      { text: 'Provider 插件', link: '/zh/api/provider-plugins' },
+      { text: 'Provider 能力矩阵', link: '/zh/api/provider-capabilities' },
+      { text: 'AI & Skills 协议', link: '/zh/api/ai-skills-protocol' },
+      { text: 'Agent 协议 v1', link: '/zh/api/agent-protocol' },
+      { text: 'KB / TM 格式', link: '/zh/api/kb-tm-format' },
+    ] },
+    { text: '包', items: [
+      { text: '@genoffice/agent-runtime', link: '/zh/api/agent-runtime' },
+      { text: '@genoffice/agent-session', link: '/zh/api/agent-session' },
+    ] },
+    { text: '参考', items: [
+      { text: 'IPC 通道 (514)', link: '/zh/api/ipc-channels' },
+    ] },
+  ],
+  '/zh/skills/': [
+    { text: 'Skills', items: [
+      { text: '市场', link: '/zh/skills/marketplace' },
+      { text: '官方 Skills', link: '/zh/skills/official' },
+      { text: 'doc-format', link: '/zh/skills/official/doc-format' },
+      { text: 'json-validate', link: '/zh/skills/official/json-validate' },
+      { text: 'markdown-format', link: '/zh/skills/official/markdown-format' },
+      { text: 'sheet-formula', link: '/zh/skills/official/sheet-formula' },
+      { text: 'slides-outline', link: '/zh/skills/official/slides-outline' },
+      { text: 'text-diff', link: '/zh/skills/official/text-diff' },
+      { text: 'text-summarize', link: '/zh/skills/official/text-summarize' },
+      { text: 'text-translate', link: '/zh/skills/official/text-translate' },
+      { text: 'text-translate-pairs', link: '/zh/skills/official/text-translate-pairs' },
+      { text: 'yaml-to-json', link: '/zh/skills/official/yaml-to-json' },
+      { text: 'yaml-validate', link: '/zh/skills/official/yaml-validate' },
+      { text: '社区 Skills', link: '/zh/skills/community' },
+      { text: '编写指南', link: '/zh/skills/authoring' },
+    ] },
+  ],
+  '/zh/about/': [
+    { text: '关于', items: [
+      { text: '架构', link: '/zh/about/architecture' },
+      { text: '路线图', link: '/zh/about/roadmap' },
+      { text: '治理', link: '/zh/about/governance' },
+      { text: '常见问题', link: '/zh/about/faq' },
+    ] },
+  ],
+  '/zh/changelog/': [
+    { text: '更新日志', items: [
+      { text: '版本历史', link: '/zh/changelog/' },
+    ] },
+  ],
+}
+
 export default defineConfig({
   title: 'GenOffice',
   description: 'AI-native office suite — docs, sheets, slides, pdf, markdown, html. Open SDK, REST API v1, embeddable iframe.',
@@ -30,9 +114,16 @@ export default defineConfig({
   ],
 
   // Bilingual nav (Chinese is added in addition to the default English).
+  // A locale's own `themeConfig` is deep-merged over this one, which is how
+  // the zh sidebar is wired below: VitePress reads `themeConfig.sidebar`
+  // only, so a sibling key at the root (previously `sidebarZH`) is inert.
   locales: {
     root: { label: 'English', lang: 'en-US' },
-    zh: { label: '简体中文', lang: 'zh-CN' },
+    zh: {
+      label: '简体中文',
+      lang: 'zh-CN',
+      themeConfig: { sidebar: sidebarZH },
+    },
   },
 
   themeConfig: {
@@ -63,10 +154,19 @@ export default defineConfig({
         ] },
       ],
 
+      '/integration/': [
+        { text: 'Integration', items: [
+          { text: 'Dataflarework Quick Start', link: '/integration/dataflarework-quickstart' },
+          { text: 'Embed Session (one call)', link: '/integration/dataflarework-embed-session' },
+          { text: 'SDK Verification', link: '/integration/sdk-verification' },
+        ] },
+      ],
+
       '/api/': [
         { text: 'Public API', items: [
           { text: 'REST API v1', link: '/api/rest-api' },
           { text: 'JavaScript SDK', link: '/api/sdk-typescript' },
+          { text: 'Embed Session', link: '/api/sdk-embed-session' },
           { text: 'postMessage Protocol', link: '/api/postmessage-protocol' },
           { text: 'Marketplace', link: '/api/marketplace' },
           { text: 'Generated API Reference', link: '/api/_generated/README' },
@@ -125,82 +225,6 @@ export default defineConfig({
       ],
     },
 
-    // zh-CN localized sidebar — maps to /zh/* VitePress locale routes.
-    sidebarZH: {
-      '/zh/guide/': [
-        { text: '快速上手', items: [
-          { text: '安装', link: '/zh/guide/installation' },
-          { text: '快速上手 — Web', link: '/zh/guide/quick-start-web' },
-          { text: '快速上手 — 嵌入', link: '/zh/guide/quick-start-embed' },
-          { text: '快速上手 — SDK', link: '/zh/guide/quick-start-sdk' },
-          { text: 'SDK 多实例', link: '/zh/guide/sdk-multi-instance' },
-          { text: '快速开始', link: '/zh/guide/getting-started' },
-        ] },
-        { text: '部署', items: [
-          { text: 'Docker', link: '/zh/guide/deployment-docker' },
-          { text: 'Kubernetes', link: '/zh/guide/deployment-kubernetes' },
-        ] },
-        { text: '运维', items: [
-          { text: '安全最佳实践', link: '/zh/guide/security-best-practices' },
-        ] },
-      ],
-      '/zh/api/': [
-        { text: '公开 API', items: [
-          { text: 'REST API v1', link: '/zh/api/rest-api' },
-          { text: 'JavaScript SDK', link: '/zh/api/sdk-typescript' },
-          { text: 'postMessage 协议', link: '/zh/api/postmessage-protocol' },
-          { text: '市场', link: '/zh/api/marketplace' },
-        ] },
-        { text: '扩展性', items: [
-          { text: 'Provider 插件', link: '/zh/api/provider-plugins' },
-          { text: 'Provider 能力矩阵', link: '/zh/api/provider-capabilities' },
-          { text: 'AI & Skills 协议', link: '/zh/api/ai-skills-protocol' },
-          { text: 'Agent 协议 v1', link: '/zh/api/agent-protocol' },
-          { text: 'KB / TM 格式', link: '/zh/api/kb-tm-format' },
-        ] },
-        { text: '包', items: [
-          { text: '@genoffice/agent-runtime', link: '/zh/api/agent-runtime' },
-          { text: '@genoffice/agent-session', link: '/zh/api/agent-session' },
-        ] },
-        { text: '参考', items: [
-          { text: 'IPC 通道 (514)', link: '/zh/api/ipc-channels' },
-        ] },
-      ],
-      '/zh/skills/': [
-        { text: 'Skills', items: [
-          { text: '市场', link: '/zh/skills/marketplace' },
-          { text: '官方 Skills', link: '/zh/skills/official' },
-          { text: 'doc-format', link: '/zh/skills/official/doc-format' },
-          { text: 'json-validate', link: '/zh/skills/official/json-validate' },
-          { text: 'markdown-format', link: '/zh/skills/official/markdown-format' },
-          { text: 'sheet-formula', link: '/zh/skills/official/sheet-formula' },
-          { text: 'slides-outline', link: '/zh/skills/official/slides-outline' },
-          { text: 'text-diff', link: '/zh/skills/official/text-diff' },
-          { text: 'text-summarize', link: '/zh/skills/official/text-summarize' },
-          { text: 'text-translate', link: '/zh/skills/official/text-translate' },
-          { text: 'text-translate-pairs', link: '/zh/skills/official/text-translate-pairs' },
-          { text: 'yaml-to-json', link: '/zh/skills/official/yaml-to-json' },
-          { text: 'yaml-validate', link: '/zh/skills/official/yaml-validate' },
-          { text: '社区 Skills', link: '/zh/skills/community' },
-          { text: '编写指南', link: '/zh/skills/authoring' },
-        ] },
-      ],
-      '/zh/about/': [
-        { text: '关于', items: [
-          { text: '架构', link: '/zh/about/architecture' },
-          { text: '路线图', link: '/zh/about/roadmap' },
-          { text: '治理', link: '/zh/about/governance' },
-          { text: '常见问题', link: '/zh/about/faq' },
-        ] },
-      ],
-
-      '/zh/changelog/': [
-        { text: '更新日志', items: [
-          { text: '版本历史', link: '/zh/changelog/' },
-        ] },
-      ],
-    },
-
     socialLinks: [
       { icon: 'github', link: 'https://github.com/genspark-ai/genoffice' },
     ],
@@ -224,12 +248,23 @@ export default defineConfig({
     },
   },
 
-  // Markdown options — disable broken-link checker (we ship external
-  // GitHub URLs that may not exist before the public release).
   markdown: {
     lineNumbers: false,
     theme: { light: 'github-light', dark: 'github-dark' },
   },
+
+  // Dead-link detection runs on every build and DOES fail it. Two pre-existing
+  // classes are exempted, both outside the curated site:
+  //   - `docs/i18n/README.*.md` are mirrors of the repository READMEs, whose
+  //     relative links point at files above the docs srcDir (`LICENSE`,
+  //     `CONTRIBUTING`, `SECURITY`, `ee/LICENSE`, …). They have no sidebar
+  //     entry and are not linked from anywhere on the site.
+  //   - `http://localhost:*` URLs are dev-server addresses, dead by construction.
+  //     (VitePress's `'localhostLinks'` shorthand only applies when it is the
+  //     entire value, so the array form needs an explicit pattern.)
+  // Everything else — every curated page, including the /integration/ and
+  // /api/sdk-embed-session pages — is still checked.
+  ignoreDeadLinks: [/^\.\/(\.\.\/)+/, /^https?:\/\/localhost[:/]/],
 
   // VitePress sitemap + dead-link detection live in CI (docs.yml).
   cleanUrls: true,

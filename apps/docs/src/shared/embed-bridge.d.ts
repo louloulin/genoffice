@@ -1,8 +1,16 @@
+/**
+ * Re-export shim for the Dataflare embed bridge type declarations.
+ *
+ * The SDK now owns the `window.dataflareOfficeBridge` global type and the
+ * stream envelope types. This file exists only so legacy imports keep
+ * resolving; consumers should import from `@genoffice/web-sdk/dataflare/guest`.
+ */
+
 import type {
   GenOfficeEmbedEvent,
   DataflareParentStreamEvent,
   DataflareParentStreamRequest,
-} from './embed-bridge'
+} from '@genoffice/web-sdk/dataflare/guest'
 
 declare global {
   interface Window {

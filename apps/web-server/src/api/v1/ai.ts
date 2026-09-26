@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
 import { invokeIpc } from './ipc-bridge'
 import { requireScopeFromHeaders } from './auth'
+import { translateBatchCore, handleTranslateStreamHttp, handleTranslateStreamCancelHttp, type TranslateBatchHttpRequest } from '../../ai/translate-http'
 
 /**
  * `POST /api/v1/ai/capabilities`
@@ -92,12 +93,23 @@ export async function handleAiTranslate(ctx: { request: IncomingMessage; respons
     return true
   }
   const caller = { sub: gate.payload.sub }
-  let rawBody: { text?: unknown; from?: unknown; to?: unknown; instruction?: unknown; sourceLang?: unknown; targetLang?: unknown }
+  let rawBody: { text?: unknown; from?: unknown; to?: unknown; instruction?: unknown; sourceLang?: unknown; targetLang?: unknown; units?: unknown }
   try {
     const raw = await readBody(ctx.request)
     rawBody = raw ? JSON.parse(raw) : {}
   } catch {
     sendError(ctx.response, 400, 'invalid JSON body', 'INVALID_ARGUMENT', 'ai:translate')
+    return true
+  }
+  // Batch shape — `{ units: [...], targetLanguage }`. This is what the SDK's
+  // `translateBatch()` sends, and what the legacy `/api/ai/translate` route
+  // has always accepted. Without this branch the v1 route ignored `units`
+  // entirely and answered 400 `expected { text, from?, to }`, so pointing the
+  // SDK at v1 would have been a regression rather than a migration.
+  // `translateBatchCore` takes the already-parsed body: `readBody` above has
+  // consumed the stream, and a second read would silently return nothing.
+  if (Array.isArray(rawBody.units)) {
+    await translateBatchCore(rawBody as TranslateBatchHttpRequest, ctx.response)
     return true
   }
   // The REST shape (sdk1 §11.4 / docs/api/rest-api.md) is
@@ -137,6 +149,53 @@ export async function handleAiTranslate(ctx: { request: IncomingMessage; respons
   }
   const result = await invokeIpc('ai:translate', [ipcBody])
   sendJson(ctx.response, 200, result)
+  return true
+}
+
+/**
+ * `POST /api/v1/ai/translate/stream`
+ *
+ * SSE translation stream. Same event sequence as the legacy
+ * `/api/ai/translate/stream` (`start` / `unit` / `quality` / `complete` /
+ * `error`) — this v1 route only adds the scope gate and the v1 prefix.
+ *
+ * **Required scope**: `ai:translate`
+ *
+ * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`. Request-validation
+ * failures before the stream opens keep the legacy envelope (no `channel`);
+ * failures after it opens arrive as an SSE `error` event.
+ * @public
+ */
+export function handleAiTranslateStream(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
+  const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:translate')
+  if (!gate.ok) {
+    sendError(ctx.response, gate.status, gate.message, gate.code, 'ai:translate/stream')
+    return true
+  }
+  // Not awaited: an SSE handler stays open until the stream terminates, and
+  // awaiting it here would hold the dispatcher's promise for the whole run.
+  // Mirrors the legacy registration in src/index.ts.
+  void handleTranslateStreamHttp(ctx.request, ctx.response)
+  return true
+}
+
+/**
+ * `POST /api/v1/ai/translate/stream/cancel`
+ *
+ * Abort an in-flight v1 translation stream by `requestId`.
+ *
+ * **Required scope**: `ai:translate`
+ *
+ * **Errors**: `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
+ */
+export function handleAiTranslateStreamCancel(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
+  const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:translate')
+  if (!gate.ok) {
+    sendError(ctx.response, gate.status, gate.message, gate.code, 'ai:translate/stream/cancel')
+    return true
+  }
+  void handleTranslateStreamCancelHttp(ctx.request, ctx.response)
   return true
 }
 

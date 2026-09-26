@@ -60,6 +60,18 @@ For non-bundler apps:
 
 Full event / command surface: [SDK Reference](/api/sdk-typescript).
 
+## Embedding into a host app
+
+Mounting a single editor inside someone else's page needs a session, not just
+an iframe — a file-scoped JWT and a handshake nonce. `openEmbedSession()` does
+all of it in one call:
+
+- [Embed Session (one call)](/integration/dataflarework-embed-session) — the
+  guide, including the `autoRelease` interaction and the retry matrix
+- [Embed Session API](/api/sdk-embed-session) — every option and return type
+- [SDK Verification](/integration/sdk-verification) — `npm run verify:sdk`,
+  the contract gate that catches SDK/server drift mocked tests cannot see
+
 ## Examples
 
 - [`examples/embed-basic/`](https://github.com/genspark-ai/genoffice/tree/main/examples/embed-basic/) — vanilla HTML + UMD.

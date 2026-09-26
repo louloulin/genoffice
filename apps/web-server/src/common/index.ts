@@ -75,6 +75,17 @@ export type {
   TabRecord,
 } from './state'
 
+export {
+  loadCollabStore,
+  saveCollabSessions,
+  savePresence,
+  saveDocPermissions,
+  saveDocVersions,
+  saveDocComments,
+  saveTemplates,
+  _resetCollabStoreForTests,
+} from './collab-store'
+
 export { MIME_TYPES } from './mime'
 export {
   ROOT,
@@ -82,6 +93,7 @@ export {
   HOST,
   APPS,
   STATIC_ROOT,
+  SDK_BUNDLE_ROOT,
   WEB_TEMP_ROOT,
   isWithin,
   isManagedPath,

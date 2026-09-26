@@ -59,6 +59,17 @@ editor.destroy()
 
 完整的事件 / 命令清单：[SDK 参考](/zh/api/sdk-typescript)。
 
+## 嵌入到宿主应用
+
+在别人的页面里挂载单个编辑器，需要的不是 iframe 本身，而是一个会话——
+文件级 JWT 加上握手 nonce。`openEmbedSession()` 一次调用全部搞定：
+
+- [嵌入会话（一次调用）](/zh/integration/dataflarework-embed-session) ——
+  使用指南，含 `autoRelease` 相互影响与重试矩阵
+- [嵌入会话 API](/zh/api/sdk-embed-session) —— 全部参数与返回类型
+- [SDK 契约验证](/zh/integration/sdk-verification) —— `npm run verify:sdk`，
+  拦住 mock 测试看不见的 SDK/服务端漂移
+
 ## 示例
 
 - [`examples/embed-basic/`](https://github.com/genspark-ai/genoffice/tree/main/examples/embed-basic/) — 纯 HTML + UMD。

@@ -1,30 +1,51 @@
 /**
  * Static-token auth gate for the web-server IPC surface.
  *
- * Default posture: open. Setting `WEB_TOKEN` activates the gate for
- * every `/api/*` request except the small public allowlist below. This
- * mirrors the legacy Dataflare bridge behaviour (cookie-based, but the
- * shape is the same: prove who you are on every call that touches the
- * host).
+ * # Dual-auth model
  *
- * Token transport:
+ * Two independent gates protect the IPC surface. A request must satisfy
+ * **both** for `/api/v1/*` and the IPC bridge; HTML previews and a small
+ * allowlist bypass them.
  *
- *   Authorization: Bearer <token>
- *   X-GenOffice-Token: <token>
+ * ## Gate 1 — `WEB_TOKEN` (env-gated shared secret)
  *
- * The custom header exists because some browsers strip `Authorization`
- * on cross-origin EventSource requests (which is what
- * `/api/ai/translate/stream` and `/api/ipc/events` are).
+ * - Default posture: **open**. `WEB_TOKEN` unset = no gate.
+ * - When set: every `/api/*` request (except the public allowlist) must
+ *   present the secret. The secret is the same in every transport:
+ *     - `Authorization: Bearer <token>`
+ *     - `X-GenOffice-Token: <token>` (used by EventSource, which strips
+ *       `Authorization` cross-origin)
+ *     - `Cookie: auth_token=<token>` (HttpOnly, set on first HTML response
+ *       to a WEB_TOKEN-configured boot — every editor bundle is
+ *       authenticated without per-bundle plumbing)
+ *     - `?token=<token>` query param (non-browser clients, curl, older
+ *       EventSource paths)
  *
- * Failure shape: a 401 with a `WWW-Authenticate: Bearer` challenge and
- * a structured JSON body so the renderer can show a real error instead
- * of a generic "IPC failed".
+ * ## Gate 2 — JWT + scope (per-request)
  *
- * With `WEB_TOKEN` unset the server stays open. That keeps local dev,
- * e2e tests, and the desktop preload (which already has an
- * OS-level trust boundary) working without ceremony. Production
- * deployments that want the gate should set `WEB_TOKEN` AND `HOST` to
- * something other than loopback.
+ * - Independent of `WEB_TOKEN`. A request that has the env secret but no
+ *   `Authorization: Bearer <jwt>` falls through to the IPC handler, which
+ *   then enforces its own scope check (`requireScopeFromHeaders`).
+ * - JWT signing keys: `GENOFFICE_JWT_SECRET` (HS256, default) or
+ *   `GENOFFICE_JWT_ALG=RS256` with the matching public/private pair.
+ * - TTL clamp: 30..86400 seconds. Sub-second / out-of-range TTLs are
+ *   clamped up / down rather than rejected so a typo can't mint an
+ *   eternal token.
+ * - Scope list: flat `action:resource` strings; `*` and `action:*` are
+ *   wildcards. Empty / absent `scope` is read-only (`files:read`).
+ *
+ * # Third-party integration
+ *
+ * The SDK ships `createAuthedClient()` (`apps/sdk/src/auth/client.ts`) to
+ * pick the right transport automatically:
+ *
+ *   - If `process.env.WEB_TOKEN` (or a passed-in `webToken`) is set, the
+ *     returned client uses it as a Bearer for every request.
+ *   - Otherwise, the returned client calls `AuthMintClient.mint(...)` on
+ *     boot and forwards the resulting JWT as Bearer.
+ *
+ * Without this helper, third-party hosts routinely miss one of the two
+ * gates and see a 401 with no actionable error — see plan §6.1 B.1.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'

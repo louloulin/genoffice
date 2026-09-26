@@ -69,7 +69,9 @@ jobs:
           cache: npm
       - run: npm ci
       # Build the standalone SDK bundle (the artefact that ships to npm).
-      - run: npm run build -w @genoffice/sdk --if-present
+      # The package is `@genoffice/web-sdk` — the old `-w @genoffice/sdk`
+      # plus `--if-present` resolved to nothing, so this built silently.
+      - run: npm run build -w @genoffice/web-sdk
 
   bundle:
     name: Bundle Web Server
@@ -90,6 +92,28 @@ jobs:
           name: web-server-bundle
           path: apps/web-server/dist/bundle/index.js
           retention-days: 7
+
+  # The contract gate. The SDK's mocked suite once passed 410/410 while seven
+  # methods failed against a real server, because the mocks served a payload
+  # shape the server never emits. This job builds both artefacts, boots a
+  # throwaway server on a free port and probes it over real HTTP. Breaking a
+  # contract (a renamed query param, a moved route, a dropped scope) must
+  # turn this job red.
+  #
+  # Deliberately not in `docker`'s `needs`: it only guards the workflow's
+  # overall status, and adding ~4 minutes to the release path buys nothing.
+  sdk-contract:
+    name: SDK Contract Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@1d27c9d2b801d2c8c384b2cf4e0cd6f97f25990e5 # v6.4.0
+        with:
+          node-version: 22.12
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:sdk
 
   docker:
     name: Docker Image

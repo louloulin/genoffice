@@ -81,7 +81,64 @@ export const APPS = ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html', 'she
 
 export { ROOT, STATIC_ROOT }
 
+/**
+ * The bundled `@genoffice/web-sdk` artefacts (`index.mjs`, `index.umd.js`)
+ * live inside the web-server's own dist tree, not under STATIC_ROOT
+ * (STATIC_ROOT points at the apps dir, not at web-server/dist). The web-sdk
+ * build script copies them here so the server can re-serve them at
+ * `/static/sdk/<file>` for third-party hosts that drop a `<script src=…>`
+ * tag into their own page.
+ *
+ * Resolution order — same fall-back ladder as STATIC_ROOT:
+ *   1. `WEB_SDK_BUNDLE_DIR` env override (production mount point).
+ *   2. `<ROOT>/apps/web-server/dist/static/sdk` (dev / packaged).
+ */
+const envSdk = process.env.WEB_SDK_BUNDLE_DIR
+export const SDK_BUNDLE_ROOT = envSdk && envSdk.length > 0
+  ? resolve(envSdk)
+  : resolve(ROOT, 'apps', 'web-server', 'dist', 'static', 'sdk')
+
 export const WEB_TEMP_ROOT = resolve(process.env.TMPDIR || '/tmp', 'genoffice-web-temp')
+
+/**
+ * Additional managed storage roots configured by the operator.
+ *
+ * Production deployments often have to write files outside `DATA_DIR` —
+ * an S3 mirror, a CI artefacts volume, a shared `/var/lib/genoffice` on
+ * the hosts — and `isManagedPath` rejecting them would block legitimate
+ * features. `WEB_MANAGED_ROOTS` lets operators add comma-separated absolute
+ * paths to the allow-list without code changes.
+ *
+ * Each entry is normalised to an absolute path; malformed entries
+ * (relative, empty, still containing `..` segments after resolution) are
+ * dropped at startup so a typo in the env var can't silently open up the
+ * rest of the filesystem.
+ */
+function parseExtraManagedRoots(envValue: string | undefined): string[] {
+  if (!envValue) return []
+  const out: string[] = []
+  for (const raw of envValue.split(',')) {
+    const candidate = raw.trim()
+    if (!candidate) continue
+    // Reject any entry with a literal `..` segment before resolving — even
+    // though `resolve()` would normalise it away, the operator typed it
+    // explicitly, which is a strong signal the entry was wrong.
+    const segments = candidate.split(/[\\/]+/)
+    if (segments.includes('..')) continue
+    if (!isAbsolute(candidate)) continue
+    out.push(resolve(candidate))
+  }
+  return out
+}
+
+/**
+ * Extra operator-configured storage roots. Computed once at module load —
+ * paths are stable for the lifetime of the process, so re-reading the env
+ * var on every `isManagedPath` call would just be wasted work.
+ */
+export const EXTRA_MANAGED_ROOTS: readonly string[] = parseExtraManagedRoots(
+  process.env.WEB_MANAGED_ROOTS,
+)
 
 /**
  * True when `target` resolves to `root` itself or to a path strictly beneath
@@ -104,14 +161,18 @@ export function isWithin(root: string, target: string): boolean {
  * True when `target` is a path this server is allowed to read, write, delete or
  * rename on a renderer's behalf: inside persistent storage (`DATA_DIR`, which
  * contains `FILES_DIR` where uploads and save-as targets land) or inside the
- * disposable upload area (`WEB_TEMP_ROOT`).
+ * disposable upload area (`WEB_TEMP_ROOT`), or inside one of the
+ * operator-configured extra roots in `WEB_MANAGED_ROOTS`.
  *
  * In the web build there is no Electron path-grant map, so this predicate is
  * the only thing between a renderer — or anyone who can reach the IPC endpoint;
  * the default HOST binds every interface — and the rest of the filesystem.
  */
 export function isManagedPath(target: string): boolean {
-  return [DATA_DIR, WEB_TEMP_ROOT].some((root) => isWithin(root, target))
+  if ([DATA_DIR, WEB_TEMP_ROOT, ...EXTRA_MANAGED_ROOTS].some((root) => isWithin(root, target))) {
+    return true
+  }
+  return false
 }
 
 /**

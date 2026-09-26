@@ -199,17 +199,94 @@ export function verifyJwtWithRevocation(token: string): JwtPayload | null {
   return payload
 }
 
+/** Failure reasons `verifyJwtDetailed` can report. */
+export type JwtFailureReason =
+  | 'malformed'   // not a 3-part token, or header/payload not valid base64 JSON
+  | 'signature'   // alg unsupported or HMAC/RSA signature mismatch
+  | 'expired'     // signature valid, `exp` in the past
+  | 'revoked'     // signature valid + unexpired, but `jti` on a revocation list
+
+export type JwtVerifyResult =
+  | { ok: true; payload: JwtPayload }
+  | { ok: false; reason: JwtFailureReason }
+
+/**
+ * Same checks as `verifyJwtWithRevocation`, but reports *why* a token was
+ * rejected. Used by the embed endpoint (B.12) so a 401 can say
+ * `EMBED_JWT_EXPIRED` vs `EMBED_JWT_REVOKED` vs `EMBED_JWT_INVALID` — the
+ * three call for different client remediation (refresh / re-mint / fix the
+ * token source) and a single "invalid token" message makes debugging a
+ * failing embed a shot in the dark.
+ *
+ * Ordering matters: signature is verified before the expiry claim is
+ * trusted, so a forged token with a future `exp` cannot masquerade as
+ * merely-expired. Only a token whose signature checks out can be classified
+ * `expired` or `revoked`.
+ */
+export function verifyJwtDetailed(token: string): JwtVerifyResult {
+  const parts = token.split('.')
+  if (parts.length !== 3) return { ok: false, reason: 'malformed' }
+  const [headerB64, payloadB64, sigB64] = parts
+  let header: { alg?: string }
+  let payload: JwtPayload
+  try {
+    header = JSON.parse(b64urlDecode(headerB64).toString('utf8'))
+    payload = JSON.parse(b64urlDecode(payloadB64).toString('utf8')) as JwtPayload
+  } catch {
+    return { ok: false, reason: 'malformed' }
+  }
+  const signingInput = `${headerB64}.${payloadB64}`
+  try {
+    if (header.alg === 'HS256') {
+      if (!SECRET) return { ok: false, reason: 'signature' }
+      const expected = createHmac('sha256', SECRET).update(signingInput).digest()
+      const actual = b64urlDecode(sigB64)
+      if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+        return { ok: false, reason: 'signature' }
+      }
+    } else if (header.alg === 'RS256') {
+      const key = process.env.GENOFFICE_JWT_PUBLIC_KEY
+      if (!key) return { ok: false, reason: 'signature' }
+      const ok = createVerify('RSA-SHA256').update(signingInput).verify(key, b64urlDecode(sigB64))
+      if (!ok) return { ok: false, reason: 'signature' }
+    } else {
+      return { ok: false, reason: 'signature' }
+    }
+  } catch {
+    return { ok: false, reason: 'signature' }
+  }
+  if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) {
+    return { ok: false, reason: 'expired' }
+  }
+  if (payload.jti) {
+    if (jtiRevocationHook(payload.jti) || adminRevokedJtis.has(payload.jti)) {
+      return { ok: false, reason: 'revoked' }
+    }
+  }
+  return { ok: true, payload }
+}
+
 
 
 
 /**
  * Read & verify the Authorization: Bearer header. Returns the decoded
  * payload, or null if the header is missing / malformed / invalid.
+ *
+ * B.9: a malicious caller can ship a megabyte-long `Authorization` value
+ * to force the JWT verify (HMAC / RSA) to run on garbage; the cost is
+ * paid before we ever look at `sub`. A 4 KB cap matches the longest
+ * realistic RS256 token we'd mint here (header+payload+sig, all base64)
+ * and stops the request well before it can wedge the event loop.
  */
+const MAX_AUTH_HEADER_LENGTH = 4096
+
 export function requireAuthFromHeaders(headers: unknown): JwtPayload | null {
   const h = headers as { authorization?: string | string[] | undefined } | null | undefined
   const raw = h?.authorization
-  if (typeof raw !== 'string' || !raw.startsWith('Bearer ')) return null
+  if (typeof raw !== 'string') return null
+  if (raw.length > MAX_AUTH_HEADER_LENGTH) return null
+  if (!raw.startsWith('Bearer ')) return null
   return verifyJwt(raw.slice('Bearer '.length))
 }
 

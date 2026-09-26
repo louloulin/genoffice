@@ -49,6 +49,13 @@ export const EMBED_BRIDGE_VERSION = '1.0' as const
  */
 export const EMBED_BRIDGE_SOURCE = `(function () {
   var ENVELOPE_VERSION = '1.0';
+  // sendReady() can fire from BOTH the DOMContentLoaded listener and the load
+  // listener (the inline bridge script runs while the parser is still going,
+  // so both events will dispatch after the script is installed). Without this
+  // flag the host sees two ready envelopes back-to-back; SDK's handshakeDone
+  // gate makes the second one harmless, but hosts that listen with a plain
+  // addEventListener end up counting two mounts.
+  var readySent = false;
   function post(name, payload) {
     try {
       // Carry any nonce on the OUTER envelope so the SDK's handshake
@@ -181,6 +188,8 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
     }
   }
   function sendReady() {
+    if (readySent) return;
+    readySent = true;
     var nonceMeta = document.querySelector('meta[name="genoffice-nonce"]');
     var nonce = nonceMeta ? nonceMeta.getAttribute('content') : null;
     var readyPayload = {

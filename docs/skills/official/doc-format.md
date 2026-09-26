@@ -27,7 +27,7 @@
 | Name | Type | Description |
 |---|---|---|
 | `text` | string | Reformatted document text. |
-| `appliedRules` | array<string> | Which formatting rules fired (e.g. `heading-case`, `bullet-spacing`). |
+| `appliedRules` | `array<string>` | Which formatting rules fired (e.g. `heading-case`, `bullet-spacing`). |
 
 ## Install
 

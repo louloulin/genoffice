@@ -2,7 +2,7 @@
  * Document-level locking, cursor sync, change tracking and conflict
  * detection/resolution. All state lives on the `COLLAB_SESSIONS` map.
  */
-import { COLLAB_SESSIONS, DOC_PERMISSIONS, registerHandle } from '../common/index'
+import { COLLAB_SESSIONS, DOC_PERMISSIONS, registerHandle, saveCollabSessions, saveDocPermissions } from '../common/index'
 
 export function registerLockHandlers(): void {
   registerHandle('collab:lock-acquire', (_event: unknown, args: unknown) => {
@@ -23,6 +23,7 @@ export function registerLockHandlers(): void {
     }
 
     session.locks.set(lockKey, { userId, timestamp: Date.now() })
+    saveCollabSessions()
     return { ok: true, lockKey, acquiredAt: Date.now() }
   }, { scope: 'soft:collab:write' })
 
@@ -36,6 +37,7 @@ export function registerLockHandlers(): void {
 
     if (existingLock && existingLock.userId === userId) {
       session.locks.delete(lockKey)
+      saveCollabSessions()
     }
 
     return { ok: true }
@@ -79,6 +81,7 @@ export function registerCursorHandlers(): void {
       selection,
       timestamp: Date.now(),
     })
+    saveCollabSessions()
 
     return { ok: true }
   }, { scope: 'soft:collab:write' })
@@ -131,6 +134,7 @@ export function registerChangeTrackingHandlers(): void {
       session.changes = session.changes.slice(-1000)
     }
 
+    saveCollabSessions()
     return { ok: true, changeId: changeRecord.id, version: changeRecord.version }
   }, { scope: 'soft:collab:write' })
 
@@ -216,6 +220,7 @@ export function registerPermissionHandlers(): void {
     }
 
     DOC_PERMISSIONS.get(docId)!.set(userId, permission)
+    saveDocPermissions()
 
     return { ok: true }
   }, { scope: 'soft:collab:write' })

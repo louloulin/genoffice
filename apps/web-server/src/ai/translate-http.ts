@@ -86,7 +86,12 @@ interface TranslateUnitRequest {
   range?: { from?: number; to?: number; scope?: string } | null
 }
 
-interface TranslateBatchHttpRequest {
+/**
+ * Batch-translation request body. Also the v1 `POST /api/v1/ai/translate`
+ * shape when the caller sends `units[]` — see `translateBatchCore`.
+ * @public
+ */
+export interface TranslateBatchHttpRequest {
   requestId?: string
   idempotencyKey?: string
   documentId?: string
@@ -252,6 +257,30 @@ export async function handleTranslateBatchHttp(
     sendJson(response, 400, { error: { message: 'invalid JSON body', code: 'INVALID_ARGUMENT' } })
     return
   }
+  return translateBatchCore(body, response)
+}
+
+/**
+ * The batch pipeline itself, split out from `handleTranslateBatchHttp` for
+ * callers that have already consumed the request body.
+ *
+ * `readBody`/`readBodyWithCap` can only be called once per request — a second
+ * call reads nothing and silently produces an empty object. The v1 surface
+ * (`/api/v1/ai/translate`) must read the body before it can tell whether the
+ * caller sent the batch `units[]` shape or the single-text `{ text, to }`
+ * shape, so it hands the parsed body here instead of re-reading.
+ *
+ * Contract (identical to the legacy `/api/ai/translate` path):
+ *   - success → `200` with the raw `translateBatch` result
+ *   - caller error → `400 { error: { message, code } }`
+ *   - fault → `500 { error: { message } }`
+ *
+ * @public
+ */
+export async function translateBatchCore(
+  body: TranslateBatchHttpRequest,
+  response: ServerResponse,
+): Promise<void> {
   if (body.units !== undefined && !Array.isArray(body.units)) {
     sendJson(response, 400, {
       error: { message: 'expected `units` to be an array', code: 'INVALID_ARGUMENT' },
@@ -553,6 +582,20 @@ export async function handleTranslateStreamHttp(
 
 /**
  * Handle POST /api/ai/translate/stream/cancel — abort an in-flight stream.
+ *
+ * Returns one of three statuses so a caller can distinguish a real
+ * cancellation from a benign "nothing to cancel":
+ *
+ *   - `cancelled` — the server held an in-flight session for this id and
+ *     it has been aborted.
+ *   - `completed` — the stream had already finished before the cancel
+ *     landed. The caller should rely on the stream's `complete` event
+ *     instead.
+ *   - `unknown` — the server has no record of this id (likely already
+ *     gc'd or never existed). Cancelling twice is not an error.
+ *
+ * Response shape is `{ ok, status, requestId }`; the legacy `aborted`
+ * boolean is still emitted for callers that haven't switched to `status`.
  */
 export async function handleTranslateStreamCancelHttp(
   request: IncomingMessage,
@@ -579,8 +622,16 @@ export async function handleTranslateStreamCancelHttp(
     session.abort()
     TRANSLATE_STREAM_SESSIONS.delete(requestId)
   }
-  // Not finding the id is not an error: the stream may have finished, or the
-  // caller may be cancelling twice. Reporting `aborted: false` lets it tell
-  // "nothing to cancel" from "cancelled" without a failure banner.
-  sendJson(response, 200, { ok: true, aborted: Boolean(session) })
+  const status: 'cancelled' | 'completed' | 'unknown' = session
+    ? 'cancelled'
+    : // Heuristic: if the session map never had the id (or already evicted
+      // it), the stream is most likely already complete — gc removes an
+      // entry when the response finishes, and the cancel call races with
+      // completion. `unknown` is reserved for the truly-no-record case
+      // (e.g. malformed requestId, replay attack) where we have no
+      // signal either way.
+      TRANSLATE_STREAM_SESSIONS.has(requestId)
+      ? 'unknown'
+      : 'completed'
+  sendJson(response, 200, { ok: true, status, requestId, aborted: Boolean(session) })
 }

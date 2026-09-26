@@ -12,6 +12,9 @@ export { createEditor, createEmbedNonce, verifyEmbedNonce, verifyEmbedSession, r
 export { buildEmbedUrl } from './embed-url'
 export type { EmbedUrlInput } from './embed-url'
 
+export { openEmbedSession, isRetryable } from './file/embed'
+export type { EmbedSession, EmbedSessionOptions } from './file/embed'
+
 export { ENVELOPE_VERSION, isEnvelope } from './envelope'
 export type {
   CreateEditorOptions,

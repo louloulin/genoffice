@@ -67,6 +67,37 @@ describe.skipIf(skip)('v1 HTTP method + envelope contract', () => {
         expect(r.body.error.code).toBe('METHOD_NOT_ALLOWED')
       }
 
+      // ── /api/channels query params (§B.10) ──────────────────────────────
+      // 3a. ?prefix= narrows the list and echoes the prefix.
+      {
+        const r = await h.req<{ channels: string[]; prefix?: string }>(
+          '/api/channels?prefix=ai:',
+        )
+        expect(r.status).toBe(200)
+        expect(r.body.prefix).toBe('ai:')
+        expect(r.body.channels.length).toBeGreaterThan(0)
+        expect(r.body.channels.every((c) => c.startsWith('ai:'))).toBe(true)
+      }
+
+      // 3b. ?includeCounts=true attaches a histogram + total.
+      {
+        const r = await h.req<{ counts: Record<string, number>; total: number }>(
+          '/api/channels?includeCounts=true',
+        )
+        expect(r.status).toBe(200)
+        expect(r.body.total).toBeGreaterThan(0)
+        const summed = Object.values(r.body.counts).reduce((a, b) => a + b, 0)
+        expect(summed).toBe(r.body.total)
+      }
+
+      // 3c. A prefix matching nothing is still a 200 with an empty list —
+      //     not a 404 and not an error envelope.
+      {
+        const r = await h.req<{ channels: string[] }>('/api/channels?prefix=zzz-nope:')
+        expect(r.status).toBe(200)
+        expect(r.body.channels).toEqual([])
+      }
+
       // ── /api/ai/pi-prompt ───────────────────────────────────────────────
       // 4. GET → 405
       {

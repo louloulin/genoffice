@@ -1,7 +1,7 @@
 /**
  * Collab supporting channels — version history, comments, templates.
  */
-import { DOC_COMMENTS, DOC_VERSIONS, registerHandle, TEMPLATES, initDefaultTemplates } from '../common/index'
+import { DOC_COMMENTS, DOC_VERSIONS, registerHandle, TEMPLATES, initDefaultTemplates, saveDocComments, saveDocVersions, saveTemplates } from '../common/index'
 
 export function registerHistoryHandlers(): void {
   registerHandle('history:versions', (_event: unknown, args: unknown) => {
@@ -43,6 +43,7 @@ export function registerHistoryHandlers(): void {
       docVersions.versions = docVersions.versions.slice(-50)
     }
 
+    saveDocVersions()
     return { ok: true, versionId, timestamp: Date.now() }
   }, { scope: 'soft:history:write' })
 
@@ -100,16 +101,17 @@ export function registerCommentHandlers(): void {
       selection,
     })
 
+    saveDocComments()
     return { ok: true, commentId }
   }, { scope: 'soft:comments:write' })
 
   registerHandle('comments:reply', (_event: unknown, args: unknown) => {
     const { docId, commentId, userId, userName, content } = args as {
       docId: string
-      commentId: string
       userId: string
       userName: string
       content: string
+      commentId: string
     }
 
     const comments = DOC_COMMENTS.get(docId)
@@ -127,6 +129,7 @@ export function registerCommentHandlers(): void {
       timestamp: Date.now(),
     })
 
+    saveDocComments()
     return { ok: true, replyId }
   }, { scope: 'soft:comments:write' })
 
@@ -139,6 +142,7 @@ export function registerCommentHandlers(): void {
     if (!comment) return { ok: false, error: 'Comment not found' }
 
     comment.resolved = true
+    saveDocComments()
     return { ok: true }
   }, { scope: 'soft:comments:write' })
 
@@ -151,12 +155,20 @@ export function registerCommentHandlers(): void {
     if (index === -1) return { ok: false, error: 'Comment not found' }
 
     comments.splice(index, 1)
+    saveDocComments()
     return { ok: true }
   }, { scope: 'soft:comments:write' })
 }
 
 export function registerTemplateHandlers(): void {
-  initDefaultTemplates()
+  // Seed built-in templates; persist them on first run so a fresh boot
+  // doesn't re-seed duplicates after a restart (the boot-time guard in
+  // initDefaultTemplates() only checks the in-memory Map, so without
+  // this save a wipe-on-restart would re-seed identical records).
+  if (TEMPLATES.size === 0) {
+    initDefaultTemplates()
+    saveTemplates()
+  }
 
   registerHandle('templates:list', (_event: unknown, args: unknown) => {
     const { type, category, search } = (args || {}) as { type?: string; category?: string; search?: string }
@@ -215,6 +227,7 @@ export function registerTemplateHandlers(): void {
       updatedAt: Date.now(),
     })
 
+    saveTemplates()
     return { ok: true, id }
   }, { scope: 'soft:templates:write' })
 
@@ -222,6 +235,7 @@ export function registerTemplateHandlers(): void {
     const { id } = args as { id: string }
     if (!TEMPLATES.has(id)) return { ok: false, error: 'Template not found' }
     TEMPLATES.delete(id)
+    saveTemplates()
     return { ok: true }
   }, { scope: 'soft:templates:write' })
 }

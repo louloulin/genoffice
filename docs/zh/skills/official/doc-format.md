@@ -27,7 +27,7 @@
 | 名称 | 类型 | 说明 |
 |---|---|---|
 | `text` | string | 重新排版后的文档文本。 |
-| `appliedRules` | array<string> | 触发的排版规则（如 `heading-case`、`bullet-spacing`）。 |
+| `appliedRules` | `array<string>` | 触发的排版规则（如 `heading-case`、`bullet-spacing`）。 |
 
 ## 安装
 

@@ -18,7 +18,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readBody, sendJson, sendError, sendIpcError } from './http-utils'
 import { handleAuthJwt, handleOAuthToken } from './auth'
 import { handleFilesList, handleFilesCreate, handleFilesGet, handleFilesDelete, handleFilesIssueJwt, handleFilesCallback } from './files'
-import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiImage, handleAiSkill } from './ai'
+import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiTranslateStream, handleAiTranslateStreamCancel, handleAiImage, handleAiSkill } from './ai'
 import { handleKbSearch, handleKbEntries } from './kb'
 import { handleWebhooksUpsert, handleWebhooksDelete, handleCallbacksFire } from './webhooks'
 import {
@@ -191,6 +191,11 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
   // ai
   if (pathname === '/api/v1/ai/capabilities' && method === 'GET') return handleAiCapabilities(ctx)
   if (pathname === '/api/v1/ai/chat' && method === 'POST') return handleAiChat(ctx)
+  // The two `/stream` routes are exact-match, so they can't be swallowed by
+  // the bare `/translate` test below — but they are listed first anyway to
+  // keep the more specific paths above the more general one.
+  if (pathname === '/api/v1/ai/translate/stream' && method === 'POST') return handleAiTranslateStream(ctx)
+  if (pathname === '/api/v1/ai/translate/stream/cancel' && method === 'POST') return handleAiTranslateStreamCancel(ctx)
   if (pathname === '/api/v1/ai/translate' && method === 'POST') return handleAiTranslate(ctx)
   if (pathname === '/api/v1/ai/image' && method === 'POST') return handleAiImage(ctx)
   const skillMatch = /^\/api\/v1\/ai\/skill\/([a-z0-9._-]+)$/.exec(pathname)
@@ -276,6 +281,8 @@ export const v1Routes: V1RouteInfo[] = [
   { pattern: /^\/api\/v1\/ai\/capabilities$/, methods: ['GET'] },
   { pattern: /^\/api\/v1\/ai\/chat$/, methods: ['POST'] },
   { pattern: /^\/api\/v1\/ai\/translate$/, methods: ['POST'] },
+  { pattern: /^\/api\/v1\/ai\/translate\/stream$/, methods: ['POST'] },
+  { pattern: /^\/api\/v1\/ai\/translate\/stream\/cancel$/, methods: ['POST'] },
   { pattern: /^\/api\/v1\/ai\/image$/, methods: ['POST'] },
   { pattern: /^\/api\/v1\/ai\/skill\/[a-z0-9._-]+$/, methods: ['POST'] },
   // kb

@@ -81,8 +81,9 @@ describe('handleEmbed', () => {
     if (resp.status() !== 200) return // docs not built in this env — skip
     const body = resp.chunks.join('')
     expect(body).toContain('<meta name="genoffice-token" content="jwt-xyz">')
-    expect(body).toContain('ENVELOPE_VERSION = \'1.0\'')
-    expect(body).toContain('window.parent.postMessage')
+    // W6c: the bridge is now an external script reference — the CSP can
+    // stay at `script-src 'self'` instead of needing `'unsafe-inline'`.
+    expect(body).toContain('<script src="/embed/static/bridge.js"></script>')
     expect(body).toContain('theme')
     expect(body).toContain('dark')
   })

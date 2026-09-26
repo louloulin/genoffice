@@ -158,7 +158,7 @@ export function saveStarredDocs(
 
 export const DOCS_RECENT: Map<string, DocInfo> = new Map()
 /**
- * Starred docs — path -> starredAt timestamp. The previous Set<string>
+ * Starred docs — path -> starredAt timestamp. The previous `Set<string>`
  * dropped on every restart because nothing persisted it; the home pane
  * then silently un-starred everything. The Map shape keeps the membership
  * test cheap and gives us a stable order (most-recent first) for the

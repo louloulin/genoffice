@@ -34,14 +34,14 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
-import { verifyJwtWithRevocation } from '../api/v1/auth'
+import { verifyJwtDetailed } from '../api/v1/auth'
 import { WEB_SERVER_VERSION } from '../common/version'
 import { verifyEmbedNonce } from './nonce-store'
 import { EMBED_BRIDGE_SOURCE } from './bridge'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APPS } from '../common/index'
+import { authCookieHeader } from '../auth/cookie'
 
 
 /**
@@ -74,18 +74,23 @@ function verifyEmbedToken(token: string):
   // Only attempt JWT verification when the token has the 3-part shape;
   // legacy dev tokens (random strings, WEB_TOKEN shared secret) pass through.
   if (token.split('.').length !== 3) return { ok: true }
-  const payload = verifyJwtWithRevocation(token)
-  if (!payload) {
-    // Distinguish expired from revoked for clearer client diagnostics.
-    // Re-run `verifyJwt` (no revocation) to see if the signature itself
-    // is valid; if so, the token was revoked or expired.
-    // `verifyJwt` and `verifyJwtWithRevocation` share the secret; we
-    // import lazily so we don't blow up when auth.ts is mocked in tests.
+  // B.12: report the failure reason so the client can tell "expired, refresh
+  // it" from "revoked, re-mint it" from "malformed, fix your token source".
+  // A single "invalid or expired" left integrators guessing which of the
+  // four possible causes they hit.
+  const result = verifyJwtDetailed(token)
+  if (!result.ok) {
+    const codeByReason: Record<string, string> = {
+      expired: 'EMBED_JWT_EXPIRED',
+      revoked: 'EMBED_JWT_REVOKED',
+      signature: 'EMBED_JWT_INVALID',
+      malformed: 'EMBED_JWT_INVALID',
+    }
     return {
       ok: false,
       status: 401,
-      code: 'UNAUTHENTICATED',
-      message: 'invalid or expired embed token',
+      code: codeByReason[result.reason] ?? 'EMBED_JWT_INVALID',
+      message: `embed token rejected: ${result.reason}`,
     }
   }
   // If the payload carries `files:read` scope it can render any doc; we
@@ -192,7 +197,66 @@ function resolveAppIndex(app: string): string | null {
  * consumer on the same session; two parallel consumers is fine — the
  * server broadcasts to every connected socket in the session.
  */
-const EMBED_BRIDGE = EMBED_BRIDGE_SOURCE
+const EMBED_BRIDGE_SOURCE_REEXPORT = EMBED_BRIDGE_SOURCE
+
+/**
+ * External bridge script — same source as `EMBED_BRIDGE_SOURCE` but served as
+ * a separate file at `/embed/static/bridge.js` so the embed HTML can
+ * reference it via `<script src=…>` instead of inlining it. The inline form
+ * required `'unsafe-inline'` in the CSP `script-src` directive (the only
+ * safe alternative was a nonce on the inline script, but every renderer
+ * upgrade that touched the meta tag reset the nonce and broke the bridge).
+ *
+ * Loading the bridge from a same-origin URL removes the `unsafe-inline`
+ * requirement entirely — the CSP only needs to allow `'self'` for scripts.
+ * This is the "CSP tightening" piece of W6c.
+ */
+export const EMBED_BRIDGE_SCRIPT_PATH = '/embed/static/bridge.js'
+
+/**
+ * `frame-ancestors` value for the `/embed/:docId` HTML response (C.4).
+ *
+ * The embed page exists to be framed by a *different* origin — the
+ * Dataflarework host — so `frame-ancestors 'none'` is not an option. But
+ * omitting the directive entirely leaves the page frameable by *every*
+ * origin, which is a UI-redressing (clickjacking) surface: an attacker page
+ * can iframe the editor and overlay controls on top of it.
+ *
+ * Operators declare the hosts allowed to frame the editor:
+ *
+ *     EMBED_FRAME_ANCESTORS="'self' https://app.dataflarework.com"
+ *
+ * Defaults to `'self'` so an unconfigured deployment is closed by default.
+ * Parsing is fail-closed: the value is split on whitespace/commas and every
+ * token must match the strict pattern below, or the entire value is rejected
+ * and `'self'` applies. Salvaging the valid tokens out of a malformed string
+ * is what lets a splice attempt smuggle an origin that the operator never
+ * wrote — e.g. `'self'; report-uri https://evil` contains a bare
+ * `https://evil` token that would survive per-token filtering. Rejecting the
+ * whole value keeps a hostile or fat-fingered config from ever widening the
+ * policy. The pattern also excludes the characters (newline, `;`, quotes)
+ * needed to terminate the header or start a new directive.
+ *
+ * `*` and `'none'` are honoured only when they are the *entire* value: both
+ * are contradictory inside a list (`*` subsumes it; `'none'` is ignored by
+ * CSP when other sources are present), so a stray one is dropped.
+ */
+const FRAME_ANCESTOR_TOKEN = /^(?:'self'|https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?)$/
+
+export function parseFrameAncestors(envValue: string | undefined): string {
+  const fallback = "'self'"
+  if (!envValue) return fallback
+  const tokens = envValue
+    .split(/[\s,]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+  if (tokens.length === 0) return fallback
+  if (tokens.length === 1 && (tokens[0] === '*' || tokens[0] === "'none'")) return tokens[0]
+  if (!tokens.every((token) => FRAME_ANCESTOR_TOKEN.test(token))) return fallback
+  return tokens.join(' ')
+}
+
+export const EMBED_FRAME_ANCESTORS: string = parseFrameAncestors(process.env.EMBED_FRAME_ANCESTORS)
 
 /**
  * Build the embed HTML by reading the editor app's `index.html` and injecting
@@ -201,28 +265,40 @@ const EMBED_BRIDGE = EMBED_BRIDGE_SOURCE
  */
 export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: string): string {
   let html = readFileSync(appIndexPath, 'utf-8')
-  // Two renderer-side quirks need rewriting before the bridge can boot:
-  //   1. The renderer's CSP meta tag declares `script-src 'self'`. Without
-  //      'unsafe-inline' (or a nonce) the inline bridge script we inject
-  //      below is BLOCKED and the iframe never sends `ready`. Mint a per-
-  //      request nonce, rewrite the meta tag's `script-src` to allow it,
-  //      and stamp the same nonce on the bridge tag.
+  // The bridge is now an external `<script src>` — no `'unsafe-inline'`
+  // required. Two renderer-side quirks still need rewriting:
+  //   1. The renderer's CSP meta tag declares `script-src 'self'`. We
+  //      rewrite it to keep `frame-ancestors` semantics (none in a meta
+  //      tag — that's an HTTP-header-only directive) and to make sure
+  //      any non-self source the renderer had declared is dropped. Inline
+  //      script tags in the renderer's own bundle should already carry a
+  //      nonce/hash, so this rewrite is conservative.
   //   2. The renderer's bundle paths are relative (`./assets/index-XYZ.js`).
   //      When loaded inside the `/embed/:docId` iframe the browser resolves
   //      them to `/embed/assets/...` which the static layer does not serve
   //      (returns 400). Inject `<base href="/">` so the relative paths land
   //      on the real static root.
-  const nonce = randomBytes(16).toString('base64')
-  html = html.replace(
-    /<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i,
-    (m) => m.replace(/script-src 'self'/, `script-src 'self' 'nonce-${nonce}' 'unsafe-inline'`),
-  )
+  if (html.includes('http-equiv="Content-Security-Policy"')) {
+    html = html.replace(
+      /<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i,
+      (m) =>
+        m
+          // Drop any `'unsafe-inline'` / `'unsafe-eval'` so a re-scoped CSP
+          // on the embed page can never silently relax back to "anything
+          // goes". Inline scripts in the renderer's own bundle are out of
+          // our control — they need to ship with their own nonce/hash.
+          .replace(/\s*'unsafe-inline'/g, '')
+          .replace(/\s*'unsafe-eval'/g, ''),
+    )
+  }
   if (!html.includes('http-equiv="Content-Security-Policy"')) {
-    // Renderer shipped without a CSP meta tag — inject one so the bridge
-    // tag below has a nonce-aware policy to honour.
+    // Renderer shipped without a CSP meta tag — inject one. `script-src 'self'`
+    // is enough now that the bridge lives in a separate file under our
+    // origin. `connect-src` keeps localhost for dev, and `frame-ancestors`
+    // is intentionally omitted — that's an HTTP-header directive only.
     html = html.replace(
       /<\/head>/i,
-      `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'nonce-${nonce}' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*">\n</head>`,
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*">\n</head>`,
     )
   }
   const baseTag = '<base href="/">'
@@ -255,7 +331,9 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   }
   const configTag = `\n<meta name="genoffice-embed-config" content="${escapeAttr(JSON.stringify(embedConfig))}">`
   const sessionTag = `\n<meta name="genoffice-session" content="${sessionId}">`
-  const bridgeTag = `\n<script nonce="${nonce}">window.__GENOFFICE_EMBED__=${JSON.stringify(embedConfig)};${EMBED_BRIDGE}</script>`
+  // Bridge is now loaded from a same-origin file — no inline `<script>`,
+  // no `'unsafe-inline'` requirement in the CSP.
+  const bridgeTag = `\n<script src="${EMBED_BRIDGE_SCRIPT_PATH}"></script>`
   const injection = tokenTag + nonceTag + configTag + sessionTag + bridgeTag
   // Case-insensitive match against `</head>` so a renderer with a `<HEAD>`
   // tag (rare but possible after build minification) still gets the bridge
@@ -278,6 +356,27 @@ function escapeAttr(s: string): string {
  */
 export function handleEmbed(request: IncomingMessage, response: ServerResponse, url: URL): boolean {
   if (!url.pathname.startsWith('/embed/')) return false
+
+  // `/embed/static/bridge.js` — external bridge script. The embed HTML now
+  // references it via `<script src="…">` instead of an inline `<script>`,
+  // so the CSP can stay at `script-src 'self'` (no `'unsafe-inline'`).
+  // Returns the script with a long-lived cache header — the bridge changes
+  // are bundled with a server release, not per request.
+  if (url.pathname === EMBED_BRIDGE_SCRIPT_PATH) {
+    if (request.method !== 'GET') {
+      response.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({
+        error: { code: 'METHOD_NOT_ALLOWED', message: 'GET required', allow: 'GET' },
+      }))
+      return true
+    }
+    response.writeHead(200, {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600',
+    })
+    response.end(EMBED_BRIDGE_SOURCE)
+    return true
+  }
 
   // sdk1 §11.109: only GET is documented; POST / PUT / DELETE fall
   // through to the SPA fallback (200 + index.html) which looks like
@@ -381,13 +480,30 @@ export function handleEmbed(request: IncomingMessage, response: ServerResponse, 
   }
 
   const html = buildEmbedHtml(appIndex, parsed, docId)
+  // Mirror the WEB_TOKEN shim used by the static SPA fallback (index.ts:1208):
+  // under WEB_TOKEN mode, the iframe's /api/ipc/* calls would 401 because the
+  // bridge has no way to learn the token (it can't carry custom headers on
+  // EventSource, and the SDK transport is same-origin). Setting the cookie on
+  // this HTML response lets the browser auto-attach it to every same-origin
+  // request. Safe because (a) the cookie is HttpOnly + SameSite=Strict so an
+  // XSS in the iframe can't exfiltrate it, and (b) only callers who already
+  // know WEB_TOKEN benefit — the auth gate still rejects requests whose
+  // cookie doesn't match.
+  const cookie = authCookieHeader()
   response.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',
+    // C.4: header-only directive (a `<meta>` CSP cannot carry
+    // `frame-ancestors`), so it has to be set here rather than in the
+    // renderer's meta tag. Emitted as its own policy — the response has no
+    // other CSP header, and multiple CSP headers intersect, so this can only
+    // ever narrow what the renderer's meta tag already allows.
+    'Content-Security-Policy': `frame-ancestors ${EMBED_FRAME_ANCESTORS}`,
+    ...(cookie ? { 'Set-Cookie': cookie } : {}),
   })
   response.end(html)
   return true
 }
 
-export { EMBED_BRIDGE } // re-export for backwards compat (test consumers may import)
+export { EMBED_BRIDGE_SOURCE_REEXPORT as EMBED_BRIDGE } // re-export for backwards compat (test consumers may import)

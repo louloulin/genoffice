@@ -1,7 +1,7 @@
 {
   "name": "@genoffice/web-sdk",
   "version": "0.9.0-beta.1",
-  "description": "Embeddable editor SDK for GenOffice \u2014 iframe / in-page editor with typed events and commands.",
+  "description": "Embeddable editor SDK for GenOffice — iframe / in-page editor with typed events and commands.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -9,10 +9,97 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
+      "browser": "./dist/index.umd.js",
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs",
-      "browser": "./dist/index.umd.js"
+      "types": "./dist/index.d.ts"
+    },
+    "./dataflare/host": {
+      "browser": "./dist/dataflare-host.umd.js",
+      "import": "./dist/dataflare-host.mjs",
+      "require": "./dist/dataflare-host.cjs",
+      "types": "./dist/dataflare/host.d.ts"
+    },
+    "./dataflare/guest": {
+      "browser": "./dist/dataflare-guest.umd.js",
+      "import": "./dist/dataflare-guest.mjs",
+      "require": "./dist/dataflare-guest.cjs",
+      "types": "./dist/dataflare/guest.d.ts"
+    },
+    "./file/management": {
+      "import": "./dist/file-management.mjs",
+      "require": "./dist/file-management.cjs",
+      "types": "./dist/file/management.d.ts"
+    },
+    "./file/versions": {
+      "import": "./dist/file-versions.mjs",
+      "require": "./dist/file-versions.cjs",
+      "types": "./dist/file/versions.d.ts"
+    },
+    "./file/comments": {
+      "import": "./dist/file-comments.mjs",
+      "require": "./dist/file-comments.cjs",
+      "types": "./dist/file/comments.d.ts"
+    },
+    "./file/callback": {
+      "import": "./dist/file-callback.mjs",
+      "require": "./dist/file-callback.cjs",
+      "types": "./dist/file/callback.d.ts"
+    },
+    "./file/jwt": {
+      "import": "./dist/file-jwt.mjs",
+      "require": "./dist/file-jwt.cjs",
+      "types": "./dist/file/jwt.d.ts"
+    },
+    "./file/embed": {
+      "import": "./dist/file-embed.mjs",
+      "require": "./dist/file-embed.cjs",
+      "types": "./dist/file/embed.d.ts"
+    },
+    "./embed/nonce": {
+      "import": "./dist/embed-nonce.mjs",
+      "require": "./dist/embed-nonce.cjs",
+      "types": "./dist/embed/nonce.d.ts"
+    },
+    "./ai/translation": {
+      "import": "./dist/ai-translation.mjs",
+      "require": "./dist/ai-translation.cjs",
+      "types": "./dist/ai/translation.d.ts"
+    },
+    "./ai/agent": {
+      "import": "./dist/ai-agent.mjs",
+      "require": "./dist/ai-agent.cjs",
+      "types": "./dist/ai/agent.d.ts"
+    },
+    "./auth/mint": {
+      "import": "./dist/auth-mint.mjs",
+      "require": "./dist/auth-mint.cjs",
+      "types": "./dist/auth/mint.d.ts"
+    },
+    "./auth/client": {
+      "import": "./dist/auth-client.mjs",
+      "require": "./dist/auth-client.cjs",
+      "types": "./dist/auth/client.d.ts"
+    },
+    "./collab/cursor": {
+      "import": "./dist/collab-cursor.mjs",
+      "require": "./dist/collab-cursor.cjs",
+      "types": "./dist/collab/cursor.d.ts"
+    },
+    "./collab/presence": {
+      "import": "./dist/collab-presence.mjs",
+      "require": "./dist/collab-presence.cjs",
+      "types": "./dist/collab/presence.d.ts"
+    },
+    "./collab/lock": {
+      "import": "./dist/collab-lock.mjs",
+      "require": "./dist/collab-lock.cjs",
+      "types": "./dist/collab/lock.d.ts"
+    },
+    "./collab/comments": {
+      "import": "./dist/collab-comments.mjs",
+      "require": "./dist/collab-comments.cjs",
+      "types": "./dist/collab/comments.d.ts"
     }
   },
   "files": [
@@ -45,9 +132,11 @@
   },
   "homepage": "https://genoffice.app/docs/sdk",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/copy-sdk-to-webserver.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "probe:live": "node scripts/live-probe.mjs",
+    "probe:live:auto": "node scripts/probe-live-server.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.12",

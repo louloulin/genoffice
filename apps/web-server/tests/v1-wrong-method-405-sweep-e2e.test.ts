@@ -75,6 +75,8 @@ const cases: SweepCase[] = [
   { path: '/api/v1/ai/capabilities', documented: ['GET'], wrongMethod: 'POST' },
   { path: '/api/v1/ai/chat', documented: ['POST'], wrongMethod: 'GET' },
   { path: '/api/v1/ai/translate', documented: ['POST'], wrongMethod: 'GET' },
+  { path: '/api/v1/ai/translate/stream', documented: ['POST'], wrongMethod: 'GET' },
+  { path: '/api/v1/ai/translate/stream/cancel', documented: ['POST'], wrongMethod: 'GET' },
   { path: '/api/v1/ai/image', documented: ['POST'], wrongMethod: 'GET' },
   { path: '/api/v1/ai/skill/foo', documented: ['POST'], wrongMethod: 'GET' },
   // kb

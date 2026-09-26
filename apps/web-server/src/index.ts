@@ -24,7 +24,7 @@
  */
 import { createServer, type IncomingMessage, ServerResponse } from 'node:http'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
-import { resolve, extname, sep } from 'node:path'
+import { resolve, extname, sep, basename } from 'node:path'
 
 import {
   APPS,
@@ -32,6 +32,7 @@ import {
   HOST,
   MIME_TYPES,
   PORT,
+  SDK_BUNDLE_ROOT,
   STATIC_ROOT,
   WEB_TEMP_ROOT,
   decodeTransportValue,
@@ -41,8 +42,11 @@ import {
   getHandler,
   getHandlerEntry,
   handlerCount,
+  isWithin,
   listChannels,
+  loadCollabStore,
 } from './common/index'
+import { buildChannelsView } from './common/channels-view'
 import { fileIndexStore } from './common/file-index-store'
 import { flushFileManagementState } from './common/document-stores'
 import { WEB_SERVER_VERSION } from './common/version'
@@ -99,20 +103,16 @@ function hasAuthorizationHeader(headers: unknown): boolean {
 import { handleEmbed } from './embed/index'
 import { registerSdkCommandHandlers } from './embed/sdk-commands'
 
-function authCookieHeader(): string | null {
-  const token = process.env.WEB_TOKEN
-  if (!token) return null
-  // Token is treated as a cookie value (RFC 6265 §4.1.1): characters
-  // outside the allowed set are percent-encoded by encodeURIComponent so
-  // the browser parses the Set-Cookie header cleanly. The auth gate
-  // reverses the encoding with decodeURIComponent before comparing.
-  // Path=/ so every IPC call (mounted under /api/ipc/…) sees the cookie.
-  // Max-Age is set to one week so a long-running editor session does not
-  // suddenly lose auth; the operator can clear it via DevTools if they
-  // need to invalidate. HttpOnly keeps the cookie out of document.cookie
-  // so an XSS payload inside the editor cannot exfiltrate the secret.
-  return `auth_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`
-}
+/**
+ * Re-export the WEB_TOKEN → Set-Cookie shim from `src/auth/cookie.ts`.
+ *
+ * Lives in `auth/cookie.ts` so `src/embed/index.ts` can stamp the same
+ * cookie on the wrapper HTML without creating a circular import
+ * (embed ↔ index). The auth gate in `hasAuthorizationHeader` reverses the
+ * percent-encoding with decodeURIComponent before comparing.
+ */
+export { authCookieHeader } from './auth/cookie'
+import { authCookieHeader } from './auth/cookie'
 
 // ----- global error traps (must run before any handler so unexpected
 //       failures in the pi session bridge show a stack instead of dying silently)
@@ -167,6 +167,7 @@ function sweepPendingFrames(): void {
 }
 
 initRecentState()
+loadCollabStore()
 /* Audit-log retention worker (sdk1 §A.5 audit-log backlog close).
  * Periodically trims audit-log.jsonl to entries within
  * GENOFFICE_AUDIT_RETENTION_DAYS (default 90). The timer is unref'd
@@ -497,11 +498,38 @@ const server = createServer(async (request, response) => {
       })
       return
     }
-    sendJson(response, 200, {
-      protocolVersion: 1,
-      minClientVersion: 1,
-      channels: listChannels(),
+    // sdk1 §B.10: `/api/channels` returns every registered channel — 559 of
+    // them at last count — and the full list is ~17 KB raw. A client that
+    // only needs one namespace (e.g. `ai:`) used to download + parse all of
+    // them. Two opt-in query params keep the response proportional:
+    //
+    //   ?prefix=ai:          only channels starting with `ai:`
+    //   ?includeCounts=true  attach a per-prefix histogram so a discovery UI
+    //                        can render "AI (42)" chips without N requests
+    //
+    // The response is also hard-capped at 32 KB. A future registry explosion
+    // (or a `?prefix=` of the empty string) can't turn this public endpoint
+    // into an unbounded payload — it answers 413 with a hint to narrow the
+    // prefix instead. The view logic lives in `common/channels-view` so the
+    // filter / histogram / cap stay unit-testable without booting the server.
+    const view = buildChannelsView(listChannels(), {
+      prefix: url.searchParams.get('prefix') ?? '',
+      includeCounts: url.searchParams.get('includeCounts') === 'true',
     })
+    if (view.status !== 200) {
+      // `view.body` is already the complete `{error:{…}}` envelope.
+      response.writeHead(view.status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(view.body),
+      })
+      response.end(view.body)
+      return
+    }
+    response.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(view.body),
+    })
+    response.end(view.body)
     return
   }
 
@@ -1117,6 +1145,54 @@ const server = createServer(async (request, response) => {
     })
     return
   }
+
+  // ----- /static/sdk/* -----------------------------------------------------
+  // The bundled @genoffice/web-sdk artefacts (one .mjs + one .cjs per entry,
+  // and .umd.js for entries that ship a browser bundle) live under
+  // apps/web-server/dist/static/sdk. Third-party hosts drop a
+  // `<script src="/static/sdk/index.umd.js"></script>` into their page to
+  // mount the SDK without serving the bundle themselves. Without this route
+  // every host has to copy the bundle out-of-band, which is fragile (version
+  // drift between the embed iframe and the host SDK).
+  //
+  // Allow-list: each SDK sub-path emits `<entry>.mjs` + `<entry>.cjs` (and
+  // optionally `<entry>.umd.js`). We serve any `<entry>.{mjs,cjs,umd.js}`
+  // for entries declared in `apps/sdk/scripts/build.mjs#targets`. Anything
+  // else under /static/sdk/ — sourcemaps, .d.ts, future internal files —
+  // returns 404, so a stray build artefact never leaks by accident.
+  const SDK_ENTRY_PATTERN = /^\/static\/sdk\/(?:index|dataflare-host|dataflare-guest|file-management|file-versions|file-comments|file-callback|file-jwt|file-embed|embed-nonce|ai-translation|ai-agent|auth-mint|auth-client|collab-cursor|collab-presence|collab-lock|collab-comments)\.(?:mjs|cjs|umd\.js)$/
+  if (SDK_ENTRY_PATTERN.test(url.pathname)) {
+    const sdkFile = resolve(SDK_BUNDLE_ROOT, basename(url.pathname))
+    // Containment: reject anything that resolves outside SDK_BUNDLE_ROOT.
+    // `resolve` happily walks up on absolute or `..` segments, so the
+    // isWithin check is the second line of defence — without it
+    // `/static/sdk/..%2F..%2Fetc%2Fpasswd` (URL-decoded by URL parser) could
+    // hand createReadStream a host file.
+    if (!isWithin(SDK_BUNDLE_ROOT, sdkFile)) {
+      sendJson(response, 400, {
+        error: { code: 'INVALID_ARGUMENT', message: 'sdk path escapes bundle root' },
+      })
+      return
+    }
+    if (!existsSync(sdkFile) || !statSync(sdkFile).isFile()) {
+      sendJson(response, 404, {
+        error: { code: 'NOT_FOUND', message: 'sdk bundle not built — run pnpm --filter @genoffice/web-sdk build' },
+      })
+      return
+    }
+    const ext = extname(sdkFile)
+    response.writeHead(200, {
+      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+      // Allow third-party origins to fetch the SDK. The bundle has no
+      // secrets — its job is to be loaded by any host page — and the actual
+      // auth happens on /api/* after the iframe boots.
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=300',
+    })
+    createReadStream(sdkFile).pipe(response)
+    return
+  }
+
   const pathMatch = url.pathname.match(
     /^\/(docs|sheets|slides|pdf|markdown|html|shell)(?:\/(.*))?$/,
   )

@@ -3,7 +3,7 @@
  * (`COLLAB_SESSIONS`) and presence map (`PRESENCE`) live in
  * `common/state.ts`; this module just wires the channels.
  */
-import { COLLAB_SESSIONS, PRESENCE, registerHandle } from '../common/index'
+import { COLLAB_SESSIONS, PRESENCE, registerHandle, saveCollabSessions, savePresence } from '../common/index'
 
 export function registerCollabSessionHandlers(): void {
   registerHandle('collab:join', (_event: unknown, args: unknown) => {
@@ -28,6 +28,7 @@ export function registerCollabSessionHandlers(): void {
     session.users.add(userId)
     session.lastActivity = Date.now()
 
+    saveCollabSessions()
     return { sessionId, users: [...session.users], docId, userCount: session.users.size }
   }, { scope: 'soft:collab:write' })
 
@@ -40,6 +41,7 @@ export function registerCollabSessionHandlers(): void {
         COLLAB_SESSIONS.delete(docId)
       }
     }
+    saveCollabSessions()
     return { ok: true }
   }, { scope: 'soft:collab:write' })
 
@@ -50,6 +52,7 @@ export function registerCollabSessionHandlers(): void {
     const session = COLLAB_SESSIONS.get(docId)
     if (session) {
       session.lastActivity = Date.now()
+      saveCollabSessions()
       return {
         ok: true,
         acknowledged: true,
@@ -87,6 +90,7 @@ export function registerCollabSessionHandlers(): void {
       color: colors[colorIndex],
     })
 
+    savePresence()
     return { ok: true }
   }, { scope: 'soft:collab:write' })
 
@@ -101,6 +105,8 @@ export function registerCollabSessionHandlers(): void {
     const stale = [...docPresence.keys()].filter((uid) => now - (docPresence.get(uid)?.lastSeen ?? 0) > 60000)
     for (const uid of stale) docPresence.delete(uid)
 
+    // Sweep mutated the Map; persist so the prune survives restart.
+    savePresence()
     return [...docPresence.values()]
   }, { scope: 'soft:collab:read' })
 }

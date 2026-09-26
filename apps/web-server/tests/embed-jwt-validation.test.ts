@@ -16,10 +16,15 @@
  *   - With GENOFFICE_JWT_SECRET set + valid HS256 JWT: serves the embed
  *     HTML (200).
  *   - With GENOFFICE_JWT_SECRET set + tampered signature: 401 with
- *     `UNAUTHENTICATED` envelope.
+ *     `EMBED_JWT_INVALID`.
  *   - One-time token (jti present) is accepted on first view and rejected
- *     on second view — closes the §11.17.5 backlog.
- *   - Expired JWT is rejected with 401.
+ *     on second view — closes the §11.17.5 backlog. Second view reports
+ *     `EMBED_JWT_REVOKED`.
+ *   - Expired JWT is rejected with 401 `EMBED_JWT_EXPIRED`.
+ *   - A forged token whose `exp` is in the past still reports
+ *     `EMBED_JWT_INVALID`, never `EMBED_JWT_EXPIRED` — the signature is
+ *     checked before the exp claim is trusted, so an attacker cannot make
+ *     a forgery look like a benign expiry.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -132,7 +137,7 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     }
   })
 
-  it('rejects a tampered signature with 401 UNAUTHENTICATED', async () => {
+  it('rejects a tampered signature with 401 EMBED_JWT_INVALID', async () => {
     const { signJwt, setJtiRevocationCheck } = await loadAuth()
     setJtiRevocationCheck(() => false)
 
@@ -157,11 +162,11 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${tampered}&app=docs`))
     expect(resp.status()).toBe(401)
     const body = JSON.parse(resp.chunks.join(''))
-    expect(body.error.code).toBe('UNAUTHENTICATED')
-    expect(body.error.message).toMatch(/invalid or expired embed token/i)
+    expect(body.error.code).toBe('EMBED_JWT_INVALID')
+    expect(body.error.message).toMatch(/signature/i)
   })
 
-  it('rejects garbage token shaped as JWT with 401', async () => {
+  it('rejects garbage token shaped as JWT with 401 EMBED_JWT_INVALID', async () => {
     const { setJtiRevocationCheck } = await loadAuth()
     setJtiRevocationCheck(() => false)
 
@@ -172,7 +177,8 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${garbage}&app=docs`))
     expect(resp.status()).toBe(401)
     const body = JSON.parse(resp.chunks.join(''))
-    expect(body.error.code).toBe('UNAUTHENTICATED')
+    expect(body.error.code).toBe('EMBED_JWT_INVALID')
+    expect(body.error.message).toMatch(/malformed/i)
   })
 
   it('accepts a non-JWT legacy token when GENOFFICE_JWT_SECRET is set', async () => {
@@ -210,10 +216,13 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     handleEmbed({ method: "GET" } as unknown as Incoming, second.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
     expect(second.status()).toBe(401)
     const body = JSON.parse(second.chunks.join(''))
-    expect(body.error.code).toBe('UNAUTHENTICATED')
+    // B.12: a revoked token is distinguishable from an expired one so the
+    // client knows to re-mint rather than refresh.
+    expect(body.error.code).toBe('EMBED_JWT_REVOKED')
+    expect(body.error.message).toMatch(/revoked/i)
   })
 
-  it('rejects an expired JWT with 401', async () => {
+  it('rejects an expired JWT with 401 EMBED_JWT_EXPIRED', async () => {
     const { signJwt, setJtiRevocationCheck } = await loadAuth()
     setJtiRevocationCheck(() => false)
 
@@ -225,7 +234,30 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
     handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${expired}&app=docs`))
     expect(resp.status()).toBe(401)
     const body = JSON.parse(resp.chunks.join(''))
-    expect(body.error.code).toBe('UNAUTHENTICATED')
+    expect(body.error.code).toBe('EMBED_JWT_EXPIRED')
+    expect(body.error.message).toMatch(/expired/i)
+  })
+
+  it('reports a forged signature as INVALID even when exp is in the past (no expiry masquerade)', async () => {
+    const { signJwt, setJtiRevocationCheck } = await loadAuth()
+    setJtiRevocationCheck(() => false)
+
+    const handleEmbed = await loadHandler()
+    // Structurally valid, expired, but the signature came from a different
+    // secret. If verification checked `exp` first, this would surface as a
+    // benign-looking EMBED_JWT_EXPIRED and invite a pointless refresh.
+    const iat = Math.floor(Date.now() / 1000) - 7200
+    const parts = signJwt({ ...basePayload(), iat, exp: iat + 60 }).split('.')
+    const sig = parts[2]!
+    const mid = Math.floor(sig.length / 2)
+    parts[2] = sig.slice(0, mid) + (sig[mid] === 'A' ? 'B' : 'A') + sig.slice(mid + 1)
+
+    const resp = fakeResponse()
+    handleEmbed({ method: "GET" } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${parts.join('.')}&app=docs`))
+    expect(resp.status()).toBe(401)
+    const body = JSON.parse(resp.chunks.join(''))
+    expect(body.error.code).toBe('EMBED_JWT_INVALID')
+    expect(body.error.message).toMatch(/signature/i)
   })
 })
 
