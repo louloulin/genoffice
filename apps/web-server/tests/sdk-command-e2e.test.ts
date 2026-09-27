@@ -28,7 +28,6 @@ import { stopServer } from './helpers/server-process'
 const here = new URL('.', import.meta.url).pathname
 const pkgRoot = join(here, '..')
 const bundle = join(pkgRoot, 'dist', 'bundle', 'index.js')
-const skip = !existsSync(bundle)
 
 async function pollHealth(base: string, deadlineMs: number): Promise<void> {
   const deadline = Date.now() + deadlineMs
@@ -72,13 +71,19 @@ async function sdkCommand(
   }
 }
 
-describe.skipIf(skip)('SDK command channel e2e (sdk1.md §11.36)', () => {
+describe('SDK command channel e2e (sdk1.md §11.36)', () => {
   let server: ChildProcess | undefined
   let base: string
   let dataDir: string
   const docName = 'e2e-doc.docx'
 
   beforeAll(async () => {
+    // Fail closed if the bundle is missing — a missing artifact is a build
+    // chain failure, not a reason to silently pass. (See plan §W2.2.)
+    expect(
+      existsSync(bundle),
+      `Missing ${bundle}. Build it first: npm run bundle -w @genoffice/web-server`,
+    ).toBe(true)
     dataDir = mkdtempSync(join(tmpdir(), 'genoffice-sdkcmd-'))
     const filesDir = join(dataDir, 'files')
     mkdirSync(filesDir, { recursive: true })
