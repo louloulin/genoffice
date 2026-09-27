@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "generatedBy": "apps/sdk/scripts/build.mjs",
+  "entries": [
+    {
+      "entry": "src/index.ts",
+      "out": "index",
+      "umd": true
+    },
+    {
+      "entry": "src/dataflare/host.ts",
+      "out": "dataflare-host",
+      "umd": true
+    },
+    {
+      "entry": "src/dataflare/guest.ts",
+      "out": "dataflare-guest",
+      "umd": true
+    },
+    {
+      "entry": "src/dataflare/integration.ts",
+      "out": "dataflare-integration",
+      "umd": false
+    },
+    {
+      "entry": "src/file/management.ts",
+      "out": "file-management",
+      "umd": false
+    },
+    {
+      "entry": "src/file/versions.ts",
+      "out": "file-versions",
+      "umd": false
+    },
+    {
+      "entry": "src/file/comments.ts",
+      "out": "file-comments",
+      "umd": false
+    },
+    {
+      "entry": "src/file/callback.ts",
+      "out": "file-callback",
+      "umd": false
+    },
+    {
+      "entry": "src/file/jwt.ts",
+      "out": "file-jwt",
+      "umd": false
+    },
+    {
+      "entry": "src/file/embed.ts",
+      "out": "file-embed",
+      "umd": false
+    },
+    {
+      "entry": "src/embed/nonce.ts",
+      "out": "embed-nonce",
+      "umd": false
+    },
+    {
+      "entry": "src/ai/translation.ts",
+      "out": "ai-translation",
+      "umd": false
+    },
+    {
+      "entry": "src/ai/agent.ts",
+      "out": "ai-agent",
+      "umd": false
+    },
+    {
+      "entry": "src/auth/mint.ts",
+      "out": "auth-mint",
+      "umd": false
+    },
+    {
+      "entry": "src/auth/client.ts",
+      "out": "auth-client",
+      "umd": false
+    },
+    {
+      "entry": "src/collab/cursor.ts",
+      "out": "collab-cursor",
+      "umd": false
+    },
+    {
+      "entry": "src/collab/presence.ts",
+      "out": "collab-presence",
+      "umd": false
+    },
+    {
+      "entry": "src/collab/lock.ts",
+      "out": "collab-lock",
+      "umd": false
+    },
+    {
+      "entry": "src/collab/comments.ts",
+      "out": "collab-comments",
+      "umd": false
+    }
+  ]
+}

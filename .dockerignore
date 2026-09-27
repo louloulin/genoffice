@@ -34,3 +34,18 @@ current-state.png
 saas1.md
 sdk1.md
 storage:/
+
+# Build outputs from the host. The image builds its own renderers and bundles
+# (see tools/build-web-renderers.mjs); a stale `out/` on the build host must
+# never be able to stand in for a build that failed.
+**/node_modules
+apps/*/out
+apps/*/dist
+
+# Scratch from verification sessions. Never part of an image.
+.webverify-tmp
+
+# Cargo build output (~1 GB of `target/`). The image runs no Rust build: the
+# sheets renderer reaches the xlsx engine over HTTP, not through the native
+# sidecar, so nothing in the image build reads this.
+apps/sheets/native/**/target

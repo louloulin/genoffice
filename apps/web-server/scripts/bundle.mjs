@@ -10,7 +10,8 @@
 // `const { Buffer } = require('buffer')`) keep working inside an ESM bundle.
 
 import { build } from 'esbuild'
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +22,13 @@ const outdir = resolve(root, 'dist/bundle')
 
 mkdirSync(outdir, { recursive: true })
 
+// Mark the output directory as ESM. The bundle uses `import`/`export`, and its
+// consumers copy `dist/bundle/` into an image where no parent package.json
+// exists (the Docker runtime stage), so the marker has to travel with it.
+// Relying on Node's syntax detection instead would work today but silently
+// ties the image to a Node >= 22.7 runtime.
+writeFileSync(resolve(outdir, 'package.json'), JSON.stringify({ type: 'module' }, null, 2) + '\n')
+
 await build({
   entryPoints: [resolve(root, 'src/index.ts')],
   outfile: resolve(outdir, 'index.js'),
@@ -29,7 +37,14 @@ await build({
   format: 'esm',
   target: 'node22',
   packages: 'bundle',
-  external: ['node:*', 'ws'],
+  // `ws` is imported eagerly by the OpenAI SDK's Node shim (`import * as NodeWs
+  // from "ws"`), so it has to be resolvable the moment the bundle loads — even
+  // for deployments that never open a WebSocket. The Docker runtime stage
+  // copies `dist/bundle/` and no node_modules, so leaving it external meant the
+  // image died at startup with ERR_MODULE_NOT_FOUND. Bundle it instead; its two
+  // optional native accelerators stay external and are required inside a
+  // try/catch, so their absence falls back to ws's JS implementation.
+  external: ['node:*', 'bufferutil', 'utf-8-validate'],
   // The op-docs surface (used by the AI provider prompt builder) inlines
   // markdown via Vite-style `?raw` imports. esbuild has no built-in
   // loader for the suffix; strip it and return the file contents as a
@@ -76,4 +91,31 @@ await build({
   }
   copyFileSync(wasmSrc, resolve(outdir, 'pdfium.wasm'))
   console.log(`[bundle] copied pdfium.wasm (${readFileSync(wasmSrc).byteLength} bytes) -> dist/bundle/`)
+}
+
+// Build the host SDK and stage it at `dist/static/sdk/`.
+//
+// `/static/sdk/*` is the distribution channel for the host SDK, and the embed
+// bridge's consumers load `dataflare-host.umd.js` from it. Those bytes used to
+// appear only if someone had already run `pnpm --filter @genoffice/web-sdk
+// build` — a hidden prerequisite that neither Dockerfile satisfied, so every
+// released image answered 404 for the SDK, and the container's own path
+// derivation pointed somewhere else even when the files were present
+// (sdk1.md §11.125). Running the SDK pipeline here makes `bundle` alone
+// produce a complete `dist/static/sdk/`; a missing script or a non-zero exit
+// fails the build rather than shipping a silently empty route.
+{
+  const sdkRoot = resolve(root, '..', 'sdk')
+  for (const script of ['build.mjs', 'copy-sdk-to-webserver.mjs']) {
+    const path = join(sdkRoot, 'scripts', script)
+    if (!existsSync(path)) {
+      throw new Error(
+        `SDK build script missing at ${path}; the web-server cannot ship /static/sdk/* without it`,
+      )
+    }
+    const res = spawnSync(process.execPath, [path], { stdio: 'inherit', cwd: sdkRoot })
+    if (res.status !== 0) {
+      throw new Error(`${script} exited ${res.status}; /static/sdk/* would be empty or stale`)
+    }
+  }
 }

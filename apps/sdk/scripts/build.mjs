@@ -23,6 +23,7 @@
 
 import { build } from 'esbuild'
 import { spawn } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -61,6 +62,31 @@ const targets = [
   { entry: 'src/collab/comments.ts',  out: 'collab-comments',   umd: undefined },
 ]
 
+// Entry manifest — the single source of truth for which bundles this build
+// produced. The web-server's `/static/sdk/*` allow-list and its startup
+// self-check both derive from this file rather than re-listing filenames by
+// hand; a hand-copied list silently 404s the moment an entry is added here
+// (sdk1.md §11.125). Written next to this script and committed, so a fresh
+// clone and a Docker build see the same list without running this script
+// first — CI asserts the committed copy is in sync via `--check`.
+const manifest = {
+  version: 1,
+  generatedBy: 'apps/sdk/scripts/build.mjs',
+  entries: targets.map((t) => ({ entry: t.entry, out: t.out, umd: Boolean(t.umd) })),
+}
+const manifestJson = JSON.stringify(manifest, null, 2) + '\n'
+const manifestPath = resolve(__dirname, 'sdk-entries.json')
+
+if (process.argv.includes('--check')) {
+  const current = existsSync(manifestPath) ? readFileSync(manifestPath, 'utf8') : ''
+  if (current !== manifestJson) {
+    console.error('[sdk] sdk-entries.json is stale — run `node scripts/build.mjs` and commit the result')
+    process.exit(1)
+  }
+  console.log(`[sdk] sdk-entries.json in sync (${targets.length} entries)`)
+  process.exit(0)
+}
+
 for (const t of targets) {
   const entry = resolve(root, t.entry)
   const base = { ...shared, entryPoints: [entry] }
@@ -78,7 +104,10 @@ for (const t of targets) {
 // fields point at these emitted files.
 await runTsc([])
 
+writeFileSync(manifestPath, manifestJson)
+
 console.log(`[sdk] built ${targets.length} entries × ESM + CJS${targets.some((t) => t.umd) ? ' + UMD' : ''} + d.ts →`, resolve(root, 'dist'))
+console.log(`[sdk] wrote entry manifest →`, manifestPath)
 
 function runTsc(args) {
   return new Promise((resolveProm, rejectProm) => {

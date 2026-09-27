@@ -12,6 +12,8 @@
  * server `list()` returned `[]` forever and `add()` threw. Keep this passing
  * whenever the IPC envelope or a collab handler's return shape changes.
  */
+import { readFileSync } from 'node:fs'
+
 import { CollabCursorClient } from '../dist/collab-cursor.mjs'
 import { CollabPresenceClient } from '../dist/collab-presence.mjs'
 import { CollabLockClient } from '../dist/collab-lock.mjs'
@@ -50,14 +52,27 @@ const join = await fetch(`${baseUrl}/api/ipc/collab:join`, {
 }).then((r) => r.json())
 console.log(`session ${docId}: ${JSON.stringify(join)}\n`)
 
-// The web-server serves the SDK bundle off a hard-coded entry allowlist
-// (`SDK_ENTRY_PATTERN` in `apps/web-server/src/index.ts`). No test pins that
-// regex, and a missing entry is invisible locally — the SDK tests import
-// `dist/` directly — while a CDN-hosted host gets a 404. Probe it here.
-console.log('static sdk allowlist')
-for (const entry of ['file-embed', 'ai-translation', 'embed-nonce']) {
-  const res = await fetch(`${baseUrl}/static/sdk/${entry}.mjs`)
-  check(`/static/sdk/${entry}.mjs is served`, res.status === 200, res.status)
+// The web-server serves the SDK bundle off an allowlist derived from the same
+// manifest this file reads (`SDK_ENTRY_PATTERN` in `apps/web-server/src/index.ts`
+// is built from `apps/sdk/scripts/sdk-entries.json`, and startup refuses to boot
+// if a declared entry is missing). Probe every entry and every format the
+// manifest declares rather than a hand-written subset: the SDK's own tests
+// import `dist/` directly, so a file that never reached the server is invisible
+// locally while a CDN-hosted embed host gets a 404. `dataflare-host` is the
+// concrete case — it is the bridge the embed host loads, and the list this
+// replaced left it out entirely.
+console.log('\nstatic sdk allowlist')
+{
+  const manifest = JSON.parse(readFileSync(new URL('./sdk-entries.json', import.meta.url), 'utf8'))
+  for (const { out, umd } of manifest.entries) {
+    const files = [`${out}.mjs`, `${out}.cjs`, ...(umd ? [`${out}.umd.js`] : [])]
+    const missing = []
+    for (const file of files) {
+      const res = await fetch(`${baseUrl}/static/sdk/${file}`)
+      if (res.status !== 200) missing.push(`${file} → ${res.status}`)
+    }
+    check(`/static/sdk/${out}.* is served (${files.length} file(s))`, missing.length === 0, missing)
+  }
 }
 
 const cursor = new CollabCursorClient(config)

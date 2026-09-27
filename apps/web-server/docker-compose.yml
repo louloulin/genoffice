@@ -1,11 +1,17 @@
-# GenOffice Web Server Docker Compose
-version: '3.8'
+# GenOffice Web Server — docker compose
+#
+#   WEB_TOKEN=$(openssl rand -hex 32) docker compose up --build
+#
+# Builds the single repository-root Dockerfile. This used to point at
+# `apps/web-server/Dockerfile`, which asked for `context: ../..` while living
+# in `apps/web-server` — a second image definition that shipped one renderer and
+# no SDK bytes. There is one Dockerfile now.
 
 services:
   genoffice-web:
     build:
       context: ../..
-      dockerfile: apps/web-server/Dockerfile
+      dockerfile: Dockerfile
     container_name: genoffice-web
     restart: unless-stopped
     ports:
@@ -14,10 +20,16 @@ services:
       - HOST=0.0.0.0
       - PORT=8080
       - NODE_ENV=production
+      - DATA_DIR=/data
+      - FILES_DIR=/data/files
+      # Required. The server refuses to start on a non-loopback bind without a
+      # shared secret, so a blank value here is a startup failure with the fix
+      # printed, not a silently unauthenticated server.
+      - WEB_TOKEN=${WEB_TOKEN:?set WEB_TOKEN, e.g. WEB_TOKEN=$(openssl rand -hex 32) docker compose up}
       # Optional: MiniMax AI API Key
       # - MINIMAX_API_KEY=your-api-key
     volumes:
-      - genoffice-data:/tmp/genoffice-data
+      - genoffice-data:/data
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s

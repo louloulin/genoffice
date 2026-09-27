@@ -138,6 +138,7 @@
   "homepage": "https://genoffice.app/docs/sdk",
   "scripts": {
     "build": "node scripts/build.mjs && node scripts/copy-sdk-to-webserver.mjs",
+    "manifest:check": "node scripts/build.mjs --check",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "probe:live": "node scripts/live-probe.mjs",

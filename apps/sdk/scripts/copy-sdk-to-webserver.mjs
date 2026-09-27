@@ -12,9 +12,11 @@
 //
 //   node scripts/build.mjs && node scripts/copy-sdk-to-webserver.mjs
 //
-// The web-server's static route allow-lists explicit filenames (see
-// `if (url.pathname === '/static/sdk/index.mjs' || ...)` in src/index.ts);
-// when adding a new sub-path here, also extend the allow-list there.
+// The web-server's static route derives its allow-list from
+// `scripts/sdk-entries.json` (written by build.mjs), so that manifest is
+// copied alongside the bundles and every declared entry is served without
+// touching src/index.ts. Adding a new sub-path is a one-line change to the
+// `targets` array in build.mjs.
 
 import { mkdirSync, copyFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
@@ -25,9 +27,14 @@ const sdkRoot = resolve(__dirname, '..')
 const sdkDist = resolve(sdkRoot, 'dist')
 const webserverRoot = resolve(sdkRoot, '..', 'web-server')
 const target = resolve(webserverRoot, 'dist', 'static', 'sdk')
+const manifest = resolve(__dirname, 'sdk-entries.json')
 
 if (!existsSync(sdkDist)) {
   console.error(`[sdk→webserver] source dist/ missing at ${sdkDist}; did the build run?`)
+  process.exit(1)
+}
+if (!existsSync(manifest)) {
+  console.error(`[sdk→webserver] entry manifest missing at ${manifest}; did build.mjs run?`)
   process.exit(1)
 }
 
@@ -44,5 +51,9 @@ for (const f of readdirSync(sdkDist)) {
     copied++
   }
 }
+// The manifest travels with the bundles: the server reads it at startup to
+// verify every declared entry was actually shipped.
+copyFileSync(manifest, join(target, 'sdk-entries.json'))
+copied++
 
 console.log(`[sdk→webserver] copied ${copied} files from ${sdkDist} → ${target}`)
