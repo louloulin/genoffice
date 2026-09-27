@@ -50,6 +50,7 @@ import { buildChannelsView } from './common/channels-view'
 import { fileIndexStore } from './common/file-index-store'
 import { flushFileManagementState } from './common/document-stores'
 import { WEB_SERVER_VERSION } from './common/version'
+import { runStartupChecks, sdkServedFilenames } from './common/startup-checks'
 import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from './common/read-body'
 import { registerAiHandlers, AI_STREAM_SESSIONS, runProviderStream } from './ai/index'
 import { loadMarketplace } from './common/marketplace-loader'
@@ -79,6 +80,7 @@ import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
+import { jwtScopeFor, resolveAuthority, writeForbidden } from './auth/route-policy'
 // sdk1 §11.111: handleApiV1 + findV1Route are imported together so the
 // v1 dispatcher catch-all can return 405 METHOD_NOT_ALLOWED with the
 // correct Allow list when a pathname matches a known v1 route but the
@@ -86,7 +88,7 @@ import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 // the catch-all would return 404 NOT_FOUND for paths that exist for
 // other methods, which is an RFC 7231 violation.
 import { findV1Route, handleApiV1 } from './api/v1/index'
-import { requireScopeFromHeaders, verifyJwtWithRevocation } from './api/v1/auth'
+import { hasScope, requireScopeFromHeaders, verifyJwtWithRevocation } from './api/v1/auth'
 
 /**
  * True when the request carries an `Authorization: Bearer …` header. Used
@@ -113,6 +115,26 @@ import { registerSdkCommandHandlers } from './embed/sdk-commands'
  */
 export { authCookieHeader } from './auth/cookie'
 import { authCookieHeader } from './auth/cookie'
+
+// ----- /static/sdk/* allow-list ---------------------------------------------
+// Mount prefix for the SDK distribution route, plus a memoised view of the
+// filenames the SDK build declared. See the route for why this is derived
+// rather than hand-listed.
+const SDK_PATH_PREFIX = '/static/sdk/'
+let sdkServedCache: Set<string> | null = null
+function sdkServedFiles(): Set<string> {
+  if (!sdkServedCache) {
+    // A missing manifest makes this throw. That is reported (and fatal) by
+    // `runStartupChecks` before `listen`, so reaching here without one means
+    // a test harness imported this module directly; serve nothing.
+    try {
+      sdkServedCache = sdkServedFilenames()
+    } catch {
+      sdkServedCache = new Set()
+    }
+  }
+  return sdkServedCache
+}
 
 // ----- global error traps (must run before any handler so unexpected
 //       failures in the pi session bridge show a stack instead of dying silently)
@@ -424,9 +446,7 @@ const server = createServer(async (request, response) => {
   // probes, channel discovery, and anonymous previews keep working.
   // Without `WEB_TOKEN`, the gate is a no-op — dev / e2e / desktop
   // preload builds all rely on that open posture.
-  if (
-    url.pathname.startsWith('/api/') &&
-    !isPublicApiPath(url.pathname) &&
+  if (url.pathname.startsWith('/api/') && !isPublicApiPath(url.pathname)) {
     // Pass url so the auth gate can read `?token=` (the only token transport
     // EventSource supports). Same-origin browser traffic that loaded the
     // page from us ships the token this way; external API consumers still
@@ -434,10 +454,26 @@ const server = createServer(async (request, response) => {
     // because spreading IncomingMessage through {...request, …} loses
     // properties the parser stores as non-enumerable getters, which the
     // auth gate then sees as `undefined`.
-    !isAuthorised({ headers: request.headers, url })
-  ) {
-    writeUnauthorized(response, `Missing or invalid token for ${url.pathname}`)
-    return
+    const authority = resolveAuthority({ headers: request.headers, url })
+    if (!authority) {
+      writeUnauthorized(response, `Missing or invalid token for ${url.pathname}`)
+      return
+    }
+    if (authority.kind === 'jwt') {
+      // A guest JWT is not the operator. It may only reach a route that
+      // declares a required scope, and must carry it — an unlisted route is a
+      // 403, never a fall-through. See `auth/route-policy.ts` for why this is
+      // default-deny rather than per-handler.
+      const required = jwtScopeFor(request.method ?? 'GET', url.pathname)
+      if (required === null) {
+        writeForbidden(response, `JWT callers may not use ${request.method} ${url.pathname}`)
+        return
+      }
+      if (!hasScope(authority.payload, required)) {
+        writeForbidden(response, `token does not grant scope "${required}"`)
+        return
+      }
+    }
   }
 
   // sdk1 §11.110: wrong-method requests return 405 instead of SPA HTML.
@@ -1156,13 +1192,24 @@ const server = createServer(async (request, response) => {
   // drift between the embed iframe and the host SDK).
   //
   // Allow-list: each SDK sub-path emits `<entry>.mjs` + `<entry>.cjs` (and
-  // optionally `<entry>.umd.js`). We serve any `<entry>.{mjs,cjs,umd.js}`
-  // for entries declared in `apps/sdk/scripts/build.mjs#targets`. Anything
-  // else under /static/sdk/ — sourcemaps, .d.ts, future internal files —
-  // returns 404, so a stray build artefact never leaks by accident.
-  const SDK_ENTRY_PATTERN = /^\/static\/sdk\/(?:index|dataflare-host|dataflare-guest|dataflare-integration|file-management|file-versions|file-comments|file-callback|file-jwt|file-embed|embed-nonce|ai-translation|ai-agent|auth-mint|auth-client|collab-cursor|collab-presence|collab-lock|collab-comments)\.(?:mjs|cjs|umd\.js)$/
-  if (SDK_ENTRY_PATTERN.test(url.pathname)) {
-    const sdkFile = resolve(SDK_BUNDLE_ROOT, basename(url.pathname))
+  // optionally `<entry>.umd.js`). The served names are derived from
+  // `sdk-entries.json`, the manifest the SDK build writes next to its bundles,
+  // so adding an entry to `apps/sdk/scripts/build.mjs` needs no change here.
+  // Previously this was a hand-maintained regex that silently 404'd a new
+  // entry until someone remembered to extend it (sdk1.md §11.125). Anything
+  // else under /static/sdk/ — sourcemaps, .d.ts, the manifest itself, future
+  // internal files — returns 404, so a stray build artefact never leaks.
+  //
+  // Lazy + memoised so importing this module never reads the filesystem: a
+  // missing manifest is the startup check's job to report (it exits with an
+  // actionable message before `listen`), not a stack trace at import time.
+  let sdkFileName: string | null = null
+  if (url.pathname.startsWith(SDK_PATH_PREFIX)) {
+    const rest = url.pathname.slice(SDK_PATH_PREFIX.length)
+    if (rest.length > 0 && !rest.includes('/')) sdkFileName = rest
+  }
+  if (sdkFileName && sdkServedFiles().has(sdkFileName)) {
+    const sdkFile = resolve(SDK_BUNDLE_ROOT, sdkFileName)
     // Containment: reject anything that resolves outside SDK_BUNDLE_ROOT.
     // `resolve` happily walks up on absolute or `..` segments, so the
     // isWithin check is the second line of defence — without it
@@ -1176,7 +1223,7 @@ const server = createServer(async (request, response) => {
     }
     if (!existsSync(sdkFile) || !statSync(sdkFile).isFile()) {
       sendJson(response, 404, {
-        error: { code: 'NOT_FOUND', message: 'sdk bundle not built — run pnpm --filter @genoffice/web-sdk build' },
+        error: { code: 'NOT_FOUND', message: 'sdk bundle not built — run pnpm --filter @genoffice/web-server bundle' },
       })
       return
     }
@@ -1269,7 +1316,15 @@ const server = createServer(async (request, response) => {
   if (filePath && existsSync(filePath) && statSync(filePath).isFile()) {
     const ext = extname(filePath)
     const isHtml = ext.toLowerCase() === '.html'
-    if (isHtml && process.env.WEB_TOKEN) {
+    const webToken = process.env.WEB_TOKEN
+    // `isAuthorised(request)` is not optional here. Without it, an anonymous
+    // GET /docs/ returned this HTML with the operator WEB_TOKEN inlined in a
+    // readable `<meta>` tag (and stamped into `auth_token`), which is a full
+    // operator credential — anyone who could reach the port owned every
+    // /api/** route. The token is only handed to a caller that already
+    // presented it; the Dataflare proxy supplies `X-GenOffice-Token` on every
+    // `/office-engine/**` request, so the embed path is unaffected.
+    if (isHtml && webToken && isAuthorised({ headers: request.headers, url })) {
       // Inject the WEB_TOKEN into the page so the renderer's HTTP IPC
       // transport can send it back on every same-origin request. Without
       // this, a WEB_TOKEN-configured server returns 401 on every IPC call
@@ -1280,8 +1335,8 @@ const server = createServer(async (request, response) => {
       // see the value. The renderer reads it from
       // `document.querySelector('meta[name="genoffice-token"]')`.
       const html = readFileSync(filePath, 'utf-8')
-      const tag = `\n<meta name="genoffice-token" content="${process.env.WEB_TOKEN.replace(/"/g, '&quot;')}">`
-      const cookie = authCookieHeader()
+      const tag = `\n<meta name="genoffice-token" content="${webToken.replace(/"/g, '&quot;')}">`
+      const cookie = authCookieHeader(webToken)
       response.writeHead(200, {
         'Content-Type': MIME_TYPES[ext] || 'text/html; charset=utf-8',
         ...(cookie ? { 'Set-Cookie': cookie } : {}),
@@ -1311,14 +1366,15 @@ const server = createServer(async (request, response) => {
 
   const indexPath = resolve(STATIC_ROOT, appName, 'out', 'renderer', 'index.html')
   if (existsSync(indexPath)) {
-    if (process.env.WEB_TOKEN) {
+    const webToken = process.env.WEB_TOKEN
+    if (webToken && isAuthorised({ headers: request.headers, url })) {
       // Same-origin auth shim: see the direct-file branch above for the
-      // rationale. The meta-tag injection is CSP-safe because
-      // `script-src 'self'` would otherwise drop the value before the
-      // renderer could read it.
+      // rationale and for why `isAuthorised` gates this. The meta-tag
+      // injection is CSP-safe because `script-src 'self'` would otherwise
+      // drop the value before the renderer could read it.
       const html = readFileSync(indexPath, 'utf-8')
-      const tag = `\n<meta name="genoffice-token" content="${process.env.WEB_TOKEN.replace(/"/g, '&quot;')}">`
-      const cookie = authCookieHeader()
+      const tag = `\n<meta name="genoffice-token" content="${webToken.replace(/"/g, '&quot;')}">`
+      const cookie = authCookieHeader(webToken)
       response.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         ...(cookie ? { 'Set-Cookie': cookie } : {}),
@@ -1361,16 +1417,13 @@ const server = createServer(async (request, response) => {
   }
 })
 
-// Detect whether the renderer apps are available at STATIC_ROOT. When the
-// binary is shipped standalone (pkg) the operator is expected to set
-// WEB_STATIC_ROOT; in dev the apps live next to the source. We surface
-// this in the boot log so misconfiguration is obvious instead of silent.
-const shellIndex = resolve(STATIC_ROOT, 'shell', 'out', 'renderer', 'index.html')
-const staticReady = existsSync(shellIndex)
-const staticHint = staticReady
-  ? `║   📁 Static root: ${STATIC_ROOT}                    ║\n`
-  : `║   ⚠️  No renderer apps at ${STATIC_ROOT}          ║\n` +
-    `║      Set WEB_STATIC_ROOT=/path/to/apps or run npm run build:all  ║\n`
+// Refuse to serve an incomplete build or a wide-open bind. This replaces a
+// boot-log warning that detected the very same conditions and started anyway —
+// the "green locally, 404 in the deployment" shape this project keeps
+// re-discovering (sdk1.md §11.125). See common/startup-checks.ts.
+runStartupChecks()
+
+const staticHint = `║   📁 Static root: ${STATIC_ROOT}                    ║\n`
 
 server.listen(PORT, HOST, () => {
   console.log(`
