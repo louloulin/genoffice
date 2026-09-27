@@ -81,6 +81,26 @@ async function translationStorage(): Promise<{
   return { knowledgeBase: sharedKnowledgeBase, memory: translationMemory }
 }
 
+/**
+ * Whether the request names a tenant scope.
+ *
+ * `translationMemory` is one file-backed store for every tenant this process
+ * serves, and the core's `keyOf` drops the scope entirely for a request with
+ * no bucket — so handing it to an unscoped translation is how tenant A's row
+ * becomes tenant B's cache hit. Offer the shared store only behind an explicit
+ * scope; an unscoped request translates fresh instead of reading (and
+ * polluting) the shared namespace. Mirrors `bucketFor` in translation-core, so
+ * a request that was bucketed before stays bucketed.
+ */
+function hasCacheScope(body: {
+  cacheScope?: string | undefined
+  glossaryCategory?: string | undefined
+  customerName?: string | undefined
+}): boolean {
+  const raw = body.cacheScope ?? body.glossaryCategory ?? body.customerName
+  return typeof raw === 'string' && raw.trim().length > 0
+}
+
 interface TranslateUnitRequest {
   unitId?: string
   kind?: string
@@ -470,9 +490,11 @@ export async function translateBatchCore(
       {
         provider,
         config,
-        ...storage,
-        // Request-scoped memory wins when supplied; otherwise the shared TM
-        // stays, now bucketed by `cacheScope`.
+        knowledgeBase: storage.knowledgeBase,
+        // The shared TM only for a scoped request — see `hasCacheScope`.
+        ...(hasCacheScope(body) ? { memory: storage.memory } : {}),
+        // Request-scoped memory wins when supplied (it is the caller's own
+        // store, scoped by construction).
         ...(inlineMemory ? { memory: inlineMemory } : {}),
         // `opts.dictionary` is the documented slot for caller-supplied pairs:
         // the core merges them with the KB terms, injects the ones that occur
@@ -649,7 +671,9 @@ export async function handleTranslateStreamHttp(
       {
         provider,
         config,
-        ...storage,
+        knowledgeBase: storage.knowledgeBase,
+        // The shared TM only for a scoped request — see `hasCacheScope`.
+        ...(hasCacheScope(body) ? { memory: storage.memory } : {}),
         ...(inlineMemory ? { memory: inlineMemory } : {}),
         ...(body.glossary && body.glossary.length > 0 ? { dictionary: body.glossary } : {}),
       },

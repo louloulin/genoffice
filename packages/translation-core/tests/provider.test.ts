@@ -16,7 +16,7 @@ import { callLlm } from '../src/llm-client'
 
 import { KnowledgeBase } from '../src/knowledge-base'
 import { TranslationMemory } from '../src/memory'
-import { normalizeCustomerName, sharedMemory, translateBatch, translateBatchStream, translateOne } from '../src/provider'
+import { sharedMemory, translateBatch, translateBatchStream, translateOne } from '../src/provider'
 
 const mockedCall = vi.mocked(callLlm)
 
@@ -573,7 +573,13 @@ describe('translateBatchStream', () => {
 
   it('serves memory hits without calling the provider and emits unit event', async () => {
     mockedCall.mockResolvedValue({ ok: true, content: '<source_text>fresh</source_text>新' })
-    sharedMemory.save({ sourceLang: 'en-US', targetLang: 'zh-CN', sourceText: 'cached', translatedText: '已缓存' })
+    sharedMemory.save({
+      sourceLang: 'en-US',
+      targetLang: 'zh-CN',
+      sourceText: 'cached',
+      translatedText: '已缓存',
+      bucket: 'stream-scope',
+    })
     const events: string[] = []
     const r = await translateBatchStream(
       {
@@ -583,6 +589,7 @@ describe('translateBatchStream', () => {
         ],
         sourceLang: 'en-US',
         targetLang: 'zh-CN',
+        cacheScope: 'stream-scope',
         qualityCheck: false,
       },
       { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
@@ -944,5 +951,159 @@ describe('translateOne — terminology provenance', () => {
     const prompt = mockedCall.mock.calls[0]?.[0]?.systemPrompt ?? ''
     expect(prompt).not.toContain('牛津布')
     expect(prompt).not.toContain('府绸')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Translation-memory scoping (fail-closed fallback).
+//
+// `bucketFor` returns `undefined` when a request carries none of
+// `cacheScope` / `glossaryCategory` / `customerName`, and `keyOf` then omits
+// the scope entirely — so every unscoped request shared one row. The old
+// fallback (`opts.memory ?? sharedMemory`) therefore let two tenants that both
+// sent no scope read *and overwrite* each other's translations through the
+// module-level TM. The shared TM is now reachable only behind an explicit
+// scope; a host that wants shared caching must send `cacheScope` or inject its
+// own `memory`.
+//
+// Behaviour change for existing single-tenant deployments: a request with no
+// scope no longer replays previously-cached rows, so provider calls go up.
+// ---------------------------------------------------------------------------
+describe('translation memory scoping', () => {
+  const config = { apiKey: 'k', model: 'm' }
+  const scoped = (bucket: string, translatedText: string) =>
+    sharedMemory.save({
+      sourceLang: 'auto',
+      targetLang: 'zh-CN',
+      sourceText: 'Hello',
+      translatedText,
+      bucket,
+    })
+
+  beforeEach(() => {
+    mockedCall.mockReset()
+    sharedMemory.clear()
+  })
+
+  it('does not let two unscoped tenants replay each other', async () => {
+    // Tenant A translates with no scope; tenant B asks for the same sentence
+    // with no scope. Before the fix both landed in the same unscoped row, so
+    // B was served A's translation without the provider ever being consulted.
+    mockedCall.mockResolvedValueOnce({ ok: true, content: '租户A的译文' })
+    const a = await translateOne(
+      { instruction: 'Hello', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config },
+    )
+    expect(a.status).toBe('translated')
+
+    mockedCall.mockResolvedValueOnce({ ok: true, content: '租户B的译文' })
+    const b = await translateOne(
+      { instruction: 'Hello', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config },
+    )
+    expect(b.status).toBe('translated')
+    expect(b.translated).toBe('租户B的译文')
+    expect(mockedCall).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not write into the shared TM for a request without a scope', async () => {
+    mockedCall.mockResolvedValue({ ok: true, content: '你好' })
+    await translateOne(
+      { instruction: 'Hello', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config },
+    )
+    expect(sharedMemory.lookup('auto', 'zh-CN', 'Hello')).toBeNull()
+    expect(sharedMemory.size()).toBe(0)
+  })
+
+  it('still replays the shared TM when the request carries a scope', async () => {
+    scoped('tenant-a', '你好')
+    const r = await translateOne(
+      { instruction: 'Hello', targetLang: 'zh-CN', cacheScope: 'tenant-a' },
+      { provider: 'anthropic', config },
+    )
+    expect(r.status).toBe('memory-hit')
+    expect(mockedCall).not.toHaveBeenCalled()
+  })
+
+  it('does not let one scope replay another scope entry', async () => {
+    scoped('tenant-a', '租户A的译文')
+    mockedCall.mockResolvedValue({ ok: true, content: '租户B的译文' })
+    const r = await translateOne(
+      { instruction: 'Hello', targetLang: 'zh-CN', cacheScope: 'tenant-b' },
+      { provider: 'anthropic', config },
+    )
+    expect(r.status).toBe('translated')
+    expect(r.translated).toBe('租户B的译文')
+    expect(mockedCall).toHaveBeenCalledTimes(1)
+  })
+
+  it('still honours a caller-supplied memory without a scope', async () => {
+    // The rule narrows the *shared* fallback, not caller-supplied memory: an
+    // inline TM is the caller's own store, scoped by construction.
+    const mem = new TranslationMemory()
+    mem.save({
+      sourceLang: 'auto',
+      targetLang: 'zh-CN',
+      sourceText: 'Hello',
+      translatedText: '你好',
+    })
+    const r = await translateOne(
+      { instruction: 'Hello', targetLang: 'zh-CN' },
+      { provider: 'anthropic', config, memory: mem },
+    )
+    expect(r.status).toBe('memory-hit')
+    expect(mockedCall).not.toHaveBeenCalled()
+  })
+
+  it('applies the same rule to translateBatch', async () => {
+    scoped('tenant-a', '租户A的译文')
+    mockedCall.mockResolvedValue({ ok: true, content: '你好' })
+    const r = await translateBatch(
+      {
+        units: [{ unitId: 'u1', kind: 'paragraph', sourceText: 'Hello', order: 0 }],
+        targetLang: 'zh-CN',
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config },
+    )
+    expect(r.units?.[0]?.status).toBe('translated')
+    expect(mockedCall).toHaveBeenCalledTimes(1)
+    // The only row is the pre-seeded scoped one; no unscoped row was created.
+    expect(sharedMemory.lookup('auto', 'zh-CN', 'Hello')).toBeNull()
+    expect(sharedMemory.size()).toBe(1)
+  })
+
+  it('translateBatch still serves and writes back under an explicit scope', async () => {
+    mockedCall.mockResolvedValue({ ok: true, content: '你好' })
+    const r = await translateBatch(
+      {
+        units: [{ unitId: 'u1', kind: 'paragraph', sourceText: 'Hello', order: 0 }],
+        targetLang: 'zh-CN',
+        cacheScope: 'tenant-a',
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config },
+    )
+    expect(r.units?.[0]?.status).toBe('translated')
+    // Written under the scope the caller named…
+    expect(sharedMemory.lookup('auto', 'zh-CN', 'Hello', 'tenant-a')?.translatedText).toBe('你好')
+    // …and not into the unscoped namespace.
+    expect(sharedMemory.lookup('auto', 'zh-CN', 'Hello')).toBeNull()
+  })
+
+  it('applies the same rule to translateBatchStream', async () => {
+    scoped('tenant-a', '租户A的译文')
+    mockedCall.mockResolvedValue({ ok: true, content: '<source_text>Hello</source_text>你好' })
+    const r = await translateBatchStream(
+      {
+        units: [{ unitId: 'u1', kind: 'paragraph' as const, sourceText: 'Hello', order: 0 }],
+        targetLang: 'zh-CN',
+        qualityCheck: false,
+      },
+      { provider: 'anthropic', config },
+    )
+    expect(r.units?.[0]?.status).toBe('translated')
+    expect(mockedCall).toHaveBeenCalledTimes(1)
   })
 })

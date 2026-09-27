@@ -74,7 +74,12 @@ export const sharedMemory = new TranslationMemory()
 export interface TranslateOneOptions {
   provider: AiProviderId
   config: AiProviderConfig
-  /** Optional external memory; falls back to the shared in-memory TM.
+  /** Optional external memory. Used verbatim when supplied — it is the
+   *  caller's own store, scoped by construction. When omitted, only the
+   *  module-level shared TM is consulted, and only for a request that carries
+   *  an explicit `cacheScope` / `glossaryCategory` / `customerName`: an
+   *  unscoped request gets no cache, so it can neither replay nor pollute
+   *  another tenant's rows (see {@link memoryFor}).
    *  Accepts any object that exposes the methods the translator actually
    *  uses (`lookup` and `save`); the in-memory {@link TranslationMemory} and
    *  the file-backed {@link PersistentTranslationMemory} both satisfy this. */
@@ -141,7 +146,6 @@ export async function translateOne(
   if (opts.provider !== 'codex' && !opts.config.model) {
     return { ok: false, error: `No model selected for "${opts.provider}".` }
   }
-  const memory = request.memoryEnabled === false ? null : (opts.memory ?? sharedMemory)
   const sourceLang = normalizeSourceLang(request.sourceLang)
   const preserveFormat = request.preserveFormat !== false
 
@@ -164,6 +168,7 @@ export async function translateOne(
   const qualityEnabled = request.qualityCheck !== false
 
   const bucket = bucketFor(request)
+  const memory = memoryFor(request, opts, bucket)
   const hit = memory?.lookup(sourceLang, targetLang, sourceText, bucket)
   if (hit) {
     // A cached answer was enforced against the terms of the request that
@@ -400,6 +405,27 @@ function bucketFor(request: {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+/**
+ * Pick the memory a translation runs against, failing closed.
+ *
+ * A caller-supplied `opts.memory` is used as-is: it is the caller's own store
+ * (the web-server hands in a per-request inline adapter), scoped by
+ * construction. The module-level {@link sharedMemory} is only reachable behind
+ * an explicit scope: without one, `keyOf` drops the scope entirely, so two
+ * tenants that both omit `cacheScope` would read and overwrite the same row.
+ * Unscoped requests therefore get no shared cache at all — hosts that want it
+ * must send `cacheScope` (or inject their own memory).
+ */
+function memoryFor(
+  request: { memoryEnabled?: boolean | undefined },
+  opts: TranslateOneOptions,
+  bucket: string | undefined,
+): TranslationMemoryLike | null {
+  if (request.memoryEnabled === false) return null
+  if (opts.memory) return opts.memory
+  return bucket === undefined ? null : sharedMemory
+}
+
 function terminologyForBatch(
   request: TranslateBatchRequest,
   opts: TranslateOneOptions,
@@ -496,7 +522,6 @@ export async function translateBatch(
   if (request.targetLang !== undefined && typeof request.targetLang !== 'string') {
     return { ok: false, error: 'ai:translate-batch expected `targetLang` to be a string' }
   }
-  const memory = request.memoryEnabled === false ? null : (opts.memory ?? sharedMemory)
   const sourceLang = normalizeSourceLang(request.sourceLang)
   const targetLang = (request.targetLang ?? '').trim()
   const preserveFormat = request.preserveFormat !== false
@@ -504,6 +529,7 @@ export async function translateBatch(
 
   const termPairs = terminologyForBatch(request, opts, sourceLang, targetLang)
   const batchBucket = bucketFor(request)
+  const memory = memoryFor(request, opts, batchBucket)
 
   const settled = await Promise.all(
     request.units.map(async (unit, index): Promise<TranslateBatchUnitResult> => {
@@ -625,7 +651,6 @@ export async function translateBatchStream(
   if (!Array.isArray(request.units) || request.units.length === 0) {
     return { ok: false, error: 'ai:translate-batch expected a non-empty `units` array' }
   }
-  const memory = request.memoryEnabled === false ? null : (opts.memory ?? sharedMemory)
   const sourceLang = normalizeSourceLang(request.sourceLang)
   const targetLang = (request.targetLang ?? '').trim()
   const preserveFormat = request.preserveFormat !== false
@@ -636,6 +661,7 @@ export async function translateBatchStream(
   const settled: TranslateBatchUnitResult[] = new Array(total)
   const termPairs = terminologyForBatch(request, opts, sourceLang, targetLang)
   const batchBucket = bucketFor(request)
+  const memory = memoryFor(request, opts, batchBucket)
 
   // Build a unit-settler that re-uses the same per-unit logic as translateBatch.
   const settleOne = async (index: number): Promise<void> => {

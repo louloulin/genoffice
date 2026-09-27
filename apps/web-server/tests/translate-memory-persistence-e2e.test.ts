@@ -12,6 +12,12 @@
  * the translate handlers flush after each call (a `save()` only marks the
  * language pair dirty). This suite restarts the server and asserts the second
  * process still answers from memory.
+ *
+ * The HTTP cases name a `cacheScope` on purpose: `translationMemory` is one
+ * store for every tenant the process serves, so the HTTP boundary hands it to
+ * a translation only when the request names a scope. An unscoped request
+ * translates fresh rather than reading (and polluting) the shared namespace —
+ * that is the assertion in the last case.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -74,7 +80,11 @@ function startFakeProvider(): Promise<{ server: Server; port: number; calls: () 
   })
 }
 
-async function translateHttp(base: string, source: string): Promise<{ status?: string; translatedText?: string }> {
+async function translateHttp(
+  base: string,
+  source: string,
+  cacheScope?: string,
+): Promise<{ status?: string; translatedText?: string }> {
   const res = await fetch(`${base}/api/ai/translate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -82,6 +92,7 @@ async function translateHttp(base: string, source: string): Promise<{ status?: s
       sourceLanguage: 'en-US',
       targetLanguage: 'zh-CN',
       units: [{ unitId: 'http-1', kind: 'paragraph', sourceText: source, order: 0 }],
+      ...(cacheScope !== undefined ? { cacheScope } : {}),
     }),
   })
   const json = (await res.json()) as { ok: boolean; units?: Array<{ status?: string; translatedText?: string }> }
@@ -90,6 +101,9 @@ async function translateHttp(base: string, source: string): Promise<{ status?: s
 
 const SOURCE = 'persistent memory probe sentence'
 const HTTP_SOURCE = 'http surface memory probe sentence'
+const UNSCOPED_SOURCE = 'unscoped surface memory probe sentence'
+/** The scope the HTTP memory cases run under — see `hasCacheScope`. */
+const MEMORY_SCOPE = 'tenant-persist'
 
 describe('translation memory persistence', () => {
   let fake: Awaited<ReturnType<typeof startFakeProvider>>
@@ -197,7 +211,7 @@ describe('translation memory persistence', () => {
   it('persists translations made over the HTTP endpoint without a shutdown', async () => {
     const server = await boot()
     try {
-      const first = await translateHttp(base, HTTP_SOURCE)
+      const first = await translateHttp(base, HTTP_SOURCE, MEMORY_SCOPE)
       expect(first.status).toBe('translated')
 
       // Wait for the debounced write while the process is still alive. The
@@ -225,11 +239,31 @@ describe('translation memory persistence', () => {
     const callsBeforeRestart = fake.calls()
     const second = await boot()
     try {
-      const replay = await translateHttp(base, HTTP_SOURCE)
+      const replay = await translateHttp(base, HTTP_SOURCE, MEMORY_SCOPE)
       expect(replay.status).toBe('memory-hit')
       expect(fake.calls()).toBe(callsBeforeRestart)
     } finally {
       await stop(second)
+    }
+  }, 90_000)
+
+  it('never serves the shared TM to a request that names no scope', async () => {
+    // `translationMemory` is one store for every tenant the process serves and
+    // `keyOf` drops the scope for a request with no bucket, so an unscoped
+    // request reading it is how tenant A's row becomes tenant B's cache hit.
+    // The HTTP boundary therefore withholds the shared store unless the
+    // request names a scope (cacheScope / glossaryCategory / customerName).
+    const server = await boot()
+    try {
+      const first = await translateHttp(base, UNSCOPED_SOURCE, MEMORY_SCOPE)
+      expect(first.status).toBe('translated')
+
+      const callsBefore = fake.calls()
+      const unscoped = await translateHttp(base, UNSCOPED_SOURCE)
+      expect(unscoped.status).toBe('translated')
+      expect(fake.calls()).toBe(callsBefore + 1)
+    } finally {
+      await stop(server)
     }
   }, 90_000)
 })
