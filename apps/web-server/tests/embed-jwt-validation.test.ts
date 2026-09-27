@@ -261,6 +261,57 @@ describe('handleEmbed: server-side JWT validation (sdk1.md §11.18)', () => {
   })
 })
 
+describe('handleEmbed: which credential is handed back to the iframe', () => {
+  // The wrapper stamps an `auth_token` cookie so the iframe's EventSource can
+  // authenticate its /api/ipc/* calls. It used to stamp the operator WEB_TOKEN
+  // unconditionally, so `?token=garbage` walked away with an operator
+  // credential. The rule now: hand back only what the caller just proved it
+  // holds. `static-token-injection.test.ts` covers the HTTP cases end to end;
+  // this covers the verified-JWT branch, which needs a minted token.
+  it('stamps the verified guest JWT — never the operator WEB_TOKEN', async () => {
+    const saved = process.env.WEB_TOKEN
+    process.env.WEB_TOKEN = 'operator-secret-do-not-leak'
+    try {
+      const { signJwt, setJtiRevocationCheck } = await loadAuth()
+      setJtiRevocationCheck(() => false)
+
+      const handleEmbed = await loadHandler()
+      const token = signJwt(basePayload())
+      const resp = fakeResponse()
+      handleEmbed({ method: 'GET' } as unknown as Incoming, resp.res, new URL(`http://x/embed/doc_abc?token=${token}&app=docs`))
+
+      // docs is built in this repo; a 503 is a broken build, not a pass.
+      expect(resp.status()).toBe(200)
+      const cookie = resp.headers()['Set-Cookie'] ?? ''
+      expect(cookie).toContain(`auth_token=${token}`)
+      expect(cookie).not.toContain('operator-secret-do-not-leak')
+    } finally {
+      if (saved === undefined) delete process.env.WEB_TOKEN
+      else process.env.WEB_TOKEN = saved
+    }
+  })
+
+  it('stamps no cookie for a token the caller cannot prove it holds', async () => {
+    const saved = process.env.WEB_TOKEN
+    process.env.WEB_TOKEN = 'operator-secret-do-not-leak'
+    try {
+      const { setJtiRevocationCheck } = await loadAuth()
+      setJtiRevocationCheck(() => false)
+
+      const handleEmbed = await loadHandler()
+      const resp = fakeResponse()
+      handleEmbed({ method: 'GET' } as unknown as Incoming, resp.res, new URL('http://x/embed/doc_abc?token=invented-here&app=docs'))
+
+      expect(resp.status()).toBe(200)
+      expect(resp.headers()['Set-Cookie']).toBeUndefined()
+      expect(resp.chunks.join('')).not.toContain('operator-secret-do-not-leak')
+    } finally {
+      if (saved === undefined) delete process.env.WEB_TOKEN
+      else process.env.WEB_TOKEN = saved
+    }
+  })
+})
+
 describe('handleEmbed: legacy dev mode (no GENOFFICE_JWT_SECRET)', () => {
   // This suite needs the env var unset, which conflicts with the global
   // hoisted setup. We rely on the fact that the production `verifyJwt`

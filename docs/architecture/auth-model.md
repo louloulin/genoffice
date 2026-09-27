@@ -47,14 +47,23 @@ is compared in each:
 | `?token=<token>` | curl / non-browser clients, older `EventSource` paths |
 
 When the server serves **HTML** on a `WEB_TOKEN`-configured boot it stamps the
-cookie on the response:
+cookie on the response — but only if the request itself carried the secret.
+An anonymous `GET /docs/` gets the page with no token in it:
 
 ```
 Set-Cookie: auth_token=<urlencoded>; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800
 ```
 
 The cookie value is only accepted when it decodes to the env secret, so a
-forged cookie is just another 401.
+forged cookie is just another 401. That rule protects what the server
+*accepts*; it says nothing about what the server *hands out*, which is the
+other half. The same request check gates the readable
+`<meta name="genoffice-token">` the renderer reads its credential from, and the
+`/embed/:docId` wrapper's cookie. It matters because `/docs/` is not under
+`/api/`, so Gate 1 never sees it: without the check, an anonymous page load
+returned the operator secret to anyone who could reach the port. A reverse
+proxy that injects `X-GenOffice-Token` (as Dataflarework does on every
+`/office-engine/**` request) satisfies the check transparently.
 
 ### Configuration knobs
 

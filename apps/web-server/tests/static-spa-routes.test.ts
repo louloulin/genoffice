@@ -16,8 +16,13 @@
  *   2. their module requests come back as JavaScript (not text/html),
  *   3. the documented app routes still serve their own renderer.
  *
- * The bundle is gitignored, so this suite is skipped when it is absent —
- * `apps/web-server/tests/global-setup.ts` rebuilds it for `npx vitest run`.
+ * The bundles are gitignored. Their absence means the build chain is broken,
+ * not that this behaviour is untestable, so the suite FAILS rather than skips
+ * when they are missing — `apps/web-server/tests/global-setup.ts` rebuilds the
+ * server bundle for `npx vitest run`, and the shell renderer comes from
+ * `npm run build:renderers`. A skip here is how "the assets are missing in the
+ * deployed image" survived a green suite: the very condition under test was
+ * being silently turned into "nothing to check".
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -27,7 +32,6 @@ import { tmpdir } from 'node:os'
 import { stopServer } from './helpers/server-process'
 
 const bundle = join(__dirname, '..', 'dist', 'bundle', 'index.js')
-const haveBundle = existsSync(bundle)
 
 /** First `<script type="module" src=…>` in a renderer index.html. */
 function moduleSrcFor(html: string): string | undefined {
@@ -48,12 +52,18 @@ async function waitForHealth(base: string, timeoutMs = 30_000): Promise<void> {
   throw new Error(`web-server did not become healthy within ${timeoutMs}ms`)
 }
 
-describe.skipIf(!haveBundle)('static SPA route fallback', () => {
+describe('static SPA route fallback', () => {
   let server: ChildProcess | undefined
   let base: string
   let dataDir: string
+  /** Server stderr, surfaced when startup fails. */
+  let serverStderr = ''
 
   beforeAll(async () => {
+    expect(
+      existsSync(bundle),
+      `Missing ${bundle}. Build it first: npm run bundle -w @genoffice/web-server`,
+    ).toBe(true)
     dataDir = mkdtempSync(join(tmpdir(), 'genoffice-static-e2e-'))
     const port = 20000 + Math.floor(Math.random() * 9000)
     base = `http://127.0.0.1:${port}`
@@ -61,9 +71,19 @@ describe.skipIf(!haveBundle)('static SPA route fallback', () => {
       env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GENOFFICE_DATA_DIR: dataDir },
       stdio: 'pipe',
     })
-    server.stderr?.on('data', () => {})
+    // Keep both streams flowing (an unread pipe stalls the child), and keep the
+    // stderr text: the server now refuses to boot when a renderer or SDK entry
+    // is missing, and "did not become healthy" without that message sends the
+    // reader hunting through a log the test threw away.
+    server.stderr?.on('data', (chunk) => {
+      serverStderr += String(chunk)
+    })
     server.stdout?.on('data', () => {})
-    await waitForHealth(base)
+    try {
+      await waitForHealth(base)
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- server output ---\n${serverStderr.slice(-4000)}`)
+    }
   }, 60_000)
 
   afterAll(async () => {
@@ -85,10 +105,15 @@ describe.skipIf(!haveBundle)('static SPA route fallback', () => {
       const html = await page.text()
       expect(html).toContain('<div id="root">')
 
-      if (!existsSync(shellIndexPath)) return
+      expect(
+        existsSync(shellIndexPath),
+        `Missing ${shellIndexPath}. Build the renderers first: npm run build:renderers`,
+      ).toBe(true)
       const shellHtml = readFileSync(shellIndexPath, 'utf8')
       const shellScript = moduleSrcFor(shellHtml)
-      if (!shellScript) return
+      if (!shellScript) {
+        throw new Error(`shell index.html carries no <script type="module" src=…>: ${shellIndexPath}`)
+      }
 
       // Request the shell's module through the sub-route prefix, exactly the
       // way the browser resolves the relative `./assets/…` src.
@@ -109,7 +134,7 @@ describe.skipIf(!haveBundle)('static SPA route fallback', () => {
       expect(html, `${route} index`).toContain('<div id="root">')
 
       const src = moduleSrcFor(html)
-      if (!src) continue
+      if (!src) throw new Error(`${route} index.html carries no <script type="module" src=…>`)
       const assetPath = src.startsWith('/') ? src : `/${route}/${src}`
       // The app's own module must be fetchable and typed, not the SPA fallback.
       const asset = await fetch(`${base}${assetPath}`)

@@ -74,8 +74,12 @@ import { existsSync, readFileSync } from 'node:fs'
 export const SDK_COMMAND_CHANNEL = 'sdk:command'
 
 /**
- * Args shape the bridge sends. `docId` comes from
- * `window.__GENOFFICE_EMBED__.docId` (the embed URL's `:docId` segment).
+ * Args shape the bridge sends. `docId` comes from the
+ * `<meta name="genoffice-embed-config">` JSON the server injects into the embed
+ * page (the embed URL's `:docId` segment). This comment previously named
+ * `window.__GENOFFICE_EMBED__.docId` — no artifact ever assigned that global, so
+ * following it leads to a bridge whose `docId` is always undefined; see
+ * sdk1.md §11.124.
  */
 export interface SdkCommandRequest {
   name: string
