@@ -47,8 +47,10 @@
     "dist:mac": "npm run notices && npm run build:all && npm run native:build:universal -w @genoffice/sheets && npm run dist:mac -w @genoffice/shell",
     "dist:win": "npm run notices && npm run build:all && npm run dist:win -w @genoffice/shell",
     "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @genoffice/shell",
-    "dev:web": "npm run build:all && npm run dev -w @genoffice/web-server",
-    "build:web": "npm run build:all && npm run build -w @genoffice/web-server",
+    "build:sdk": "npm run build -w @genoffice/web-sdk",
+    "build:renderers": "node tools/build-web-renderers.mjs",
+    "dev:web": "npm run build:sdk && npm run build:renderers && npm run dev -w @genoffice/web-server",
+    "build:web": "npm run build:sdk && npm run build:renderers && npm run bundle -w @genoffice/web-server",
     "start:web": "npm run start -w @genoffice/web-server"
   },
   "dependencies": {
@@ -73,5 +75,9 @@
     "prettier": "^3.9.6",
     "typescript-eslint": "^8.65.0"
   },
-  "packageManager": "pnpm@9.13.0+sha512.beb9e2a803db336c10c9af682b58ad7181ca0fbd0d4119f2b33d5f2582e96d6c0d93c85b23869295b765170fbdaa92890c0da6ada457415039769edf3c959efe"
+  "packageManager": "pnpm@9.13.0+sha512.beb9e2a803db336c10c9af682b58ad7181ca0fbd0d4119f2b33d5f2582e96d6c0d93c85b23869295b765170fbdaa92890c0da6ada457415039769edf3c959efe",
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "4.62.2",
+    "@rollup/rollup-linux-arm64-gnu": "4.62.2"
+  }
 }

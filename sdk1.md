@@ -1275,7 +1275,7 @@ data: {"channel":"saved","args":[{"path":"...","version":1790...,"bytes":42,"for
 
 | 文件 | 改动 | 行数变化 |
 |---|---|---|
-| `apps/web-server/src/embed/index.ts` | `buildEmbedHtml` 新增 per-request `sessionId` + `<meta name="genoffice-session">` + 注入到 `__GENOFFICE_EMBED__` 配置 | +18 |
+| `apps/web-server/src/embed/index.ts` | `buildEmbedHtml` 新增 per-request `sessionId` + `<meta name="genoffice-session">` + 注入 embed 配置 — **§11.124 更正**：注入的是 `<meta name="genoffice-embed-config">`（JSON），**不是** `__GENOFFICE_EMBED__` 全局；该全局在生产从未被赋值 | +18 |
 | `apps/web-server/src/embed/index.ts` | `EMBED_BRIDGE` 新增 `subscribePush()` 函数：`new EventSource('/api/ipc/events?session=<id>')` + 每个 frame `post(channel, payload)` | +20 |
 | `apps/web-server/tests/embed-endpoint.test.ts` | 新增 · 1 e2e（"injects a per-request sessionId meta + EventSource wiring for SSE forwarding"）| +24 |
 
@@ -2249,7 +2249,7 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 - `node apps/web-server/scripts/bundle.mjs`：`dist/bundle/index.js 28.5mb` ⚠️（与 baseline 同大小）
 - live smoke（PORT=33002 + `GENOFFICE_JWT_SECRET=smoke-secret`，tmux session 隔离 sandbox 杀进程）：
   1. mint nonce → `200 {sessionId, nonce, expiresAt}` ✓
-  2. embed with session+nonce → `200` + 4 KB HTML，含全部 6 token（`ENVELOPE_VERSION` x3 / `genoffice-nonce` x2 / `genoffice-token` x1 / `genoffice-session` x1 / `__GENOFFICE_EMBED__` x3 / `sendReady` x4）✓
+  2. embed with session+nonce → `200` + 4 KB HTML，含全部 6 token（`ENVELOPE_VERSION` x3 / `genoffice-nonce` x2 / `genoffice-token` x1 / `genoffice-session` x1 / `__GENOFFICE_EMBED__` x3 / `sendReady` x4）✓ — **§11.124 更正**：`__GENOFFICE_EMBED__` x3 是**内联 bridge 源码文本里的读引用**，不是注入；该全局在生产从未被赋值，此 ✓ 不成立
   3. bridge source 含 `version: '0.8.0'` 字面（SOT 插值生效）✓
   4. embed wrong nonce → `401 NONCE_SESSION_INVALID` ✓
   5. embed sessionId without nonce → `400 INVALID_ARGUMENT` ✓
@@ -2310,7 +2310,7 @@ iframe 内执行的 bridge JS（包含 handshake nonce echo / EventSource 订阅
 - live smoke（PORT=33002 + `GENOFFICE_JWT_SECRET`，tmux）：
   - mint nonce → `200 {sessionId, nonce, expiresAt}` ✓
   - `verifyEmbedSession` POST → `200 {valid:true, expiresAt}` ✓
-  - embed with sessionId+nonce → `200`，`__GENOFFICE_EMBED__.sessionId` 字段存在 ✓
+  - embed with sessionId+nonce → `200`，`__GENOFFICE_EMBED__.sessionId` 字段存在 ✓ — **§11.124 更正**：同上，命中的是内联源码文本；且该写法已随 bridge 外置（`<script src="static/bridge.js">`）消失，现在页面只有 `<meta name="genoffice-session">` 与 `<meta name="genoffice-embed-config">`
   - `DELETE /api/v1/embed/nonce` (autoRelease 走过的路径) → `200 {released:true}` ✓
   - verify after release → `200 {valid:false, reason:'unknown'}` ✓
   - embed stale sessionId → `401 NONCE_SESSION_INVALID` ✓
@@ -8703,6 +8703,87 @@ $ ./node_modules/.bin/vitest run --reporter=dot
 ```
 
 全套件 140 文件 / ~1205 通过 / 0 fail / 1 skipped / 0 回归。（kerrits flaky-external-LLM 已知不在 0 fail 列表里）
+
+### 11.124 · embed 推送通道在真实前缀下是死的（C27 第二实例 · 4 处根因 · 含一条被测试焊死的旧断言）
+
+**性质**：这不是新 bug，是 §11.11 / §11.31 那条链路**从未在真实挂载拓扑下跑通过**。§11.34 已经吃过一次同类教训（"`host.command` 字符串存在当 positive 守门"），本条是同一类缺陷的第二次暴露：**用"字符串存在"代替"行为发生"，且验证只在一个拓扑下做**。
+
+#### 11.124.1 症状
+
+真实浏览器经 Dataflare 的 `/office-engine`（`strip-path-prefix: true`）加载 embed 页，页面能挂载、能编辑、postMessage 闭环 OK，但 **`window.parent` 永远收不到 `saved` / `dirtyChanged`**。实测探针输出：
+
+```json
+{ "allEventSourceUrls": ["http://127.0.0.1:8991/office-engine/api/ipc/events?session=embed-…",
+                         "/office-engine/api/ipc/events?session=embed-…"],
+  "sawOpen": true, "receivedFrame": false,
+  "embedGlobal": "undefined",
+  "configMeta": "{\"docId\":\"…\",\"app\":\"docs\",…,\"sessionId\":\"embed-…\"}",
+  "sessionMeta": "embed-…" }
+```
+
+服务端产物实测：`GET /embed/:docId` 返回 **1308 字节**，`__GENOFFICE_EMBED__` 出现 **0 次**，只有 3 个 meta（`genoffice-token` / `genoffice-embed-config` / `genoffice-session`）。
+
+#### 11.124.2 四处独立根因（缺一不可）
+
+| # | 根因 | 证据 |
+|---|---|---|
+| 1 | **bridge 的 `EventSource('/api/ipc/events?…')` 是根相对**。在前缀拓扑下解析到**宿主根**（Dataflare 自己的 `/api/ipc/events`），宿主不转发 → SSE 静默失效 | `bridge.ts` `subscribePush()` 原写法 |
+| 2 | **bridge 的 `fetch('/api/ipc/sdk:command')` 同样是根相对** → 入站命令 round-trip 同样死 | `dispatchCommand()` 原写法 |
+| 3 | **bridge 只从 `window.__GENOFFICE_EMBED__` 读配置，而该全局从未被任何产物赋值**。全仓只有 4 个**测试**文件"赋值"它；生产读点在 `bridge.ts`，写点为零。于是 `cfg` 恒为 `undefined` → `sessionId` 缺失 → 推送**根本不开**、ready 事件丢 `app`、命令丢 `sessionId`/`docId` | 探针 `embedGlobal: "undefined"`；全仓 grep 写点 |
+| 4 | **桥与渲染器各自 `crypto.randomUUID()`，是两个不同 session**。而推送通道是**请求作用域**的：`pushSseEvent(session)` 只写给"发起该请求的 `x-ipc-session`"（`src/index.ts`），所以桥即使订阅成功，也永远收不到渲染器请求产生的帧 | 修复前 `ipcCalls` 的 session 与桥的 EventSource `?session=` 不一致 |
+
+根因 3 与 4 是**设计错配**而非接线笔误：把推送当成广播总线去用，实际是请求回执通道。
+
+#### 11.124.3 为什么它能活过 §11.11 / §11.31 / §11.34 三次"验证"
+
+- **字符串存在 ≠ 行为发生**。旧断言只是 grep 出 HTML 里含 `__GENOFFICE_EMBED__` 字样就判 ✓——而那串字样来自**被内联的 bridge 源码文本**，是**读引用**不是注入。§11.31 化验证记录（本文件 `:2252` / `:2313`）正是这么写的，本条一并更正。
+- **测试把 bug 焊死了**。`embed-endpoint.test.ts` 当时**钉住**了根相对写法（`EventSource('/api/ipc/events?session=…')`），所以"修 URL"会先撞红测试——这正是 C27 那条 `<base href="/">` 注释里写过的同一个陷阱，第三次出现。
+- **验证拓扑与部署拓扑不同**。`e2e/embed-loop-probe.mjs` 在**宿主根**额外代理了 `/assets` + `/static`（`PROBE_PROXY_PREFIXES`，还可用环境变量放宽），所以根相对 URL 在探针里能通；而真实部署只转发 `/office-engine/**`。**"探针绿"因此长期不成立地代表了"生产绿"。**
+
+#### 11.124.4 修复
+
+| 文件 | 改动 |
+|---|---|
+| `apps/web-server/src/embed/bridge.ts` | ① 新增 `readEmbedConfig()`：以服务端注入的 `<meta name="genoffice-embed-config">`（JSON）为**事实源**，`<meta name="genoffice-session">` 补 sessionId，宿主的 `window.__GENOFFICE_EMBED__` 仍可**覆盖**。② 三处消费点（`dispatchCommand` / `sendReady` / `subscribePush`）改走它。③ 新增 `apiUrl(relPath)`：以 bridge 自身 `<script src>` 为锚（`../../`）解析 API URL，前缀无关。④ `subscribePush()` 补 `pushSubscribed` 幂等守卫 |
+| `packages/ipc-bridge/src/client.ts` | 新增 `readInjectedEmbedSession()`：transport 默认采用页面注入的 `genoffice-session`（`options.session` 优先，非 embed 页回退 `crypto.randomUUID()`）。**桥与渲染器自此同 session**，根因 4 闭合 |
+| `apps/web-server/tests/embed-bridge.test.ts` | harness 增 `configMeta` / `sessionMeta`（`querySelector` 按 meta name 分发）；新增 4 测：meta 读 app/sessionId/docId、`genoffice-session` 回退、宿主覆盖优先、**双事件只开一条 SSE** |
+| `apps/web-server/tests/embed-endpoint.test.ts` | 反转旧断言：不再钉根相对字符串，改为断言 `body` 不含 `'/api/`、`EMBED_BRIDGE_SOURCE` 不含 `EventSource('/api/` / `fetch('/api/`、且**含** `apiUrl(` |
+
+附带发现的**重复订阅**：`subscribePush()` 原先像 `sendReady()` 一样从 `DOMContentLoaded` **和** `load` 两个监听器注册，但 `sendReady` 有 `readySent` 守卫而它没有 → **每个 embed 页开着 2 条 SSE 流 + 2 份服务端 session 注册**（探针实测 3 条 = 桥 ×2 + 渲染器 ×1；修复后 2 条 = 桥 1 + 渲染器 1）。
+
+#### 11.124.5 验证（真实前缀 + 确定性激励）
+
+**旧探针的做法本身不可靠**：它按 `Ctrl+S` 当激励，而渲染器只在自认 dirty 时才发 `docs:save`——冷启动的 embed 页不 dirty，实测 14 条 IPC 全是只读启动调用（`app:get-language` / `docs:recent` / `ai:get-settings` …），**一条 `docs:save` 都没有**。所以当时的 `receivedFrame: false` 里混着"通道坏"和"没激励"两件事，无法归因。
+
+改用 `html:dirty-changed`：该 handler 全局注册（`src/index.ts:205-210`），函数体只有 `sendIpcEvent(event, 'dirtyChanged', …)`，**纯推送、零文件系统副作用**，且由页面**用自己注入的 session** 发起——恰是桥依赖的那次往返。修复后实测：
+
+```json
+{ "stimulus": { "ok": true, "status": 200,
+                "endpoint": "…/office-engine/api/ipc/html:dirty-changed",
+                "session": "embed-mujbzwap-6ibft6" },
+  "frames": ["[open]", "[open]",
+             "{\"channel\":\"dirtyChanged\",\"args\":[{\"dirty\":true}]}",
+             "{\"channel\":\"dirtyChanged\",\"args\":[{\"dirty\":true}]}"],
+  "urlIsPrefixed": true, "urlIsNotRootRelative": true,
+  "sawOpen": true, "receivedFrame": true, "OK": true }
+```
+
+15 条 IPC 调用**全部**带同一个 `x-ipc-session`，两条流同 session。
+
+**破坏性检验**（证明门禁有牙）：① 删掉 `pushSubscribed` 守卫 → **恰好**新测 1 条变红（`eventSources.length` 1→2），其余 35 绿；② 把 `readEmbedConfig` 换成旧的读全局实现 → **恰好** 2 条 meta 测试变红；两者均恢复即绿。单测合计 47 通过（`embed-bridge` 36 + `embed-endpoint` 11）。
+
+#### 11.124.6 同步更正的历史记录
+
+- **本节 `:2252`**："`__GENOFFICE_EMBED__` x3 ✓" —— 该计数来自内联的 bridge 源码文本，**不是注入**。已加更正标记。
+- **本节 `:2313`**："`__GENOFFICE_EMBED__.sessionId` 字段存在 ✓" —— 同上，且该写法已随 bridge 外置而消失。
+- **本节 `:1278`**："注入到 `__GENOFFICE_EMBED__` 配置" —— 实际注入的是 `<meta name="genoffice-embed-config">`。已加更正标记。
+- **本节 `:2230`**：描述的是 bridge 读全局的**代码行为**（代码确实读了），保留；但请注意该全局在生产**从未被赋值**。
+- `.webverify-tmp/sdk-real-verify-report.md:78`："`window.__GENOFFICE_EMBED__` 已注入（docId / app / mode / sessionId 全在）" —— **假**，已更正。
+- `apps/web-server/src/embed/sdk-commands.ts` 的 `SdkCommandRequest` TSDoc："`docId` comes from `window.__GENOFFICE_EMBED__.docId`" —— 假的来源描述，已更正为注入的 meta。
+
+**遗留（不在本条范围）**：探针仍记录到 5 条 `style-src 'self'` 内联样式 CSP 违规；页面照常渲染，未阻断本条。
+
+---
 
 ## 附录 A：实施状态（截至 2026-09-22，分支 `release0919`)
 

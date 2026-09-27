@@ -127,8 +127,17 @@ If you don't want `createEditor` to own the DOM, skip it — `openEmbedSession`
 already returned a ready URL. `buildDataflareEmbedUrl` produces:
 
 ```
-{baseUrl}/apps/{app}/embedded?embed=1&app=…&doc=…&jwt=…&sessionId=…&nonce=…
+{baseUrl}/embed/{docId}?app=…&token=…&nonce=…&sessionId=…
 ```
+
+The document id is a **path** segment and the credential parameter is named
+**`token`** — the server answers `400 missing ?token=` for anything else. This
+is the `/embed/:docId` wrapper endpoint (`apps/web-server/src/embed/index.ts`),
+which serves server-rendered HTML: it injects the app's `index.html` under
+`<base href="./">`, sets the `auth_token` cookie, and loads
+`/embed/static/bridge.js`. Optional `mode` / `theme` / `lang` / `toolbar`
+ride along; `readonly` maps to `mode=view` and the dataflare `theme: 'system'`
+maps to the editor's `auto`.
 
 Pass that to your own `<iframe>` and mount
 `installDataflareHostBridge` against its `contentWindow`. The cleanup

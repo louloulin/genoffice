@@ -118,8 +118,15 @@ try {
 返回了可用的 URL。`buildDataflareEmbedUrl` 产出:
 
 ```
-{baseUrl}/apps/{app}/embedded?embed=1&app=…&doc=…&jwt=…&sessionId=…&nonce=…
+{baseUrl}/embed/{docId}?app=…&token=…&nonce=…&sessionId=…
 ```
+
+文档 id 是**路径**段,凭据参数名为 **`token`** —— 服务端对其它写法一律回
+`400 missing ?token=`。这是 `/embed/:docId` 包裹层端点
+(`apps/web-server/src/embed/index.ts`),返回服务端渲染的 HTML:把应用的
+`index.html` 注入到 `<base href="./">` 之下、下发 `auth_token` Cookie,并加载
+`/embed/static/bridge.js`。可选的 `mode` / `theme` / `lang` / `toolbar` 一并拼接;
+`readonly` 映射为 `mode=view`,dataflare 的 `theme: 'system'` 映射为编辑器的 `auto`。
 
 把它交给自己的 `<iframe>`,再针对 `contentWindow` 挂
 `installDataflareHostBridge`。此时释放责任完全在你:卸载时调

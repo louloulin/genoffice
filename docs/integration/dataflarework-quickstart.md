@@ -150,9 +150,12 @@ const uninstall = installDataflareHostBridge(
 ```
 
 `session.url` is
-`{baseUrl}/apps/{app}/embedded?embed=1&app=…&doc=…&jwt=…&sessionId=…&nonce=…`,
-plus optional `readonly` / `lang` / `theme`. If you build the URL yourself
-instead, `buildDataflareEmbedUrl` takes the same fields.
+`{baseUrl}/embed/{docId}?app=…&token=…&nonce=…&sessionId=…`, plus optional
+`mode` / `lang` / `theme` / `toolbar`. The document id is a path segment and
+the credential parameter is named `token` (not `jwt`) — see
+[Embed Session](./dataflarework-embed-session.md#mounting-your-own-iframe) for
+the full shape. If you build the URL yourself instead, `buildDataflareEmbedUrl`
+takes the same fields.
 
 ### 2c. Cleanup
 

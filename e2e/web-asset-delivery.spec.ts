@@ -17,12 +17,17 @@
  * search. These tests therefore resolve asset URLs exactly like a browser does
  * (`new URL(src, pageUrl)`) instead of hard-coding a path shape.
  *
- * Requires the deployed web-server: start it with
- *   node apps/web-server/dist/bundle/index.js   (PORT=18081)
- * or point WEB_BASE_URL at a running instance. Skips (never silently passes)
- * when no server answers /health.
+ * This suite starts its own web-server (or uses WEB_BASE_URL when set) and
+ * FAILS — never skips — when the bundle it needs is missing: a missing bundle
+ * is a broken build chain, and the bug this file exists for was invisible to a
+ * suite that skipped whenever the server was not already running.
  */
 import { test, expect, chromium, type Browser } from '@playwright/test'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { stopServer } from '../apps/web-server/tests/helpers/server-process'
 
 /**
  * The bundled chromium build can lag the installed Playwright version (the
@@ -37,8 +42,12 @@ async function launchBrowser(): Promise<Browser> {
   }
 }
 
-const BASE = process.env.WEB_BASE_URL || 'http://127.0.0.1:18081'
+const EXTERNAL_BASE = process.env.WEB_BASE_URL
+const BUNDLE = resolve(__dirname, '../apps/web-server/dist/bundle/index.js')
 const APPS = ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html', 'shell'] as const
+
+/** Where the suite talks to. Set from `WEB_BASE_URL` or by `beforeAll`'s spawn. */
+let BASE = ''
 
 /** Every navigation form the shell or a deep link can produce. */
 const NAV_FORMS: Array<{ app: string; url: string }> = [
@@ -54,25 +63,68 @@ function assetRefs(html: string): string[] {
   return refs.filter((r) => !/^(data:|https?:|#)/.test(r))
 }
 
-async function serverAvailable(): Promise<boolean> {
-  try {
-    const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(4000) })
-    return res.ok
-  } catch {
-    return false
+async function waitForHealth(base: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${base}/health`)
+      if (res.ok) return
+    } catch {
+      /* keep polling */
+    }
+    await new Promise((r) => setTimeout(r, 250))
   }
+  throw new Error(`web-server did not become healthy within ${timeoutMs}ms`)
 }
 
 test.describe('web-server asset delivery', () => {
   test.setTimeout(120_000)
-  let available = false
+  let server: ChildProcess | undefined
+  let dataDir = ''
+  /** Server stderr, surfaced when startup fails. */
+  let serverStderr = ''
 
   test.beforeAll(async () => {
-    available = await serverAvailable()
+    if (EXTERNAL_BASE) {
+      BASE = EXTERNAL_BASE
+      return
+    }
+    // FAIL, never skip. A missing bundle is a broken build chain, and the bug
+    // this file exists for — the HTML served fine while its assets 404'd — was
+    // invisible for exactly as long as the suite was allowed to decide there
+    // was nothing to check.
+    expect(
+      existsSync(BUNDLE),
+      `Missing ${BUNDLE}. Build it first: npm run bundle -w @genoffice/web-server ` +
+        `(or point WEB_BASE_URL at an already-running server)`,
+    ).toBe(true)
+    dataDir = mkdtempSync(join(tmpdir(), 'genoffice-web-assets-'))
+    const port = 21000 + Math.floor(Math.random() * 9000)
+    BASE = `http://127.0.0.1:${port}`
+    server = spawn(process.execPath, [BUNDLE], {
+      env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GENOFFICE_DATA_DIR: dataDir },
+      stdio: 'pipe',
+    })
+    // Keep both streams flowing (an unread pipe stalls the child), and keep the
+    // stderr text: the server refuses to boot when a renderer or SDK entry is
+    // missing, and "did not become healthy" without that message sends the
+    // reader hunting through a log the test threw away.
+    server.stderr?.on('data', (chunk) => {
+      serverStderr += String(chunk)
+    })
+    server.stdout?.on('data', () => {})
+    try {
+      await waitForHealth(BASE, 30_000)
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- server output ---\n${serverStderr.slice(-4000)}`)
+    }
+  })
+
+  test.afterAll(async () => {
+    await stopServer(server, dataDir)
   })
 
   test('every app serves its HTML and its referenced assets from every nav form', async () => {
-    test.skip(!available, `no web-server on ${BASE} (start the bundle, or set WEB_BASE_URL)`)
 
     const problems: string[] = []
     for (const { app, url } of NAV_FORMS) {
@@ -111,7 +163,6 @@ test.describe('web-server asset delivery', () => {
   })
 
   test('every app actually boots in a real browser (no blank page)', async () => {
-    test.skip(!available, `no web-server on ${BASE} (start the bundle, or set WEB_BASE_URL)`)
 
     const browser = await launchBrowser()
     const failures: string[] = []

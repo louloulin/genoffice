@@ -22,20 +22,6 @@
  * Env knobs:
  *     PROBE_SKIP_BUILD=1        reuse existing dist/ (SDK + server + app builds)
  *     PROBE_KEEP=1              leave the temp DATA_DIR for inspection
- *     PROBE_PROXY_PREFIXES=…    comma-separated path prefixes the host proxy
- *                               forwards to the server (default: just
- *                               `/office-engine` — the only prefix
- *                               Dataflarework's `OfficeEngineProxyController`
- *                               forwards, and the Vite dev proxy before it).
- *                               Do NOT widen this to make a failure go away:
- *                               adding `/assets` + `/static` asks the host to
- *                               serve the editor bundle at the origin root,
- *                               which no real deployment does. That default
- *                               used to include both, and it masked a genuine
- *                               break — `<base href="/">` in the embed HTML
- *                               pointed the bundle at the host's `/assets/…`,
- *                               so under the real prefix the iframe rendered
- *                               blank while this harness reported LOOP OK.
  *     PROBE_DOCUMENT_SOURCE=office
  *                               run the T3/G4 reproduction instead: the host
  *                               sends `documentSource: 'office'` (what a direct
@@ -44,6 +30,15 @@
  *                               "G4 REPRODUCED" when that silent local save is
  *                               observed. Default is `knowledge` (the loop).
  *     HEADED=1                  run with a visible browser
+ *
+ * The set of prefixes the fake host proxy forwards is a constant, not an env
+ * knob. It used to be `PROBE_PROXY_PREFIXES`, and the only way to use it was
+ * to widen it — adding `/assets` + `/static` asks the host to serve the editor
+ * bundle at the origin root, which no real deployment does, and that default
+ * masked a genuine break: `<base href="/">` in the embed HTML pointed the
+ * bundle at the host's `/assets/…`, so the iframe rendered blank under the real
+ * prefix while this harness reported LOOP OK. A gate whose looseness is an
+ * environment variable is not a gate.
  */
 import { spawn } from 'node:child_process'
 import { createServer, request as httpRequest } from 'node:http'
@@ -268,11 +263,11 @@ window.addEventListener('unhandledrejection', (e) => { window.__state.errors.pus
 
 // ── main ───────────────────────────────────────────────────────────────────
 
-const PROXY_DEFAULT = '/office-engine'
-const proxyPrefixes = (process.env.PROBE_PROXY_PREFIXES ?? PROXY_DEFAULT)
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
+// The host proxy forwards exactly one path prefix: `/office-engine`, which is
+// what Dataflarework's `OfficeEngineProxyController` forwards and what the Vite
+// dev proxy forwarded before it. Hardcoded on purpose — see the note at the top
+// of this file.
+const proxyPrefixes = ['/office-engine']
 
 // T3 / G4: the host's `documentSource` decides whether the guest opens and
 // uploads at all, and the two sides disagree on the default. The host's

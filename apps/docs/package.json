@@ -52,7 +52,7 @@
     "@earendil-works/pi-telemetry": "^0.85.1",
     "@earendil-works/pi-protocol": "^0.85.1",
     "@earendil-works/pi-client": "^0.85.1",
-    "@genoffice/web-sdk": "workspace:*"
+    "@genoffice/web-sdk": "*"
   },
   "author": "GenOffice",
   "build": {
