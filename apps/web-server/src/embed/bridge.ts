@@ -47,6 +47,15 @@ export const EMBED_BRIDGE_VERSION = '1.0' as const
  * Exported for tests so they can evaluate the script in a controlled
  * scope (a fake `window` / `document` / `EventSource`).
  */
+/**
+ * Where the bridge file is served, relative to the server root. The bridge
+ * source needs this to resolve its own URL at runtime (see `BRIDGE_SRC` in
+ * `EMBED_BRIDGE_SOURCE`) and `embed/index.ts` re-exports it as the `<script
+ * src>` reference. Declared here rather than in `index.ts` so the bridge can
+ * use it without importing its own consumer.
+ */
+export const EMBED_BRIDGE_SCRIPT_PATH = '/embed/static/bridge.js'
+
 export const EMBED_BRIDGE_SOURCE = `(function () {
   var ENVELOPE_VERSION = '1.0';
   // sendReady() can fire from BOTH the DOMContentLoaded listener and the load
@@ -56,6 +65,78 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
   // gate makes the second one harmless, but hosts that listen with a plain
   // addEventListener end up counting two mounts.
   var readySent = false;
+  // subscribePush() is registered from the same two listeners and needs the
+  // same guard for a worse reason: it holds an *open connection*, not a
+  // message. Two calls meant two EventSource streams per embed page, each
+  // holding a server-side session registration open for the page's lifetime.
+  var pushSubscribed = false;
+  // Prefix-independent API resolution. A host reverse-proxy that mounts this
+  // server under a path prefix (Dataflarework: /office-engine, with
+  // strip-path-prefix) erases the prefix before the request reaches us, so the
+  // server cannot tell us what it was and a root-relative '/api/...' gets
+  // asked of the *host*, which forwards only its own mount path — the call
+  // silently fails and the embed loses its push channel and its command
+  // round-trip. The bridge is always served from
+  // <prefix>${EMBED_BRIDGE_SCRIPT_PATH}, so walking two levels up from this
+  // script's own URL lands on the mount root under any prefix (and at '/').
+  var BRIDGE_SRC = (function () {
+    try {
+      var cur = document.currentScript;
+      if (cur && cur.src) return cur.src;
+      if (typeof document.getElementsByTagName !== 'function') return null;
+      var scripts = document.getElementsByTagName('script');
+      for (var i = scripts.length - 1; i >= 0; i--) {
+        if (scripts[i].src && scripts[i].src.indexOf('${EMBED_BRIDGE_SCRIPT_PATH}') !== -1) {
+          return scripts[i].src;
+        }
+      }
+    } catch (e) { /* fall through to the document-relative anchor */ }
+    return null;
+  })();
+  // Embed config: what the server baked into this page for this request.
+  //
+  // It arrives as the meta tag named genoffice-embed-config, carrying a JSON
+  // object, with the session id mirrored in the genoffice-session meta tag.
+  // This used to be read from a window.__GENOFFICE_EMBED__ global — but nothing
+  // in any shipped artifact ever assigned that global (only the test harnesses
+  // fabricated it), so every consumer below quietly ran with cfg undefined: the
+  // push relay never opened, the ready event lost its app, and commands lost
+  // their session/docId. Read the injected meta as the source of truth; a host
+  // that sets the global itself still overrides it.
+  function readEmbedConfig() {
+    var cfg = {};
+    try {
+      var el = document.querySelector('meta[name="genoffice-embed-config"]');
+      var raw = el ? el.getAttribute('content') : null;
+      if (raw) cfg = JSON.parse(raw);
+    } catch (e) { cfg = {}; }
+    if (!cfg || typeof cfg !== 'object') cfg = {};
+    try {
+      var override = window.__GENOFFICE_EMBED__;
+      if (override && typeof override === 'object') {
+        var keys = Object.keys(override);
+        for (var i = 0; i < keys.length; i++) cfg[keys[i]] = override[keys[i]];
+      }
+    } catch (e) { /* no host override */ }
+    if (!cfg.sessionId) {
+      try {
+        var s = document.querySelector('meta[name="genoffice-session"]');
+        var sid = s ? s.getAttribute('content') : null;
+        if (sid) cfg.sessionId = sid;
+      } catch (e) { /* no session meta */ }
+    }
+    return cfg;
+  }
+  function apiUrl(relPath) {
+    if (BRIDGE_SRC) {
+      try { return new URL('../../' + relPath, BRIDGE_SRC).toString(); } catch (e) { /* fall through */ }
+    }
+    // Fallback anchor: the embed document always sits one level below the
+    // mount root (it is served at <prefix>/embed/<docId>), so '../' reaches
+    // the API root under a prefix and at '/' alike.
+    try { return new URL('../' + relPath, document.baseURI).toString(); } catch (e) { /* fall through */ }
+    return '/' + relPath;
+  }
   function post(name, payload) {
     try {
       // Carry any nonce on the OUTER envelope so the SDK's handshake
@@ -151,7 +232,7 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
     if (docId) envelope.docId = docId;
     var headers = { 'content-type': 'application/json' };
     if (sessionId) headers['x-ipc-session'] = sessionId;
-    fetchFn('/api/ipc/' + encodeURIComponent(SDK_COMMAND_CHANNEL), {
+    fetchFn(apiUrl('api/ipc/' + encodeURIComponent(SDK_COMMAND_CHANNEL)), {
       method: 'POST',
       headers: headers,
       body: JSON.stringify({ args: [envelope] })
@@ -194,18 +275,20 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
     var nonce = nonceMeta ? nonceMeta.getAttribute('content') : null;
     var readyPayload = {
       type: 'ready',
-      app: window.__GENOFFICE_EMBED__ && window.__GENOFFICE_EMBED__.app,
+      app: readEmbedConfig().app,
       version: '${WEB_SERVER_VERSION}'
     };
     if (nonce) readyPayload.nonce = nonce;
     post('ready', readyPayload);
   }
   function subscribePush() {
-    var cfg = window.__GENOFFICE_EMBED__;
-    if (!cfg || !cfg.sessionId) return;
+    if (pushSubscribed) return;
+    var cfg = readEmbedConfig();
+    if (!cfg.sessionId) return;
     if (typeof EventSource === 'undefined') return;
+    pushSubscribed = true;
     try {
-      var es = new EventSource('/api/ipc/events?session=' + encodeURIComponent(cfg.sessionId));
+      var es = new EventSource(apiUrl('api/ipc/events') + '?session=' + encodeURIComponent(cfg.sessionId));
       es.onmessage = function (ev) {
         var frame;
         try { frame = JSON.parse(ev.data); } catch (e) { return; }
