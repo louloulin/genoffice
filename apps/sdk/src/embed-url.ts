@@ -42,7 +42,16 @@ export interface EmbedUrlInput {
 }
 
 export function buildEmbedUrl(input: EmbedUrlInput): string {
-  const base = new URL(`/embed/${encodeURIComponent(input.documentId)}`, ensureTrailingSlash(input.host))
+  // `input.host` may carry a path prefix (e.g. `https://cdn/office-engine`) —
+  // resolve `/embed/<docId>` as a **relative** reference so the prefix is
+  // preserved. With an absolute path (`/embed/…`) the WHATWG URL parser
+  // replaces the base path, silently dropping `office-engine` in production
+  // and the dev-proxy path in vite. The dev-proxy fix in `host.ts`
+  // relies on this branch being right.
+  const base = new URL(
+    `embed/${encodeURIComponent(input.documentId)}`,
+    ensureTrailingSlash(input.host),
+  )
   const params = base.searchParams
   params.set('app', input.app)
   params.set('token', input.token)

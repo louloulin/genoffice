@@ -88,6 +88,36 @@ describe('buildEmbedUrl', () => {
     })
     expect(url.startsWith('https://genoffice.app/embed/')).toBe(true)
   })
+
+  it('preserves a path prefix on host (e.g. /office-engine dev-proxy)', () => {
+    // The dev proxy rewrites `/office-engine/...` -> upstream; in production
+    // GenOffice may sit behind the same prefix via reverse proxy. A leading
+    // slash on the embed path used to make WHATWG URL replace the base path
+    // and silently drop the prefix — locking the iframe onto the host's SPA
+    // fallback in dev. The fix resolves `embed/...` (relative) so the prefix
+    // survives.
+    const url = buildEmbedUrl({
+      host: 'http://127.0.0.1:8990/office-engine',
+      documentId: '2104158614643634177',
+      app: 'docs',
+      token: 't',
+    })
+    expect(url).toBe(
+      'http://127.0.0.1:8990/office-engine/embed/2104158614643634177?app=docs&token=t',
+    )
+  })
+
+  it('preserves a deeper prefix and trailing slash on host', () => {
+    const url = buildEmbedUrl({
+      host: 'https://cdn.example.com/office-engine/',
+      documentId: 'doc-9',
+      app: 'docs',
+      token: 't',
+    })
+    expect(url).toBe(
+      'https://cdn.example.com/office-engine/embed/doc-9?app=docs&token=t',
+    )
+  })
 })
 
 describe('buildEmbedUrl handshake nonce (sdk1.md §11.20)', () => {

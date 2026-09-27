@@ -59,7 +59,8 @@ const RELATIVE_BASE_PLACEHOLDER = 'http://dataflare-embed.invalid'
  * hop rather than at the bridge.
  *
  * The web-server responds with HTML that:
- *   1. injects the app's own `index.html` under a `<base href="/">` wrapper,
+ *   1. injects the app's own `index.html` under a `<base href="./">` wrapper
+ *      (directory-relative, so the page also resolves under a host prefix),
  *   2. sets the `auth_token` cookie (so the iframe's `EventSource` works),
  *   3. injects the `'1.0'` standalone bridge (`/embed/static/bridge.js`).
  *
@@ -224,6 +225,15 @@ function sendResponseToGuest(
 }
 
 // ── Utility re-export ──────────────────────────────────────────────────────
+//
+// `buildDataflareEmbedUrl` lives here too (not just in `file/embed.ts`) so the
+// UMD global — `window.GenOfficeDataflareHost` — exposes it for hosts that
+// load this entry via `<script>` and mint sessions via their own backend
+// (dataflarework hits `POST /knowledge/{id}/embed-session` to have Spring
+// forward the three GenOffice hops, then asks the SDK only for the URL
+// builder). Keeping the builder here means there is one tested contract for
+// the iframe URL shape; copying it elsewhere is exactly the drift the SDK
+// consolidation is trying to kill.
 
 export { DATAFLARE_EMBED_PROTOCOL, isDataflareEnvelope, makeEnvelope }
 export type { EmbedEnvelope, DataflareEmbedKind }

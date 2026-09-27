@@ -109,13 +109,40 @@ export interface HttpIpcTransportOptions {
    * browser API cannot carry custom headers on).
    */
   token?: string
+  /**
+   * IPC / SSE session id. Defaults to the id the web server injected into the
+   * served HTML as `<meta name="genoffice-session">` when the page was served
+   * as an embed, and to a fresh random id on any other page.
+   *
+   * Adopting the server's id matters in embed mode. The push channel is
+   * request-scoped: `pushSseEvent` answers only the session named by a
+   * request's own `x-ipc-session` header, so a session sees nothing unless it
+   * is the session that made the call. The page's embed bridge relays those
+   * frames to `window.parent` for the host SDK, and it can only do that if it
+   * and this transport subscribe under the same id. With two independent
+   * random ids the bridge's relay opens a stream that is never written to.
+   */
+  session?: string
+}
+
+/**
+ * The session id the server baked into this page, when it served one.
+ *
+ * Absent on a normal app page (and in Electron), which is the case that keeps
+ * `createSessionId()`'s random id as the fallback.
+ */
+function readInjectedEmbedSession(): string | null {
+  if (typeof document === 'undefined') return null
+  const el = document.querySelector('meta[name="genoffice-session"]')
+  const value = el?.getAttribute('content')
+  return value ? value : null
 }
 
 export function createHttpIpcTransport(options: HttpIpcTransportOptions = {}): IpcTransport {
   const base = (options.baseUrl ?? '').replace(/\/+$/, '')
   const pathPrefix = (options.pathPrefix ?? '').replace(/^\/+|\/+$/g, '')
   const apiPrefix = pathPrefix ? `/${pathPrefix}` : ''
-  const session = createSessionId()
+  const session = options.session ?? readInjectedEmbedSession() ?? createSessionId()
   const token = options.token
   const pushHub = createPushHub(base, apiPrefix, session, token)
 
