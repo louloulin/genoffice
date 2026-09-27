@@ -269,6 +269,19 @@ gates like any other `/api/*` path.
    origin is blocked until its origin is listed. The server logs a 200, so
    there is nothing to find server-side. See [Framing the
    editor](../integration/dataflarework-quickstart.md#framing-the-editor).
+8. **Dataflare backend → GenOffice service-to-service calls 401 the moment
+   you arm `WEB_TOKEN`.** The browser / iframe path is fine — Dataflarework's
+   `OfficeEngineProxyController` injects `X-GenOffice-Token: <operator>` on
+   every `/office-engine/**` outbound request, so GenOffice sees the operator
+   secret and Gate 1 accepts. The backend → backend path (`GenOfficeTranslationTools
+   .postTranslate` → `POST /api/ai/translate`) does **not** go through the
+   proxy: it is a plain `java.net.http.HttpClient` call that sets only
+   `Content-Type` / `Accept`. With `WEB_TOKEN` unset the call works because
+   Gate 1 is a no-op; the instant `WEB_TOKEN` is armed, every such call 401s
+   and the GenOffice-driven translation path silently breaks. The fix lives
+   in Dataflarework (forward `properties.webToken` on `postTranslate` the
+   same way the proxy does), not here. Symptom: log line
+   `GenOffice 翻译调用失败:status=401 body={"error":{"code":"UNAUTHORIZED",…}}`.
 
 ## What runs in the SDK
 
