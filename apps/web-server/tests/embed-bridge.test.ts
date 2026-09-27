@@ -18,7 +18,8 @@
  * it out + evaluating it in a controlled scope lets us pin:
  *   - the postMessage payload shape (envelope version, kind, name)
  *   - the nonce source (the meta tag, not the URL hash or a global var)
- *   - the app field source (window.__GENOFFICE_EMBED__.app)
+ *   - the app field source (`<meta name="genoffice-embed-config">`, with a
+ *     host-set `window.__GENOFFICE_EMBED__` as the override)
  *   - the version field source (server SOT constant)
  *   - the SSE subscription URL and message forwarding
  */
@@ -81,7 +82,26 @@ interface BridgeHarness {
  * the bridge source inside it. Returns a harness with capture handles so
  * tests can assert what the bridge did.
  */
-function evalBridgeWith(opts: { nonce: string | null; embedConfig: BridgeHarness['embedConfig']; readyState?: BridgeHarness['readyState'] }): BridgeHarness {
+function evalBridgeWith(opts: {
+  nonce: string | null
+  embedConfig: BridgeHarness['embedConfig']
+  readyState?: BridgeHarness['readyState']
+  /**
+   * Absolute URL the bridge script itself is served from, i.e. what
+   * `document.currentScript.src` reports. Defaults to the production shape: a
+   * host reverse-proxy mount under `/office-engine`. Tests that care about the
+   * root-mounted case pass `'http://host/embed/static/bridge.js'`.
+   */
+  bridgeSrc?: string
+  /**
+   * Contents of `<meta name="genoffice-embed-config">` — the production source
+   * of the bridge's app / docId / sessionId. This is what the server actually
+   * injects; `embedConfig` above models only the optional host override.
+   */
+  configMeta?: Record<string, unknown> | null
+  /** Contents of `<meta name="genoffice-session">`. */
+  sessionMeta?: string | null
+}): BridgeHarness {
   const harness: BridgeHarness = {
     parentPosts: [],
     messageHandlers: [],
@@ -121,14 +141,31 @@ function evalBridgeWith(opts: { nonce: string | null; embedConfig: BridgeHarness
     },
   }
 
-  // Fake document
+  // Fake document. `currentScript` / `baseURI` are what the bridge anchors its
+  // API URLs on, so the fake models the real prefixed mount by default rather
+  // than the degenerate no-DOM case (which would silently fall back to a
+  // root-relative URL and hide a prefix regression).
+  const bridgeSrc = opts.bridgeSrc ?? 'http://host/office-engine/embed/static/bridge.js'
   const fakeDocument = {
     readyState: harness.readyState,
+    currentScript: { src: bridgeSrc },
+    baseURI: bridgeSrc.replace(/static\/bridge\.js$/, ''),
+    getElementsByTagName(): Array<{ src: string }> {
+      return [{ src: bridgeSrc }]
+    },
     querySelector(selector: string): { getAttribute(name: string): string | null } | null {
-      if (selector === 'meta[name="genoffice-nonce"]' && harness.nonce !== null) {
-        return { getAttribute(name: string) { return name === 'content' ? harness.nonce : null } }
+      // The real document returns the *unescaped* attribute value, so the
+      // JSON meta is served as plain JSON here (the server's `&quot;` escaping
+      // is undone by the HTML parser before `getAttribute` ever sees it).
+      let value: string | null = null
+      if (selector === 'meta[name="genoffice-nonce"]') value = harness.nonce
+      else if (selector === 'meta[name="genoffice-embed-config"]') {
+        value = opts.configMeta ? JSON.stringify(opts.configMeta) : null
+      } else if (selector === 'meta[name="genoffice-session"]') {
+        value = opts.sessionMeta ?? null
       }
-      return null
+      if (value === null) return null
+      return { getAttribute(name: string) { return name === 'content' ? value : null } }
     },
   }
 
@@ -252,6 +289,50 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     expect(data.payload.payload.app == null).toBe(true)
   })
 
+  it('reads app / sessionId / docId from the injected embed-config meta', () => {
+    // The production path. The server injects <meta name="genoffice-embed-config">
+    // and <meta name="genoffice-session">; nothing in any shipped artifact ever
+    // assigns a `window.__GENOFFICE_EMBED__` global. Asserting only the global
+    // (as this file used to) left the whole push relay dead in every deployment
+    // while the suite stayed green.
+    const h = evalBridgeWith({
+      nonce: 'n',
+      embedConfig: null,
+      configMeta: { app: 'docs', sessionId: 'embed-meta-1', docId: 'meta.docx' },
+    })
+    const ready = h.parentPosts.find((p) => (p.data as { payload?: { name?: string } }).payload?.name === 'ready')!
+    const data = ready.data as { payload: { payload: { app: string } } }
+    expect(data.payload.payload.app).toBe('docs')
+    // Full URL, so this also pins the mount-relative resolution that the meta
+    // fix depends on: the meta can supply a sessionId, but a root-relative
+    // EventSource would still ask the *host* for it.
+    expect(h.eventSources.length).toBe(1)
+    expect(h.eventSources[0]!.url).toBe('http://host/office-engine/api/ipc/events?session=embed-meta-1')
+  })
+
+  it('falls back to the genoffice-session meta for the session id', () => {
+    const h = evalBridgeWith({
+      nonce: 'n',
+      embedConfig: null,
+      configMeta: { app: 'docs' },
+      sessionMeta: 'embed-session-meta',
+    })
+    expect(h.eventSources.length).toBe(1)
+    expect(h.eventSources[0]!.url).toBe('http://host/office-engine/api/ipc/events?session=embed-session-meta')
+  })
+
+  it('lets an explicit host override win over the injected meta', () => {
+    const h = evalBridgeWith({
+      nonce: 'n',
+      embedConfig: { app: 'sheets', sessionId: 'host-override' },
+      configMeta: { app: 'docs', sessionId: 'embed-meta-1' },
+    })
+    const ready = h.parentPosts.find((p) => (p.data as { payload?: { name?: string } }).payload?.name === 'ready')!
+    const data = ready.data as { payload: { payload: { app: string } } }
+    expect(data.payload.payload.app).toBe('sheets')
+    expect(h.eventSources[0]!.url).toBe('http://host/office-engine/api/ipc/events?session=host-override')
+  })
+
   it('uses WEB_SERVER_VERSION as the version field', () => {
     const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs' } })
     const ready = h.parentPosts.find((p) => {
@@ -262,13 +343,49 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     expect(data.payload.payload.version).toBe(WEB_SERVER_VERSION)
   })
 
-  it('opens EventSource to /api/ipc/events when sessionId is present', () => {
+  it('opens EventSource to the mount-relative /api/ipc/events when sessionId is present', () => {
     const h = evalBridgeWith({
       nonce: 'n',
       embedConfig: { app: 'docs', sessionId: 'embed-abc-123' },
     })
     expect(h.eventSources.length).toBe(1)
-    expect(h.eventSources[0]!.url).toBe('/api/ipc/events?session=embed-abc-123')
+    // Resolved against the bridge's own <script src>, which sits at
+    // <mount>/embed/static/bridge.js — so the API root is two levels up. A
+    // root-relative '/api/ipc/events' would be asked of the *host*, which
+    // forwards only its own mount path, and the push channel would die
+    // silently under a prefixed deployment.
+    expect(h.eventSources[0]!.url).toBe('http://host/office-engine/api/ipc/events?session=embed-abc-123')
+    expect(h.eventSources[0]!.url).not.toMatch(/^\/api\//)
+  })
+
+  it('opens the same SSE channel when mounted at the origin root', () => {
+    const h = evalBridgeWith({
+      nonce: 'n',
+      embedConfig: { app: 'docs', sessionId: 'embed-abc-123' },
+      bridgeSrc: 'http://host/embed/static/bridge.js',
+    })
+    expect(h.eventSources.length).toBe(1)
+    expect(h.eventSources[0]!.url).toBe('http://host/api/ipc/events?session=embed-abc-123')
+  })
+
+  it('resolves the command round-trip against the mount, not the origin root', () => {
+    const h = evalBridgeWith({
+      nonce: 'n',
+      embedConfig: { app: 'docs', sessionId: 'embed-abc-123', docId: 'doc_1' },
+    })
+    h.messageHandlers.forEach((fn) =>
+      fn({
+        data: {
+          v: '1.0',
+          dir: 'host→editor',
+          kind: 'command',
+          correlationId: 'cmd-mount',
+          payload: { name: 'setTheme', args: { theme: 'dark' } },
+        },
+      }),
+    )
+    expect(h.fetchCalls.length).toBeGreaterThan(0)
+    expect(h.fetchCalls[0]!.url).toBe('http://host/office-engine/api/ipc/sdk%3Acommand')
   })
 
   it('does NOT open EventSource when sessionId is absent', () => {
@@ -413,6 +530,35 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     expect(h.parentPosts.length).toBeGreaterThan(0)
   })
 
+  it('opens exactly one SSE stream when both DOMContentLoaded and load fire', () => {
+    // The bridge installs sendReady + subscribePush from BOTH listeners (the
+    // external script can still be running while the parser is going), and
+    // both events dispatch on every page load. subscribePush holds an *open
+    // connection*, unlike sendReady's one-shot message, so without a guard
+    // each embed page kept two EventSource streams — and two server-side
+    // session registrations — alive for its whole lifetime. The live prefix
+    // probe observed three streams where two are correct (bridge + renderer).
+    const h = evalBridgeWith({
+      nonce: 'n',
+      embedConfig: null,
+      configMeta: { app: 'docs', sessionId: 'embed-dup-1' },
+      readyState: 'loading',
+    })
+    expect(h.eventSources.length).toBe(0)
+    // Fire DOMContentLoaded, then load — the real page sequence.
+    h.domLoadedHandlers.forEach((fn) => fn())
+    vi.runAllTimers()
+    expect(h.eventSources.length).toBe(1)
+    // `load` is the second handler in the same captured list; firing it must
+    // not add a stream (this is the assertion that fails without the guard).
+    h.domLoadedHandlers.forEach((fn) => fn())
+    vi.runAllTimers()
+    expect(h.eventSources.length).toBe(1)
+    expect(h.eventSources[0]!.url).toBe('http://host/office-engine/api/ipc/events?session=embed-dup-1')
+    // Same guard shape for the ready envelope: exactly one per page.
+    expect(h.parentPosts.filter((p) => (p.data as { payload?: { name?: string } }).payload?.name === 'ready')).toHaveLength(1)
+  })
+
   it('every outbound postMessage uses the U+2192 arrow dir, never ASCII hyphen', () => {
     // SDK isEnvelope (apps/sdk/src/envelope.ts:76) strictly compares
     // `dir === 'editor→host' || dir === 'host→editor'`. The bridge
@@ -474,7 +620,7 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     })
     await flushMicrotasks()
     expect(captured).not.toBeNull()
-    expect(captured!.url).toBe('/api/ipc/sdk%3Acommand')
+    expect(captured!.url).toBe('http://host/office-engine/api/ipc/sdk%3Acommand')
     const init = captured!.init as RequestInit
     expect(init.method).toBe('POST')
     const headers = init.headers as Record<string, string>

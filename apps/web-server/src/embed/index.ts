@@ -37,10 +37,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { verifyJwtDetailed } from '../api/v1/auth'
 import { WEB_SERVER_VERSION } from '../common/version'
 import { verifyEmbedNonce } from './nonce-store'
-import { EMBED_BRIDGE_SOURCE } from './bridge'
-import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { EMBED_BRIDGE_SOURCE, EMBED_BRIDGE_SCRIPT_PATH } from './bridge'
+import { resolve } from 'node:path'
 import { APPS } from '../common/index'
+import { STATIC_ROOT } from '../common/paths'
 import { authCookieHeader } from '../auth/cookie'
 
 
@@ -63,17 +63,24 @@ import { authCookieHeader } from '../auth/cookie'
  *     `ok: true` and the page is served as before — backwards compatible.
  *
  * Returns one of:
- *   - `{ ok: true }` — proceed with HTML rendering
+ *   - `{ ok: true, verified: true }`  — the token passed JWT verification here
+ *   - `{ ok: true, verified: false }` — legacy pass-through: no secret
+ *     configured, or the token isn't JWT-shaped. The page is served, but the
+ *     caller must NOT treat this token as an authenticated credential.
  *   - `{ ok: false, status, code, message }` — caller should 401/403 and stop
+ *
+ * `verified` exists so the cookie site can tell "the caller proved possession
+ * of a signed token" from "the caller typed something". Only the former may be
+ * echoed back as an iframe credential.
  */
 function verifyEmbedToken(token: string):
-  | { ok: true }
+  | { ok: true; verified: boolean }
   | { ok: false; status: number; code: string; message: string } {
   const secret = process.env.GENOFFICE_JWT_SECRET ?? ''
-  if (!secret) return { ok: true }
+  if (!secret) return { ok: true, verified: false }
   // Only attempt JWT verification when the token has the 3-part shape;
   // legacy dev tokens (random strings, WEB_TOKEN shared secret) pass through.
-  if (token.split('.').length !== 3) return { ok: true }
+  if (token.split('.').length !== 3) return { ok: true, verified: false }
   // B.12: report the failure reason so the client can tell "expired, refresh
   // it" from "revoked, re-mint it" from "malformed, fix your token source".
   // A single "invalid or expired" left integrators guessing which of the
@@ -97,11 +104,8 @@ function verifyEmbedToken(token: string):
   // don't restrict by docId here because the SDK hands out file-scoped
   // tokens with `doc` set. Future hardening could match `payload.doc` to
   // the `:docId` path segment; deferred to a follow-up.
-  return { ok: true }
+  return { ok: true, verified: true }
 }
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
 
 const VALID_APPS = APPS as readonly string[]
 
@@ -167,21 +171,25 @@ function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
 }
 
 /**
- * Resolve the editor app's compiled `index.html`. Mirrors the SPA fallback
- * in `apps/web-server/src/index.ts` — both pull from the same renderer
- * output directory.
+ * Resolve the editor app's compiled `index.html`, off the same `STATIC_ROOT`
+ * the SPA fallback (`apps/web-server/src/index.ts`) serves `/docs/` from.
+ *
+ * This used to walk up from `__dirname` three levels and probe four candidate
+ * layouts. That walk is only correct in the monorepo, where the bundle sits at
+ * `apps/web-server/dist/bundle` — three levels below `apps/`. The Docker image
+ * flattens it to `/app/bundle`, so the walk resolved to `/docs/out/renderer/…`
+ * and every embed answered 503 `EMBED_APP_NOT_BUILT` while `/docs/` answered
+ * 200 from the same bytes. Same defect class as the operator-mount path ladder:
+ * a location derived from the source tree rather than pinned by ENV.
+ *
+ * `STATIC_ROOT` is `WEB_STATIC_ROOT` when set, and `runStartupChecks()` refuses
+ * to boot unless `<app>/out/renderer/index.html` exists under it for every app —
+ * so there is exactly one layout to look for, and a miss here means the startup
+ * check was bypassed.
  */
 function resolveAppIndex(app: string): string | null {
-  const candidates = [
-    resolve(__dirname, '..', '..', '..', app, 'dist', 'renderer', 'index.html'),
-    resolve(__dirname, '..', '..', '..', app, 'dist', 'index.html'),
-    resolve(__dirname, '..', '..', '..', app, 'build', 'renderer', 'index.html'),
-    resolve(__dirname, '..', '..', '..', app, 'out', 'renderer', 'index.html'),
-  ]
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate
-  }
-  return null
+  const candidate = resolve(STATIC_ROOT, app, 'out', 'renderer', 'index.html')
+  return existsSync(candidate) ? candidate : null
 }
 
 /**
@@ -210,8 +218,12 @@ const EMBED_BRIDGE_SOURCE_REEXPORT = EMBED_BRIDGE_SOURCE
  * Loading the bridge from a same-origin URL removes the `unsafe-inline`
  * requirement entirely — the CSP only needs to allow `'self'` for scripts.
  * This is the "CSP tightening" piece of W6c.
+ *
+ * The path constant lives in `./bridge` because the bridge source interpolates
+ * it to resolve its own URL at runtime; re-exported here for the endpoints and
+ * tests that have always imported it from this module.
  */
-export const EMBED_BRIDGE_SCRIPT_PATH = '/embed/static/bridge.js'
+export { EMBED_BRIDGE_SCRIPT_PATH }
 
 /**
  * The same script, expressed *relative to the embed page's own directory*.
@@ -523,16 +535,30 @@ export function handleEmbed(request: IncomingMessage, response: ServerResponse, 
   }
 
   const html = buildEmbedHtml(appIndex, parsed, docId)
-  // Mirror the WEB_TOKEN shim used by the static SPA fallback (index.ts:1208):
-  // under WEB_TOKEN mode, the iframe's /api/ipc/* calls would 401 because the
-  // bridge has no way to learn the token (it can't carry custom headers on
-  // EventSource, and the SDK transport is same-origin). Setting the cookie on
-  // this HTML response lets the browser auto-attach it to every same-origin
-  // request. Safe because (a) the cookie is HttpOnly + SameSite=Strict so an
-  // XSS in the iframe can't exfiltrate it, and (b) only callers who already
-  // know WEB_TOKEN benefit — the auth gate still rejects requests whose
-  // cookie doesn't match.
-  const cookie = authCookieHeader()
+  // Which credential, if any, may ride back to the iframe as `auth_token`?
+  // Only one the caller just proved it holds:
+  //
+  //   - a token that passed JWT verification above → that scoped guest JWT;
+  //   - the legacy case, where the caller supplied the operator WEB_TOKEN as
+  //     `?token=` and so demonstrated knowledge of it → the operator token,
+  //     unchanged from the historical behaviour;
+  //   - anything else (an opaque string the caller invented) → nothing.
+  //
+  // The third branch closes a real disclosure: this endpoint used to stamp
+  // the operator WEB_TOKEN on *every* wrapper response, so
+  // `/embed/<id>?token=garbage` handed an operator credential to a caller who
+  // had presented nothing. It is the iframe's own /api/ipc/* credential in
+  // WEB_TOKEN mode, but the bridge cannot stamp headers on EventSource, so
+  // the cookie is how it learns the token at all. HttpOnly + SameSite=Strict
+  // keep iframe XSS from reading it back; neither addressed giving it out.
+  const operatorToken = process.env.WEB_TOKEN
+  let credential: string | null = null
+  if (tokenCheck.verified) {
+    credential = parsed.token
+  } else if (operatorToken && parsed.token === operatorToken) {
+    credential = operatorToken
+  }
+  const cookie = credential ? authCookieHeader(credential) : null
   response.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
