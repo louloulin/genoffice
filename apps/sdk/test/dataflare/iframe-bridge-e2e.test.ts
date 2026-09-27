@@ -12,8 +12,11 @@
  * `guest` receives a `MessageEvent` whose `source` is `host` and `origin`
  * is `hostOrigin`. Symmetrically for `guest.postMessage` → `host`.
  *
- * `vi.resetModules()` between tests clears the module-local `activeSessionId`
- * in `guest.ts` so each test starts clean.
+ * `vi.resetModules()` between tests gives each test fresh module instances, but
+ * it does *not* reset the guest session: that lives on `globalThis` precisely so
+ * the duplicate copies a real bundle contains share it (see the
+ * "duplicate copies" test below). `afterEach` clears the slot explicitly so each
+ * test still starts clean.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -203,13 +206,27 @@ describe('iframe ↔ host bridge E2E', () => {
   afterEach(() => {
     resetDom()
     rig = null
+    // The session slot is window-global (see the module docstring), so module
+    // reset does not clear it — drop it by hand to keep tests independent.
+    delete (globalThis as { __genofficeDataflareEmbedSessionId?: unknown })
+      .__genofficeDataflareEmbedSessionId
     vi.resetModules()
   })
 
-  it('completes the bootstrap dance: guest posts ready + global-state-request, host sends init, guest switches session', async () => {
+  it('announces ready + global-state-request once init anchors the session, and stays silent before that', async () => {
     if (!rig) throw new Error('rig not set')
     const events: string[] = []
     const initReceived: unknown[] = []
+    // Raw tap on the shared listener list. The bridge's own handlers filter, so
+    // only a listener that sees every MessageEvent can tell "never sent" from
+    // "sent, then dropped on the sessionId check" — the distinction this test is
+    // about. Both directions land here (the two windows share one list).
+    const rawEnvelopes: Array<{ kind?: string; type?: string; sessionId?: string | null }> = []
+    rig.host.listeners.push((e: MessageEvent<unknown>) => {
+      const d = e.data as { protocol?: string; kind?: string; payload?: { type?: string }; sessionId?: string } | null
+      if (d?.protocol !== 'genoffice-dataflare/v1') return
+      rawEnvelopes.push({ kind: d.kind, type: d.payload?.type, sessionId: d.sessionId ?? null })
+    })
     const uninstallHost = rig.hostModule.installDataflareHostBridge(
       rig.host.contentWindow as unknown as Window,
       GUEST_ORIGIN,
@@ -222,11 +239,15 @@ describe('iframe ↔ host bridge E2E', () => {
     const uninstallGuest = rig.guestModule.installDataflareEmbedBridge({
       onCommand: (c) => initReceived.push(c),
     })
-    // Guest's bootstrap posts go out before any sessionId is set, so the
-    // host (which strictly enforces sessionId) drops them. The host then
-    // sends an `init` command to anchor the session; from then on the guest
-    // tags every envelope with the same id.
+    // Regression guard: the bootstrap used to fire at install time, before any
+    // sessionId existed, so `makeEnvelope` omitted it and the host dropped both
+    // envelopes. A host driving its handshake off `ready` never saw one.
     await Promise.resolve()
+    expect(rawEnvelopes).toEqual([])
+    expect(events).toEqual([])
+
+    // The host then sends an `init` command to anchor the session; the guest
+    // must announce itself against that session.
     rig.hostModule.postCommandToGuest(
       rig.host.contentWindow as unknown as Window,
       GUEST_ORIGIN,
@@ -240,11 +261,58 @@ describe('iframe ↔ host bridge E2E', () => {
     await Promise.resolve()
     expect(initReceived.some((c) => (c as { type: string }).type === 'init')).toBe(true)
     expect(rig.guestModule.getDataflareEmbedSessionId()).toBe(SESSION_ID)
+    expect(events).toEqual(expect.arrayContaining(['event:ready', 'event:global-state-request']))
+    // every guest envelope is now addressable — the `init` command the host sent
+    // is in the raw list too and carries the same session
+    expect(rawEnvelopes.length).toBeGreaterThan(0)
+    expect(rawEnvelopes.every((m) => m.sessionId === SESSION_ID)).toBe(true)
     // Now guest → host events with sessionId attached should land.
     rig.guestModule.postToEmbedParent({ type: 'document-dirty', documentId: 'doc-1' })
     await Promise.resolve()
     expect(events).toContain('event:document-dirty')
     uninstallHost()
+    uninstallGuest()
+  })
+
+  it('keeps one session across duplicate copies of the guest module', async () => {
+    if (!rig) throw new Error('rig not set')
+    const first = rig.guestModule
+    // The SDK build emits one self-contained bundle per entry (`scripts/build.mjs`),
+    // so a consumer that imports both `dataflare-guest` and `dataflare-integration`
+    // gets two evaluations of `guest.ts` — the integration bundle inlines its own
+    // copy. Re-importing after a module reset reproduces exactly that.
+    vi.resetModules()
+    const second = await import('../../src/dataflare/guest')
+    // Prove we really hold two evaluations; otherwise this test passes vacuously.
+    expect(second.getDataflareEmbedSessionId).not.toBe(first.getDataflareEmbedSessionId)
+
+    const events: string[] = []
+    rig.hostModule.installDataflareHostBridge(
+      rig.host.contentWindow as unknown as Window,
+      GUEST_ORIGIN,
+      SESSION_ID,
+      { onEvent: (e) => events.push(e.type) },
+    )
+    // The copy that installs the bridge is the one that sees `init`…
+    const uninstallGuest = first.installDataflareEmbedBridge({ onCommand: () => {} })
+    rig.hostModule.postCommandToGuest(
+      rig.host.contentWindow as unknown as Window,
+      GUEST_ORIGIN,
+      SESSION_ID,
+      { type: 'init', context: { tenantId: 't1', userId: 'u1' }, sessionId: SESSION_ID },
+    )
+    await Promise.resolve()
+
+    // …but app code posts business events through the *other* copy: apps/docs
+    // imports `postToEmbedParent` from the guest entry while the save/open policy
+    // comes from the integration entry. With module-scoped session state those
+    // envelopes went out carrying no sessionId, and the host bridge — which drops
+    // any envelope it cannot correlate (`host.ts` `envelope.sessionId !== sessionId`)
+    // — discarded them, so `document-dirty` silently never reached the host.
+    expect(second.getDataflareEmbedSessionId()).toBe(SESSION_ID)
+    second.postToEmbedParent({ type: 'document-dirty', documentId: 'doc-1' })
+    await Promise.resolve()
+    expect(events).toContain('document-dirty')
     uninstallGuest()
   })
 
@@ -403,7 +471,7 @@ describe('iframe ↔ host bridge E2E', () => {
     ])
   })
 
-  it('buildDataflareEmbedUrl produces a valid URL with all required params', () => {
+  it('buildDataflareEmbedUrl emits the server /embed/:docId contract', () => {
     if (!rig) throw new Error('rig not set')
     const url = rig.hostModule.buildDataflareEmbedUrl({
       baseUrl: HOST_ORIGIN,
@@ -417,16 +485,35 @@ describe('iframe ↔ host bridge E2E', () => {
       theme: 'dark',
     })
     const u = new globalThis.URL(url)
-    expect(u.pathname).toBe('/apps/docs/embedded')
-    expect(u.searchParams.get('embed')).toBe('1')
+    // docId is a path segment and the credential is `token` — the server's
+    // parseEmbedQuery rejects anything else with 400 `missing ?token=`.
+    expect(u.pathname).toBe('/embed/doc-42')
+    expect(u.searchParams.get('token')).toBe('tok-1')
     expect(u.searchParams.get('app')).toBe('docs')
-    expect(u.searchParams.get('doc')).toBe('doc-42')
-    expect(u.searchParams.get('jwt')).toBe('tok-1')
-    expect(u.searchParams.get('sessionId')).toBe(SESSION_ID)
     expect(u.searchParams.get('nonce')).toBe('nonce-1')
-    expect(u.searchParams.get('readonly')).toBe('true')
-    expect(u.searchParams.get('lang')).toBe('zh-CN')
-    expect(u.searchParams.get('theme')).toBe('dark')
+    expect(u.searchParams.get('sessionId')).toBe(SESSION_ID)
+    // the old unroutable shape must not come back
+    expect(u.searchParams.get('doc')).toBeNull()
+    expect(u.searchParams.get('jwt')).toBeNull()
+    expect(u.searchParams.get('embed')).toBeNull()
+    expect(u.searchParams.get('readonly')).toBeNull()
+    expect(u.pathname).not.toContain('/apps/')
+  })
+
+  it('buildDataflareEmbedUrl keeps a relative base relative', () => {
+    if (!rig) throw new Error('rig not set')
+    // `/office-engine` is the documented base behind Dataflarework's reverse
+    // proxy; the result must stay prefix-relative, not gain an origin.
+    const url = rig.hostModule.buildDataflareEmbedUrl({
+      baseUrl: '/office-engine',
+      app: 'docs',
+      documentId: 'doc-42',
+      jwt: 'tok-1',
+      sessionId: SESSION_ID,
+      nonce: 'nonce-1',
+    })
+    expect(url.startsWith('/office-engine/embed/doc-42?')).toBe(true)
+    expect(url).toContain('token=tok-1')
   })
 
   it('isDataflareEnvelope rejects payloads with the wrong protocol', async () => {

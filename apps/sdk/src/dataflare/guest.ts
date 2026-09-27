@@ -47,12 +47,40 @@ import type {
   GenOfficeEmbedEvent,
 } from './types'
 
-// ── Session state (process-local; one active session per guest page) ───────
+// ── Session state (window-global; one active session per guest page) ───────
+//
+// Held on `globalThis` rather than in a module-scoped binding on purpose. The
+// SDK build emits one self-contained bundle per entry (`scripts/build.mjs`), so
+// a module reachable from two entries ships as two copies in a consumer that
+// imports both: apps/docs imports this file for `postToEmbedParent` and
+// `dataflare-integration` for the save/open policy, and the integration bundle
+// inlines its own copy of this file. Only the copy that runs
+// `installDataflareEmbedBridge` ever sees `init` — with module-scoped state the
+// other copy would post every business event with no sessionId, and the host
+// bridge drops exactly those (`host.ts` `envelope.sessionId !== sessionId`), so
+// `document-dirty` and friends would vanish silently. The state is a per-window
+// singleton by definition ("one active session per page"), so a single shared
+// slot is the honest model and it survives however the bundler duplicates us.
 
-let activeSessionId: string | null = null
+const SESSION_SLOT = '__genofficeDataflareEmbedSessionId'
+type EmbedSessionGlobals = Partial<Record<typeof SESSION_SLOT, string | null>>
+
+function sessionSlot(): EmbedSessionGlobals {
+  const globals = globalThis as EmbedSessionGlobals
+  if (globals[SESSION_SLOT] === undefined) globals[SESSION_SLOT] = null
+  return globals
+}
+
+function activeSessionId(): string | null {
+  return sessionSlot()[SESSION_SLOT] ?? null
+}
+
+function setActiveSessionId(id: string | null): void {
+  sessionSlot()[SESSION_SLOT] = id
+}
 
 export function getDataflareEmbedSessionId(): string | null {
-  return activeSessionId
+  return activeSessionId()
 }
 
 // ── Origin detection ───────────────────────────────────────────────────────
@@ -108,7 +136,7 @@ function isResponseEnvelope(value: unknown): value is EmbedEnvelope<DataflarePar
 export function postToEmbedParent(payload: GenOfficeEmbedEvent): void {
   const origin = parentOrigin()
   if (!isEmbeddedInHost() || !origin) return
-  const envelope = makeEnvelope<GenOfficeEmbedEvent>('event', payload, activeSessionId ?? undefined)
+  const envelope = makeEnvelope<GenOfficeEmbedEvent>('event', payload, activeSessionId() ?? undefined)
   postEnvelope(window.parent, envelope, origin)
 }
 
@@ -123,12 +151,8 @@ export function postToEmbedParent(payload: GenOfficeEmbedEvent): void {
  */
 export function requestDataflareParent(request: DataflareParentRequest): Promise<DataflareParentResponse> {
   const origin = parentOrigin()
-  if (
-    !isEmbeddedInHost() ||
-    !origin ||
-    !activeSessionId ||
-    request.sessionId !== activeSessionId
-  ) {
+  const session = activeSessionId()
+  if (!isEmbeddedInHost() || !origin || !session || request.sessionId !== session) {
     return Promise.reject(new Error('Dataflare parent bridge is unavailable'))
   }
   return new Promise((resolve, reject) => {
@@ -178,12 +202,8 @@ export function requestDataflareStreamParent(
   onError: (error: Error) => void,
 ): () => void {
   const origin = parentOrigin()
-  if (
-    !isEmbeddedInHost() ||
-    !origin ||
-    !activeSessionId ||
-    request.sessionId !== activeSessionId
-  ) {
+  const session = activeSessionId()
+  if (!isEmbeddedInHost() || !origin || !session || request.sessionId !== session) {
     onError(new Error('Dataflare stream bridge is unavailable'))
     return () => {}
   }
@@ -225,8 +245,9 @@ export function requestDataflareStreamParent(
  *   1. Listen for `command` envelopes from the parent.
  *   2. On `init` command, capture the sessionId (rejected if empty).
  *   3. Drop any command whose sessionId doesn't match the captured one.
- *   4. Emit `ready` (capabilities) and `global-state-request` to the parent
- *      so the host can push current state.
+ *   4. Emit `ready` (capabilities) and `global-state-request` to the parent —
+ *      *once `init` has supplied the session*, not at install time, so the host
+ *      can address the reply (see `announce`).
  *   5. Route `global-state-update` commands to `handlers.onGlobalState`,
  *      everything else to `handlers.onCommand`.
  */
@@ -240,6 +261,29 @@ export function installDataflareEmbedBridge(
   const origin = parentOrigin()
   if (!isEmbeddedInHost() || !origin) return () => {}
   let sessionId: string | null = null
+  let announced = false
+  // The handshake has to carry the sessionId: a host bridge drops envelopes it
+  // cannot correlate to its session (`host.ts` `envelope.sessionId !== sessionId`).
+  // Announcing at install time — before any `init` has named the session — makes
+  // both `ready` and `global-state-request` unaddressable, so a host that drives
+  // its handshake off `ready` never sees one and never learns the guest is up.
+  // Announce once, as soon as `init` supplies the session, and stay silent if no
+  // `init` ever arrives (a pre-session handshake carries nothing a host can use).
+  const announce = () => {
+    if (announced) return
+    announced = true
+    postToEmbedParent({
+      type: 'ready',
+      capabilities: [
+        'document-context',
+        'ai-translation',
+        'ai-assistant',
+        'host-commands',
+        'global-state',
+      ],
+    })
+    postToEmbedParent({ type: 'global-state-request' })
+  }
   const onMessage = (event: MessageEvent<unknown>) => {
     if (event.source !== window.parent || event.origin !== origin) return
     if (!isCommandEnvelope(event.data)) return
@@ -248,8 +292,9 @@ export function installDataflareEmbedBridge(
     if (command.type === 'init') {
       const normalized = command.sessionId.trim()
       if (!normalized) return
-      activeSessionId = normalized
+      setActiveSessionId(normalized)
       sessionId = normalized
+      announce()
     } else if (!sessionId || envelope.sessionId !== sessionId) {
       return
     }
@@ -260,20 +305,10 @@ export function installDataflareEmbedBridge(
     handlers.onCommand(command)
   }
   window.addEventListener('message', onMessage)
-  postToEmbedParent({
-    type: 'ready',
-    capabilities: [
-      'document-context',
-      'ai-translation',
-      'ai-assistant',
-      'host-commands',
-      'global-state',
-    ],
-  })
-  postToEmbedParent({ type: 'global-state-request' })
   return () => {
     window.removeEventListener('message', onMessage)
-    activeSessionId = null
+    setActiveSessionId(null)
+    announced = false
   }
 }
 

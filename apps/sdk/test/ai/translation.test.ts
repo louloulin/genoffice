@@ -315,6 +315,28 @@ describe('TranslationClient.translateBatch', () => {
     expect(calls[0].headers.authorization).toBe('Bearer j')
   })
 
+  it('forwards inline glossary / memory / cacheScope onto the wire body', async () => {
+    const { fetchImpl, calls } = makeMockFetch(() =>
+      jsonResponse({ ok: true, units: [], okCount: 0, memoryHitCount: 0, failedCount: 0 }),
+    )
+    const c = new TranslationClient({ baseUrl: 'https://x.test', bearer: 'j', fetch: fetchImpl })
+    await c.translateBatch({
+      units: [{ sourceText: 'fabric weight', order: 0 }],
+      targetLanguage: 'zh-CN',
+      glossary: [{ source: 'fabric weight', target: '克重' }],
+      memory: [{ sourceText: 'hello', targetText: '你好' }],
+      cacheScope: 'tenant-a',
+    })
+    // The client's job at this layer is not to drop them. A field the transport
+    // forgets is indistinguishable from a feature that does not exist, because
+    // the server simply sees a request without it.
+    expect(JSON.parse(calls[0].body!)).toMatchObject({
+      glossary: [{ source: 'fabric weight', target: '克重' }],
+      memory: [{ sourceText: 'hello', targetText: '你好' }],
+      cacheScope: 'tenant-a',
+    })
+  })
+
   it('rejects empty units at the call site', async () => {
     const { fetchImpl, calls } = makeMockFetch(() => jsonResponse({}))
     const c = new TranslationClient({ baseUrl: 'https://x.test', fetch: fetchImpl })

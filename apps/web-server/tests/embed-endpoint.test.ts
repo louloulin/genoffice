@@ -83,7 +83,17 @@ describe('handleEmbed', () => {
     expect(body).toContain('<meta name="genoffice-token" content="jwt-xyz">')
     // W6c: the bridge is now an external script reference — the CSP can
     // stay at `script-src 'self'` instead of needing `'unsafe-inline'`.
-    expect(body).toContain('<script src="/embed/static/bridge.js"></script>')
+    //
+    // Both the bridge and the `<base>` are directory-relative on purpose. A
+    // root-relative `/embed/...` or `<base href="/">` only works when this
+    // server is mounted at the origin root; Dataflarework mounts it behind
+    // `/office-engine` with `strip-path-prefix: true`, where the browser asks
+    // the *host* for `/assets/…` and `/embed/…`, the host forwards neither,
+    // and the embed iframe renders blank. Pin the relative form so a future
+    // "fix" cannot quietly reintroduce the prefix dependency.
+    expect(body).toContain('<script src="static/bridge.js"></script>')
+    expect(body).toContain('<base href="./">')
+    expect(body).not.toContain('<base href="/">')
     expect(body).toContain('theme')
     expect(body).toContain('dark')
   })

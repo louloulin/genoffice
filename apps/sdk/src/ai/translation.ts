@@ -104,6 +104,33 @@ export interface TranslateRequest {
   qualityCheck?: boolean
   glossaryCategory?: string
   customerName?: string
+  /**
+   * Request-scoped mandatory term pairs, sent with the call.
+   *
+   * For hosts whose term store lives outside GenOffice — a per-tenant
+   * dictionary in a database rather than the local KB file. Merged with the
+   * server's KB terms (longest source wins) and enforced on the output, so a
+   * term the model leaves in the source language comes back corrected. The
+   * enforcement also applies on a translation-memory hit, which would
+   * otherwise return an answer cached before the term was known.
+   */
+  glossary?: Array<{ source: string; target: string }>
+  /**
+   * Request-scoped translation-memory entries, consulted before the provider.
+   *
+   * Exact-match, this request only; never written back to the server's store.
+   * A hit short-circuits the provider call entirely.
+   */
+  memory?: Array<{ sourceText: string; targetText: string; context?: string }>
+  /**
+   * Bucket for the translation-memory cache. Takes precedence over
+   * `glossaryCategory` / `customerName`.
+   *
+   * A host serving multiple tenants must set a per-tenant value: the server's
+   * persistent TM is shared across requests, so an unscoped bucket lets one
+   * tenant's translation be replayed for another.
+   */
+  cacheScope?: string
   scene?: string
   documentId?: string
   documentType?: string

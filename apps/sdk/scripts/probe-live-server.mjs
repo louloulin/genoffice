@@ -124,7 +124,19 @@ let serverLog = ''
 const keep = process.env.PROBE_KEEP === '1'
 const verbose = process.env.PROBE_VERBOSE === '1'
 
-const env = { ...process.env, HOST: '127.0.0.1', DATA_DIR: dataDir, GENOFFICE_JWT_SECRET: secret }
+const env = {
+  ...process.env,
+  HOST: '127.0.0.1',
+  DATA_DIR: dataDir,
+  GENOFFICE_JWT_SECRET: secret,
+  // DATA_DIR alone does not isolate translation. The KB resolves to
+  // `~/.genoffice/translation-kb.json` unless this is set
+  // (`knowledge-base.ts#defaultFilePath`), so without it the gate's result
+  // depends on the developer's personal glossary: an entry that happens to
+  // cover a probed term rewrites the output and flips the assertion. Passed
+  // by the in-tree e2e suites for the same reason.
+  GENOFFICE_TRANSLATION_KB: join(dataDir, 'translation-kb.json'),
+}
 // WEB_TOKEN is stripped so the /api/ipc/* collab surface behaves as it does
 // for the web renderer (the v1 groups authenticate with a real JWT instead —
 // see GENOFFICE_JWT_SECRET below).

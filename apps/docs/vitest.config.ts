@@ -22,6 +22,14 @@ export default defineConfig({
       '@genoffice/i18n': local('../../packages/i18n/src/index.ts'),
       '@genoffice/ui': local('../../packages/ui/src/index.ts'),
       '@genoffice/translation-core': local('../../packages/translation-core/src/index.ts'),
+      // SDK sub-paths are declared before the bare name: vite treats a string
+      // alias as a prefix replacement, so the general key last would swallow
+      // every `@genoffice/web-sdk/...` import.
+      '@genoffice/web-sdk/dataflare/guest': local('../../apps/sdk/src/dataflare/guest.ts'),
+      '@genoffice/web-sdk/dataflare/integration': local(
+        '../../apps/sdk/src/dataflare/integration.ts',
+      ),
+      '@genoffice/web-sdk': local('../../apps/sdk/src/index.ts'),
     },
   },
   test: {

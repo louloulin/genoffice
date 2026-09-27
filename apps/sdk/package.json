@@ -9,22 +9,27 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "browser": "./dist/index.umd.js",
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs",
+      "browser": "./dist/index.umd.js",
       "types": "./dist/index.d.ts"
     },
     "./dataflare/host": {
-      "browser": "./dist/dataflare-host.umd.js",
       "import": "./dist/dataflare-host.mjs",
       "require": "./dist/dataflare-host.cjs",
+      "browser": "./dist/dataflare-host.umd.js",
       "types": "./dist/dataflare/host.d.ts"
     },
     "./dataflare/guest": {
-      "browser": "./dist/dataflare-guest.umd.js",
       "import": "./dist/dataflare-guest.mjs",
       "require": "./dist/dataflare-guest.cjs",
+      "browser": "./dist/dataflare-guest.umd.js",
       "types": "./dist/dataflare/guest.d.ts"
+    },
+    "./dataflare/integration": {
+      "import": "./dist/dataflare-integration.mjs",
+      "require": "./dist/dataflare-integration.cjs",
+      "types": "./dist/dataflare/integration.d.ts"
     },
     "./file/management": {
       "import": "./dist/file-management.mjs",

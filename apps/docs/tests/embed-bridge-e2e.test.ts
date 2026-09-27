@@ -22,7 +22,7 @@ import {
   DATAFLARE_EMBED_PROTOCOL,
   installDataflareEmbedBridge,
   requestDataflareStreamParent,
-} from '../src/shared/embed-bridge'
+} from '@genoffice/web-sdk/dataflare/guest'
 
 interface BridgeEvent {
   protocol: string

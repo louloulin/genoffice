@@ -65,14 +65,20 @@ describe('openEmbedSession — happy path', () => {
     expect(s.nonce).toBe('n-1')
     expect(s.expiresAt).toBe(3000)
 
+    // Server contract: `/embed/:docId?token=…` (apps/web-server/src/embed/index.ts
+    // `parseEmbedQuery`). The doc id is a path segment and the credential is
+    // `token` — the retired `/apps/{app}/embedded?doc=&jwt=` shape was never
+    // routable, so asserting it here pinned the test to a URL no server serves.
     const url = new URL(s.url)
-    expect(url.origin + url.pathname).toBe(`${BASE}/apps/docs/embedded`)
-    expect(url.searchParams.get('embed')).toBe('1')
+    expect(url.origin + url.pathname).toBe(`${BASE}/embed/doc-1`)
     expect(url.searchParams.get('app')).toBe('docs')
-    expect(url.searchParams.get('doc')).toBe('doc-1')
-    expect(url.searchParams.get('jwt')).toBe('ey.test')
+    expect(url.searchParams.get('token')).toBe('ey.test')
     expect(url.searchParams.get('sessionId')).toBe('s-1')
     expect(url.searchParams.get('nonce')).toBe('n-1')
+    // No readonly / locale / theme supplied → no mode / lang / theme params.
+    expect(url.searchParams.get('mode')).toBeNull()
+    expect(url.searchParams.get('lang')).toBeNull()
+    expect(url.searchParams.get('theme')).toBeNull()
   })
 
   it('sends no body params when optional args are omitted', async () => {
@@ -118,8 +124,11 @@ describe('openEmbedSession — happy path', () => {
       fetch: fetchImpl,
     })
     const url = new URL(s.url)
-    expect(url.pathname).toBe('/apps/sheets/embedded')
-    expect(url.searchParams.get('readonly')).toBe('true')
+    expect(url.pathname).toBe('/embed/doc-1')
+    expect(url.searchParams.get('app')).toBe('sheets')
+    // readonly → mode=view; the dataflare vocabulary's 'system' theme maps to
+    // the editor's 'auto' (see buildDataflareEmbedUrl).
+    expect(url.searchParams.get('mode')).toBe('view')
     expect(url.searchParams.get('lang')).toBe('zh')
     expect(url.searchParams.get('theme')).toBe('dark')
   })
@@ -127,7 +136,7 @@ describe('openEmbedSession — happy path', () => {
   it('strips a trailing slash from baseUrl', async () => {
     const { fetchImpl } = makeServer()
     const s = await openEmbedSession({ baseUrl: 'https://x.test/', documentId: 'doc-1', fetch: fetchImpl })
-    expect(s.url.startsWith('https://x.test/apps/docs/embedded')).toBe(true)
+    expect(s.url.startsWith('https://x.test/embed/doc-1')).toBe(true)
   })
 
   it('allows replacing the URL builder wholesale', async () => {

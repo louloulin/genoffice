@@ -27,15 +27,13 @@ import { createDesktopApi, createProjectApi } from '../shared/desktop-api-factor
 import type { DesktopApi } from '../shared/ipc'
 import { parseDataflareTranslateResponse } from '../shared/dataflare-translate-response'
 import { buildEmbedTranslateBody } from '../shared/translate-embed-body'
+import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import {
-  installDataflareEmbedBridge,
-  getDataflareEmbedSessionId,
-  postToEmbedParent,
-  requestDataflareParent,
-  requestDataflareStreamParent,
+  createDataflareEmbedIntegration,
+  resolveEmbedPathPrefix,
   type DataflareEmbedCommand,
   type DataflareOfficeContext,
-} from '../shared/embed-bridge'
+} from '@genoffice/web-sdk/dataflare/integration'
 
 if (!isElectronRuntime()) {
   // Mount the floating "返回主页" pill once the renderer has wired its
@@ -117,66 +115,37 @@ if (!isElectronRuntime()) {
       },
     }),
   })
-  const embeddedPathPrefix = window.location.pathname.startsWith('/office-engine/')
-    ? '/office-engine'
-    : ''
-  const transport = createHttpIpcTransport({ pathPrefix: embeddedPathPrefix })
+  const transport = createHttpIpcTransport({
+    pathPrefix: resolveEmbedPathPrefix(window.location.pathname),
+  })
   const files = createWebFileBridge(transport)
-  let dataflareContext: DataflareOfficeContext | null = null
-  let dataflareRevision = '0'
-  const requestDataflare = (path: string, init: RequestInit = {}) => {
-    if (window.parent === window) {
-      const token = localStorage.getItem('Manager-Token')
-      return fetch(path, {
-        ...init,
-        headers: { ...(init.headers || {}), ...(token ? { 'Manager-Token': token } : {}) },
-      })
-    }
-    return requestDataflareParent({
-      type: 'http-request',
-      requestId: `df-http-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      sessionId: getDataflareEmbedSessionId() || '',
-      method: (init.method || 'GET').toUpperCase() as 'GET' | 'POST',
-      path,
-      jsonBody: typeof init.body === 'string' ? init.body : undefined,
-    }).then(
-      (result) => new Response(result.body, { status: result.status, headers: result.headers }),
-    )
-  }
-  const uploadDataflare = (path: string, data: ArrayBuffer, fields: Record<string, string>) => {
-    if (window.parent === window) {
-      const token = localStorage.getItem('Manager-Token')
-      const form = new FormData()
-      form.append(
-        'file',
-        new Blob([data], {
-          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        }),
-        'document.docx',
-      )
-      Object.entries(fields).forEach(([key, value]) => form.append(key, value))
-      return fetch(path, {
-        method: 'POST',
-        headers: token ? { 'Manager-Token': token } : undefined,
-        body: form,
-      })
-    }
-    return requestDataflareParent({
-      type: 'http-request',
-      requestId: `df-http-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      sessionId: getDataflareEmbedSessionId() || '',
-      method: 'POST',
-      path,
-      file: {
-        bytes: data,
-        filename: 'document.docx',
-        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      },
-      fields,
-    }).then(
-      (result) => new Response(result.body, { status: result.status, headers: result.headers }),
-    )
-  }
+  // 嵌入策略层（前缀探测 / 双模 request / 上传 / 409 映射 / revision 缓存）已经收进
+  // `@genoffice/web-sdk/dataflare/integration`；docs 只提供三个应用相关的适配器。
+  //
+  // 关键结构性变化：三个保存入口（saveDocx / saveDocxNew / saveDocxAs）全部委托给
+  // 同一个 `dataflare.saveDocument`。G8 的成因正是"三条保存路径里只有一条带 Dataflare
+  // 分支"，而新开的知识库文档没有 filePath、走的偏偏是另一条 —— 逐条补分支只是治标，
+  // 现在这种漏法在结构上无法表达。
+  const dataflare = createDataflareEmbedIntegration({
+    app: 'docs',
+    transport,
+    openBytes: async (bytes, name) => {
+      const path = await files.writeTempFile(name, bytes)
+      return await transport.invoke('docs:open-path', path)
+    },
+    saveLocal: (path, data, auto) => transport.invoke('docs:save', path, data, auto),
+    onDocumentOpened: (result) => {
+      // `docs:open-path` only *returns* the document; only the renderer's
+      // `loadFile` applies it to the editor, and that lives in the App component.
+      // Nothing awaits this function, so dropping the result here left the boot
+      // blank document on screen — the host believed the knowledge document was
+      // open, every dirty event and save then applied to the blank one, and the
+      // first save wrote it back over the original. Hand it over.
+      window.dispatchEvent(new CustomEvent('dataflare:open-document', { detail: result }))
+    },
+  })
+  const dataflareContext = () => dataflare.getContext()
+  const requestDataflare = (path: string, init?: RequestInit) => dataflare.request(path, init)
   // SAFETY: the global `window` is typed as lib.dom's Window, which has no
   // `desktop` / `projectApi` / `dataflareOfficeBridge` fields. We are
   // declaring those properties on the runtime window below (mirroring the
@@ -189,44 +158,27 @@ if (!isElectronRuntime()) {
   // after that assignment, so the narrowing is sound within this module.
   const desktopApi = (): DesktopApi => bridgedWindow.desktop as DesktopApi
   bridgedWindow.desktop = createDesktopApi(transport, {
-    saveDocx: async (_path, data, _auto) => {
-      const documentId = dataflareContext?.documentId
-      if (!documentId || dataflareContext?.documentSource !== 'knowledge') {
-        return await transport.invoke('docs:save', _path, data, _auto === true)
+    saveDocx: async (path, data, auto) => {
+      const result = await dataflare.saveDocument(path, data, auto === true)
+      // A local save's channel result flows back untouched (`passwordIntentPending`
+      // is decided by the shell, not by this layer).
+      if (result.local !== undefined) {
+        return result.local as Awaited<ReturnType<DesktopApi['saveDocx']>>
       }
-      const response = await uploadDataflare(
-        `/crmapi/knowledge/office/${encodeURIComponent(documentId)}`,
-        data,
-        { expectedRevision: dataflareRevision },
-      )
-      const body = (await response.json().catch(() => null)) as {
-        code?: number
-        msg?: string
-        data?: { revision?: string }
-      } | null
-      if (!response.ok || body?.code !== 0) {
-        const error = body?.msg || `Dataflare document save failed (${response.status})`
-        postToEmbedParent({
-          type: 'error',
-          code: response.status === 409 || body?.code === 409 ? 'document-conflict' : 'save-failed',
-          message: error,
-        })
-        return { ok: false, reason: 'external-modified', error }
-      }
-      dataflareRevision = body.data?.revision || String(Number(dataflareRevision) + 1)
-      postToEmbedParent({
-        type: 'document-saved',
-        documentId: documentId,
-        revision: dataflareRevision,
-      })
-      return { ok: true }
+      return result.ok
+        ? { ok: true }
+        : {
+            ok: false,
+            error: result.error,
+            reason: result.reason === 'external-modified' ? 'external-modified' : undefined,
+          }
     },
     aiTranslate: async (request) => {
       // Standalone web build: route through the local bridge transport so the
       // AI translation hits the web-server's `ai:translate` handler (the real
       // provider-backed translation path). The Dataflare branch only fires
       // when this window is embedded inside Dataflare with an active context.
-      if (!dataflareContext) {
+      if (!dataflareContext()) {
         return await transport.invoke('ai:translate', request)
       }
       const scope = request.range?.scope === 'document' ? 'document' : 'selection'
@@ -240,7 +192,7 @@ if (!isElectronRuntime()) {
           buildEmbedTranslateBody(
             {
               requestId: unitId,
-              documentId: dataflareContext?.documentId,
+              documentId: dataflareContext()?.documentId,
               scene: scope,
               sourceLanguage: request.sourceLang,
               targetLanguage: request.targetLang,
@@ -291,7 +243,7 @@ if (!isElectronRuntime()) {
         NonNullable<import('../shared/desktop-api-factory').DesktopApiOverrides['aiTranslateBatch']>
       >[0],
     ) => {
-      if (!dataflareContext) {
+      if (!dataflareContext()) {
         return await transport.invoke('ai:translate-batch', request)
       }
       const batchId = `document-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -302,7 +254,7 @@ if (!isElectronRuntime()) {
           buildEmbedTranslateBody(
             {
               requestId: batchId,
-              documentId: dataflareContext?.documentId,
+              documentId: dataflareContext()?.documentId,
               scene: request.scene || 'document',
               sourceLanguage: request.sourceLang,
               targetLanguage: request.targetLang,
@@ -343,7 +295,7 @@ if (!isElectronRuntime()) {
       // SSE 流式批量翻译：每完成一个 unit 立即收到推送事件，
       // 通过 onUnit 回调让 GenOffice AI 面板实时追加翻译预览，
       // 替代旧的"等待整批返回"。
-      if (window.parent === window || !getDataflareEmbedSessionId()) {
+      if (!dataflare.isEmbedded()) {
         // 独立模式：fallback 到同步批量接口
         return await desktopApi().aiTranslateBatch(request)
       }
@@ -358,97 +310,93 @@ if (!isElectronRuntime()) {
       let streamOk = true
       const batchId = `stream-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
       await new Promise<void>((resolve) => {
-        const unsubscribe = requestDataflareStreamParent(
-          {
-            type: 'http-stream-request',
-            requestId: batchId,
-            sessionId: getDataflareEmbedSessionId() || '',
-            method: 'POST',
-            path: '/office-engine/api/ai/translate/stream',
-            jsonBody: JSON.stringify(
-              buildEmbedTranslateBody(
-                {
-                  requestId: batchId,
-                  documentId: dataflareContext?.documentId,
-                  scene: request.scene || 'document',
-                  sourceLanguage: request.sourceLang,
-                  targetLanguage: request.targetLang,
-                  preserveFormatting: request.preserveFormat,
-                  memoryEnabled: request.memoryEnabled,
-                  qualityCheck: request.qualityCheck,
-                  glossaryCategory: request.glossaryCategory,
-                },
-                request.units,
-              ),
+        const unsubscribe = dataflare.stream(
+          '/office-engine/api/ai/translate/stream',
+          JSON.stringify(
+            buildEmbedTranslateBody(
+              {
+                requestId: batchId,
+                documentId: dataflareContext()?.documentId,
+                scene: request.scene || 'document',
+                sourceLanguage: request.sourceLang,
+                targetLanguage: request.targetLang,
+                preserveFormatting: request.preserveFormat,
+                memoryEnabled: request.memoryEnabled,
+                qualityCheck: request.qualityCheck,
+                glossaryCategory: request.glossaryCategory,
+              },
+              request.units,
             ),
-          },
-          (event) => {
-            try {
-              const payload = JSON.parse(event.data) as {
-                type?: string
-                status?: string
-                unit?: {
-                  unitId?: string
+          ),
+          {
+            onEvent: (event) => {
+              try {
+                const payload = JSON.parse(event.data) as {
+                  type?: string
                   status?: string
-                  sourceText?: string
-                  translatedText?: string
-                  matchedTerms?: string[]
-                  warnings?: string[]
-                  errorMessage?: string
+                  unit?: {
+                    unitId?: string
+                    status?: string
+                    sourceText?: string
+                    translatedText?: string
+                    matchedTerms?: string[]
+                    warnings?: string[]
+                    errorMessage?: string
+                  }
+                  quality?: { overallScore?: number; warnings?: string[] }
+                  message?: string
                 }
-                quality?: { overallScore?: number; warnings?: string[] }
-                message?: string
-              }
-              if (payload.type === 'unit' && payload.unit?.unitId) {
-                const input = request.units.find((u) => u.unitId === payload.unit!.unitId)
-                streamUnits.set(payload.unit.unitId, {
-                  unitId: payload.unit.unitId,
-                  sourceText: payload.unit.sourceText || '',
-                  translatedText: payload.unit.translatedText,
-                  status: payload.unit.status,
-                  matchedTerms: payload.unit.matchedTerms,
-                  warnings: payload.unit.warnings,
-                  errorMessage: payload.unit.errorMessage,
-                  range: input?.range || null,
-                })
-                postToEmbedParent({
-                  type: 'ai-progress',
-                  status: 'running',
-                  progress: streamUnits.size / Math.max(request.units.length, 1),
-                })
-              } else if (payload.type === 'quality' && payload.quality) {
-                streamQuality = payload.quality
-              } else if (payload.type === 'complete') {
-                if (
-                  payload.status &&
-                  payload.status !== 'completed' &&
-                  payload.status !== 'partial'
-                ) {
+                if (payload.type === 'unit' && payload.unit?.unitId) {
+                  const input = request.units.find((u) => u.unitId === payload.unit!.unitId)
+                  streamUnits.set(payload.unit.unitId, {
+                    unitId: payload.unit.unitId,
+                    sourceText: payload.unit.sourceText || '',
+                    translatedText: payload.unit.translatedText,
+                    status: payload.unit.status,
+                    matchedTerms: payload.unit.matchedTerms,
+                    warnings: payload.unit.warnings,
+                    errorMessage: payload.unit.errorMessage,
+                    range: input?.range || null,
+                  })
+                  postToEmbedParent({
+                    type: 'ai-progress',
+                    status: 'running',
+                    progress: streamUnits.size / Math.max(request.units.length, 1),
+                  })
+                } else if (payload.type === 'quality' && payload.quality) {
+                  streamQuality = payload.quality
+                } else if (payload.type === 'complete') {
+                  if (
+                    payload.status &&
+                    payload.status !== 'completed' &&
+                    payload.status !== 'partial'
+                  ) {
+                    streamOk = false
+                    if (payload.status === 'failed')
+                      streamError = 'Dataflare translation completed with failed status'
+                  }
+                } else if (payload.type === 'error') {
                   streamOk = false
-                  if (payload.status === 'failed')
-                    streamError = 'Dataflare translation completed with failed status'
+                  streamError = payload.message || 'Dataflare stream error'
                 }
-              } else if (payload.type === 'error') {
-                streamOk = false
-                streamError = payload.message || 'Dataflare stream error'
+              } catch (err) {
+                console.warn('[web-bridge] failed to parse SSE event', err)
               }
-            } catch (err) {
-              console.warn('[web-bridge] failed to parse SSE event', err)
-            }
-          },
-          (status) => {
-            if (status >= 400) {
+            },
+            onClose: (status) => {
+              if (status >= 400) {
+                streamOk = false
+                streamError = `Dataflare stream failed (${status})`
+              }
+              unsubscribe()
+              resolve()
+            },
+            onError: (error) => {
               streamOk = false
-              streamError = `Dataflare stream failed (${status})`
-            }
-            unsubscribe()
-            resolve()
-          },
-          (error) => {
-            streamOk = false
-            streamError = error.message
-            unsubscribe()
-            resolve()
+              streamError = error.message
+              unsubscribe()
+              resolve()
+            },
           },
         )
       })
@@ -461,7 +409,7 @@ if (!isElectronRuntime()) {
       }
     },
     saveTranslationMemory: async (request) => {
-      if (!dataflareContext) {
+      if (!dataflareContext()) {
         return await transport.invoke('ai:save-translation-memory', request)
       }
       const requestId = `memory-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -470,7 +418,7 @@ if (!isElectronRuntime()) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requestId,
-          documentId: dataflareContext?.documentId,
+          documentId: dataflareContext()?.documentId,
           scene: request.scene,
           sourceLanguage: request.sourceLang,
           targetLanguage: request.targetLang,
@@ -518,6 +466,15 @@ if (!isElectronRuntime()) {
       return { base64: bytesToBase64(bytes), mime, name }
     },
     saveDocxAs: async (defaultName, data) => {
+      // 知识库文档的"另存为"= 写回知识库记录 + 另存一份副本。写回必须在前面：
+      // 只落本地副本会丢掉这次编辑，用户以为存了其实知识库还是旧的。
+      // G8 的教训是"某条保存路径漏了 Dataflare 分支"，这里不给自己留第二个出口。
+      const result = await dataflare.saveDocument('', data, false)
+      if (!result.ok) return { ok: false, error: result.error }
+      if (result.revision !== undefined) {
+        downloadBytes(defaultName, data)
+        return { ok: true, passwordIntentPending: false }
+      }
       // Persist into the webserver's FILES_DIR so the document survives
       // reload, shows up on the home recents, and is the canonical path that
       // the next saveDocx() call rewrites in place. downloadBytes is a
@@ -535,6 +492,12 @@ if (!isElectronRuntime()) {
       return { ok: true, path: saved.path, passwordIntentPending: false }
     },
     saveDocxNew: async (defaultName, data) => {
+      const result = await dataflare.saveDocument('', data, false)
+      if (!result.ok) return { ok: false, error: result.error }
+      if (result.revision !== undefined) {
+        downloadBytes(defaultName, data)
+        return { ok: true, passwordIntentPending: false }
+      }
       const saved = (await transport.invoke('docs:save-new', defaultName, data)) as {
         id?: string
         path?: string
@@ -600,72 +563,21 @@ if (!isElectronRuntime()) {
   bridgedWindow.projectApi = createProjectApi(transport)
   bridgedWindow.dataflareOfficeBridge = {
     postEvent: postToEmbedParent,
-    isEmbedded: window.parent !== window,
-    getRevision: () => dataflareRevision,
+    isEmbedded: isEmbeddedInHost(),
+    getRevision: () => dataflare.getRevision(),
   }
-  installDataflareEmbedBridge({
+  // Context / revision 记账与"init 即拉知识库文档"都收在 integration 里；
+  // 这里只保留 docs 自己的两件事：广播 command 事件、广播 global-state 事件。
+  dataflare.install({
     onCommand: (command: DataflareEmbedCommand) => {
-      if (command.type === 'init') dataflareContext = command.context
       window.dispatchEvent(new CustomEvent('dataflare:office-command', { detail: command }))
-      if (
-        command.type === 'init' &&
-        command.context.documentId &&
-        command.context.documentSource === 'knowledge'
-      ) {
-        void openDataflareKnowledgeDocument(
-          command.context,
-          transport,
-          files,
-          requestDataflare,
-          (revision) => {
-            dataflareRevision = revision
-          },
-        )
-      }
     },
     onGlobalState: (state, revision) => {
-      // Update cached revision when host pushes a newer one (e.g. another tab/user saved).
-      const incoming = state?.documentRevision
-      if (incoming !== undefined && incoming !== null) {
-        dataflareRevision = String(incoming)
-      }
       window.dispatchEvent(
         new CustomEvent('dataflare:office-global-state', { detail: { state, revision } }),
       )
     },
   })
-}
-
-async function openDataflareKnowledgeDocument(
-  context: DataflareOfficeContext,
-  transport: { invoke(channel: string, ...args: unknown[]): Promise<unknown> },
-  files: { writeTempFile(name: string, bytes: ArrayBuffer): Promise<string> },
-  requestDataflare: (path: string, init?: RequestInit) => Promise<Response>,
-  onRevision: (revision: string) => void,
-): Promise<void> {
-  const documentId = context.documentId?.trim()
-  if (!documentId || context.documentType !== 'docx') return
-  try {
-    const response = await requestDataflare(
-      `/crmapi/knowledge/office/${encodeURIComponent(documentId)}`,
-    )
-    if (!response.ok) throw new Error(`Dataflare document download failed (${response.status})`)
-    onRevision(
-      response.headers.get('X-Office-Revision') ||
-        response.headers.get('ETag')?.replace(/^"|"$/g, '') ||
-        '0',
-    )
-    const bytes = await response.arrayBuffer()
-    const name = `dataflare-${documentId}.docx`
-    const path = await files.writeTempFile(name, bytes)
-    await transport.invoke('docs:open-path', path)
-  } catch (error) {
-    postToEmbedParent({
-      type: 'error',
-      code: 'dataflare-document-open-failed',
-      message: error instanceof Error ? error.message : String(error),
-    })
-  }
 }
 
 const IMAGE_MIME: Record<string, string> = {

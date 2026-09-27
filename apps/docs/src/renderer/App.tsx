@@ -64,8 +64,8 @@ import {
 } from '@genoffice/docx-engine'
 import type { AiDocContent, AiSettings, OpenDocxResult } from '../shared/ipc'
 import { AI_PROVIDERS } from '../shared/ipc'
-import type { DataflareEmbedCommand, DataflareOfficeContext } from '../shared/embed-bridge'
-import { isEmbeddedInHost, postToEmbedParent } from '../shared/embed-bridge'
+import type { DataflareEmbedCommand, DataflareOfficeContext } from '@genoffice/web-sdk/dataflare/guest'
+import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { ZoteroDocumentController } from './zotero/controller'
 import { AiPanel, AI_REVISION_AUTHOR } from './ai/AiPanel'
 import type { AiCommentsAccess, AiHeaderFooterAccess } from './ai/tools'
@@ -1476,7 +1476,6 @@ export function App() {
         } else {
           document.documentElement.removeAttribute('data-theme')
         }
-        postToEmbedParent({ type: 'ready', capabilities: ['document-context', 'ai-translation', 'ai-assistant', 'host-commands'] })
       } else if (command.type === 'set-readonly') {
         setHostReadonly(command.readonly)
       } else if (command.type === 'focus-ai') {
@@ -1849,6 +1848,23 @@ export function App() {
     },
     [loadFile],
   )
+
+  // The embed flow fetches the host's document in web-bridge (the guest bridge
+  // and the Dataflare HTTP client live there) but cannot apply it: `loadFile`
+  // owns the editor and lives here. Without this hop the editor kept the boot
+  // blank document while the host believed the knowledge document was open, so
+  // every dirty event and save applied to the blank one. Gated on `editor`, and
+  // the fetch it delivers is at least one network round trip, so the listener
+  // is always attached first.
+  useEffect(() => {
+    if (!isEmbeddedInHost() || !editor) return
+    const onOpenDocument = (event: Event) => {
+      const result = (event as CustomEvent<OpenDocxResult>).detail
+      if (result) void loadFile(result)
+    }
+    window.addEventListener('dataflare:open-document', onOpenDocument)
+    return () => window.removeEventListener('dataflare:open-document', onOpenDocument)
+  }, [editor, loadFile])
 
   /** decrypt-and-open retry loop for the password prompt (wrong password stays in the dialog) */
   const submitDocPwd = async () => {

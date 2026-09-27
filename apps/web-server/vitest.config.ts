@@ -8,6 +8,11 @@ import { defineConfig } from 'vitest/config'
  * bundle on a random port and drives it end-to-end to prove that the
  * install → pi-loader → uninstall chain still works after every change.
  *
+ * Note: `src/<area>/__tests__/` is a *different* runner (`node:test`), so it
+ * must not be added here — vitest cannot collect those files and would fail the
+ * suite. Those suites run via `npm run test:http` (scripts/test-http.mjs),
+ * which this package's `test` script chains after vitest.
+ *
  * `globalSetup` rebuilds `dist/bundle` when `src/` is newer, because those
  * suites spawn the bundle rather than importing the sources.
  */

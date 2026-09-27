@@ -68,6 +68,16 @@ export interface TranslateRequest {
   /** Customer name — forwarded to the KB resolver so per-customer terms
    *  (and customerPreference entries) narrow the prompt + matchedTerms. */
   customerName?: string | undefined
+  /**
+   * Bucket for the translation-memory cache. Takes precedence over
+   * `glossaryCategory` / `customerName` when deriving the memory bucket.
+   *
+   * Carried on the single-unit request too because `translateBatch` /
+   * `translateBatchStream` settle each unit through `translateOne`, which is
+   * where `memory.save` happens: the write must land in the same bucket the
+   * batch-level `memory.lookup` searched, or the entry is never found again.
+   */
+  cacheScope?: string | undefined
 }
 
 export interface TranslateResponse {
@@ -81,6 +91,26 @@ export interface TranslateResponse {
   status?: 'translated' | 'memory-hit' | 'failed' | undefined
   matchedTerms?: string[] | undefined
   warnings?: string[] | undefined
+}
+
+/**
+ * One caller-supplied `source -> target` pair, carried inline on the request.
+ *
+ * Structurally identical to `TerminologyPair` (`kb-rules.ts`), but declared
+ * here because this is the **wire** shape: hosts serialise it to JSON without
+ * importing translation-core internals.
+ */
+export interface InlineGlossaryPair {
+  source: string
+  target: string
+}
+
+/** One caller-supplied translation-memory entry, carried inline on the request. */
+export interface InlineMemoryEntry {
+  sourceText: string
+  targetText: string
+  /** Free-form label (scene, document id, …); not used for matching today. */
+  context?: string | undefined
 }
 
 export interface TranslateBatchRequest {
@@ -98,6 +128,33 @@ export interface TranslateBatchRequest {
   /** Customer name — forwarded to the KB resolver so per-customer terms
    *  (and customerPreference entries) narrow the result set. */
   customerName?: string | undefined
+  /**
+   * Request-scoped mandatory term pairs, layered on top of the KB terms.
+   *
+   * Hosts that keep their term store outside GenOffice (a database, a
+   * SaaS tenant dictionary) send the applicable rows with every call instead
+   * of a sync protocol. Merged with the KB terms; longest source wins.
+   *
+   * Kept generic (no tenant semantics) so translation-core stays free of any
+   * host's data model.
+   */
+  glossary?: readonly InlineGlossaryPair[] | undefined
+  /**
+   * Request-scoped translation-memory entries, consulted **before** the LLM.
+   *
+   * Exact-match only, and only for this request — these are never written
+   * back to any shared store. A hit short-circuits the provider call.
+   */
+  memory?: readonly InlineMemoryEntry[] | undefined
+  /**
+   * Bucket for the translation-memory cache. Takes precedence over
+   * `glossaryCategory` / `customerName` when deriving the memory bucket.
+   *
+   * Hosts that serve multiple tenants **must** set this to a per-tenant value:
+   * the server-wide persistent TM is shared across requests, so an unscoped
+   * bucket lets one tenant's translation be replayed for another.
+   */
+  cacheScope?: string | undefined
 }
 
 export interface TranslateBatchUnitResult {

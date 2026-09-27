@@ -20,7 +20,8 @@
     "pkg:mac": "pkg dist/bundle/index.js --targets node22-macos-x64 --output dist/genoffice-web-mac",
     "pkg:all": "pkg dist/bundle/index.js --targets node22-linux-x64,node22-win-x64,node22-macos-x64 --output dist/genoffice-web",
     "bundle": "node scripts/bundle.mjs",
-    "test": "vitest run --reporter=dot",
+    "test": "vitest run --reporter=dot && npm run test:http",
+    "test:http": "node scripts/test-http.mjs",
     "test:watch": "vitest",
     "dev:once": "tsx --import ./scripts/register-loaders.mjs src/index.ts"
   },

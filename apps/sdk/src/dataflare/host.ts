@@ -29,6 +29,8 @@ import {
   type EmbedEnvelope,
   type DataflareEmbedKind,
 } from './protocol'
+import { buildEmbedUrl } from '../embed-url'
+import type { EditorApp, EditorLang, EditorTheme } from '../types'
 import type {
   DataflareEmbedCommand,
   DataflareParentRequest,
@@ -43,27 +45,54 @@ import type {
 
 // ── Build the iframe URL ────────────────────────────────────────────────────
 
+/** Stand-in origin so a relative `baseUrl` can go through `new URL()`. */
+const RELATIVE_BASE_PLACEHOLDER = 'http://dataflare-embed.invalid'
+
 /**
  * Construct the iframe URL that loads the GenOffice editor in embed mode.
+ *
+ * The shape is the web-server's `/embed/:docId` contract
+ * (`apps/web-server/src/embed/index.ts` `parseEmbedQuery`): the document id is
+ * a **path** segment and the credential parameter is named **`token`** — the
+ * server answers `400 missing ?token=` for anything else. `openEmbedSession`
+ * defaults to this builder, so a mismatch here breaks every embed at the first
+ * hop rather than at the bridge.
+ *
  * The web-server responds with HTML that:
- *   1. validates the nonce + JWT,
+ *   1. injects the app's own `index.html` under a `<base href="/">` wrapper,
  *   2. sets the `auth_token` cookie (so the iframe's `EventSource` works),
- *   3. injects the `genoffice-dataflare/v1` bridge listener.
+ *   3. injects the `'1.0'` standalone bridge (`/embed/static/bridge.js`).
+ *
+ * Note (3) is *not* the `genoffice-dataflare/v1` bridge: the dataflare guest is
+ * installed by the editor app's own bundle, not by the server. See
+ * `installDataflareHostBridge` below for the host half of that pairing.
  */
 export function buildDataflareEmbedUrl(input: DataflareEmbedUrlInput): string {
-  const params = new URLSearchParams({
-    embed: '1',
-    app: input.app,
-    doc: input.documentId,
-    jwt: input.jwt,
-    sessionId: input.sessionId,
+  // Delegate to the canonical builder rather than re-deriving the query string:
+  // `/apps/{app}/embedded?doc=&jwt=` was an unroutable shape that the server
+  // never served, and a hand-rolled second copy of the vocabulary is how it
+  // drifted. `buildEmbedUrl` is the one tested against `parseEmbedQuery`.
+  const base = input.baseUrl.replace(/\/+$/, '')
+  const absolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(base)
+  const url = buildEmbedUrl({
+    // `new URL()` needs an origin. The placeholder is stripped below, and the
+    // prefix is re-attached there too: `/embed/…` is an absolute path, so
+    // resolving it against `…/office-engine` would drop the prefix rather
+    // than append to it.
+    host: absolute ? base : RELATIVE_BASE_PLACEHOLDER,
+    documentId: input.documentId,
+    app: input.app as EditorApp,
+    token: input.jwt,
     nonce: input.nonce,
+    sessionId: input.sessionId,
+    mode: input.readonly === undefined ? undefined : input.readonly ? 'view' : 'edit',
+    // the dataflare vocabulary says 'system'; the editor's says 'auto'
+    theme: input.theme === 'system' ? 'auto' : (input.theme as EditorTheme | undefined),
+    lang: input.locale as EditorLang | undefined,
   })
-  if (input.readonly !== undefined) params.set('readonly', String(input.readonly))
-  if (input.locale) params.set('lang', input.locale)
-  if (input.theme) params.set('theme', input.theme)
-  const base = input.baseUrl.replace(/\/$/, '')
-  return `${base}/apps/${input.app}/embedded?${params.toString()}`
+  if (absolute) return url
+  const parsed = new URL(url)
+  return `${base}${parsed.pathname}${parsed.search}`
 }
 
 // ── Inbound: install the host bridge (parses guest envelopes) ──────────────

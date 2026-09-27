@@ -30,6 +30,8 @@
 
 export type {
   EditorRange,
+  InlineGlossaryPair,
+  InlineMemoryEntry,
   LanguageCode,
   LanguageOption,
   QualityReport,

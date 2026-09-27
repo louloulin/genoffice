@@ -896,6 +896,38 @@ describe('translateOne — terminology provenance', () => {
     expect(r.translated).toBe('克重 spec')
   })
 
+  it('lets the KB win when it and the inline dictionary name the same source', async () => {
+    // Both halves carry an identical `source`, so the merge re-sort leaves them
+    // tied, `Array#sort` is stable, and `applyTerminology` walks the list in
+    // order — the KB pair consumes the source text before the dictionary pair
+    // is ever reached. Pinned here because it is a real precedence rule, not an
+    // accident of iteration order: a KB term is the deployment's mandatory
+    // rule, the dictionary is the caller's per-request glossary.
+    //
+    // The consequence for hosts is worth stating: a caller-supplied glossary
+    // that collides with a term already in the host's local KB file
+    // (`~/.genoffice/translation-kb.json`) is silently overridden.
+    const kb = new KnowledgeBase({ seed: {} })
+    kb.upsert({
+      id: 'kb-fabric-weight',
+      scope: 'company',
+      priority: 5,
+      sourceTerm: 'fabric weight',
+      targetTerm: '克重',
+    })
+    mockedCall.mockResolvedValue({ ok: true, content: 'please check the fabric weight' })
+    const r = await translateOne(
+      { instruction: 'please check the fabric weight', targetLang: 'zh-CN', sourceLang: 'en-US' },
+      {
+        provider: 'anthropic',
+        config,
+        knowledgeBase: kb,
+        dictionary: [{ source: 'fabric weight', target: '探针甲' }],
+      },
+    )
+    expect(r.translated).toBe('please check the 克重')
+  })
+
   it('does not inject dictionary terms the source text lacks', async () => {
     mockedCall.mockResolvedValue({ ok: true, content: '你好' })
     await translateOne(

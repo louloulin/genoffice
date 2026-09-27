@@ -166,15 +166,20 @@ export async function translateOne(
   const bucket = bucketFor(request)
   const hit = memory?.lookup(sourceLang, targetLang, sourceText, bucket)
   if (hit) {
+    // A cached answer was enforced against the terms of the request that
+    // *saved* it. Terms are now per-request (`opts.dictionary`), so a hit can
+    // predate the caller's glossary — serve it through `applyTerminology` or
+    // the cache silently defeats a mandatory term.
+    const hitText = applyTerminology(hit.translatedText, termPairs)
     return {
       ok: true,
-      translated: hit.translatedText,
+      translated: hitText,
       planId: `translate-memory-${Date.now().toString(36)}`,
       sourceLang,
       targetLang,
       preserveFormat,
       status: 'memory-hit',
-      ...(qualityEnabled ? warningsOption(sourceText, hit.translatedText) : {}),
+      ...(qualityEnabled ? warningsOption(sourceText, hitText) : {}),
       ...withTerms,
     }
   }
@@ -207,7 +212,8 @@ export async function translateOne(
     if (fuzzyHit) {
       return {
         ok: true,
-        translated: fuzzyHit.translatedText,
+        // See the exact-hit branch — a fuzzy match is stale by construction.
+        translated: applyTerminology(fuzzyHit.translatedText, termPairs),
         planId: `translate-fuzzy-${Date.now().toString(36)}`,
         sourceLang,
         targetLang,
@@ -377,12 +383,18 @@ function describeTranslationFailure(result: { error?: string; overloaded?: boole
  * for customer A is never replayed for customer B. `glossaryCategory` and
  * `customerName` are unified because the renderer paths blur them (docs
  * sends the customer as `glossaryCategory`).
+ *
+ * `cacheScope` wins when present. It is the explicit, host-supplied tenant
+ * scope, and it exists precisely because the other two are overloaded: a host
+ * that serves many tenants cannot express "this request belongs to tenant X"
+ * through a glossary *category* without also changing which KB terms apply.
  */
 function bucketFor(request: {
   glossaryCategory?: string | undefined
   customerName?: string | undefined
+  cacheScope?: string | undefined
 }): string | undefined {
-  const raw = request.glossaryCategory ?? request.customerName
+  const raw = request.cacheScope ?? request.glossaryCategory ?? request.customerName
   if (typeof raw !== 'string') return undefined
   const trimmed = raw.trim()
   return trimmed.length > 0 ? trimmed : undefined
@@ -504,7 +516,8 @@ export async function translateBatch(
         return {
           unitId: unitIdOf(unit),
           sourceText,
-          translatedText: hit.translatedText,
+          // See translateOne: a hit must still honour this request's terms.
+          translatedText: applyTerminology(hit.translatedText, termPairs),
           status: 'memory-hit',
           range: unit.range ?? null,
           ...(matchedTerms.length > 0 ? { matchedTerms } : {}),
@@ -521,6 +534,11 @@ export async function translateBatch(
           qualityCheck: request.qualityCheck,
           glossaryCategory: request.glossaryCategory,
           ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
+          // Must reach `translateOne`: it is where `memory.save` runs, and the
+          // batch-level `lookup` above searched `batchBucket` (= `bucketFor`
+          // with `cacheScope`). Omitting it here writes under the
+          // glossaryCategory bucket, so the entry is never found again.
+          ...(request.cacheScope !== undefined ? { cacheScope: request.cacheScope } : {}),
         },
         opts,
       )
@@ -647,7 +665,8 @@ export async function translateBatchStream(
       result = {
         unitId: unitIdOf(unit),
         sourceText,
-        translatedText: hit.translatedText,
+        // See translateOne: a hit must still honour this request's terms.
+        translatedText: applyTerminology(hit.translatedText, termPairs),
         status: 'memory-hit',
         range: unit.range ?? null,
         ...(matchedTerms.length > 0 ? { matchedTerms } : {}),
@@ -664,6 +683,8 @@ export async function translateBatchStream(
           qualityCheck: request.qualityCheck,
           glossaryCategory: request.glossaryCategory,
           ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
+          // See translateBatch — same read/write bucket mismatch.
+          ...(request.cacheScope !== undefined ? { cacheScope: request.cacheScope } : {}),
         },
         opts,
       )

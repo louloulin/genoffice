@@ -4,7 +4,7 @@ import {
   installDataflareEmbedBridge,
   requestDataflareParent,
   requestDataflareStreamParent,
-} from '../src/shared/embed-bridge'
+} from '@genoffice/web-sdk/dataflare/guest'
 
 const parentWindow = {
   postMessage: vi.fn(),
@@ -106,11 +106,16 @@ describe('Dataflare embed bridge', () => {
     dispose()
   })
 
-  it('delivers global-state-update commands only to the globalState handler and posts ready+request', () => {
+  it('delivers global-state-update commands only to the globalState handler and posts ready+request after init', () => {
     setEmbeddedWindow()
     const onCommand = vi.fn()
     const onGlobalState = vi.fn()
     const dispose = installDataflareEmbedBridge({ onCommand, onGlobalState })
+
+    // Nothing may be announced before the host names a session: a pre-session
+    // envelope carries no sessionId, so the host bridge's correlation check
+    // drops it and the handshake would silently never arrive.
+    expect(parentWindow.postMessage).not.toHaveBeenCalled()
 
     // init sets the session and is also dispatched to onCommand (kept for backward compatibility)
     window.dispatchEvent(new MessageEvent('message', {
@@ -153,7 +158,7 @@ describe('Dataflare embed bridge', () => {
     }))
     expect(onGlobalState).toHaveBeenCalledTimes(1)
 
-    // ready + global-state-request should have been posted to parent
+    // ready + global-state-request are posted once `init` supplied the session
     const postedPayloads = parentWindow.postMessage.mock.calls.map(call => call[0]?.payload?.type)
     expect(postedPayloads).toContain('ready')
     expect(postedPayloads).toContain('global-state-request')

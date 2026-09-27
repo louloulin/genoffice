@@ -25,10 +25,41 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pkgRoot = resolve(here, '..')
+const repoRoot = resolve(pkgRoot, '..', '..')
 const bundle = join(pkgRoot, 'dist', 'bundle', 'index.js')
-const srcDir = join(pkgRoot, 'src')
 
-/** Newest mtime under a directory tree, or 0 when it does not exist. */
+/**
+ * Every source tree the bundle is built from.
+ *
+ * The bundle inlines the `@genoffice/*` workspace packages — they are not in
+ * its `--external` list — so the server's own `src/` is not the only thing
+ * that can make the artifact stale. Watching only `pkgRoot/src` let an edit to
+ * `packages/translation-core/src` leave the *previous* bundle in place, and the
+ * e2e suites then asserted against code nobody had just written: the fix
+ * looked like it did nothing, which is the second failure mode above, arriving
+ * through a door this file had left open.
+ *
+ * `packages/<name>/src` deliberately, not `packages/<name>`: the latter
+ * includes each package's own build output, which a build rewrites, and the
+ * guard would then rebuild on every single run.
+ */
+function sourceDirs(): string[] {
+  const dirs = [join(pkgRoot, 'src')]
+  const packagesDir = join(repoRoot, 'packages')
+  let names: string[]
+  try {
+    names = readdirSync(packagesDir)
+  } catch {
+    return dirs
+  }
+  for (const name of names) {
+    const dir = join(packagesDir, name, 'src')
+    if (existsSync(dir)) dirs.push(dir)
+  }
+  return dirs
+}
+
+/** Newest mtime across a directory tree, or 0 when it does not exist. */
 function newestMtime(dir: string): number {
   let newest = 0
   const stack = [dir]
@@ -55,14 +86,19 @@ function newestMtime(dir: string): number {
   return newest
 }
 
+function newestSourceMtime(): number {
+  let newest = 0
+  for (const dir of sourceDirs()) newest = Math.max(newest, newestMtime(dir))
+  return newest
+}
+
 export default function setup(): void {
-  const needsBuild =
-    !existsSync(bundle) || statSync(bundle).mtimeMs < newestMtime(srcDir)
+  const needsBuild = !existsSync(bundle) || statSync(bundle).mtimeMs < newestSourceMtime()
   if (!needsBuild) return
   // stderr, so the rebuild note never corrupts a suite's stdout assertions.
   process.stderr.write(
     existsSync(bundle)
-      ? '[web-server tests] src/ is newer than the bundle — rebuilding before the e2e suites run\n'
+      ? '[web-server tests] sources are newer than the bundle — rebuilding before the e2e suites run\n'
       : '[web-server tests] no bundle found — building it before the e2e suites run\n',
   )
   execFileSync('node', [join(pkgRoot, 'scripts', 'bundle.mjs')], {

@@ -80,7 +80,7 @@ import {
   type TranslateDialogStrings,
   type AiInlineLauncherStrings,
 } from '@genoffice/ui'
-import { postToEmbedParent } from '../../shared/embed-bridge'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import { ProviderMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'

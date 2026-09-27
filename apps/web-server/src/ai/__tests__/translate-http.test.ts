@@ -24,6 +24,11 @@ import {
   handleTranslateStreamCancelHttp,
   handleTranslateStreamHttp,
 } from '../translate-http'
+// Same specifier `translate-http.ts` uses, so the swap lands on the module
+// instance the handler actually calls. Importing a relative path into the
+// package (`../…/src/llm-client`) would resolve to a *second* instance and
+// the injected caller would never run.
+import { getLlmCaller, setLlmCaller, type LlmCallResult } from '@genoffice/translation-core'
 
 function makeServer(): Promise<{ server: Server; port: number; close: () => void }> {
   return new Promise((resolve) => {
@@ -241,26 +246,47 @@ test('POST /api/ai/translate/stream/cancel — unknown requestId → 200 with st
 
 test('POST /api/ai/translate/stream/cancel — active requestId → status:"cancelled"', async () => {
   const { port, close } = await makeServer()
+  // `cancelled` is only reported while the stream is still registered, and
+  // the registration lives from the first `writeHead` to the handler's
+  // `finally`. Driving that window with a *failing* provider is unwinnable:
+  // a missing provider resolves in microseconds, so the session is already
+  // evicted before any `await` in the test resumes (the previous 30ms sleep
+  // made this test permanently red — it always read `completed`).
+  //
+  // Instead, hold the stream open with a caller that never settles, and use
+  // the `start` event as the readiness signal. `start` is written *after*
+  // `TRANSLATE_STREAM_SESSIONS.set()` (translate-http.ts), so receiving it
+  // proves the session is registered — no sleep, no race.
+  const originalCaller = getLlmCaller()
+  setLlmCaller(() => new Promise<LlmCallResult>(() => {}))
+  const streamAbort = new AbortController()
   try {
-    // Start a stream that hangs (no provider configured, the SSE pipeline
-    // still registers the session before failing). We use the missing-provider
-    // path because it is deterministic and the session map stays populated
-    // through the SSE emit phase.
-    const streamAbort = new AbortController()
-    void fetch(`http://127.0.0.1:${port}/api/ai/translate/stream`, {
+    const streamResponse = await fetch(`http://127.0.0.1:${port}/api/ai/translate/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         requestId: 'cancel-me',
         sourceLanguage: 'en-US',
         targetLanguage: 'zh-CN',
-        settings: { provider: 'openai', providers: {} },
+        settings: { provider: 'openai', providers: { openai: { apiKey: 'test', model: 'test' } } },
         units: [{ unitId: 'u1', sourceText: 'hello', order: 0 }],
       }),
       signal: streamAbort.signal,
-    }).catch(() => undefined)
-    // Give the handler a tick to register the session.
-    await new Promise((r) => setTimeout(r, 30))
+    })
+    assert.equal(streamResponse.status, 200)
+
+    const reader = streamResponse.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let sawStart = false
+    while (!sawStart) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      if (buffer.includes('event: start')) sawStart = true
+    }
+    assert.ok(sawStart, 'stream must emit `start`, which proves the session is registered')
+
     const response = await fetch(`http://127.0.0.1:${port}/api/ai/translate/stream/cancel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -277,8 +303,11 @@ test('POST /api/ai/translate/stream/cancel — active requestId → status:"canc
     assert.equal(body.status, 'cancelled')
     assert.equal(body.requestId, 'cancel-me')
     assert.equal(body.aborted, true)
-    streamAbort.abort()
   } finally {
+    // Client-side close releases the server socket; restoring the caller keeps
+    // the swap from leaking into the other tests in this file.
+    streamAbort.abort()
+    setLlmCaller(originalCaller)
     close()
   }
 })

@@ -214,6 +214,25 @@ const EMBED_BRIDGE_SOURCE_REEXPORT = EMBED_BRIDGE_SOURCE
 export const EMBED_BRIDGE_SCRIPT_PATH = '/embed/static/bridge.js'
 
 /**
+ * The same script, expressed *relative to the embed page's own directory*.
+ *
+ * The embed page is served at two different URLs depending on whether the host
+ * mounts this server at the origin root or behind a path prefix:
+ *
+ *   root-mounted   /embed/<docId>
+ *   prefixed       /office-engine/embed/<docId>   (proxy strips /office-engine)
+ *
+ * A reverse proxy erases the prefix before the request reaches us, so the
+ * prefix cannot be recovered from `url.pathname` and must not be baked into
+ * the HTML either. Referencing the bridge and the renderer bundle through the
+ * embed page's own directory (`<base href="./">`) is the only form that
+ * resolves correctly under both mountings: the browser then asks for
+ * `<prefix>/embed/static/bridge.js`, the proxy strips its prefix, and the
+ * request lands here as `/embed/static/bridge.js` — exactly the route below.
+ */
+export const EMBED_BRIDGE_SCRIPT_REF = EMBED_BRIDGE_SCRIPT_PATH.replace(/^\/embed\//, '')
+
+/**
  * `frame-ancestors` value for the `/embed/:docId` HTML response (C.4).
  *
  * The embed page exists to be framed by a *different* origin — the
@@ -274,10 +293,10 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   //      script tags in the renderer's own bundle should already carry a
   //      nonce/hash, so this rewrite is conservative.
   //   2. The renderer's bundle paths are relative (`./assets/index-XYZ.js`).
-  //      When loaded inside the `/embed/:docId` iframe the browser resolves
-  //      them to `/embed/assets/...` which the static layer does not serve
-  //      (returns 400). Inject `<base href="/">` so the relative paths land
-  //      on the real static root.
+  //      They must resolve inside the embed directory, not at the origin
+  //      root — see the `<base href="./">` note below, which also explains
+  //      why the path prefix a reverse proxy mounts us under cannot be
+  //      recovered here and must not be assumed to be `/`.
   if (html.includes('http-equiv="Content-Security-Policy"')) {
     html = html.replace(
       /<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i,
@@ -301,11 +320,23 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
       `<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*">\n</head>`,
     )
   }
-  const baseTag = '<base href="/">'
+  // `<base href="./">` — the embed page's own directory, NOT the origin root.
+  //
+  // The renderer bundle references its assets relatively (`./assets/index-*.js`,
+  // `./assets/index-*.css`). Resolving those against the origin root only works
+  // when this server is mounted at `/`. Behind a path prefix — which is exactly
+  // how Dataflarework runs it, `@RequestMapping("/office-engine")` with
+  // `strip-path-prefix: true` — the browser asked the *host* for `/assets/…`,
+  // a path the host never forwards, so the bundle 404'd and the embed iframe
+  // rendered blank. The proxy strips the prefix upstream, so neither the
+  // request URL nor any server-side state reveals the prefix; a root-relative
+  // `<base>` is therefore wrong in the general case and a per-request guess is
+  // impossible. Directory-relative is the one form that is correct under both
+  // mountings, because it inherits whatever prefix the iframe URL already has.
+  //
   // `<base>` only affects URLs that follow it, so inject it as the first
-  // element after `<head>` opens. Inserting it later leaves the renderer's
-  // own `<script src="./assets/…">` tag resolving against the iframe URL
-  // and 400-ing on `/embed/assets/…`.
+  // element after `<head>` opens.
+  const baseTag = '<base href="./">'
   html = html.replace(/<head>/i, (_m) => `<head>\n${baseTag}`)
   const safeToken = q.token.replace(/"/g, '&quot;').replace(/</g, '&lt;')
   const tokenTag = `\n<meta name="genoffice-token" content="${safeToken}">`
@@ -331,9 +362,12 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   }
   const configTag = `\n<meta name="genoffice-embed-config" content="${escapeAttr(JSON.stringify(embedConfig))}">`
   const sessionTag = `\n<meta name="genoffice-session" content="${sessionId}">`
-  // Bridge is now loaded from a same-origin file — no inline `<script>`,
-  // no `'unsafe-inline'` requirement in the CSP.
-  const bridgeTag = `\n<script src="${EMBED_BRIDGE_SCRIPT_PATH}"></script>`
+  // Bridge is loaded from a same-origin file — no inline `<script>`, no
+  // `'unsafe-inline'` requirement in the CSP. Referenced relative to the embed
+  // directory (see `EMBED_BRIDGE_SCRIPT_REF`) so it survives a path-prefixed
+  // mount; a root-relative `/embed/static/bridge.js` would ask the *host* for
+  // that path, which the host does not forward.
+  const bridgeTag = `\n<script src="${EMBED_BRIDGE_SCRIPT_REF}"></script>`
   const injection = tokenTag + nonceTag + configTag + sessionTag + bridgeTag
   // Case-insensitive match against `</head>` so a renderer with a `<HEAD>`
   // tag (rare but possible after build minification) still gets the bridge
@@ -356,6 +390,15 @@ function escapeAttr(s: string): string {
  */
 export function handleEmbed(request: IncomingMessage, response: ServerResponse, url: URL): boolean {
   if (!url.pathname.startsWith('/embed/')) return false
+
+  // `/embed/assets/**` is the renderer's own bundle, not an embed-document
+  // request. It arrives here because the embed HTML resolves its relative
+  // assets against the embed directory (`<base href="./">`), which is what
+  // makes the page survive a path-prefixed mount. Falling through to the
+  // static layer matters: without this, `parseEmbedQuery` below treats
+  // `assets` as the app name and answers 400 `missing ?token=`, which the
+  // browser reports as a MIME failure and the iframe renders blank.
+  if (url.pathname.startsWith('/embed/assets/')) return false
 
   // `/embed/static/bridge.js` — external bridge script. The embed HTML now
   // references it via `<script src="…">` instead of an inline `<script>`,

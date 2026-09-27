@@ -33,7 +33,12 @@ import {
   type AiProviderId,
 } from '@genoffice/ai-provider'
 import {
+  type InlineGlossaryPair,
+  type InlineMemoryEntry,
+  normalizeSourceLang,
+  TranslationMemory,
   type TranslateBatchUnitResult,
+  type TranslationMemoryLike,
   translateBatch,
   translateBatchStream,
 } from '@genoffice/translation-core'
@@ -106,6 +111,25 @@ export interface TranslateBatchHttpRequest {
   units?: TranslateUnitRequest[]
   /** Customer name — narrows the KB to per-customer terms + preferences. */
   customerName?: string
+  /**
+   * Caller-supplied mandatory term pairs for this request. Layered on top of
+   * the KB terms (longest source wins) and enforced on the output exactly like
+   * KB terms. Lets a host keep its term store outside GenOffice.
+   */
+  glossary?: InlineGlossaryPair[]
+  /**
+   * Caller-supplied translation-memory entries, consulted before the provider.
+   * Exact match only; never written to the shared TM.
+   */
+  memory?: InlineMemoryEntry[]
+  /**
+   * Tenant scope for the shared translation-memory bucket.
+   *
+   * Required by any host that serves more than one tenant: the shared TM is
+   * process-wide, so without a scope one tenant's translation is replayed for
+   * the next tenant that asks for the same sentence.
+   */
+  cacheScope?: string
   settings?: AiSettings
 }
 
@@ -193,6 +217,104 @@ function pickInvalidStringField(
     if (typeof value !== 'string') return field
   }
   return null
+}
+
+/**
+ * Caps on the request-scoped `glossary` / `memory` arrays.
+ *
+ * Both feed the prompt and the memory index, so an authenticated caller could
+ * otherwise make one request cost unbounded memory and a huge system prompt.
+ * The limits are far above any real host's per-request slice (Dataflare sends
+ * ≤50 terms, ≤5 memories) and well above the 200 terms the prompt renders.
+ */
+const MAX_INLINE_GLOSSARY_ENTRIES = 1000
+const MAX_INLINE_MEMORY_ENTRIES = 500
+
+/**
+ * Validate one request-scoped array field.
+ *
+ * These arrive as untyped JSON and are consumed directly — `glossary` goes
+ * into the prompt, `memory` into the lookup index. A malformed element used to
+ * be dropped or to throw later as a 500; both outcomes silently change the
+ * translation. Reject the request instead and name the offending index, so the
+ * caller learns its payload is wrong rather than shipping a worse translation.
+ *
+ * Returns an error message, or null when the field is absent / well-formed.
+ */
+function pickInvalidInlineArray(obj: Record<string, unknown>, field: 'glossary' | 'memory'): string | null {
+  const value = obj[field]
+  if (value === undefined) return null
+  if (!Array.isArray(value)) return `expected \`${field}\` to be an array`
+  const limit = field === 'glossary' ? MAX_INLINE_GLOSSARY_ENTRIES : MAX_INLINE_MEMORY_ENTRIES
+  if (value.length > limit) return `expected \`${field}\` to hold at most ${limit} entries`
+  // `context` is the only optional member; every other key must be a string.
+  const required: readonly string[] =
+    field === 'glossary' ? ['source', 'target'] : ['sourceText', 'targetText']
+  for (let index = 0; index < value.length; index += 1) {
+    const entry = value[index] as Record<string, unknown> | null
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return `expected \`${field}[${index}]\` to be an object`
+    }
+    for (const key of required) {
+      if (typeof entry[key] !== 'string') {
+        return `expected \`${field}[${index}].${key}\` to be a string`
+      }
+      // An empty string is structurally a string but is not usable: the
+      // enforcement pass rewrites with `text.split(source).join(target)`, so a
+      // blank `source` matches everywhere and splices the target between every
+      // character, and a blank `target` deletes the matched term outright.
+      // Both corrupt the whole unit, so refuse rather than translate wrongly.
+      if ((entry[key] as string).length === 0) {
+        return `expected \`${field}[${index}].${key}\` to be non-empty`
+      }
+    }
+    if (field === 'memory' && entry.context !== undefined && typeof entry.context !== 'string') {
+      return `expected \`memory[${index}].context\` to be a string`
+    }
+  }
+  return null
+}
+
+/**
+ * Build the request-scoped memory adapter for `body.memory`.
+ *
+ * Returns null when the caller sent none, which leaves the shared TM in place.
+ *
+ * Semantics: exact match only, and there is no write-through — `save()` is a
+ * no-op. The entries belong to the caller's own store, so persisting them into
+ * the process-wide TM would let one tenant's translation be served to the next.
+ * A throwaway {@link TranslationMemory} backs the index so the source-text
+ * normalisation is byte-identical to the shared TM's; only the bucket is
+ * dropped, because these entries are already scoped to this request by
+ * construction and applying a tenant bucket would make them unreachable.
+ */
+function buildInlineMemory(
+  body: TranslateBatchHttpRequest,
+): TranslationMemoryLike | null {
+  const entries = body.memory
+  if (!entries || entries.length === 0) return null
+  const sourceLang = normalizeSourceLang(body.sourceLanguage)
+  const targetLang = (body.targetLanguage ?? '').trim()
+  const store = new TranslationMemory()
+  for (const entry of entries) {
+    // An empty target is not a memory — `MemorySaveRequest` skips the same
+    // shape, and storing it would answer "translated" with nothing.
+    if (!entry.targetText.trim()) continue
+    store.save({
+      sourceLang,
+      targetLang,
+      sourceText: entry.sourceText,
+      translatedText: entry.targetText,
+    })
+  }
+  return {
+    lookup(_sourceLang, _targetLang, sourceText) {
+      return store.lookup(sourceLang, targetLang, sourceText)
+    },
+    save() {
+      // Request-scoped: nothing may outlive the request.
+    },
+  }
 }
 
 function toCoreUnits(raw: unknown): CoreUnit[] {
@@ -297,6 +419,7 @@ export async function translateBatchCore(
     'targetLanguage',
     'glossaryCategory',
     'customerName',
+    'cacheScope',
     'scene',
     'documentId',
     'documentType',
@@ -312,6 +435,15 @@ export async function translateBatchCore(
     })
     return
   }
+  const badInline =
+    pickInvalidInlineArray(body as unknown as Record<string, unknown>, 'glossary') ??
+    pickInvalidInlineArray(body as unknown as Record<string, unknown>, 'memory')
+  if (badInline) {
+    sendJson(response, 400, {
+      error: { message: badInline, code: 'INVALID_ARGUMENT' },
+    })
+    return
+  }
   try {
     const { provider, config } = resolveProvider(body)
     if (!config) {
@@ -321,6 +453,7 @@ export async function translateBatchCore(
       return
     }
     const storage = await translationStorage()
+    const inlineMemory = buildInlineMemory(body)
     const result = await translateBatch(
       {
         units: toCoreUnits(body.units) as never,
@@ -332,8 +465,21 @@ export async function translateBatchCore(
         qualityCheck: body.qualityCheck,
         glossaryCategory: body.glossaryCategory,
         ...(body.customerName !== undefined ? { customerName: body.customerName } : {}),
+        ...(body.cacheScope !== undefined ? { cacheScope: body.cacheScope } : {}),
       },
-      { provider, config, ...storage },
+      {
+        provider,
+        config,
+        ...storage,
+        // Request-scoped memory wins when supplied; otherwise the shared TM
+        // stays, now bucketed by `cacheScope`.
+        ...(inlineMemory ? { memory: inlineMemory } : {}),
+        // `opts.dictionary` is the documented slot for caller-supplied pairs:
+        // the core merges them with the KB terms, injects the ones that occur
+        // in each unit into the prompt, reports them as `matchedTerms` and
+        // enforces them on the output.
+        ...(body.glossary && body.glossary.length > 0 ? { dictionary: body.glossary } : {}),
+      },
     )
     sendJson(response, 200, result)
   } catch (error) {
@@ -440,6 +586,7 @@ export async function handleTranslateStreamHttp(
       'targetLanguage',
       'glossaryCategory',
       'customerName',
+      'cacheScope',
       'scene',
       'documentId',
       'documentType',
@@ -451,6 +598,17 @@ export async function handleTranslateStreamHttp(
         type: 'error',
         requestId: effectiveRequestId,
         message: `expected \`${badField}\` to be a string`,
+      })
+      return
+    }
+    const badInline =
+      pickInvalidInlineArray(body as unknown as Record<string, unknown>, 'glossary') ??
+      pickInvalidInlineArray(body as unknown as Record<string, unknown>, 'memory')
+    if (badInline) {
+      writeSseEvent(response, 'error', {
+        type: 'error',
+        requestId: effectiveRequestId,
+        message: badInline,
       })
       return
     }
@@ -474,6 +632,7 @@ export async function handleTranslateStreamHttp(
     })
 
     const storage = await translationStorage()
+    const inlineMemory = buildInlineMemory(body)
     const response_ = await translateBatchStream(
       {
         units: units as never,
@@ -485,8 +644,15 @@ export async function handleTranslateStreamHttp(
         qualityCheck: body.qualityCheck,
         glossaryCategory: body.glossaryCategory,
         ...(body.customerName !== undefined ? { customerName: body.customerName } : {}),
+        ...(body.cacheScope !== undefined ? { cacheScope: body.cacheScope } : {}),
       },
-      { provider, config, ...storage },
+      {
+        provider,
+        config,
+        ...storage,
+        ...(inlineMemory ? { memory: inlineMemory } : {}),
+        ...(body.glossary && body.glossary.length > 0 ? { dictionary: body.glossary } : {}),
+      },
       {
         // Cancellation already short-circuits the SSE socket via the
         // `AbortController` registered in TRANSLATE_STREAM_SESSIONS, but the

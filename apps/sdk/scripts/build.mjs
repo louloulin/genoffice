@@ -43,6 +43,7 @@ const targets = [
   { entry: 'src/index.ts',             out: 'index',             umd: 'GenOffice' },
   { entry: 'src/dataflare/host.ts',    out: 'dataflare-host',    umd: 'GenOfficeDataflareHost' },
   { entry: 'src/dataflare/guest.ts',   out: 'dataflare-guest',   umd: 'GenOfficeDataflareGuest' },
+  { entry: 'src/dataflare/integration.ts', out: 'dataflare-integration', umd: undefined },
   { entry: 'src/file/management.ts',   out: 'file-management',   umd: undefined },
   { entry: 'src/file/versions.ts',     out: 'file-versions',     umd: undefined },
   { entry: 'src/file/comments.ts',     out: 'file-comments',     umd: undefined },

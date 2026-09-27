@@ -2,7 +2,7 @@
 
 import type { DesktopApi } from '../shared/ipc'
 import type { ProjectApi } from '@genoffice/project-store'
-import type { GenOfficeEmbedEvent } from '../shared/embed-bridge'
+import type { GenOfficeEmbedEvent } from '@genoffice/web-sdk/dataflare/guest'
 
 declare global {
   interface Window {

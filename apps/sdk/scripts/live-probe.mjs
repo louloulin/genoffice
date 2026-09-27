@@ -184,14 +184,23 @@ if (bearer) {
   console.log('\nembed session (openEmbedSession)')
   const session = await openEmbedSession({ baseUrl, documentId: fileId, bearer })
   const embedUrl = new URL(session.url)
-  check('url targets /apps/docs/embedded', embedUrl.pathname === '/apps/docs/embedded', session.url)
-  check('url carries embed=1', embedUrl.searchParams.get('embed') === '1', session.url)
+  // Assert the contract the server actually serves — `parseEmbedQuery` in
+  // `apps/web-server/src/embed/index.ts`: the document id is a **path** segment
+  // and the credential parameter is named **`token`** (anything else answers
+  // `400 missing ?token=`). This probe previously asserted
+  // `/apps/docs/embedded?embed=1&doc=&jwt=`, a shape no route serves, so it
+  // reported a green embed session for a URL that could never load.
   check(
-    'url carries doc + sessionId + nonce + jwt',
-    embedUrl.searchParams.get('doc') === fileId &&
-      !!embedUrl.searchParams.get('sessionId') &&
-      !!embedUrl.searchParams.get('nonce') &&
-      embedUrl.searchParams.get('jwt') === session.jwt,
+    'url targets /embed/<docId> with the id in the path',
+    embedUrl.pathname === `/embed/${encodeURIComponent(fileId)}`,
+    session.url,
+  )
+  check('url carries app=docs', embedUrl.searchParams.get('app') === 'docs', session.url)
+  check(
+    'url carries token + sessionId + nonce',
+    embedUrl.searchParams.get('token') === session.jwt &&
+      embedUrl.searchParams.get('sessionId') === session.sessionId &&
+      embedUrl.searchParams.get('nonce') === session.nonce,
     Object.fromEntries(embedUrl.searchParams),
   )
   check('jwt is unexpired', session.jwtExp * 1000 > Date.now(), session.jwtExp)
@@ -241,6 +250,41 @@ if (bearer) {
     batchErr ? { code: batchErr.code, message: batchErr.message } : undefined,
   )
   check('batch returns the units[] pipeline result', Array.isArray(batch?.units), batch)
+
+  // Inline memory + glossary, asserted without involving a provider: an inline
+  // memory hit short-circuits before the provider call, so `status` and the
+  // resulting text are deterministic no matter which model (if any) the server
+  // has configured. The seeded target deliberately still carries the source
+  // term — the "model left the term untranslated" case the enforcement pass
+  // exists for — so a server that dropped `glossary` returns the term verbatim
+  // and this check goes red.
+  //
+  // The term is probe-scoped on purpose. A realistic one ("fabric weight")
+  // silently collides with whatever the server's KB already says, and the KB
+  // wins on an equal-length match, which makes the assertion a statement about
+  // the KB rather than about the wire fields under test.
+  let hitBatch = null
+  let hitErr = null
+  try {
+    hitBatch = await translation.translateBatch({
+      units: [{ sourceText: 'probe term alpha', order: 0 }],
+      targetLanguage: 'zh',
+      glossary: [{ source: 'probe term alpha', target: '探针甲' }],
+      memory: [{ sourceText: 'probe term alpha', targetText: 'the probe term alpha value' }],
+      cacheScope: 'probe-scope',
+    })
+  } catch (err) {
+    hitErr = err
+  }
+  const hitUnit = hitBatch?.units?.[0]
+  const hitDetail = hitErr ? { code: hitErr.code, message: hitErr.message } : hitUnit
+  check('inline memory is served without a provider call', hitUnit?.status === 'memory-hit', hitDetail)
+  check('inline glossary is enforced on the memory hit', hitUnit?.translatedText === 'the 探针甲 value', hitDetail)
+  check(
+    'inline glossary is reported in matchedTerms',
+    (hitUnit?.matchedTerms ?? []).includes('probe term alpha'),
+    hitDetail,
+  )
 
   const stream = translation.translate({ units: [{ sourceText: 'hello', order: 0 }], targetLanguage: 'zh' })
   const events = await collect(stream, { limit: 1 })

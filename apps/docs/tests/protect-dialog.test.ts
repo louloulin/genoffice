@@ -42,11 +42,15 @@ async function mount(partial: Partial<Props>) {
     })
   }
   // submit hashes/verifies passwords asynchronously (iterated SHA-512); keep
-  // flushing until the expected outcome shows up instead of guessing a delay
+  // flushing until the expected outcome shows up instead of guessing a delay.
+  // The poll budget must stay above the heaviest case's outer test timeout
+  // (60 s, see the password-touching cases below), otherwise the inner deadline
+  // fires first and the suite goes red on a slow full-suite run purely from CPU
+  // contention — the hash itself is never the thing that is wrong.
   const submit = async (done: () => boolean) => {
     await click(host.querySelector('.btn-primary')!)
     const start = Date.now()
-    while (!done() && Date.now() - start < 10_000) {
+    while (!done() && Date.now() - start < 50_000) {
       await act(async () => {
         await new Promise((r) => setTimeout(r, 10))
       })

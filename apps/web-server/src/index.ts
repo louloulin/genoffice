@@ -1160,7 +1160,7 @@ const server = createServer(async (request, response) => {
   // for entries declared in `apps/sdk/scripts/build.mjs#targets`. Anything
   // else under /static/sdk/ — sourcemaps, .d.ts, future internal files —
   // returns 404, so a stray build artefact never leaks by accident.
-  const SDK_ENTRY_PATTERN = /^\/static\/sdk\/(?:index|dataflare-host|dataflare-guest|file-management|file-versions|file-comments|file-callback|file-jwt|file-embed|embed-nonce|ai-translation|ai-agent|auth-mint|auth-client|collab-cursor|collab-presence|collab-lock|collab-comments)\.(?:mjs|cjs|umd\.js)$/
+  const SDK_ENTRY_PATTERN = /^\/static\/sdk\/(?:index|dataflare-host|dataflare-guest|dataflare-integration|file-management|file-versions|file-comments|file-callback|file-jwt|file-embed|embed-nonce|ai-translation|ai-agent|auth-mint|auth-client|collab-cursor|collab-presence|collab-lock|collab-comments)\.(?:mjs|cjs|umd\.js)$/
   if (SDK_ENTRY_PATTERN.test(url.pathname)) {
     const sdkFile = resolve(SDK_BUNDLE_ROOT, basename(url.pathname))
     // Containment: reject anything that resolves outside SDK_BUNDLE_ROOT.

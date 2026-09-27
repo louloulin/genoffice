@@ -26,7 +26,11 @@ describe('web-bridge.ts translate URL migration', () => {
   })
 
   it('embeds send translate-batch-stream requests to the GenOffice SSE endpoint', () => {
-    expect(content).toContain("path: '/office-engine/api/ai/translate/stream'")
+    // The SSE branch goes through the SDK integration's `stream(path, body, handlers)`
+    // adapter; assert the URL is that call's first argument. Whitespace-tolerant so
+    // reformatting does not go red, but a rollback to the legacy URL or the retired
+    // `requestDataflareStreamParent({ path })` shape still does.
+    expect(content).toMatch(/dataflare\.stream\(\s*'\/office-engine\/api\/ai\/translate\/stream'/)
   })
 
   it('keeps saveTranslationMemory pointing at the Dataflare multi-tenant memory endpoint', () => {
