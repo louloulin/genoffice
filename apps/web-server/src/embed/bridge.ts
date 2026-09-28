@@ -188,38 +188,32 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
   //      versions / telemetry) and replies UNSUPPORTED for the rest, so
   //      the host sees a loud structured failure instead of a hang.
   //
+  // A sink is not a claim on every command. installSdkCommandSink rejects
+  // anything outside its handler map with code 'UNSUPPORTED' (see
+  // packages/ipc-bridge/src/sdk-command-sink.ts), and the shipped renderers
+  // register only a small map — defaultSdkCommandHandlers() carries just
+  // openFileDialog and print. Treating the sink's presence as ownership
+  // therefore shadowed the entire server-backed subset: listComments,
+  // addComment, createSnapshot, restoreVersion and reportUsage were all
+  // unreachable from the real embed even though step 2 exists to service
+  // them. So step 2 is a *fallback*, not merely the no-sink path: only an
+  // UNSUPPORTED rejection hands off. Every other rejection (a handler that
+  // ran and failed) is the renderer's answer and is mirrored as-is, so we
+  // still reply exactly once per command.
+  //
   // Error codes from either side are preserved verbatim so hosts see a
   // stable shape regardless of who rejected the command.
   var SDK_COMMAND_CHANNEL = 'sdk:command';
-  function dispatchCommand(env) {
-    var name = env && env.payload && env.payload.name;
-    var args = env && env.payload && env.payload.args;
-    var correlationId = env && env.correlationId;
-    if (typeof name !== 'string' || !name || !correlationId) return;
-
-    var sink = window.__GENOFFICE_COMMAND_SINK__;
-    if (typeof sink === 'function') {
-      try {
-        Promise.resolve(sink(name, args)).then(function (result) {
-          replyCommand(correlationId, true, result);
-        }, function (e) {
-          replyCommand(correlationId, false, undefined, {
-            code: (e && e.code) || 'RENDERER_ERROR',
-            message: (e && e.message) || 'renderer rejected command'
-          });
-        });
-      } catch (e) {
-        replyCommand(correlationId, false, undefined, {
-          code: (e && e.code) || 'RENDERER_ERROR',
-          message: (e && e.message) || 'renderer threw synchronously'
-        });
-      }
-      return;
-    }
-
-    var cfg = window.__GENOFFICE_EMBED__;
-    var sessionId = cfg && cfg.sessionId;
-    var docId = cfg && cfg.docId;
+  // readEmbedConfig() — not the raw global — so docId/sessionId come from
+  // the <meta name="genoffice-embed-config"> the server always injects. The
+  // global is only a host override layered on top of it, and nothing in any
+  // shipped artifact assigns it, so reading it alone left every command with
+  // an undefined docId (sdk-commands.ts: 'docId is required'). It also means
+  // x-ipc-session is sent, which the IPC dispatcher needs.
+  function dispatchViaServerIpc(correlationId, name, args) {
+    var cfg = readEmbedConfig();
+    var sessionId = cfg.sessionId;
+    var docId = cfg.docId;
     var fetchFn = (typeof fetch !== 'undefined') ? fetch : null;
     if (!fetchFn) {
       replyCommand(correlationId, false, undefined, {
@@ -256,6 +250,42 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
         message: (e && e.message) || 'IPC fetch failed'
       });
     });
+  }
+  function dispatchCommand(env) {
+    var name = env && env.payload && env.payload.name;
+    var args = env && env.payload && env.payload.args;
+    var correlationId = env && env.correlationId;
+    if (typeof name !== 'string' || !name || !correlationId) return;
+
+    var sink = window.__GENOFFICE_COMMAND_SINK__;
+    if (typeof sink === 'function') {
+      try {
+        Promise.resolve(sink(name, args)).then(function (result) {
+          replyCommand(correlationId, true, result);
+        }, function (e) {
+          if (e && e.code === 'UNSUPPORTED') {
+            dispatchViaServerIpc(correlationId, name, args);
+            return;
+          }
+          replyCommand(correlationId, false, undefined, {
+            code: (e && e.code) || 'RENDERER_ERROR',
+            message: (e && e.message) || 'renderer rejected command'
+          });
+        });
+      } catch (e) {
+        if (e && e.code === 'UNSUPPORTED') {
+          dispatchViaServerIpc(correlationId, name, args);
+          return;
+        }
+        replyCommand(correlationId, false, undefined, {
+          code: (e && e.code) || 'RENDERER_ERROR',
+          message: (e && e.message) || 'renderer threw synchronously'
+        });
+      }
+      return;
+    }
+
+    dispatchViaServerIpc(correlationId, name, args);
   }
   function onHostMessage(event) {
     var data = event.data;

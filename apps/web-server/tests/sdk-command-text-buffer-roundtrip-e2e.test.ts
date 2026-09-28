@@ -94,7 +94,26 @@ function evalBridgeWithSink(opts?: {
     'fetch',
     EMBED_BRIDGE_SOURCE,
   )
-  fn(fakeWindow, fakeDocument, class { close() {} }, setTimeout, class {}, async () => ({ ok: true }))
+  fn(
+    fakeWindow,
+    fakeDocument,
+    class { close() {} },
+    setTimeout,
+    class {},
+    // The bridge hands a command the sink does not own to the server
+    // channel (see the UNSUPPORTED fall-through in EMBED_BRIDGE_SOURCE),
+    // so the stub has to answer like the real dispatcher: a structured
+    // WEB_UNSUPPORTED envelope. A `{ok:true}`-only stub leaves `res.text`
+    // undefined and the bridge reports IPC_FETCH_FAILED, which would hide
+    // the code this test is actually about.
+    async () => ({
+      ok: false,
+      status: 501,
+      text: async () => JSON.stringify({
+        error: { code: 'WEB_UNSUPPORTED', message: 'unsupported command: setLang' },
+      }),
+    }),
+  )
 
   // Install the sink AFTER the bridge is on the window. The bridge
   // reads `window.__GENOFFICE_COMMAND_SINK__` lazily on each command,
@@ -184,17 +203,21 @@ describe('SDK host → bridge → text-buffer sink round-trip (sdk1.md §11.36.5
     expect(v.text).toBe('foobar')
   })
 
-  it('an unsupported command (e.g. setLang with no adapter) replies with UNSUPPORTED', async () => {
+  it('a command neither side owns (setLang, no adapter) replies with the server WEB_UNSUPPORTED', async () => {
     // installTextBufferSink registers setText / insertText / getText /
-    // getBytes only — setLang is absent, so the bridge forwards the
-    // command to the sink which throws UnsupportedCommandError.
+    // getBytes only. The package throws UnsupportedCommandError for
+    // anything else, and the bridge uses exactly that code to decide the
+    // sink does not own the command — so it hands off to the server
+    // channel, whose dispatcher is the authority on the server-backed
+    // subset. The load-bearing property is still the one this test was
+    // written for: a loud structured failure, never a hang.
     const h = evalBridgeWithSink()
     deliver(h, makeCommand('setLang', { lang: 'zh-CN' }, 'corr-lang-1'))
     await flush()
     const reply = lastReply(h, 'corr-lang-1')
     expect(reply).not.toBeNull()
     expect(reply!.ok).toBe(false)
-    expect(reply!.error?.code).toBe('UNSUPPORTED')
+    expect(reply!.error?.code).toBe('WEB_UNSUPPORTED')
   })
 
   it('envelope version mismatch is dropped at the bridge — no reply fires', async () => {

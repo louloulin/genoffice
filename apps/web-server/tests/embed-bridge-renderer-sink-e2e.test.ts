@@ -124,7 +124,15 @@ describe('renderer sink ↔ embed bridge integration (§11.36)', () => {
     expect(h.fetchCalls).toHaveLength(0)
   })
 
-  it('surfaces the package UnsupportedCommandError code verbatim to the host', async () => {
+  it('hands a command the sink does not own to the server channel', async () => {
+    // defaultSdkCommandHandlers() is openFileDialog + print only, so
+    // setContent is exactly the case the sink cannot service. The
+    // package's UnsupportedCommandError carries code 'UNSUPPORTED', and
+    // the bridge reads THAT as "not mine" rather than as a final answer
+    // — otherwise the whole server-backed subset (listComments /
+    // addComment / createSnapshot / restoreVersion / reportUsage) would be
+    // unreachable from the real embed, since every shipped renderer
+    // installs a sink. The server's reply is the one the host sees.
     const target: SdkCommandSinkTarget & Record<string, unknown> = {}
     const h = evalBridge(target)
     installSdkCommandSink({ target: h.window, handlers: defaultSdkCommandHandlers() })
@@ -138,11 +146,11 @@ describe('renderer sink ↔ embed bridge integration (§11.36)', () => {
       },
     })
     await flush()
+    expect(h.fetchCalls).toHaveLength(1)
+    expect(h.fetchCalls[0]!.url).toContain(encodeURIComponent('sdk:command'))
     const result = resultFor(h, 'int-2')
-    expect(result!.payload.ok).toBe(false)
-    expect(result!.payload.error!.code).toBe('UNSUPPORTED')
-    expect(result!.payload.error!.message).toContain('setContent')
-    expect(h.fetchCalls).toHaveLength(0)
+    expect(result).toBeDefined()
+    expect(result!.payload.ok).toBe(true)
   })
 
   it('falls back to the server channel when no sink is installed', async () => {

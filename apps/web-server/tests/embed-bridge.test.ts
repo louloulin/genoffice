@@ -688,11 +688,14 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     expect(data.payload.result).toEqual({ applied: true })
   })
 
-  it('rejects with RENDERER_ERROR when the sink throws', async () => {
+  it("mirrors the sink's own rejection when the code is not UNSUPPORTED", async () => {
+    // A handler that RAN and failed is the renderer's answer. The bridge
+    // must not second-guess it by also POSTing — that would risk two
+    // replies for one command.
     const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', sessionId: 'embed-xyz' } })
     h.commandSink = async () => {
       const err = new Error('renderer says no') as Error & { code?: string }
-      err.code = 'UNSUPPORTED'
+      err.code = 'RENDERER_ERROR'
       throw err
     }
     h.messageHandlers[0]!({
@@ -711,9 +714,84 @@ describe('EMBED_BRIDGE_SOURCE (sdk1.md §11.31)', () => {
     })
     const data = reply!.data as { payload: { ok: boolean; error: { code: string; message: string } } }
     expect(data.payload.ok).toBe(false)
-    expect(data.payload.error.code).toBe('UNSUPPORTED')
+    expect(data.payload.error.code).toBe('RENDERER_ERROR')
     expect(data.payload.error.message).toBe('renderer says no')
     expect(h.fetchCalls).toHaveLength(0)
+  })
+
+  it('falls through to the server IPC when the sink rejects with UNSUPPORTED', async () => {
+    // The decisive case. installSdkCommandSink rejects every command
+    // outside its handler map with code 'UNSUPPORTED' — and the shipped
+    // renderers register only a small map (defaultSdkCommandHandlers is
+    // just openFileDialog + print). Treating the sink's PRESENCE as
+    // ownership shadowed the whole server-backed subset (listComments /
+    // addComment / createSnapshot / restoreVersion / reportUsage), which
+    // is exactly what step 2 of the dispatch order exists to service.
+    // So an UNSUPPORTED rejection hands off to the IPC POST — and the
+    // POST's answer is the one and only reply.
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', docId: 'doc-1', sessionId: 'embed-xyz' } })
+    h.commandSink = async (name: string) => {
+      const err = new Error(`sdk command "${name}" has no handler in this renderer`) as Error & { code?: string }
+      err.code = 'UNSUPPORTED'
+      throw err
+    }
+    h.fetchMock = async () => ({
+      ok: true, status: 200,
+      text: async () => JSON.stringify({ ok: true, result: { comments: [] } }),
+    })
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-fallthrough',
+        payload: { name: 'listComments', args: {} },
+      },
+    })
+    await flushMicrotasks()
+    expect(h.fetchCalls).toHaveLength(1)
+    const replies = h.parentPosts.filter((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-fallthrough'
+    })
+    // Exactly one reply, not one from the sink plus one from the server.
+    expect(replies).toHaveLength(1)
+    const data = replies[0]!.data as { payload: { ok: boolean; result: { comments: unknown[] } } }
+    expect(data.payload.ok).toBe(true)
+    expect(data.payload.result).toEqual({ comments: [] })
+  })
+
+  it('lets the server IPC reject when the sink also had no handler', async () => {
+    // The other end of the hand-off: if neither side owns the command the
+    // host still gets a structured failure, just with the SERVER's code
+    // (WEB_UNSUPPORTED) rather than the renderer's.
+    const h = evalBridgeWith({ nonce: 'n', embedConfig: { app: 'docs', docId: 'doc-1', sessionId: 'embed-xyz' } })
+    h.commandSink = async () => {
+      const err = new Error('no handler') as Error & { code?: string }
+      err.code = 'UNSUPPORTED'
+      throw err
+    }
+    h.fetchMock = async () => ({
+      ok: false, status: 501,
+      text: async () => JSON.stringify({ error: { code: 'WEB_UNSUPPORTED', message: 'unsupported command' } }),
+    })
+    h.messageHandlers[0]!({
+      data: {
+        v: '1.0',
+        dir: 'host→editor',
+        kind: 'command',
+        correlationId: 'cmd-unknown',
+        payload: { name: 'notARealCommand', args: {} },
+      },
+    })
+    await flushMicrotasks()
+    const reply = h.parentPosts.find((p) => {
+      const d = p.data as { kind?: string; correlationId?: string }
+      return d.kind === 'command-result' && d.correlationId === 'cmd-unknown'
+    })
+    const data = reply!.data as { payload: { ok: boolean; error: { code: string } } }
+    expect(data.payload.ok).toBe(false)
+    expect(data.payload.error.code).toBe('WEB_UNSUPPORTED')
   })
 
   it('replies command-result with ok:true when IPC returns ok envelope', async () => {
