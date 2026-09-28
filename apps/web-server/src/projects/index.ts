@@ -12,6 +12,7 @@ import {
   MIME_TYPES,
   fileIndexStore,
   loadProjects,
+  READ_PREF_SCOPE,
   recordRecentDoc,
   registerHandle,
   sanitizeFileName,
@@ -56,7 +57,7 @@ export function registerProjectHandlers(): void {
           ? `chat-${Buffer.from(request.filePath).toString('base64url').slice(0, 32)}`
           : `unsaved-${Date.now()}`),
     }
-  })
+  }, { scope: READ_PREF_SCOPE })
 
   registerHandle('project:appendChat', (_event: unknown, args: unknown) => {
     const request = args as {

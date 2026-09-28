@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { DATA_DIR, isManagedPath, registerHandle } from '../common/index'
+import { DATA_DIR, isManagedPath, READ_PREF_SCOPE, registerHandle } from '../common/index'
 import {
   AiCreditsError,
   AiTimeoutError,
@@ -501,7 +501,7 @@ export async function runProviderStream(
 // ----- IPC handlers ----------------------------------------------------------
 
 export function registerAiCoreHandlers(): void {
-  registerHandle('ai:get-settings', () => aiSettings)
+  registerHandle('ai:get-settings', () => aiSettings, { scope: READ_PREF_SCOPE })
   registerHandle('ai:set-settings', (_event: unknown, settings: unknown) => {
     const next = settings as AiSettings
     if (!next || typeof next !== 'object') {
@@ -536,7 +536,7 @@ export function registerAiCoreHandlers(): void {
     const loggedIn = hasGskAuth() || !!info
     if (withEmail === false) return { loggedIn }
     return { loggedIn, email: info?.email ?? null }
-  })
+  }, { scope: READ_PREF_SCOPE })
 
   registerHandle('ai:log-run-failure', () => ({ ok: true }))
 

@@ -13,6 +13,7 @@ import {
   FILES_DIR,
   isManagedPath,
   loadProjects,
+  READ_PREF_SCOPE,
   loadRecentDocs,
   randomFileId,
   registerHandle,
@@ -123,7 +124,7 @@ export function registerDocsHandlers(): void {
   // state as the desktop path, just without the synthetic keystroke.
   registerHandle('docs:respell-kick', () => ({ ok: true, supported: false }))
 
-  registerHandle('docs:view-menu-state', () => ({ ok: true }))
+  registerHandle('docs:view-menu-state', () => ({ ok: true }), { scope: READ_PREF_SCOPE })
 
   registerHandle('docs:discard-password-intents', (_event: unknown, throughRevision: unknown) => ({
     ok:
@@ -132,7 +133,7 @@ export function registerDocsHandlers(): void {
       throughRevision >= 0,
   }))
 
-  registerHandle('docs:recent', () => loadRecentDocs())
+  registerHandle('docs:recent', () => loadRecentDocs(), { scope: READ_PREF_SCOPE })
 
   registerHandle('docs:font-metrics', (_event: unknown, family: unknown) => ({
     family: family || 'sans-serif',
@@ -597,9 +598,9 @@ export function registerDocsHandlers(): void {
     message: '请使用浏览器的打印功能 (Ctrl+P 或 Cmd+P)',
   }))
 
-  registerHandle('docs:consume-new-blank', () => false)
+  registerHandle('docs:consume-new-blank', () => false, { scope: READ_PREF_SCOPE })
   registerHandle('docs:consume-pending-open', () => null)
-  registerHandle('docs:consume-ai-doc-content', () => null)
+  registerHandle('docs:consume-ai-doc-content', () => null, { scope: READ_PREF_SCOPE })
   registerHandle('docs:write-recovery', () => ({ ok: true }))
-  registerHandle('docs:password-intent-revision', () => 0)
+  registerHandle('docs:password-intent-revision', () => 0, { scope: READ_PREF_SCOPE })
 }

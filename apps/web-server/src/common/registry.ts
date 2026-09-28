@@ -16,6 +16,28 @@
 
 export type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
 
+/**
+ * Scope for channels that only READ server-side UI state — theme, language,
+ * auto-save default, recent-document list, menu state, AI settings.
+ *
+ * The `soft:` prefix means the same thing it means on the write side
+ * (`soft:preferences:write`): it lowers the bar for unauthenticated renderer
+ * traffic, and for a JWT caller jwtScopeFor() strips the prefix and demands
+ * `preferences:read` outright. Fail-closed either way — a JWT without the
+ * scope still gets 403.
+ *
+ * Why the reads need it at all: `jwtScopeFor()` treats an absent declaration as
+ * "no JWT may use this channel" (the module header's intentional no-fall-
+ * through), which is the right default for a channel nobody has thought about.
+ * It silently made every bare `get-*` unreachable to the embed, whose guest JWT
+ * is scoped by design. Measured on the armed stack: 12 read calls 403 on a bare
+ * page load, so the embedded editor came up without theme, language, recents or
+ * AI settings. Declaring the read is the narrow fix; loosening the policy for
+ * undeclared channels would have been the broad one, and would have opened
+ * every channel added from here on.
+ */
+export const READ_PREF_SCOPE = 'soft:preferences:read'
+
 export interface HandleOptions {
   /**
    * OAuth-style scope required to invoke this channel via /api/ipc. The

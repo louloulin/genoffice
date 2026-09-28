@@ -9,7 +9,7 @@ export { randomFileId, atomicWriteJson, reserveDailyPasteQuota, DAILY_PASTE_LIMI
 export { readBlankTemplate, writeBlankOfficeFile } from './blank-templates'
 export type { TypedArrayTag } from './codec'
 
-export { registerHandle, getHandler, getHandlerEntry, listChannels, handlerCount } from './registry'
+export { registerHandle, getHandler, getHandlerEntry, listChannels, handlerCount, READ_PREF_SCOPE } from './registry'
 export { promoteAcrossBackend } from './promote-across-backend'
 export type { PromoteOptions, PromoteResult } from './promote-across-backend'
 export type { IpcHandler } from './registry'

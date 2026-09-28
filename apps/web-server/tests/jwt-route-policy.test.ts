@@ -29,6 +29,7 @@ let readerToken = ''
 let docsToken = ''
 let bridgeToken = ''
 let subscriberToken = ''
+let prefReaderToken = ''
 
 /** Mint a guest JWT. Requires the operator credential — minting is operator-only. */
 async function mint(sub: string, scope: string[]): Promise<string> {
@@ -114,6 +115,7 @@ beforeAll(async () => {
   docsToken = await mint('guest-editor', ['docs:*'])
   bridgeToken = await mint('guest-bridge', ['sdk:command', 'docs:*'])
   subscriberToken = await mint('guest-subscriber', ['ipc:subscribe'])
+  prefReaderToken = await mint('guest-pref-reader', ['preferences:read'])
 }, 30_000)
 
 afterAll(async () => {
@@ -197,5 +199,60 @@ describe('Gate 1: the IPC allowlist is scoped, not open', () => {
     expect(listed.status).not.toBe(403)
     const other = await call('POST', '/api/ipc/files:add', docsToken)
     expect(other.status).toBe(403)
+  })
+})
+
+describe('Gate 1: UI read channels are scoped, not merely undeclared', () => {
+  // Measured on the armed stack (real browser, real doc, guest JWT scoped
+  // `["files:read"]` as Dataflare mints it): a bare page load made 21
+  // requests and 16 were refused. Ten of those were `get-*` reads carrying
+  // NO scope declaration, and jwtScopeFor() reads an absent declaration as
+  // "no JWT may use this channel" — the module header's intentional
+  // no-fall-through. So the embedded editor came up with no theme, no
+  // language, no recents, no AI settings and no menu state, and NO token
+  // could have fixed it: a wildcard-scope JWT was refused on all ten.
+  //
+  // The fix declares the read (`soft:preferences:read`) rather than
+  // loosening the policy for undeclared channels, which would have opened
+  // every channel registered from here on. Fail-closed is preserved: the
+  // first test below is the load-bearing one.
+
+  const READ_CHANNELS = [
+    'app:get-language',
+    'app:get-version',
+    'app:get-platform',
+    'app:get-theme',
+    'app:get-auto-save-default',
+    'app:get-ai-panel-prefs',
+    'docs:recent',
+    'docs:view-menu-state',
+    'docs:consume-new-blank',
+    'docs:consume-ai-doc-content',
+    'docs:password-intent-revision',
+    'ai:get-settings',
+    'ai:gsk-status',
+    'project:resolveChat',
+  ] as const
+
+  for (const channel of READ_CHANNELS) {
+    it(`refuses ${channel} to a JWT that does not carry preferences:read`, async () => {
+      const r = await call('POST', `/api/ipc/${encodeURIComponent(channel)}`, readerToken)
+      expect(r.status).toBe(403)
+      expect(r.code).toBe('FORBIDDEN')
+    })
+
+    it(`admits ${channel} to a JWT carrying preferences:read`, async () => {
+      const r = await call('POST', `/api/ipc/${encodeURIComponent(channel)}`, prefReaderToken)
+      expect(r.status).not.toBe(403)
+    })
+  }
+
+  it('does not hand the read scope to the write channels', async () => {
+    // preferences:read is a read grant. The setters keep their own
+    // preferences:write scope, so a read-scoped guest still cannot change
+    // server-side state through the embed.
+    const r = await call('POST', '/api/ipc/app:set-auto-save-default', prefReaderToken)
+    expect(r.status).toBe(403)
+    expect(r.code).toBe('FORBIDDEN')
   })
 })

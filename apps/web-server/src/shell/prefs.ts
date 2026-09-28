@@ -12,7 +12,7 @@
  *  - app:set-ai-panel-prefs
  *  - app:ai-panel-prefs-changed (push event)
  */
-import { registerHandle } from '../common/index'
+import { registerHandle, READ_PREF_SCOPE } from '../common/index'
 
 type AutoSaveDefault = { on: boolean; updatedAt: number }
 type AiFontSize = 'default' | 'large' | 'xlarge' | 'custom'
@@ -48,14 +48,14 @@ export function registerPrefsHandlers(): void {
   let autoSave: AutoSaveDefault = { ...DEFAULT_AUTO_SAVE }
   let aiPanel: AiPanelPrefs = { ...DEFAULT_AI_PANEL_PREFS }
 
-  registerHandle('app:get-auto-save-default', () => ({ ...autoSave }))
+  registerHandle('app:get-auto-save-default', () => ({ ...autoSave }), { scope: READ_PREF_SCOPE })
   registerHandle('app:set-auto-save-default', (_event: unknown, value: unknown) => {
     if (!isAutoSaveDefault(value)) return { ok: false, error: 'invalid AutoSaveDefault payload' }
     autoSave = { ...value }
     return { ok: true }
   }, { scope: 'soft:preferences:write' })
 
-  registerHandle('app:get-ai-panel-prefs', () => ({ ...aiPanel }))
+  registerHandle('app:get-ai-panel-prefs', () => ({ ...aiPanel }), { scope: READ_PREF_SCOPE })
   registerHandle('app:set-ai-panel-prefs', (_event: unknown, patch: unknown) => {
     if (!patch || typeof patch !== 'object') {
       return { ok: false, error: 'invalid AiPanelPrefs payload' }
