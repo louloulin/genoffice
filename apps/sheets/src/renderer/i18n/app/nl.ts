@@ -580,6 +580,9 @@ export const nl = {
   appSavingEdits: '{count} bewerking(en) opslaan…',
   appSaveCanceled: 'Opslaan geannuleerd.',
   appSaved: 'Opgeslagen.',
+  appHostSaved: 'Opgeslagen als nieuwe versie.',
+  appHostSaveFailed: 'Lokaal opgeslagen, maar het uploaden van de nieuwe versie is mislukt: {reason}. Sla opnieuw op om het opnieuw te proberen.',
+  appHostSaveConflict: 'Iemand anders heeft dit bestand bijgewerkt, dus je wijzigingen zijn niet geüpload. Sluit en heropen het bestand en voer je wijzigingen opnieuw uit.',
   appSaveFailed: 'Kan de werkmap niet opslaan.',
   appCfRuleUnsaveable:
     'Deze regel voor voorwaardelijke opmaak kan niet in xlsx worden opgeslagen — gebruik een ander regeltype.',

@@ -524,6 +524,9 @@ export const ar = {
   appSavingEdits: 'جارٍ حفظ {count} من التعديلات…',
   appSaveCanceled: 'أُلغي الحفظ.',
   appSaved: 'تم الحفظ.',
+  appHostSaved: 'تم الحفظ كإصدار جديد.',
+  appHostSaveFailed: 'تم الحفظ محليًا، لكن فشل رفع الإصدار الجديد: {reason}. احفظ مرة أخرى لإعادة المحاولة.',
+  appHostSaveConflict: 'قام شخص آخر بتحديث هذا الملف، لذلك لم يتم رفع تغييراتك. أغلقه وأعد فتحه، ثم أعد تطبيق تعديلاتك.',
   appSaveFailed: 'يتعذر حفظ المصنف.',
   appCfRuleUnsaveable: 'لا يمكن حفظ قاعدة التنسيق الشرطي هذه في xlsx — استخدم نوع قاعدة آخر.',
   appSaveErrX14Dv:

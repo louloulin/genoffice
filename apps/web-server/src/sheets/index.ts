@@ -23,6 +23,8 @@ import { sendIpcEvent } from '../common/event-broadcast'
 import { captureBeforeSave } from '../common/version-history'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
+import { toGatewaySaveFields } from '../../../sheets/src/main/save-request-mapping'
+import type { WorkbookSaveRequest as RendererWorkbookSaveRequest } from '../../../sheets/src/shared/desktop-api'
 import { WebSheetsSidecar } from './sidecar'
 import { getSidecarPool, type WebSheetsSidecarPool } from './sidecar-pool'
 
@@ -221,11 +223,17 @@ export function registerSheetsHandlers(): void {
     // `WEB_UNSUPPORTED`.
     const sidecarSessionId =
       typeof workbook?.sessionId === 'string' ? (workbook.sessionId as string) : id
+    const sheetNames = new Map<string, string>()
+    for (const sheet of Array.isArray(workbook.sheets) ? workbook.sheets : []) {
+      const { id: sheetId, name: sheetName } = (sheet ?? {}) as { id?: unknown; name?: unknown }
+      if (typeof sheetId === 'string' && typeof sheetName === 'string') sheetNames.set(sheetId, sheetName)
+    }
     registerSession({
       sessionId: sidecarSessionId,
       sourcePath: path,
       targetPath: openedPath,
       format: detectFormat(openedPath),
+      sheetNames,
       staged: staged ?? undefined,
     })
     return {
@@ -238,6 +246,9 @@ export function registerSheetsHandlers(): void {
       name,
       sha256,
       fileBytes: bytes.byteLength,
+      // Required by the renderer's workbook validation (the desktop open sets
+      // it the same way); without it the reopen after every Save was rejected.
+      readOnly: false,
       // The renderer's Save keeps the CSV identity when this is present
       // (`save-actions.ts`: `state.file.csvPath !== undefined`), so it must
       // point at the original `.csv`, never the converted copy.
@@ -425,7 +436,7 @@ export function registerSheetsHandlers(): void {
     edits?: unknown[]
     structuralOps?: unknown[]
     chartEdits?: unknown[]
-    sheetPlan?: unknown
+    editsTransferId?: string
     filterStates?: unknown[]
     hyperlinkEdits?: unknown[]
     cfStates?: unknown[]
@@ -448,6 +459,42 @@ export function registerSheetsHandlers(): void {
     bulkConstantFills?: unknown[]
     sheetOps?: unknown[]
     sheetOrder?: string[]
+  }
+
+  /** The renderer always sends the full save shape; HTTP callers (and the
+   *  e2e tests) may omit empty parts. Fill them so the shared mapping sees
+   *  the renderer's contract. Element shapes are not re-validated here: a
+   *  malformed part fails inside the gateway and surfaces as `{ ok: false }`. */
+  function withSaveDefaults(req: WorkbookSaveRequest): RendererWorkbookSaveRequest {
+    return {
+      ...req,
+      mode: req.mode ?? 'save',
+      edits: req.edits ?? [],
+      bulkConstantFills: req.bulkConstantFills ?? [],
+      structuralOps: req.structuralOps ?? [],
+      chartEdits: req.chartEdits ?? [],
+      visualEdits: req.visualEdits ?? [],
+      visualAdditions: req.visualAdditions ?? [],
+      tableAdditions: req.tableAdditions ?? [],
+      pivotAdditions: req.pivotAdditions ?? [],
+      sheetOps: req.sheetOps ?? [],
+      sheetOrder: req.sheetOrder ?? [],
+      filterStates: req.filterStates ?? [],
+      hyperlinkEdits: req.hyperlinkEdits ?? [],
+      cfStates: req.cfStates ?? [],
+      dvStates: req.dvStates ?? [],
+      pageSetupStates: req.pageSetupStates ?? [],
+      noteStates: req.noteStates ?? [],
+      pivotCacheRefreshPaths: req.pivotCacheRefreshPaths ?? [],
+      pivotRefreshUpdates: req.pivotRefreshUpdates ?? [],
+      sheetProtections: req.sheetProtections ?? [],
+      sparklineAdditions: req.sparklineAdditions ?? [],
+      formulaValues: req.formulaValues ?? [],
+      definedNamesState: req.definedNamesState ?? null,
+      themeState: req.themeState ?? null,
+      workbookProtectionState: req.workbookProtectionState ?? null,
+      protectedRangeStates: req.protectedRangeStates ?? [],
+    } as RendererWorkbookSaveRequest
   }
 
   /** The streaming-save entry point. Both `workbook:save` and
@@ -504,6 +551,12 @@ export function registerSheetsHandlers(): void {
     if (!sourcePath) {
       return { ok: false, error: 'workbook:save: session has no source path' }
     }
+    // Edit sets above MAX_SAVE_EDITS arrive as a chunked transfer the web
+    // build does not accumulate (see workbook:save-edits-chunk). Saving
+    // without them would silently drop edits, so refuse instead.
+    if (typeof req.editsTransferId === 'string' && req.editsTransferId) {
+      return { ok: false, error: 'workbook:save: chunked edit transfers are not supported by the web build' }
+    }
 
     try {
       // Snapshot prior bytes BEFORE the sidecar overwrites requestedTarget
@@ -514,35 +567,14 @@ export function registerSheetsHandlers(): void {
         const prev = readFileSync(requestedTarget)
         captureBeforeSave(basename(requestedTarget), prev)
       } catch { /* new file, nothing to snapshot */ }
+      // The renderer addresses sheets by id; the gateway patches parts by
+      // name. Same mapping as the desktop main process — handing the request
+      // over unmapped failed every real edit with 'Sheet "undefined"'.
       const result = await saveWorkbookViaSidecar({
         client: sheetsSidecar,
         sourcePath,
         targetPath: requestedTarget,
-        edits: (req.edits ?? []) as never,
-        structuralOps: (req.structuralOps ?? []) as never,
-        chartEdits: (req.chartEdits ?? []) as never,
-        sheetPlan: req.sheetPlan as never,
-        filterStates: (req.filterStates ?? []) as never,
-        hyperlinkEdits: (req.hyperlinkEdits ?? []) as never,
-        cfStates: (req.cfStates ?? []) as never,
-        dvStates: (req.dvStates ?? []) as never,
-        sheetProtections: (req.sheetProtections ?? []) as never,
-        definedNamesState: (req.definedNamesState as never) ?? null,
-        visualAdditions: (req.visualAdditions ?? []) as never,
-        pageSetupStates: (req.pageSetupStates ?? []) as never,
-        noteStates: (req.noteStates ?? []) as never,
-        tableAdditions: (req.tableAdditions ?? []) as never,
-        pivotAdditions: (req.pivotAdditions ?? []) as never,
-        pivotCacheRefreshPaths: req.pivotCacheRefreshPaths ?? [],
-        pivotRefreshUpdates: (req.pivotRefreshUpdates ?? []) as never,
-        visualEdits: (req.visualEdits ?? []) as never,
-        sparklineAdditions: (req.sparklineAdditions ?? []) as never,
-        formulaValues: (req.formulaValues ?? []) as never,
-        themeState: (req.themeState as never) ?? null,
-        workbookProtectionState:
-          (req.workbookProtectionState as never) ?? null,
-        protectedRangeStates: (req.protectedRangeStates ?? []) as never,
-        bulkConstantFills: (req.bulkConstantFills ?? []) as never,
+        ...toGatewaySaveFields(withSaveDefaults(req), session.sheetNames),
       })
       // Mirror to recents so the home grid reflects `modified: true` and
       // the entry survives a restart. Without this the save succeeded on

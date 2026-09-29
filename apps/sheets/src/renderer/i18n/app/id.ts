@@ -548,6 +548,9 @@ export const id = {
   appSavingEdits: 'Menyimpan {count} pengeditan…',
   appSaveCanceled: 'Penyimpanan dibatalkan.',
   appSaved: 'Disimpan.',
+  appHostSaved: 'Disimpan sebagai versi baru.',
+  appHostSaveFailed: 'Disimpan secara lokal, tetapi gagal mengunggah versi baru: {reason}. Simpan lagi untuk mencoba ulang.',
+  appHostSaveConflict: 'Orang lain telah memperbarui file ini, jadi perubahan Anda tidak diunggah. Tutup dan buka kembali, lalu terapkan ulang perubahan Anda.',
   appSaveFailed: 'Tidak dapat menyimpan buku kerja.',
   appCfRuleUnsaveable:
     'Aturan pemformatan bersyarat ini tidak dapat disimpan ke xlsx — gunakan jenis aturan lain.',

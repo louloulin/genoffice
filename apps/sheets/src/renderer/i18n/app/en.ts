@@ -533,6 +533,9 @@ export const en = {
   appSavingEdits: 'Saving {count} edit(s)…',
   appSaveCanceled: 'Save canceled.',
   appSaved: 'Saved.',
+  appHostSaved: 'Saved as a new version.',
+  appHostSaveFailed: 'Saved locally, but uploading the new version failed: {reason}. Save again to retry.',
+  appHostSaveConflict: 'Someone else updated this file, so your changes were not uploaded. Close and reopen it, then reapply your edits.',
   appSaveFailed: 'Unable to save the workbook.',
   appCfRuleUnsaveable:
     'This conditional formatting rule cannot be saved to xlsx — switch to another rule type.',

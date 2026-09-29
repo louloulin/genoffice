@@ -58,7 +58,8 @@
     "rxjs": "^7.8.2",
     "zod": "^4.3.6",
     "@genoffice/ipc-bridge": "*",
-    "@genoffice/chat-runtime": "*"
+    "@genoffice/chat-runtime": "*",
+    "@genoffice/web-sdk": "*"
   },
   "devDependencies": {
     "@genoffice/project-store": "*",

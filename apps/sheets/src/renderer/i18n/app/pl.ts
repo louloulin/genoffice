@@ -573,6 +573,9 @@ export const pl = {
   appSavingEdits: 'Zapisywanie {count} zmian(y)…',
   appSaveCanceled: 'Anulowano zapisywanie.',
   appSaved: 'Zapisano.',
+  appHostSaved: 'Zapisano jako nową wersję.',
+  appHostSaveFailed: 'Zapisano lokalnie, ale przesłanie nowej wersji nie powiodło się: {reason}. Zapisz ponownie, aby spróbować jeszcze raz.',
+  appHostSaveConflict: 'Ktoś inny zaktualizował ten plik, więc Twoje zmiany nie zostały przesłane. Zamknij i otwórz go ponownie, a następnie wprowadź zmiany jeszcze raz.',
   appSaveFailed: 'Nie można zapisać skoroszytu.',
   appCfRuleUnsaveable:
     'Tej reguły formatowania warunkowego nie można zapisać w xlsx — użyj innego typu reguły.',

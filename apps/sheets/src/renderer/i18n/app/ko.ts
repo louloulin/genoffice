@@ -557,6 +557,9 @@ export const ko = {
   appSavingEdits: '편집 {count}개를 저장하는 중…',
   appSaveCanceled: '저장을 취소했습니다.',
   appSaved: '저장했습니다.',
+  appHostSaved: '새 버전으로 저장했습니다.',
+  appHostSaveFailed: '로컬에는 저장했지만 새 버전 업로드에 실패했습니다: {reason}. 다시 저장하면 재시도합니다.',
+  appHostSaveConflict: '다른 사용자가 이 파일을 업데이트하여 변경 내용이 업로드되지 않았습니다. 닫았다가 다시 연 뒤 편집을 다시 적용하세요.',
   appSaveFailed: '통합 문서를 저장할 수 없습니다.',
   appCfRuleUnsaveable:
     '이 조건부 서식 규칙은 xlsx로 저장할 수 없습니다 — 다른 규칙 유형을 사용하십시오.',

@@ -604,6 +604,9 @@ export const fr = {
   appSavingEdits: 'Enregistrement de {count} modification(s)…',
   appSaveCanceled: 'Enregistrement annulé.',
   appSaved: 'Enregistré.',
+  appHostSaved: 'Enregistré comme nouvelle version.',
+  appHostSaveFailed: 'Enregistré localement, mais l’envoi de la nouvelle version a échoué : {reason}. Enregistrez à nouveau pour réessayer.',
+  appHostSaveConflict: 'Quelqu’un d’autre a modifié ce fichier : vos modifications n’ont pas été envoyées. Fermez-le et rouvrez-le, puis réappliquez vos modifications.',
   appSaveFailed: "Impossible d'enregistrer le classeur.",
   appCfRuleUnsaveable:
     'Cette règle de mise en forme conditionnelle ne peut pas être enregistrée en xlsx — utilisez un autre type de règle.',

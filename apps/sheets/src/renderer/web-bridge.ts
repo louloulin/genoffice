@@ -19,7 +19,14 @@ import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
 import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
+import {
+  createDataflareEmbedIntegration,
+  isHostDocumentSource,
+  resolveEmbedPathPrefix,
+} from '@genoffice/web-sdk/dataflare/integration'
 import { createSheetsApi, createSheetsProjectApi } from '../shared/sheets-api-factory'
+import { createHostDocumentSync } from './dataflare-host-sync'
+import { saveWorkbookOverHttp } from './web-save'
 
 if (!isElectronRuntime()) {
   // Floating "返回主页" pill — works even when the user landed on a deep
@@ -73,16 +80,63 @@ if (!isElectronRuntime()) {
       },
     }),
   })
-  const transport = createHttpIpcTransport()
+  // Embedded under the Dataflarework proxy the IPC endpoints live under
+  // `/office-engine/api/…`; without the prefix every call 404s on the host origin.
+  const transport = createHttpIpcTransport({
+    pathPrefix: resolveEmbedPathPrefix(window.location.pathname),
+  })
   const files = createWebFileBridge(transport)
+
+  // ── Dataflare host documents (drive / knowledge xlsx) ──────────────────────
+  //
+  // The host hands down a workbook in `init`; the integration downloads it and
+  // `openBytes` parks it in WEB_TEMP_ROOT (a managed path, so open-path / save /
+  // read-file-bytes accept it). The renderer opens that temp copy through its
+  // normal selectWorkbook flow and edits it like a local file; save-actions
+  // then pushes the saved bytes back via `syncHostDocument`.
+  let pendingHostOpen: string | null = null
+  const dataflare = createDataflareEmbedIntegration({
+    app: 'sheets',
+    transport,
+    openBytes: async (bytes, name) => {
+      const path = await files.writeTempFile(name, bytes)
+      hostSync.setHostDocumentPath(path)
+      return path
+    },
+    // workbook:save already wrote the file; the integration only needs to report ok.
+    saveLocal: async () => ({ ok: true }),
+    shouldAutoOpen: (context) => context.documentType === 'xlsx',
+    onDocumentOpened: (result) => {
+      // Only the App component can install a workbook into Univer. The path is
+      // parked for selectWorkbook; an App that mounts after the event finds it
+      // through hasQueuedWorkbook.
+      if (typeof result !== 'string') return
+      pendingHostOpen = result
+      window.dispatchEvent(new CustomEvent('dataflare:open-document', { detail: result }))
+    },
+  })
+  const hostSync = createHostDocumentSync({
+    readFileBytes: async (path) => (await files.readFileBytes(path)).bytes,
+    saveToHost: async (path, bytes) => {
+      const saved = await dataflare.saveDocument(path, bytes, false)
+      return saved.ok ? { ok: true } : { ok: false, reason: saved.reason, error: saved.error }
+    },
+    isHostDocument: () => isHostDocumentSource(dataflare.getContext()?.documentSource),
+  })
   // SAFETY: lib.dom's `window` type has no `desktopApi` / `sheetsApi` /
   // `projectApi` properties. The bridge assigns those keys below and reads
   // them back through the same module-scoped helper closures, so the
   // double-cast is sound within this renderer.
   const bridgedWindow = window as unknown as Record<string, unknown>
   bridgedWindow.desktopApi = createSheetsApi(transport, {
-    hasQueuedWorkbook: async () => new URLSearchParams(window.location.search).has('open'),
+    hasQueuedWorkbook: async () =>
+      pendingHostOpen !== null || new URLSearchParams(window.location.search).has('open'),
     selectWorkbook: async () => {
+      if (pendingHostOpen) {
+        const hostPath = pendingHostOpen
+        pendingHostOpen = null
+        return await transport.invoke('workbook:open-path', hostPath)
+      }
       const pending = new URLSearchParams(window.location.search).get('open')
       if (pending) return await transport.invoke('workbook:open-path', pending)
       const picked = await pickFileBytes('.xlsx,.xlsm,.xls,.csv')
@@ -102,6 +156,9 @@ if (!isElectronRuntime()) {
       }
       return await transport.invoke('workbook:open-for-merge', paths)
     },
+    saveWorkbook: (request) => saveWorkbookOverHttp(transport, request),
+    syncHostDocument: (path) => hostSync.sync(path),
+    hasPendingHostSync: () => hostSync.hasPending(),
     confirmCsvSave: async () => 'csv',
     /* Forwards the desktop exportCsv contract to the web-server handler.
      * The renderer keeps the desktop-shaped `WorkbookExportCsvResult`
@@ -153,6 +210,7 @@ if (!isElectronRuntime()) {
     },
   })
   bridgedWindow.projectApi = createSheetsProjectApi(transport)
+  dataflare.install({})
 }
 
 async function captureDisplayFrame(): Promise<{

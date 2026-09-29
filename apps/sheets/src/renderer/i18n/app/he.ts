@@ -504,6 +504,9 @@ export const he = {
   appSavingEdits: 'שומר {count} עריכות…',
   appSaveCanceled: 'השמירה בוטלה.',
   appSaved: 'נשמר.',
+  appHostSaved: 'נשמר כגרסה חדשה.',
+  appHostSaveFailed: 'נשמר מקומית, אך העלאת הגרסה החדשה נכשלה: {reason}. שמור שוב כדי לנסות שוב.',
+  appHostSaveConflict: 'מישהו אחר עדכן את הקובץ, ולכן השינויים שלך לא הועלו. סגור ופתח אותו מחדש, ואז החל שוב את העריכות שלך.',
   appSaveFailed: 'לא ניתן לשמור את חוברת העבודה.',
   appCfRuleUnsaveable: 'לא ניתן לשמור כלל עיצוב מותנה זה בקובץ xlsx — השתמשו בסוג כלל אחר.',
   appSaveErrX14Dv:

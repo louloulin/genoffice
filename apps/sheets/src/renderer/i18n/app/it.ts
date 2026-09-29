@@ -581,6 +581,9 @@ export const it = {
   appSavingEdits: 'Salvataggio di {count} modifica/e…',
   appSaveCanceled: 'Salvataggio annullato.',
   appSaved: 'Salvato.',
+  appHostSaved: 'Salvato come nuova versione.',
+  appHostSaveFailed: 'Salvato in locale, ma il caricamento della nuova versione non è riuscito: {reason}. Salva di nuovo per riprovare.',
+  appHostSaveConflict: 'Qualcun altro ha aggiornato questo file, quindi le modifiche non sono state caricate. Chiudi e riapri il file, poi riapplica le modifiche.',
   appSaveFailed: 'Impossibile salvare la cartella di lavoro.',
   appCfRuleUnsaveable:
     'Questa regola di formattazione condizionale non può essere salvata in xlsx — usa un altro tipo di regola.',

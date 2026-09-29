@@ -586,6 +586,9 @@ export const pt = {
   appSavingEdits: 'Salvando {count} edição(ões)…',
   appSaveCanceled: 'Salvamento cancelado.',
   appSaved: 'Salvo.',
+  appHostSaved: 'Salvo como nova versão.',
+  appHostSaveFailed: 'Salvo localmente, mas o envio da nova versão falhou: {reason}. Salve novamente para tentar de novo.',
+  appHostSaveConflict: 'Outra pessoa atualizou este arquivo, então suas alterações não foram enviadas. Feche e reabra o arquivo e aplique suas edições novamente.',
   appSaveFailed: 'Não foi possível salvar a pasta de trabalho.',
   appCfRuleUnsaveable:
     'Esta regra de formatação condicional não pode ser salva em xlsx — use outro tipo de regra.',

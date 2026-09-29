@@ -549,6 +549,9 @@ export const ms = {
   appSavingEdits: 'Menyimpan {count} suntingan…',
   appSaveCanceled: 'Penyimpanan dibatalkan.',
   appSaved: 'Disimpan.',
+  appHostSaved: 'Disimpan sebagai versi baharu.',
+  appHostSaveFailed: 'Disimpan secara setempat, tetapi gagal memuat naik versi baharu: {reason}. Simpan semula untuk mencuba lagi.',
+  appHostSaveConflict: 'Orang lain telah mengemas kini fail ini, jadi perubahan anda tidak dimuat naik. Tutup dan buka semula, kemudian gunakan semula suntingan anda.',
   appSaveFailed: 'Tidak dapat menyimpan buku kerja.',
   appCfRuleUnsaveable:
     'Peraturan pemformatan bersyarat ini tidak boleh disimpan ke xlsx — gunakan jenis peraturan lain.',

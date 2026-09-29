@@ -242,6 +242,12 @@ export async function handleSave(
   // still write back to the original file (and clear the recovery copy).
   const restoreWriteBack = mode === 'save' && state.file.restoredFromRecovery === true
   if (total === 0 && mode !== 'save-as' && !restoreWriteBack) {
+    // Web embed: the last host push failed after the local save drained the
+    // journal — Save re-sends the saved copy instead of reporting "no edits".
+    if (mode === 'save' && window.desktopApi.hasPendingHostSync?.()) {
+      await syncHostDocument(ctx, state.file.path, quiet, true)
+      return
+    }
     if (mode !== 'recovery') ctx.setMessage(t('appNoEditsToSave'))
     return
   }
@@ -424,6 +430,7 @@ export async function handleSave(
       )
       ctx.stashViewRestore(viewAtSave)
       ctx.openLazyWorkbook(result.file)
+      if (await syncHostDocument(ctx, result.file.path, quiet, true)) return
       const saved = t('appSaved')
       ctx.setMessage(saved)
       if (!quiet) showToast(saved)
@@ -468,10 +475,13 @@ export async function handleSave(
         ctx.stashViewRestore(viewAtSave)
         ctx.openLazyWorkbook(result.file)
         ctx.setMessage(t('appSaveSecondCanceled'))
+        // Phase one is on disk: keep the host in step (failures stay pending).
+        await syncHostDocument(ctx, result.file.path, quiet, false)
         return
       }
       ctx.stashViewRestore(viewAtSave)
       ctx.openLazyWorkbook(second.file)
+      if (await syncHostDocument(ctx, second.file.path, quiet, true)) return
       const saved = t('appSavedTwoPhase')
       ctx.setMessage(saved)
       if (!quiet) showToast(saved)
@@ -484,6 +494,7 @@ export async function handleSave(
       })
       ctx.setMessage(failed)
       if (!quiet) showToast(failed, 'error')
+      await syncHostDocument(ctx, result.file.path, quiet, false)
     }
   } catch (error: unknown) {
     // The save may have failed before consuming the chunked transfer (e.g.
@@ -494,6 +505,35 @@ export async function handleSave(
     ctx.setMessage(failed)
     if (!quiet) showToast(failed, 'error')
   }
+}
+
+/// Web embed: push the workbook just saved at `path` back to the Dataflare
+/// host document (see dataflare-host-sync.ts). Returns true when the file is a
+/// host document and the outcome was reported, so the caller skips its own
+/// generic "Saved." — with `announceSuccess` false only failures are reported.
+async function syncHostDocument(
+  ctx: SaveContext,
+  path: string | undefined,
+  quiet: boolean,
+  announceSuccess: boolean,
+): Promise<boolean> {
+  const sync = window.desktopApi.syncHostDocument
+  if (!sync) return false
+  const result = await sync(path)
+  if (result.status === 'not-host') return false
+  if (result.status === 'synced') {
+    if (announceSuccess) {
+      ctx.setMessage(t('appHostSaved'))
+      if (!quiet) showToast(t('appHostSaved'))
+    }
+    return true
+  }
+  const failed = result.conflict
+    ? t('appHostSaveConflict')
+    : t('appHostSaveFailed', { reason: result.error })
+  ctx.setMessage(failed)
+  if (!quiet) showToast(failed, 'error')
+  return true
 }
 
 /// Errors thrown by main-process handlers arrive wrapped as

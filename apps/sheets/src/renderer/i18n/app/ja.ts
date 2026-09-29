@@ -581,6 +581,9 @@ export const ja = {
   appSavingEdits: '{count} 件の編集を保存中…',
   appSaveCanceled: '保存をキャンセルしました。',
   appSaved: '保存しました。',
+  appHostSaved: '新しいバージョンとして保存しました。',
+  appHostSaveFailed: 'ローカルには保存しましたが、新しいバージョンのアップロードに失敗しました: {reason}。もう一度保存すると再試行します。',
+  appHostSaveConflict: 'このファイルは他のユーザーによって更新されたため、変更はアップロードされませんでした。閉じて開き直してから、編集を再適用してください。',
   appSaveFailed: 'ブックを保存できません。',
   appCfRuleUnsaveable:
     'この条件付き書式ルールは xlsx に保存できません — 別のルールの種類をお使いください。',

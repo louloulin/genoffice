@@ -2527,6 +2527,12 @@ export interface RecoveryPromptPayload {
   savedAtMs: number
 }
 
+/// Outcome of pushing a saved workbook back to a Dataflare host document.
+export type HostDocumentSyncResult =
+  | { status: 'not-host' }
+  | { status: 'synced' }
+  | { status: 'failed'; error: string; conflict: boolean }
+
 export interface DesktopApi {
   /** current UI language (persisted by the shell in app-settings.json) */
   getLanguage(): Promise<'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar'>
@@ -2575,6 +2581,12 @@ export interface DesktopApi {
   /// Frees an unconsumed transfer after a failed upload or save; silent no-op
   /// if the transfer was already consumed or expired.
   abortSaveEditsTransfer(request: WorkbookSaveEditsAbort): Promise<void>
+  /// Web embed only (Dataflare host document): push the workbook just saved
+  /// at `path` back to the host as a new revision. Absent on desktop.
+  syncHostDocument?(path: string | undefined): Promise<HostDocumentSyncResult>
+  /// Web embed only: an earlier host push failed, so the local copy is ahead
+  /// of the host and a Save must re-send it even with an empty journal.
+  hasPendingHostSync?(): boolean
   /// Crash-recovery copy of the pending edits, written under userData.
   /// Best-effort: never prompts, never touches the opened file.
   writeWorkbookRecovery(request: WorkbookSaveRequest): Promise<{ ok: boolean }>

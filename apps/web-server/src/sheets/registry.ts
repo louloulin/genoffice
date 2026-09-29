@@ -41,6 +41,9 @@ export interface WorkbookSessionInfo {
   readonly targetPath: string
   /** Detected at open time: `.xlsx`, `.xlsm`, `.csv`, or `.xls`. */
   readonly format: WorkbookFormat
+  /** Sheet id (as the renderer addresses it) → sheet name in the file. The
+   *  gateway patches parts by name, so every save resolves through this. */
+  readonly sheetNames: ReadonlyMap<string, string>
   /** When the open path was a storage URI, the staged FILES_DIR copy
    *  is recorded here so the eviction policy knows what to remove. */
   readonly staged?: string

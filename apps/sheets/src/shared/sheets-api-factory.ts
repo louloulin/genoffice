@@ -76,6 +76,16 @@ export interface SheetsApiOverrides {
   /** Web-native dropped-file path resolution. */
   getPathForFile?: (file: File) => string
   hasQueuedWorkbook?: () => Promise<boolean>
+  /**
+   * Web-native save. The web-server's workbook:save answers
+   * `{ ok, path, touchedEntries }` rather than the desktop's reopened
+   * `{ canceled: false, file, touchedEntries }`; the override bridges the two
+   * and its raw result still goes through the same response validation.
+   */
+  saveWorkbook?: (request: WorkbookSaveRequest) => Promise<unknown>
+  /** Web embed only: push a saved workbook back to the Dataflare host. */
+  syncHostDocument?: DesktopApi['syncHostDocument']
+  hasPendingHostSync?: DesktopApi['hasPendingHostSync']
 }
 
 export function createSheetsApi(t: IpcTransport, overrides: SheetsApiOverrides = {}): DesktopApi {
@@ -209,9 +219,13 @@ export function createSheetsApi(t: IpcTransport, overrides: SheetsApiOverrides =
     },
     async saveWorkbookEdits(request) {
       const validatedRequest = parseSaveRequest(request)
-      const result: unknown = await t.invoke(IPC_CHANNELS.saveWorkbook, validatedRequest)
+      const result: unknown = overrides.saveWorkbook
+        ? await overrides.saveWorkbook(validatedRequest)
+        : await t.invoke(IPC_CHANNELS.saveWorkbook, validatedRequest)
       return parseSaveResult(result)
     },
+    ...(overrides.syncHostDocument ? { syncHostDocument: overrides.syncHostDocument } : {}),
+    ...(overrides.hasPendingHostSync ? { hasPendingHostSync: overrides.hasPendingHostSync } : {}),
     async beginSaveEditsTransfer(request) {
       if (!isRecord(request)) throw new Error('Invalid save transfer request.')
       if (!isUuid(request.sessionId)) throw new Error('Invalid save transfer session.')

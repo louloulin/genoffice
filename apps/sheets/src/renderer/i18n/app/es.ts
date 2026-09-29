@@ -586,6 +586,9 @@ export const es = {
   appSavingEdits: 'Guardando {count} edición(es)…',
   appSaveCanceled: 'Guardado cancelado.',
   appSaved: 'Guardado.',
+  appHostSaved: 'Guardado como nueva versión.',
+  appHostSaveFailed: 'Guardado localmente, pero no se pudo subir la nueva versión: {reason}. Guarda de nuevo para reintentar.',
+  appHostSaveConflict: 'Otra persona actualizó este archivo, así que tus cambios no se subieron. Ciérralo y vuelve a abrirlo, y aplica de nuevo tus cambios.',
   appSaveFailed: 'No se puede guardar el libro.',
   appCfRuleUnsaveable:
     'Esta regla de formato condicional no se puede guardar en xlsx — use otro tipo de regla.',

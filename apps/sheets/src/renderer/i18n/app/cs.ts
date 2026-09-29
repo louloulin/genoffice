@@ -552,6 +552,9 @@ export const cs = {
   appSavingEdits: 'Ukládá se {count} úprav…',
   appSaveCanceled: 'Ukládání zrušeno.',
   appSaved: 'Uloženo.',
+  appHostSaved: 'Uloženo jako nová verze.',
+  appHostSaveFailed: 'Uloženo místně, ale nahrání nové verze selhalo: {reason}. Uložte znovu a zkuste to znovu.',
+  appHostSaveConflict: 'Tento soubor mezitím aktualizoval někdo jiný, takže vaše změny nebyly nahrány. Zavřete jej a znovu otevřete, pak změny proveďte znovu.',
   appSaveFailed: 'Sešit nelze uložit.',
   appCfRuleUnsaveable:
     'Toto pravidlo podmíněného formátování nelze uložit do xlsx — přepněte na jiný typ pravidla.',

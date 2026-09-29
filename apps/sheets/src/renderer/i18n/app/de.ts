@@ -592,6 +592,9 @@ export const de = {
   appSavingEdits: '{count} Bearbeitung(en) werden gespeichert…',
   appSaveCanceled: 'Speichern abgebrochen.',
   appSaved: 'Gespeichert.',
+  appHostSaved: 'Als neue Version gespeichert.',
+  appHostSaveFailed: 'Lokal gespeichert, aber das Hochladen der neuen Version ist fehlgeschlagen: {reason}. Erneut speichern, um es noch einmal zu versuchen.',
+  appHostSaveConflict: 'Jemand anderes hat diese Datei aktualisiert, daher wurden Ihre Änderungen nicht hochgeladen. Schließen und erneut öffnen, dann die Änderungen wiederholen.',
   appSaveFailed: 'Die Arbeitsmappe kann nicht gespeichert werden.',
   appCfRuleUnsaveable:
     'Diese Regel für bedingte Formatierung kann nicht in xlsx gespeichert werden — verwenden Sie einen anderen Regeltyp.',

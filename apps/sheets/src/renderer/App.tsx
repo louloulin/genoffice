@@ -1611,6 +1611,11 @@ export function App(): React.JSX.Element {
     void window.desktopApi?.hasQueuedWorkbook?.().then((queued) => {
       if (queued) void handleInspectWorkbook()
     })
+    // Web embed: the Dataflare host's workbook arrives after `init`, usually
+    // after mount. The web-bridge parks it for selectWorkbook and announces
+    // it here; one that arrived before mount is covered by hasQueuedWorkbook.
+    const onHostDocument = () => void handleInspectWorkbook()
+    window.addEventListener('dataflare:open-document', onHostDocument)
     // Univer 0.25.1 also badges text parseable as date/time, phone numbers, and
     // other long numeric identifiers with "Number stored as text". Those values
     // should remain text, so clear the view type before the built-in marker
@@ -2836,6 +2841,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener('pointerup', finishSelectionPointer, true)
       window.removeEventListener('pointercancel', finishSelectionPointer, true)
       window.removeEventListener('blur', cancelSelectionPointer)
+      window.removeEventListener('dataflare:open-document', onHostDocument)
       if (selectionAskRaf !== null) cancelAnimationFrame(selectionAskRaf)
       if (selectionAskSettleRaf !== null) cancelAnimationFrame(selectionAskSettleRaf)
       if (visualInstallTimerRef.current) clearTimeout(visualInstallTimerRef.current)
