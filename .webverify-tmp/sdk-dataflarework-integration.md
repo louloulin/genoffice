@@ -434,6 +434,35 @@ export function DocsApp() {
 | **JWT 一次性** | web-server `files/:id/jwt` | oneTime=true 模式，verifyJwtWithRevocation 检查 jti 黑名单 |
 | **Nonce 一次性** | web-server `embed/nonce` | LRU + 5min TTL，verifyEmbedNonce 防止重放 |
 | **路径越界** | web-server `isManagedPath` | iframe 内能写的路径必须在 `DATA_DIR` 或 `WEB_TEMP_ROOT` 下 |
+| **翻译记忆作用域** | web-server + translation-core | 共享 TM 只服务于**带作用域**的请求；无作用域一律失败关闭（见 5.1.1） |
+
+#### 5.1.1 翻译记忆的作用域契约（本轮 W5 新增，含行为变更）
+
+**规则**：共享翻译记忆（translation-core 的模块级 `sharedMemory`，以及 web-server 进程级的
+`translationMemory`）**只在请求带显式作用域时才被读写**。作用域 = `cacheScope` ?? `glossaryCategory`
+?? `customerName`（三者取第一个非空值，与 `bucketFor` 一致）。没有作用域时，请求**不再**退化到
+"无 bucket 共享命名空间"，而是完全不使用共享缓存、直接走 provider。
+
+**为什么**：`memory.ts` 的 `keyOf()` 只在 bucket 非空时拼 `::<scope>`；bucket 为空时键里**没有任何
+作用域信息**。因此"无作用域 → 回退共享 TM"意味着**所有租户共用同一行**：租户 A 的译文会作为租户 B
+的命中返回，B 的译文也会写回污染共享库。
+
+**落点**（缺一不可，任一遗漏都会重新打开这条通路）：
+
+| 位置 | 变化 |
+|---|---|
+| `packages/translation-core/src/provider.ts` | 新增 `memoryFor()`：`opts.memory` 照用（调用方自己的存储，天然按构造隔离）；模块级 `sharedMemory` 仅在 `bucket !== undefined` 时可用 |
+| `apps/web-server/src/ai/translate-http.ts` | 新增 `hasCacheScope()`：`/api/ai/translate` 与流式端点仅在请求带作用域时把进程级 `translationMemory` 交给 core |
+
+**对既有部署的影响（行为变更，需知会）**：单租户部署过去"不带 `cacheScope` 也能享受全局 TM 命中"
+（省 provider 调用），此后不再命中——**命中率与 provider 调用量都会变化**。要保留共享缓存语义，调用方
+必须下发 `cacheScope`（DataflareWork 的 `GenOfficeTranslationTools` 在有租户上下文时下发
+`tenant:<id>`；无租户上下文时下发 `glossaryCategory`/`customerName`，仍然算有作用域）。
+
+**仍未覆盖**（本轮显式不做）：`apps/web-server/src/ai/chat.ts` 的 `ai:translate-batch` IPC 处理器
+自己直接查 `translationMemory`（chat.ts:957），未纳入 `hasCacheScope` 门禁。桌面/文档 UI 路径依赖
+renderer 下发 `glossaryCategory`（AiPanel 默认 `'general'`）来隔离；**注意 `'general'` 是所有租户共用的
+同一个 bucket**，多租户场景下这一跳仍需后续收紧。
 
 ### 5.2 CSP 必须包含
 

@@ -76,9 +76,11 @@ $ cd /Users/louloulin/appx/genoffice && npx vitest run apps/sdk
     - 缩放控件：`-` / `+` / `100%`
     - "返回主页" 链接
   - `window.__GENOFFICE_EMBED__` 已注入（docId / app / mode / sessionId 全在）
+    - ⚠️ **本条为假，2026-09-27 更正（见 sdk1.md §11.124）**。当时页面确实含 `__GENOFFICE_EMBED__` 字样，但那来自**内联 bridge 源码里的读引用**，不是注入——**没有任何产物给该全局赋值**。真实浏览器探针实测 `typeof window.__GENOFFICE_EMBED__ === 'undefined'`。服务端注入的是 `<meta name="genoffice-embed-config">`（JSON，含 docId/app/mode/sessionId）+ `<meta name="genoffice-session">`。本报告由此犯的错与它要防的错同源：**用字符串存在代替行为发生**。
   - **0 个 console error**，document readyState === 'complete'，root HTML 21204 字符
 - bridge 副作用：
   - EventSource 已建立（指向 `/api/ipc/events?session=…`）
+    - ⚠️ **该 URL 是根相对写法，在真实 `/office-engine` 前缀下解析到宿主根 → SSE 静默失效**；已在 sdk1.md §11.124 修复为以前缀无关的 `apiUrl()` 解析（bridge 自身 `<script src>` 为锚）。当时这条"已建立"只证明了构造成功，没证明连上、更没证明收到帧。
   - `setTimeout(sendReady, 0)` 触发，但因为是 top-level，postMessage 到 window.parent 被 silently 丢弃（这是预期行为）
 
 > 这条路径直接证明：**web-server 的 embed 路由 + bridge 脚本 + renderer bundle 三件套能完整加载并交互**，无需任何额外配置。
