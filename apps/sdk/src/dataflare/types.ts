@@ -19,7 +19,12 @@ export interface DataflareOfficeContext {
   userId?: string
   documentId?: string
   documentType?: 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'markdown' | 'html'
-  documentSource?: 'knowledge' | 'office'
+  /**
+   * Where the document lives on the host. `knowledge` and `drive` are host
+   * documents (downloaded from and saved back to Dataflarework); `office` is a
+   * local/standalone file the host does not own.
+   */
+  documentSource?: 'knowledge' | 'drive' | 'office'
   businessObject?: { type: string; id: string; label?: string }
   readonly?: boolean
   locale?: string

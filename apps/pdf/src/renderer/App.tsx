@@ -1217,6 +1217,22 @@ export default function App() {
     })()
   }, [openPath])
 
+  // Dataflare embed: the web bridge downloads the host document into a managed
+  // temp path and announces it here (it cannot reach openPath itself). A path
+  // parked on window covers an open that finished before this effect ran.
+  useEffect(() => {
+    const host = window as unknown as { dataflarePdfPendingOpen?: string }
+    const open = (path: unknown): void => {
+      if (typeof path !== 'string' || !path) return
+      delete host.dataflarePdfPendingOpen
+      void openPath(path)
+    }
+    const onOpen = (event: Event): void => open((event as CustomEvent<unknown>).detail)
+    window.addEventListener('dataflare:open-document', onOpen)
+    if (host.dataflarePdfPendingOpen) open(host.dataflarePdfPendingOpen)
+    return () => window.removeEventListener('dataflare:open-document', onOpen)
+  }, [openPath])
+
   /** pdf-lib cannot write encrypted files, including owner-protected files that open without a password. */
   const readOnly = status === 'ready' && (passwordRef.current !== undefined || documentEncrypted)
 

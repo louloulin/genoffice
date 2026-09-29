@@ -93,6 +93,46 @@ export function readRevisionHeader(headers: Headers): string {
   return '0'
 }
 
+// ── Host documents ─────────────────────────────────────────────────────────
+
+/**
+ * Filename / MIME used when a host document is handed to the app or uploaded
+ * back. The host stores its own name for the file; these only need the right
+ * extension so the app's open path and the host's content sniffing agree.
+ */
+const HOST_DOCUMENT_FILES: Record<
+  NonNullable<DataflareOfficeContext['documentType']>,
+  { extension: string; contentType: string }
+> = {
+  docx: { extension: 'docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+  xlsx: { extension: 'xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+  pptx: { extension: 'pptx', contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+  pdf: { extension: 'pdf', contentType: 'application/pdf' },
+  markdown: { extension: 'md', contentType: 'text/markdown' },
+  html: { extension: 'html', contentType: 'text/html' },
+}
+
+/** File metadata for a document type; unknown/absent falls back to docx (the historical default). */
+export function resolveHostDocumentFile(
+  documentType: DataflareOfficeContext['documentType'],
+): { extension: string; contentType: string } {
+  return HOST_DOCUMENT_FILES[documentType ?? 'docx'] ?? HOST_DOCUMENT_FILES.docx
+}
+
+/** Download + save routes of one host document. */
+export interface HostDocumentPaths {
+  download: string
+  save: string
+}
+
+/**
+ * True when the host owns the document (download from / save back to
+ * Dataflarework). `office` and a missing source are local files.
+ */
+export function isHostDocumentSource(source: DataflareOfficeContext['documentSource']): boolean {
+  return source === 'knowledge' || source === 'drive'
+}
+
 // ── Result shapes ──────────────────────────────────────────────────────────
 
 /** Outcome of a save, widened enough for the standalone path to pass through. */
@@ -130,6 +170,12 @@ export interface DataflareEmbedIntegrationOptions {
    * endpoint used by every current caller.
    */
   knowledgePath?: (documentId: string) => string
+  /**
+   * Routes for a drive document. `documentId` is the host's edit-session id,
+   * not the file id: the host pins the base version inside the session, so the
+   * editor can neither read nor overwrite a version it was not given.
+   */
+  drivePaths?: (documentId: string) => HostDocumentPaths
   /** Standalone-mode credential, read from `localStorage`. */
   token?: {
     /** Default `'Manager-Token'`. */
@@ -167,8 +213,16 @@ export interface DataflareEmbedIntegration {
    * Embedded: replayed by the parent, which holds the credential.
    */
   request(path: string, init?: RequestInit): Promise<Response>
-  /** Dual-mode `multipart/form-data` upload (knowledge document save). */
-  upload(path: string, bytes: ArrayBuffer, fields?: Record<string, string>): Promise<Response>
+  /**
+   * Dual-mode `multipart/form-data` upload (host document save). `file`
+   * defaults to a docx named after the app.
+   */
+  upload(
+    path: string,
+    bytes: ArrayBuffer,
+    fields?: Record<string, string>,
+    file?: { filename: string; contentType: string },
+  ): Promise<Response>
   /** Subscribe to an SSE feed the parent proxies. Returns an unsubscribe fn. */
   stream(
     path: string,
@@ -188,7 +242,10 @@ export interface DataflareEmbedIntegration {
    * document from its knowledge record.
    */
   saveDocument(path: string, data: ArrayBuffer, auto: boolean): Promise<DataflareSaveResult>
-  /** Download + open the knowledge document named by the current context. */
+  /**
+   * Download + open the host document named by the current context
+   * (knowledge or drive, per `documentSource`).
+   */
   openKnowledgeDocument(documentId?: string): Promise<void>
   /**
    * Install the guest bridge with context/revision bookkeeping wired in.
@@ -220,6 +277,20 @@ export function createDataflareEmbedIntegration(
   const tokenStorageKey = options.token?.storageKey ?? 'Manager-Token'
   const knowledgePath =
     options.knowledgePath ?? ((documentId: string) => `/crmapi/knowledge/office/${encodeURIComponent(documentId)}`)
+  const drivePaths =
+    options.drivePaths ??
+    ((documentId: string): HostDocumentPaths => {
+      const base = `/crmapi/drive/office-sessions/${encodeURIComponent(documentId)}`
+      return { download: `${base}/content`, save: `${base}/save` }
+    })
+  const hostPaths = (
+    source: DataflareOfficeContext['documentSource'],
+    documentId: string,
+  ): HostDocumentPaths => {
+    if (source === 'drive') return drivePaths(documentId)
+    const path = knowledgePath(documentId)
+    return { download: path, save: path }
+  }
   const shouldAutoOpen =
     options.shouldAutoOpen ??
     ((context: DataflareOfficeContext) => context.documentType === 'docx')
@@ -268,9 +339,11 @@ export function createDataflareEmbedIntegration(
     path: string,
     bytes: ArrayBuffer,
     fields: Record<string, string> = {},
+    file?: { filename: string; contentType: string },
   ): Promise<Response> => {
-    const filename = `${options.app}-knowledge.docx`
+    const filename = file?.filename ?? `${options.app}-knowledge.docx`
     const contentType =
+      file?.contentType ??
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     if (!embedded()) {
       const token =
@@ -312,14 +385,18 @@ export function createDataflareEmbedIntegration(
     )
   }
 
-  const saveKnowledgeDocument = async (data: ArrayBuffer): Promise<DataflareSaveResult> => {
+  const saveHostDocument = async (data: ArrayBuffer): Promise<DataflareSaveResult> => {
     const documentId = context?.documentId
     if (!documentId) {
       return { ok: false, reason: 'save-failed', error: 'missing Dataflare documentId' }
     }
-    const response = await upload(knowledgePath(documentId), data, {
-      expectedRevision: revision,
-    })
+    const fileType = resolveHostDocumentFile(context?.documentType)
+    const response = await upload(
+      hostPaths(context?.documentSource, documentId).save,
+      data,
+      { expectedRevision: revision },
+      { filename: `${options.app}-${context?.documentSource}.${fileType.extension}`, contentType: fileType.contentType },
+    )
     const body = (await response.json().catch(() => null)) as {
       code?: number
       msg?: string
@@ -340,8 +417,8 @@ export function createDataflareEmbedIntegration(
     data: ArrayBuffer,
     auto: boolean,
   ): Promise<DataflareSaveResult> => {
-    const isKnowledge = context?.documentSource === 'knowledge' && !!context.documentId
-    if (!isKnowledge) {
+    const isHostDocument = isHostDocumentSource(context?.documentSource) && !!context?.documentId
+    if (!isHostDocument) {
       const result = await options.saveLocal(path, data, auto)
       // Pass the app's own channel result back untouched: it carries fields this
       // layer has no business interpreting (`passwordIntentPending`, `path`, …).
@@ -356,7 +433,7 @@ export function createDataflareEmbedIntegration(
       }
       return { ok: true, local: result }
     }
-    const saved = await saveKnowledgeDocument(data)
+    const saved = await saveHostDocument(data)
     if (saved.ok) {
       options.onSaved?.(context!.documentId!, revision)
       emitEvent({
@@ -372,13 +449,14 @@ export function createDataflareEmbedIntegration(
     const id = (documentId ?? context?.documentId)?.trim()
     if (!id) return
     try {
-      const response = await request(knowledgePath(id))
+      const response = await request(hostPaths(context?.documentSource, id).download)
       if (!response.ok) {
         throw new Error(`Dataflare document download failed (${response.status})`)
       }
       revision = readRevisionHeader(response.headers)
       const bytes = await response.arrayBuffer()
-      const opened = await options.openBytes(bytes, `dataflare-${id}.docx`)
+      const { extension } = resolveHostDocumentFile(context?.documentType)
+      const opened = await options.openBytes(bytes, `dataflare-${id}.${extension}`)
       if (context) options.onDocumentOpened?.(opened, context)
     } catch (error) {
       emitError(

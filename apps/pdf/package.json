@@ -41,6 +41,7 @@
   "author": "GenOffice",
   "dependencies": {
     "@genoffice/ipc-bridge": "*",
-    "@genoffice/chat-runtime": "*"
+    "@genoffice/chat-runtime": "*",
+    "@genoffice/web-sdk": "*"
   }
 }
