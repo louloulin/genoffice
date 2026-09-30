@@ -49,6 +49,13 @@ system mode).
   launch.
 - `useI18n()`'s `t` is not referentially stable; never put it in a hook
   dependency array. Store the key and translate at render time.
+- Embedded under a host that mounts the SPA on a path prefix (Dataflare uses
+  `/office-engine/`), renderer-side web-server URLs must carry that prefix —
+  `resolveEmbedPathPrefix(window.location.pathname)` from
+  `@genoffice/web-sdk/dataflare/integration`. A prefix-less `/api/ai/stream`
+  resolves against the host origin and lands on whatever else serves `/api/`
+  there (Dataflare: WeKnora → 401), which reads as "the AI panel is broken".
+  Applies to `apps/*/src/renderer/ai/transports.ts`.
 
 ## UI strings (i18n)
 

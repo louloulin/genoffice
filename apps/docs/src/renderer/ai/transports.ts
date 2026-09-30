@@ -8,6 +8,7 @@
 
 import type { AgentTransport } from '@genoffice/agent-core'
 import { createIpcTransport, createWebTransport } from '@genoffice/agent-core'
+import { resolveEmbedPathPrefix } from '@genoffice/web-sdk/dataflare/integration'
 import { isElectronRuntime } from '@genoffice/ipc-bridge/client'
 import type { AiSettings } from '../../shared/ipc'
 import { t } from '../i18n/locale'
@@ -30,8 +31,10 @@ function getWebServerUrl(): string {
       return url.origin
     }
 
-    // 否则使用当前域名
-    return `${url.protocol}//${url.host}`
+    // 否则使用当前域名。嵌入宿主时（Dataflare 把 SPA 挂在 /office-engine/ 下）
+    // 必须带上同样的路径前缀：不带前缀的 /api/ai/stream 会落到宿主根路径上的
+    // 别的服务（Dataflare 是 WeKnora 的 /api/），表现为 401 / 404 而不是 AI 报错。
+    return `${url.protocol}//${url.host}${resolveEmbedPathPrefix(url.pathname)}`
   }
 
   return 'http://localhost:8080'
