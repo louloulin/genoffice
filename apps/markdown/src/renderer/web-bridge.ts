@@ -9,6 +9,7 @@
 /// this module leaves them untouched.
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
 import {
+  createWebFileBridge,
   downloadBytes,
   installBackToHome,
   pickFileBytes,
@@ -21,6 +22,12 @@ import {
   textBufferGetText,
 } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import {
+  createDataflareEmbedIntegration,
+  isHostDocumentSource,
+  resolveEmbedPathPrefix,
+} from '@genoffice/web-sdk/dataflare/integration'
 import { createMarkdownApi, createMarkdownProjectApi } from '../shared/markdown-api-factory'
 import type { SaveMarkdownResult } from '../shared/ipc'
 
@@ -100,7 +107,9 @@ if (!isElectronRuntime()) {
       },
     }),
   })
-  const transport = createHttpIpcTransport()
+  const transport = createHttpIpcTransport({
+    pathPrefix: resolveEmbedPathPrefix(window.location.pathname),
+  })
   // SAFETY: `window` has no `markdownApi` / `markdownFilesApi` /
   // `markdownProjectApi` in lib.dom. The bridge assigns those keys below
   // and reads them back through module-scoped helpers, so the cast is
@@ -117,8 +126,40 @@ if (!isElectronRuntime()) {
     return hash
   }
   let currentPath: string | null = readCurrentPath()
+
+  // ── Dataflare host documents (云盘 / 知识库的 markdown） ─────────────────────
+  //
+  // 宿主在 `init` 里交下一份文档；集成层下载后由 `openBytes` 落到 WEB_TEMP_ROOT
+  // （受管路径，`markdown:read-file` / `markdown:save` 都接受），App 依旧用
+  // `consumePending()` 打开它。保存反过来：先由 `markdown:save` 写回那份临时文件，
+  // 成功后才把字节推给宿主作为新版本（乐观锁，409 → document-conflict）。
+  const files = createWebFileBridge(transport)
+  let pendingHostOpen: string | null = null
+  let hostDocumentPath: string | null = null
+  const dataflare = createDataflareEmbedIntegration({
+    app: 'markdown',
+    transport,
+    openBytes: async (bytes, name) => {
+      const path = await files.writeTempFile(name, bytes)
+      hostDocumentPath = path
+      pendingHostOpen = path
+      currentPath = path
+      return path
+    },
+    // markdown:save 已经写过临时文件；集成层只需要一个成功的本地保存结果。
+    saveLocal: async () => ({ ok: true }),
+    shouldAutoOpen: (context) => context.documentType === 'markdown',
+    onDocumentOpened: (result) => {
+      // 只有 App 能把它装进编辑器；宿主文档通常在挂载之后才到，所以广播一次
+      // 让 App 重跑加载流程（早于挂载的情形由 consumePending 兜住）。
+      if (typeof result !== 'string') return
+      pendingHostOpen = result
+      window.dispatchEvent(new CustomEvent('dataflare:open-document', { detail: result }))
+    },
+  })
+
   bridgedWindow.markdownApi = createMarkdownApi(transport, {
-    consumePending: async () => currentPath,
+    consumePending: async () => pendingHostOpen ?? currentPath,
     consumeHeadlessExport: async () => null,
     headlessExportDone: () => {},
     save: async (request) => {
@@ -126,9 +167,11 @@ if (!isElectronRuntime()) {
       // on success (it allocates a new managed file under DATA_DIR or
       // resolves the caller-supplied path). Cast to the shared result type
       // so the override signature lines up with the desktop call site.
+      // 只有 mode='save' 才回传当前路径：saveAs 的语义是新落一个文件，
+      // 注入 path 会让它覆盖当前文档（与 html 渲染器同一个约定）。
       const result = (await transport.invoke('markdown:save', {
         ...request,
-        path: currentPath,
+        path: request.mode === 'save' ? currentPath : null,
       })) as SaveMarkdownResult
       // `SaveMarkdownResult` is `{ ok: true; path: string } | { ok: true; canceled: true }
       // | { ok: false; error: string }` — TypeScript can't narrow on the
@@ -137,6 +180,28 @@ if (!isElectronRuntime()) {
       // the union to the variant that actually carries `path`.
       if (result.ok && 'path' in result) {
         currentPath = result.path
+        // 只有「宿主交下来的那份临时文件」才回推宿主：`?open=` 打开的本地文件
+        // 不该被写进任何人的云盘 / 知识库。
+        const context = dataflare.getContext()
+        if (
+          hostDocumentPath !== null &&
+          result.path === hostDocumentPath &&
+          isHostDocumentSource(context?.documentSource)
+        ) {
+          try {
+            // 读回刚写好的字节而不是复用 request.text：服务端保存会做图片重写等
+            // 归一化，推给宿主的必须是最终落盘内容。
+            const saved = (await transport.invoke('markdown:read-file', result.path)) as string
+            const pushed = await dataflare.saveDocument(
+              result.path,
+              textToBytes(String(saved)),
+              false,
+            )
+            if (!pushed.ok) return { ok: false, error: pushed.error }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) }
+          }
+        }
       }
       return result
     },
@@ -186,7 +251,22 @@ if (!isElectronRuntime()) {
       return { ok: true, path: '' }
     },
   })
+  // 宿主据此点亮「保存为新版本」按钮；只在变脏时报，落盘后的 false 不翻宿主状态。
+  const markdownApi = bridgedWindow.markdownApi as { setDirty: (dirty: boolean) => void }
+  const setDirty = markdownApi.setDirty
+  markdownApi.setDirty = (dirty: boolean): void => {
+    setDirty(dirty)
+    if (dirty && dataflare.isEmbedded()) {
+      postToEmbedParent({ type: 'document-dirty', documentId: dataflare.getContext()?.documentId })
+    }
+  }
+  dataflare.install({})
   bridgedWindow.projectApi = createMarkdownProjectApi(transport)
+}
+
+function textToBytes(text: string): ArrayBuffer {
+  const bytes = new TextEncoder().encode(text)
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 function bytesToBase64(bytes: ArrayBuffer): string {

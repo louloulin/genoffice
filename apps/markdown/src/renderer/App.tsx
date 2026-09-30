@@ -292,6 +292,18 @@ export default function App() {
     setImageBaseDir(filePath ? dirOf(filePath) : null)
   }, [filePath])
 
+  /**
+   * 宿主（Dataflare 云盘 / 知识库）交下文档的时机由宿主决定，通常在挂载之后；桥落地
+   * 后广播一次 `dataflare:open-document`，这里重跑加载流程去 `consumePending()`。
+   * 早于挂载的情形由桥自己的 pending 队列兜住。
+   */
+  const [hostOpenTick, setHostOpenTick] = useState(0)
+  useEffect(() => {
+    const onHostDocument = (): void => setHostOpenTick((tick) => tick + 1)
+    window.addEventListener('dataflare:open-document', onHostDocument)
+    return () => window.removeEventListener('dataflare:open-document', onHostDocument)
+  }, [])
+
   useEffect(() => {
     if (!editor) return
     let cancelled = false
@@ -332,7 +344,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [editor])
+  }, [editor, hostOpenTick])
 
   const onFrontmatterChange = useCallback(
     (inner: string) => {

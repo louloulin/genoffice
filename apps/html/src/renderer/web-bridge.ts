@@ -9,6 +9,7 @@
 /// APIs and this module leaves them untouched.
 import { createHttpIpcTransport, isElectronRuntime } from '@genoffice/ipc-bridge/client'
 import {
+  createWebFileBridge,
   downloadBytes,
   installBackToHome,
   pickFileBytes,
@@ -22,8 +23,21 @@ import {
   textBufferGetText,
 } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import {
+  createDataflareEmbedIntegration,
+  isHostDocumentSource,
+  resolveEmbedPathPrefix,
+} from '@genoffice/web-sdk/dataflare/integration'
 import { createHtmlApi, createHtmlProjectApi } from '../shared/html-api-factory'
-import type { ExportDocxRequest, ExportPdfRequest, ExportHtmlRequest } from '../shared/ipc'
+import type {
+  ExportDocxRequest,
+  ExportPdfRequest,
+  ExportHtmlRequest,
+  HtmlApi,
+  SaveHtmlRequest,
+  SaveHtmlResult,
+} from '../shared/ipc'
 
 /**
  * Open a validated same-origin URL in a new tab.
@@ -121,12 +135,14 @@ if (!isElectronRuntime()) {
       },
     }),
   })
-  const transport = createHttpIpcTransport()
+  const transport = createHttpIpcTransport({
+    pathPrefix: resolveEmbedPathPrefix(window.location.pathname),
+  })
+  const files = createWebFileBridge(transport)
   // SAFETY: `window` has no `htmlApi` / `htmlFilesApi` / `htmlProjectApi`
   // in lib.dom. The bridge assigns those keys below and reads them back
   // through module-scoped helpers, so the cast is sound within this renderer.
   const bridgedWindow = window as unknown as Record<string, unknown>
-
   // a per-tab id for the live preview: the owner writes the buffer to
   // `html:preview-update` and the preview iframe loads it via
   // `/api/html/preview/<id>`. A present tab opens that URL directly.
@@ -135,13 +151,46 @@ if (!isElectronRuntime()) {
     : `p-${Math.random().toString(36).slice(2)}`
   const previewUrlBase = `${location.origin}/api/html/preview/${previewId}`
 
+  // ── Dataflare host documents (云盘 / 知识库的 html） ─────────────────────
+  //
+  // 宿主在 `init` 里交下一份文档；集成层下载后由 `openBytes` 落到 WEB_TEMP_ROOT
+  // （受管路径，`html:read-file` / `html:save` 都接受），App 依旧用 `consumePending()`
+  // 打开它。保存反过来：先把 HTML 写回那份临时文件，成功后才把字节推给宿主作为
+  // 新版本（乐观锁，409 → document-conflict）。
+  let pendingHostOpen: string | null = null
+  let hostDocumentPath: string | null = null
+  let currentPath: string | null = null
+  const dataflare = createDataflareEmbedIntegration({
+    app: 'html',
+    transport,
+    openBytes: async (bytes, name) => {
+      const path = await files.writeTempFile(name, bytes)
+      hostDocumentPath = path
+      pendingHostOpen = path
+      currentPath = path
+      return path
+    },
+    // html:save 已经写过临时文件；集成层只需要一个成功的本地保存结果。
+    saveLocal: async () => ({ ok: true }),
+    shouldAutoOpen: (context) => context.documentType === 'html',
+    onDocumentOpened: (result) => {
+      // 只有 App 能把它装进编辑器；宿主文档通常在挂载之后才到，所以广播一次
+      // 让 App 重跑加载流程（早于挂载的情形由 consumePending 兜住）。
+      if (typeof result !== 'string') return
+      pendingHostOpen = result
+      window.dispatchEvent(new CustomEvent('dataflare:open-document', { detail: result }))
+    },
+  })
+
   bridgedWindow.htmlApi = createHtmlApi(transport, {
     consumePending: async () => {
       const hash = new URLSearchParams(window.location.hash.slice(1)).get('open')
       const query = new URLSearchParams(window.location.search).get('open')
-      const open = hash ?? query
+      // 宿主（Dataflare 云盘 / 知识库）交下来的文档优先：它在挂载后才落地。
+      const open = pendingHostOpen ?? hash ?? query
       if (!open) return null
       // grant the path to the bridge sender so html:read-file accepts it
+      currentPath = open
       return open
     },
     updatePreview: (text) => {
@@ -244,6 +293,45 @@ if (!isElectronRuntime()) {
     },
     getPathForFile: () => '',
   })
+
+  // 网页版的 `html:save` 只有拿到显式 path 才会覆盖当前文件（否则每次保存都在
+  // HTML_DOC_DIR 新落一个文件），这条路径由 web-bridge 自己维护；宿主文档再额外把
+  // 最终落盘的字节推回宿主作为新版本（乐观锁，409 → document-conflict）。
+  const htmlApi = bridgedWindow.htmlApi as HtmlApi
+  const saveHtml = htmlApi.save
+  htmlApi.save = async (request: SaveHtmlRequest): Promise<SaveHtmlResult> => {
+    // 只有 mode='save' 才带上当前路径：saveAs 的语义是新落一个文件，注入 path
+    // 会让它覆盖当前文档。
+    const outbound = request.mode === 'save' ? ({ ...request, path: currentPath } as SaveHtmlRequest) : request
+    const result = await saveHtml(outbound)
+    if (!result.ok || !('path' in result)) return result
+    currentPath = result.path
+    const context = dataflare.getContext()
+    if (
+      hostDocumentPath !== null &&
+      result.path === hostDocumentPath &&
+      isHostDocumentSource(context?.documentSource)
+    ) {
+      try {
+        const saved = (await transport.invoke('html:read-file', result.path)) as string
+        const pushed = await dataflare.saveDocument(result.path, textToBytes(String(saved)), false)
+        if (!pushed.ok) return { ok: false, error: pushed.error }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+    return result
+  }
+
+  // 宿主据此点亮「保存为新版本」按钮；只在变脏时报，落盘后的 false 不翻宿主状态。
+  const setDirty = htmlApi.setDirty
+  htmlApi.setDirty = (dirty: boolean): void => {
+    setDirty(dirty)
+    if (dirty && dataflare.isEmbedded()) {
+      postToEmbedParent({ type: 'document-dirty', documentId: dataflare.getContext()?.documentId })
+    }
+  }
+  dataflare.install({})
   bridgedWindow.projectApi = createHtmlProjectApi(transport)
 }
 
