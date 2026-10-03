@@ -150,3 +150,104 @@ describe('knowledge documents keep their routes', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
+
+describe('save as a new file (translation output)', () => {
+  it('posts to /save-as with the file name and without an optimistic-lock base', async () => {
+    const { integration } = makeIntegration()
+    init({ documentId: 'abc', documentSource: 'drive', documentType: 'docx' })
+    fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1]), { headers: { 'X-Office-Revision': '7' } }))
+    await integration.openKnowledgeDocument()
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: 0, data: { revision: '7', itemId: '55', versionId: '9' } }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+
+    const result = await integration.saveDocument('', new ArrayBuffer(3), false, {
+      saveAsFileName: '报价单.bilingual.docx',
+    })
+
+    const [url, init2] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(url).toBe(
+      `/crmapi/drive/office-sessions/abc/save-as?fileName=${encodeURIComponent('报价单.bilingual.docx')}`,
+    )
+    // No expectedRevision: a sibling file has no lock base, and sending the open
+    // document's revision would make the host think we are racing ourselves.
+    expect((init2.body as FormData).get('expectedRevision')).toBeNull()
+    expect(result).toMatchObject({ ok: true, savedAs: { fileName: '报价单.bilingual.docx', itemId: '55' } })
+    // The open document did not move; claiming it did would make the next
+    // Ctrl+S fail with a conflict that never happened.
+    expect(integration.getRevision()).toBe('7')
+  })
+
+  it('refuses instead of overwriting the original when the document has no drive location', async () => {
+    const { integration } = makeIntegration()
+    init({ documentId: '9', documentSource: 'knowledge', documentType: 'docx' })
+
+    const result = await integration.saveDocument('', new ArrayBuffer(1), false, {
+      saveAsFileName: '译文.docx',
+    })
+
+    // Silently saving over the source is precisely what "save as" promises not to
+    // do; the user would only learn it after losing the original.
+    expect(result).toMatchObject({ ok: false, reason: 'save-failed' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('save-as content type override', () => {
+  const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  const ok = (data: Record<string, unknown>) =>
+    new Response(JSON.stringify({ code: 0, data }), {
+      headers: { 'content-type': 'application/json' },
+    })
+
+  it('files a save-as under the type the caller states, not the open document type', async () => {
+    // The pdf app's PDF→DOCX fallback hands DOCX bytes to a session whose
+    // documentType is `pdf`. Deriving the type from the context would file an
+    // editable Word document as application/pdf, and the drive would then try
+    // to render it as a PDF.
+    const { integration } = makeIntegration()
+    init({ documentId: 'abc', documentSource: 'drive', documentType: 'pdf' })
+    fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1]), { headers: { 'X-Office-Revision': '7' } }))
+    await integration.openKnowledgeDocument()
+    fetchMock.mockResolvedValueOnce(ok({ revision: '7', itemId: '77', versionId: '9' }))
+
+    await integration.saveDocument('', new ArrayBuffer(8), false, {
+      saveAsFileName: '手册.editable.docx',
+      contentType: DOCX_MIME,
+    })
+
+    const body = (fetchMock.mock.calls[1]?.[1] as RequestInit).body as FormData
+    expect((body.get('file') as Blob).type).toBe(DOCX_MIME)
+  })
+
+  it('ignores the override for a normal save — a new version is the same kind of document', async () => {
+    const { integration } = makeIntegration()
+    init({ documentId: 'abc', documentSource: 'drive', documentType: 'pdf' })
+    fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1]), { headers: { 'X-Office-Revision': '42' } }))
+    await integration.openKnowledgeDocument()
+    fetchMock.mockResolvedValueOnce(ok({ revision: '43' }))
+
+    await integration.saveDocument('', new ArrayBuffer(8), false, { contentType: DOCX_MIME })
+
+    const body = (fetchMock.mock.calls[1]?.[1] as RequestInit).body as FormData
+    // The open document is still a PDF; a version bump must say so.
+    expect((body.get('file') as Blob).type).toBe('application/pdf')
+  })
+
+  it('leaves a save-as without an override on the derived type', async () => {
+    const { integration } = makeIntegration()
+    init({ documentId: 'abc', documentSource: 'drive', documentType: 'pdf' })
+    fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1]), { headers: { 'X-Office-Revision': '7' } }))
+    await integration.openKnowledgeDocument()
+    fetchMock.mockResolvedValueOnce(ok({ revision: '7', itemId: '55' }))
+
+    await integration.saveDocument('', new ArrayBuffer(8), false, {
+      saveAsFileName: '手册.pdf',
+    })
+
+    const body = (fetchMock.mock.calls[1]?.[1] as RequestInit).body as FormData
+    expect((body.get('file') as Blob).type).toBe('application/pdf')
+  })
+})

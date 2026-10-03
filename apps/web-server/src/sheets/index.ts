@@ -792,6 +792,38 @@ export function registerSheetsHandlers(): void {
   // meaningful rename, so we return null (the renderer falls back to its
   // own heuristic) instead of fabricating a name.
   registerHandle('workbook:auto-rename', () => null)
+
+  // close: release the sidecar's resident model for a workbook the renderer is
+  // done with (switching documents, closing the tab).
+  //
+  // The desktop main process owns this channel; the web build never registered
+  // it, so every `desktopApi.closeWorkbook(...)` 404'd — the workbook's model
+  // (plus the recalc model, which the sidecar's own comment puts at ~1.2 GB for
+  // a large sheet) stayed resident in a long-lived pool worker for the life of
+  // the server. The 404 was the only symptom, and it was easy to mistake for
+  // noise, so the leak was invisible.
+  registerHandle('workbook:close', async (_event: unknown, sessionId: unknown) => {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      throw new Error('workbook:close requires a sessionId')
+    }
+    // Route by the path `open` was keyed on — the same reason read-range looks
+    // the session up: a sessionId hash would reach the wrong worker ~3/4 of the
+    // time and silently close nothing.
+    const session = getSession(sessionId)
+    try {
+      await sheetsSidecar.close({
+        sessionId,
+        ...(session?.sourcePath ? { path: session.sourcePath } : {}),
+      })
+    } catch (err) {
+      // The registry entry must go either way: a close that failed to reach
+      // the sidecar still means the renderer will not use this session again.
+      forgetSession(sessionId)
+      throw err
+    }
+    forgetSession(sessionId)
+    return { ok: true }
+  })
 }
 
 /**

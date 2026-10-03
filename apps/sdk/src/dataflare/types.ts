@@ -17,8 +17,26 @@ import type { DATAFLARE_EMBED_PROTOCOL } from './protocol'
 export interface DataflareOfficeContext {
   tenantId?: string
   userId?: string
+  /**
+   * Drive space that owns the document.
+   *
+   * The editor never stores terminology or translation memory itself: it asks
+   * the host bridge for the rows visible in this space and posts accepted
+   * translations back to the same space. Without it the guest can only fall
+   * back to the tenant-wide scope, which is exactly the cross-space term leak
+   * the storage layer is scoped to prevent.
+   */
+  spaceId?: string
   documentId?: string
   documentType?: 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'markdown' | 'html'
+  /**
+   * Original file name of the host document, extension included.
+   *
+   * Without it the editor only knows the session id, so a translated copy
+   * would land in the drive as `dataflare-<sessionId>.docx` — a name the user
+   * cannot recognise and cannot tell apart from the original.
+   */
+  documentName?: string
   /**
    * Where the document lives on the host. `knowledge` and `drive` are host
    * documents (downloaded from and saved back to Dataflarework); `office` is a
@@ -51,6 +69,13 @@ export type DataflareEmbedCommand =
       scope: 'selection' | 'document'
       sourceLanguage?: string
       targetLanguage: string
+      /**
+       * Keep the source and add the translation beside it instead of
+       * replacing it. Maps to `TranslateApplyMode` in
+       * `@genoffice/translation-core`; the concrete layout (following
+       * paragraph / adjacent column / sibling text box) is the application's.
+       */
+      bilingual?: boolean
       preserveFormatting?: boolean
       memoryEnabled?: boolean
       qualityCheck?: boolean
@@ -63,11 +88,43 @@ export type DataflareEmbedCommand =
 
 // ── Event (editor → host) ──────────────────────────────────────────────────
 
+/**
+ * `started → running → (completed | failed | cancelled)`.
+ *
+ * `cancelled` is a first-class terminal state: a user pressing stop is a
+ * normal outcome, and folding it into `failed` is what makes a healthy
+ * cancellation look like a fault in the host's error reporting.
+ */
+export type DataflareAiProgressStatus =
+  | 'started'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+
 export type GenOfficeEmbedEvent =
   | { type: 'ready'; capabilities: string[] }
   | { type: 'document-dirty'; documentId?: string }
   | { type: 'document-saved'; documentId?: string; revision?: string }
-  | { type: 'ai-progress'; requestId?: string; status: string; progress?: number }
+  | {
+      type: 'ai-progress'
+      requestId?: string
+      /**
+       * Mirrors `TranslateProgressStatus` in `@genoffice/translation-core`.
+       * Typed rather than `string` on purpose: a free-form status is how a
+       * failed run ends up rendered as a silent success on the host.
+       */
+      status: DataflareAiProgressStatus
+      progress?: number
+      completedUnits?: number
+      totalUnits?: number
+      quality?: { overallScore?: number; warnings?: string[] }
+      /** The unit that just settled, for a live per-unit preview. */
+      unit?: { unitId: string; sourceText: string; translatedText?: string; status?: string }
+      /** Terminal-only. A `failed` run always carries the real message. */
+      error?: string
+    }
   | { type: 'error'; code: string; message: string }
   | { type: 'global-state'; state: DataflareGlobalState; revision?: number }
   | { type: 'global-state-request'; revision?: number }

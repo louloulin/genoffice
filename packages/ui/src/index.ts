@@ -223,3 +223,11 @@ export {
 
 // ── Follow-up suggestion chips (under assistant message) ────────────────
 export { SuggestionChips, type Suggestion, type SuggestionChipsProps } from './SuggestionChips'
+export {
+  TranslationStoragePanel,
+  type PanelGlossaryTerm,
+  type PanelMemoryEntry,
+  type PanelTranslationStorageClient,
+  type TranslationStoragePanelProps,
+  type TranslationStoragePanelStrings,
+} from './TranslationStoragePanel'

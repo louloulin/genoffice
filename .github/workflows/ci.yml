@@ -25,6 +25,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint --if-present
+      # 静态门禁：四格式翻译对等、翻译副本落点、术语/记忆面板接线。
+      # 三者都检查「声明与源码是否一致」，且**失败不报错到用户可见处**的缺陷
+      # （面板静默不可用、副本被当原地保存），所以必须与 lint 同级常驻。
+      - run: npm run check:app-translation
+      - run: npm run check:translation-copy-save
+      - run: npm run check:translation-storage-panel
+      - run: npm run check:pdf-editable-docx
+      # 嵌入宿主时 AI base URL 必须带部署路径前缀：漏了只在那一种部署形态下 404，
+      # 编译与单测都绿，必须与其它静态门禁同级常驻。
+      - run: npm run check:embed-ai-base-prefix
+      # 嵌入宿主时宿主文档必须「真的被打开」且保存「真的推回云盘」：bridge 与 App
+      # 之间只隔一个 DOM 事件，任一端漏掉都是静默的空文档 / 静默的不落盘，
+      # 编译与单测都绿，只能靠门禁。
+      - run: npm run check:embed-host-documents
+      # 打开工作簿时必须补齐 schema 默认的 sheet 数组：缺一个就在 Univer 命令
+      # 处理器内部抛错，异常从 FRange.setValue 逃出调用方循环，同批次后续写入全部
+      # 丢失（实测 6 个单元格只落 1 个译文且提示成功）。编译与单测都看不出来。
+      - run: npm run check:sheets-model-defaults
 
   typecheck:
     name: Typecheck

@@ -52,6 +52,7 @@ export const ar = {
   appSaveFailed: 'فشل الحفظ: {error}',
   appAutoSavedAt: 'تم الحفظ التلقائي ({time})',
   appSaved: 'تم الحفظ',
+  appTranslationCopySaved: 'تم حفظ النسخة المترجمة: {name}',
   appSectionBreakInserted: 'تم إدراج فاصل مقطعي ({type})',
   appSectionBreakPending: 'تم إدراج فاصل مقطعي؛ يسري المقطع الجديد بعد الحفظ',
   appBreakNextPage: 'الصفحة التالية',

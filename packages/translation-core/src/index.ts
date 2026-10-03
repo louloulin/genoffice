@@ -63,7 +63,36 @@ export {
 
 export { chunkDocument, makeUnitId } from './chunking'
 
+// Shared whole-document pipeline. Each application supplies only `extract`
+// units and an `apply` strategy; the batching / streaming / progress /
+// quality middle lives here so sheets / slides / pdf stop re-implementing it.
+export {
+  planTranslateBatches,
+  translateDocument,
+  type TranslateApplyMode,
+  type TranslateDocumentAdapters,
+  type TranslateDocumentOptions,
+  type TranslateDocumentRequest,
+  type TranslateDocumentResult,
+  type TranslateBatchFn,
+  type TranslateProgress,
+  type TranslateProgressStatus,
+  type TranslateUnitListener,
+  type TranslatedUnit,
+} from './document'
+
 export { assessQuality, assessBatchQuality, warningsFor } from './quality'
+
+// 翻译副本的文件名规则（与服务端 DriveOfficeSessionService.deriveTranslatedName
+// 同构）：三个应用在应用翻译后落云盘前都要用它把名字显示给用户。
+export {
+  BILINGUAL_NAME_SUFFIX,
+  DRIVE_NAME_MAX_LENGTH,
+  TRANSLATED_NAME_SUFFIX,
+  deriveTranslatedName,
+  translatedNameSuffixFor,
+  type TranslatedNameSuffix,
+} from './translated-file-name'
 
 export {
   TranslationMemory,

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import {
   AgentLoop,
   composeSkills,
@@ -39,6 +39,7 @@ import {
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { AiScopeQuote, Markdown, useAiPanelPrefs, type AiScopeQuoteData, AiRunHeader, AiToolTimeline, AiErrorRecovery } from '@genoffice/ui'
+import { TranslationStoragePanel } from '@genoffice/ui'
 import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import { ProviderMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
@@ -54,7 +55,7 @@ import fileVideoIcon from '../assets/file-video.png'
 import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
-import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+import { IconBook, IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
 
 interface ToolActivity {
   name: string
@@ -297,6 +298,8 @@ interface AiPanelProps {
   onCollapse?: () => void
   /** Visible rollback action; uses the same main-process history as Cmd/Ctrl+Z. */
   onUndo?: () => void
+  /** Open the whole-deck translation dialog (extraction + review + write-back). */
+  onTranslateDeck?: () => void
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
   /** Flush pending editor state (e.g. the speaker-notes draft) right before an AI run edits the deck, so a stale draft cannot overwrite what the run writes */
@@ -399,6 +402,7 @@ export function AiPanel({
   onQueueClear,
   onQueueFocus,
   onQueueConsume,
+  onTranslateDeck,
 }: AiPanelProps) {
   const { t, lang } = useI18n()
   // Panel chrome follows the UI language; message text follows its own content (dir=auto below)
@@ -413,6 +417,29 @@ export function AiPanel({
   const [sharedRunStatus, setSharedRunStatus] = useState<ChatRunStatus>('idle')
   /** Last error from a finished run; consumed by <AiErrorRecovery>. */
   const [lastError, setLastError] = useState<string | null>(null)
+  // 术语库 / 翻译记忆面板。数据在云盘空间里（`translationStorage`），不在本地，
+  // 所以这个开关只管开合，不持有任何数据。
+  const [storagePanelOpen, setStoragePanelOpen] = useState(false)
+  const translationStorageStrings = useMemo(
+    () => ({
+      title: t('aiGlossaryPanelTitle'),
+      glossaryTab: t('aiGlossaryTab'),
+      memoryTab: t('aiMemoryTab'),
+      sourceTerm: t('aiGlossarySource'),
+      targetTerm: t('aiGlossaryTarget'),
+      add: t('aiGlossaryAdd'),
+      remove: t('aiGlossaryRemove'),
+      close: t('paneCsdClose'),
+      emptyGlossary: t('aiGlossaryEmpty'),
+      emptyMemory: t('aiMemoryEmpty'),
+      scopeShared: t('aiScopeShared'),
+      scopeSpace: t('aiScopeSpace'),
+      loading: t('aiThinking'),
+      retry: t('aiGlossaryRetry'),
+      unavailable: t('aiStorageUnavailable'),
+    }),
+    [t],
+  )
   const sharedToolSeqRef = useRef(0)
   function emitSharedToolStart(name: string, input: unknown) {
     sharedToolSeqRef.current += 1
@@ -2115,6 +2142,17 @@ export function AiPanel({
               <IconNewChat size={15} />
             </button>
           )}
+          {/* Glossary / memory access. Placed after "new chat" on purpose: the
+              header's leading button is the conversation reset, and both tests
+              and muscle memory reach for the first `.ai-header-btn`. */}
+          <button
+            className="ai-header-btn"
+            onClick={() => setStoragePanelOpen(true)}
+            data-tip={t('aiGlossaryPanelTitle')}
+            aria-label={t('aiGlossaryPanelTitle')}
+          >
+            <IconBook size={15} />
+          </button>
           {onCollapse && (
             <button
               className="ai-header-btn"
@@ -2127,6 +2165,13 @@ export function AiPanel({
           )}
         </div>
       </div>
+
+      <TranslationStoragePanel
+        open={storagePanelOpen}
+        onClose={() => setStoragePanelOpen(false)}
+        client={window.desktop?.translationStorage ?? null}
+        strings={translationStorageStrings}
+      />
 
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
         {/* Shared ChatRuntime components (M4). Additive layer; inline tool chips keep rendering. */}
@@ -2170,6 +2215,14 @@ export function AiPanel({
               {t(deckEmpty ? 'aiEmptyGenBody2' : 'aiEmptyBody2')}
             </div>
             <div className="ai-starter-list">
+              {/* Whole-deck translation is a dialog flow, not a chat prompt, so
+                  it gets its own button rather than a starter chip that would
+                  hand a vague instruction to the model. */}
+              {!deckEmpty && onTranslateDeck ? (
+                <button className="ai-starter" onClick={onTranslateDeck}>
+                  {t('aiTranslateDeckTitle')}
+                </button>
+              ) : null}
               {starterPrompts(t, deckEmpty ?? false).map((p) => (
                 <button
                   key={p}

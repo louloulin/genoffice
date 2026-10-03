@@ -8,14 +8,16 @@
 import type { Lang } from '@genoffice/i18n'
 import type { AiStreamChunk } from '@genoffice/ai-provider'
 import type { IpcTransport } from '@genoffice/ipc-bridge/client'
-import { AI_CHANNELS, PDF_CHANNELS } from './ipc'
-import type { PdfApi, UiTheme } from './ipc'
+import { AI_CHANNELS, ANYDOC_CHANNELS, PDF_CHANNELS } from './ipc'
+import type { PdfApi, PdfToDocxResponse, UiTheme } from './ipc'
 
 export interface PdfApiOverrides {
   /** Web-native open: grant a path to the bridge sender and return it as pending. */
   consumePending?: () => Promise<string | null>
   /** Web-native file upload (browser file input → FILES_DIR via web:save-file). */
   uploadFile?: (projectId?: string) => Promise<{ id: string; path: string; name: string } | null>
+  /** Embedded SSE transport: the Dataflare host streams per-unit progress. */
+  aiTranslateBatchStream?: PdfApi['aiTranslateBatchStream']
 }
 
 export function createPdfApi(t: IpcTransport, overrides: PdfApiOverrides = {}): PdfApi {
@@ -92,6 +94,38 @@ export function createPdfApi(t: IpcTransport, overrides: PdfApiOverrides = {}): 
         targetLang: request.targetLang,
         preserveFormat: request.preserveFormat,
         range: request.range,
+      }),
+    // The batch request is forwarded **whole**, not field-by-field like the
+    // one-shot above: that explicit mapping is what silently dropped
+    // `memoryEnabled` / `qualityCheck` / `glossaryCategory`, so a user who
+    // turned memory off still paid for memory lookups.
+    aiTranslateBatch: (request) => t.invoke(AI_CHANNELS.translateBatch, request),
+    // The IPC transport already tags typed arrays on the wire and untags them
+    // on the way back, so the handler sees a real Uint8Array and the caller
+    // gets one — no manual base64 on either side.
+    pdfToDocx: async (pdf) => {
+      try {
+        return (await t.invoke(ANYDOC_CHANNELS.pdfToDocxBytes, { pdf })) as PdfToDocxResponse
+      } catch (err) {
+        // Desktop Electron has no anydoc handler, so `invoke` rejects. Report
+        // it in the channel's own vocabulary rather than letting a missing
+        // optional capability surface as an unhandled rejection.
+        return {
+          ok: false,
+          code: 'CONVERT_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+        }
+      }
+    },
+    // Standalone Electron has no SSE channel for this; replay the finished
+    // batch so the review list is never empty, just late.
+    aiTranslateBatchStream: overrides.aiTranslateBatchStream ??
+      (async (request, options) => {
+        const response = await t.invoke(AI_CHANNELS.translateBatch, request)
+        for (const unit of response.units ?? []) {
+          if (unit?.unitId) options?.onUnit?.(unit)
+        }
+        return response
       }),
     onAiStream: (handler) =>
       t.on(AI_CHANNELS.streamChunk, (chunk) => handler(chunk as AiStreamChunk)),

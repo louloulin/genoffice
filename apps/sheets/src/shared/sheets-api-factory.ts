@@ -83,6 +83,12 @@ export interface SheetsApiOverrides {
    * and its raw result still goes through the same response validation.
    */
   saveWorkbook?: (request: WorkbookSaveRequest) => Promise<unknown>
+  /** Web embed only: per-unit streaming batch translate through the host SSE. */
+  aiTranslateBatchStream?: DesktopApi['aiTranslateBatchStream']
+  /** Web embed only: space-scoped glossary / translation-memory client.
+   *  Absent (desktop build) leaves the API's `null`, which the panel renders
+   *  as an explanation rather than an error. */
+  translationStorage?: DesktopApi['translationStorage']
   /** Web embed only: push a saved workbook back to the Dataflare host. */
   syncHostDocument?: DesktopApi['syncHostDocument']
   hasPendingHostSync?: DesktopApi['hasPendingHostSync']
@@ -226,6 +232,7 @@ export function createSheetsApi(t: IpcTransport, overrides: SheetsApiOverrides =
     },
     ...(overrides.syncHostDocument ? { syncHostDocument: overrides.syncHostDocument } : {}),
     ...(overrides.hasPendingHostSync ? { hasPendingHostSync: overrides.hasPendingHostSync } : {}),
+    translationStorage: overrides.translationStorage ?? null,
     async beginSaveEditsTransfer(request) {
       if (!isRecord(request)) throw new Error('Invalid save transfer request.')
       if (!isUuid(request.sessionId)) throw new Error('Invalid save transfer session.')
@@ -515,6 +522,33 @@ export function createSheetsApi(t: IpcTransport, overrides: SheetsApiOverrides =
         preserveFormat?: boolean
       }
     },
+    async aiTranslateBatch(request) {
+      const result: unknown = await t.invoke(IPC_CHANNELS.aiTranslateBatch, request)
+      if (!isRecord(result) || typeof result.ok !== 'boolean') {
+        throw new Error('Invalid AI translate-batch response.')
+      }
+      return result as unknown as Awaited<ReturnType<DesktopApi['aiTranslateBatch']>>
+    },
+    // No streaming override (the Electron path): the batch still returns every
+    // unit, just all at once at the end of the batch. Callers fall back here
+    // rather than failing — progress that only moves at batch boundaries is a
+    // slower progress bar, not a broken feature.
+    aiTranslateBatchStream:
+      overrides.aiTranslateBatchStream ??
+      (async (request, options) => {
+        const response = await t.invoke(IPC_CHANNELS.aiTranslateBatch, request)
+        if (!isRecord(response) || typeof response.ok !== 'boolean') {
+          throw new Error('Invalid AI translate-batch response.')
+        }
+        const batch = response as unknown as Awaited<ReturnType<DesktopApi['aiTranslateBatch']>>
+        // Replay the finished batch through `onUnit` so the caller's per-unit
+        // list fills in one step. Without this the fallback would leave the
+        // list empty, which reads as "the run translated nothing".
+        for (const unit of batch.units ?? []) {
+          if (unit?.unitId) options?.onUnit?.(unit)
+        }
+        return batch
+      }),
     async aiGskStatus(withEmail) {
       const result: unknown = await t.invoke(IPC_CHANNELS.aiGskStatus, withEmail)
       if (!isRecord(result) || typeof result.loggedIn !== 'boolean') {

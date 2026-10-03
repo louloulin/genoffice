@@ -53,6 +53,7 @@ export const id = {
   appSaveFailed: 'Gagal menyimpan: {error}',
   appAutoSavedAt: 'Disimpan otomatis ({time})',
   appSaved: 'Disimpan',
+  appTranslationCopySaved: 'Salinan terjemahan disimpan: {name}',
   appSectionBreakInserted: 'Pemisah bagian disisipkan ({type})',
   appSectionBreakPending: 'Pemisah bagian disisipkan; bagian baru berlaku setelah disimpan',
   appBreakNextPage: 'Halaman Berikutnya',

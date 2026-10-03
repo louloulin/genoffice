@@ -53,6 +53,7 @@ export const ja = {
   appSaveFailed: '保存に失敗しました: {error}',
   appAutoSavedAt: '自動保存しました ({time})',
   appSaved: '保存しました',
+  appTranslationCopySaved: '翻訳コピーを保存しました：{name}',
   // Section breaks
   appSectionBreakInserted: 'セクション区切りを挿入しました({type})',
   appSectionBreakPending:

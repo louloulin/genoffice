@@ -1,3 +1,6 @@
+import type { TranslateBatchRequest, TranslateBatchResponse } from '@genoffice/translation-core/document'
+import type { TranslationStorageClient } from '@genoffice/translation-core/storage'
+
 export interface OpenFileResult {
   path: string
   name: string
@@ -279,12 +282,22 @@ export interface DesktopApi {
     path: string,
     data: ArrayBuffer,
     auto?: boolean,
+    /** Set to write a *sibling* file instead of a new version of `path`.
+     *  Only the Dataflare embed path honors it (the cloud drive has a
+     *  save-as endpoint); the desktop build has no drive to write a sibling
+     *  into, so it ignores the option and saves in place — which is why the
+     *  translation UI only offers the choice when a drive document is open. */
+    options?: { saveAsFileName?: string },
   ): Promise<{
     ok: boolean
     error?: string
     reason?: 'external-modified'
     /** a newer password choice arrived after this save's snapshot */
     passwordIntentPending?: boolean
+    /** present when the bytes landed in a *new* sibling file: the open
+     *  document did not move, so `path` is unchanged and the revision is
+     *  deliberately not advanced. */
+    savedAs?: { fileName: string; itemId?: string; versionId?: string }
   }>
   /** crash-recovery copy of a dirty document, stored under userData */
   writeRecoveryCopy(path: string, data: ArrayBuffer): Promise<{ ok: boolean }>
@@ -389,47 +402,44 @@ export interface DesktopApi {
     /** Batch-level score, present only on the embedded HTTP branch. */
     quality?: { overallScore?: number; warnings?: string[] }
   }>
-  /** Translate multiple document units while preserving their editor anchors. */
-  aiTranslateBatch(request: {
-    units: Array<{
-      unitId: string
-      kind: string
-      sourceText: string
-      order?: number
-      path?: string
-      metadata?: Record<string, unknown>
-      range?: { from: number; to: number; scope?: string } | null
-    }>
-    sourceLang?: string
-    targetLang: string
-    preserveFormat?: boolean
-    scene?: string
-    memoryEnabled?: boolean
-    qualityCheck?: boolean
-    glossaryCategory?: string
-    /** Customer name — the KB confidentiality boundary. */
-    customerName?: string
-  }): Promise<{
-    ok: boolean
-    units?: Array<{
-      unitId: string
-      sourceText: string
-      translatedText?: string
-      status?: string
-      matchedTerms?: string[]
-      warnings?: string[]
-      errorMessage?: string
-      range?: { from: number; to: number; scope?: string } | null
-    }>
-    quality?: { overallScore?: number; warnings?: string[] }
-    error?: string
-  }>
+  /**
+   * Translate multiple document units while preserving their editor anchors.
+   *
+   * The request/response shapes are translation-core's own, imported rather
+   * than re-declared. The hand-rolled copy had drifted (`kind: string`,
+   * `status: string`, `order` optional), and that drift is not cosmetic: a
+   * loose `status` is exactly what lets a failed unit read as a translated one.
+   * Type-only import, so the browser bundle is unaffected.
+   */
+  aiTranslateBatch(request: TranslateBatchRequest): Promise<TranslateBatchResponse>
   /**
    * Optional SSE streaming batch translation.
    * Same signature as aiTranslateBatch; implementations consume
    * per-unit events from the host and return when complete or aborted.
    */
-  aiTranslateBatchStream?: (request: Parameters<DesktopApi['aiTranslateBatch']>[0]) => ReturnType<DesktopApi['aiTranslateBatch']>
+  aiTranslateBatchStream?: (
+    request: Parameters<DesktopApi['aiTranslateBatch']>[0],
+    options?: {
+      /**
+       * Fires once per settled unit, as the SSE feed reports it.
+       *
+       * The whole-file path needs this to fill the per-unit preview *while* the
+       * run is still going: without it the dialog can only render the full list
+       * after the last batch returns, which is exactly the "it hung" impression
+       * the panel is supposed to remove.
+       */
+      onUnit?: (unit: {
+        unitId: string
+        sourceText: string
+        translatedText?: string
+        status?: 'translated' | 'memory-hit' | 'failed'
+        matchedTerms?: string[]
+        warnings?: string[]
+        errorMessage?: string
+      }) => void
+      signal?: AbortSignal
+    },
+  ) => ReturnType<DesktopApi['aiTranslateBatch']>
   saveTranslationMemory(request: {
     requestId: string
     documentId?: string
@@ -445,6 +455,13 @@ export interface DesktopApi {
     customerName?: string
     units: Array<{ unitId: string; sourceText: string; translatedText: string }>
   }): Promise<{ ok: boolean; savedCount?: number; skippedCount?: number; error?: string }>
+  /**
+   * Dataflare-backed glossary / memory access, or null when the editor is not
+   * running inside a Dataflare host (the Electron shell has no such storage).
+   * Null is a real answer the panel renders, not an error to swallow: the panel
+   * explains that the glossary lives in the drive and cannot be read here.
+   */
+  translationStorage: TranslationStorageClient | null
   /** Genspark account status (gsk login state); withEmail also returns the email (needs a network request, slower) */
   aiGskStatus(withEmail?: boolean): Promise<GenSparkAccountStatus>
   /** Open the browser to log in to Genspark (fire-and-forget; aiGskStatus flips to logged-in when done) */

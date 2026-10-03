@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import type { TranslationStorageClient } from '@genoffice/translation-core/storage'
+import type {
+  TranslateBatchRequest,
+  TranslateBatchResponse,
+  TranslateBatchUnitResult,
+} from '@genoffice/translation-core'
 
 import {
   HEADER_FOOTER_PICTURE_POSITION,
@@ -2657,6 +2663,40 @@ export interface DesktopApi {
     targetLang?: string
     preserveFormat?: boolean
   }>
+  /**
+   * Batch translate through the shared translation-core pipeline.
+   *
+   * Separate from {@link aiTranslate} on purpose: the one-shot has no memory,
+   * no glossary and no quality report, so a whole-workbook run built on it
+   * would translate every cell independently and report nothing about the run.
+   */
+  // The request/response types come from translation-core itself rather than
+  // being restated here: a hand-copied shape drifted once already (this app
+  // had no `range` at all), and `exactOptionalPropertyTypes` turns that kind of
+  // drift into a wall of assignability errors at every call site.
+  aiTranslateBatch(request: TranslateBatchRequest): Promise<TranslateBatchResponse>
+  /**
+   * Optional per-unit streaming batch translate.
+   *
+   * Same request as {@link aiTranslateBatch}, but `onUnit` fires as each unit
+   * settles so the whole-workbook run can fill a progress list *while* it is
+   * going. Callers must fall back to `aiTranslateBatch` when it is absent —
+   * that is the normal Electron path, where progress then only moves at batch
+   * boundaries.
+   */
+  aiTranslateBatchStream?: (
+    request: Parameters<DesktopApi['aiTranslateBatch']>[0],
+    options?: {
+      onUnit?: (unit: TranslateBatchUnitResult) => void
+      signal?: AbortSignal
+    },
+  ) => Promise<Awaited<ReturnType<DesktopApi['aiTranslateBatch']>>>
+  /**
+   * Space-scoped glossary / translation-memory client, or `null` when the
+   * editor is standalone. The panel renders that `null` as an explanation
+   * rather than an error: the terms live in the drive, not in the app.
+   */
+  translationStorage: TranslationStorageClient | null
   /// Genspark account status (gsk login state); withEmail also returns the email
   /// (needs a network request, slower)
   aiGskStatus(withEmail?: boolean): Promise<GenSparkAccountStatus>

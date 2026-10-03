@@ -39,6 +39,15 @@ describe('web-bridge.ts translate URL migration', () => {
     expect(content).toContain("'/crmapi/ai/translation/v1/memory'")
   })
 
+  it("scopes saved translation memory to the document's drive space", () => {
+    // The endpoint has accepted `spaceId` since the space-scope migration, but
+    // the iframe never sent it — so every confirmation landed in the
+    // tenant-shared table and was readable from every space. Assert on the
+    // forward itself: the URL check above still passes with no spaceId at all,
+    // which is exactly the shape of this defect.
+    expect(content).toMatch(/spaceId:\s*dataflareContext\(\)\?\.spaceId/)
+  })
+
   it('does not retain the legacy Dataflare translation endpoints', () => {
     expect(content).not.toContain("'/crmapi/ai/translation/v1/translate'")
     expect(content).not.toContain("'/crmapi/ai/translation/v1/translate/stream'")

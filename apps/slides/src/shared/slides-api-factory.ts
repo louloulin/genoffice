@@ -93,10 +93,25 @@ import type {
 } from './ipc'
 
 export interface SlidesApiOverrides {
+  /** Web embed only: per-unit streaming batch translate through the host SSE. */
+  aiTranslateBatchStream?: SlidesApi['aiTranslateBatchStream']
+  /** Web embed only: space-scoped glossary / translation-memory client.
+   *  Absent (desktop build) leaves the API's `null`, which the panel renders
+   *  as an explanation rather than an error. */
+  translationStorage?: SlidesApi['translationStorage']
   /** Web-native fullscreen (browser requestFullscreen). */
   setShowFullScreen?: (on: boolean) => Promise<unknown>
   /** Web-native open (browser file picker → temp file → open-path). */
   openPptx?: (fitWidthPx: number) => Promise<unknown>
+  /**
+   * Web-native save: write the temp copy, then push the bytes to the host.
+   *
+   * Overridable because in the Dataflare embed the local write is only half the
+   * job — the cloud-drive file is a *different* copy, and a save that stops at
+   * the temp path leaves the drive version untouched while the UI reports
+   * success and clears its dirty flag.
+   */
+  save?: SlidesApi['save']
   consumePendingOpen?: (fitWidthPx: number) => Promise<unknown>
   /** Web-native image insert (browser file picker → add-image-bytes). */
   insertImage?: (slideIndex: number, fitWidthPx: number) => Promise<unknown>
@@ -361,7 +376,7 @@ export function createSlidesApi(t: IpcTransport, overrides: SlidesApiOverrides =
       ((defaultName: string) => t.invoke('slides:pick-export-pdf-path', defaultName)),
     exportPdf: overrides.exportPdf ?? ((op: ExportPdfOp) => t.invoke('slides:export-pdf', op)),
     printSlides: overrides.printSlides ?? ((op: PrintSlidesOp) => t.invoke('slides:print', op)),
-    save: () => t.invoke('slides:save'),
+    save: overrides.save ?? (() => t.invoke('slides:save')),
     saveAs: (defaultName: string) => t.invoke('slides:save-as', defaultName),
     onCloseSaveRequest: (handler: () => void) => t.on('slides:close-save-request', () => handler()),
     onHistoryChanged: (handler: (state: { canUndo: boolean; canRedo: boolean }) => void) =>
@@ -388,6 +403,24 @@ export function createSlidesApi(t: IpcTransport, overrides: SlidesApiOverrides =
     setAiSettings: (settings: AiSettings) => t.invoke('ai:set-settings', settings),
     aiStream: (request: AiStreamRequest) => t.invoke('ai:stream', request),
     aiStreamCancel: (requestId: string) => t.invoke('ai:stream-cancel', requestId),
+    // The batch request is forwarded **whole**, not field-by-field like the
+    // one-shot above: that explicit mapping is what silently dropped
+    // `memoryEnabled` / `qualityCheck` / `glossaryCategory`, so a user who
+    // turned memory off still paid for memory lookups.
+    aiTranslateBatch: (request) => t.invoke('ai:translate-batch', request),
+    // Desktop build has no drive to read terms from; `null` is the answer the
+    // panel is built to explain, not an error it has to handle.
+    translationStorage: overrides.translationStorage ?? null,
+    // No streaming override on this path (Electron): replay the finished batch
+    // through `onUnit` so the review list is never empty, just late.
+    aiTranslateBatchStream: overrides.aiTranslateBatchStream ??
+      (async (request, options) => {
+        const response = await t.invoke('ai:translate-batch', request)
+        for (const unit of response.units ?? []) {
+          if (unit?.unitId) options?.onUnit?.(unit)
+        }
+        return response
+      }),
     aiTranslate: (request) =>
       t.invoke('ai:translate', {
         instruction: request.instruction,

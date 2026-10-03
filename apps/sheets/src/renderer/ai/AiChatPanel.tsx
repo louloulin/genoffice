@@ -11,6 +11,7 @@ import {
 } from '@genoffice/ui'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
 import { AiRunHeader, AiToolTimeline, AiChangeSummary, AiErrorRecovery } from '@genoffice/ui'
+import { TranslationStoragePanel } from '@genoffice/ui'
 import { toChatChangePlan, defaultXlsxPreviewRenderer } from './xlsx-change-plan'
 import type { ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import { ProviderMark } from '../ribbon-icons'
@@ -615,6 +616,29 @@ export function AiChatPanel({
   // early, and calling them after that return made the hook count depend on
   // isOpen, which React rejects with "Rendered fewer hooks than expected".
   const [lastError, setLastError] = React.useState<string | null>(null)
+  // 术语库 / 翻译记忆面板。数据在云盘空间里（`translationStorage`），不在本地，
+  // 所以这个开关只管开合，不持有任何数据。
+  const [storagePanelOpen, setStoragePanelOpen] = React.useState(false)
+  const translationStorageStrings = useMemo(
+    () => ({
+      title: t('aiGlossaryPanelTitle'),
+      glossaryTab: t('aiGlossaryTab'),
+      memoryTab: t('aiMemoryTab'),
+      sourceTerm: t('aiGlossarySource'),
+      targetTerm: t('aiGlossaryTarget'),
+      add: t('aiGlossaryAdd'),
+      remove: t('aiGlossaryRemove'),
+      close: t('appClose'),
+      emptyGlossary: t('aiGlossaryEmpty'),
+      emptyMemory: t('aiMemoryEmpty'),
+      scopeShared: t('aiScopeShared'),
+      scopeSpace: t('aiScopeSpace'),
+      loading: t('aiThinking'),
+      retry: t('aiGlossaryRetry'),
+      unavailable: t('aiStorageUnavailable'),
+    }),
+    [t],
+  )
 
   // Last error visible in the transcript; surfaced via <AiErrorRecovery>.
   // Re-derived whenever chat changes (cheap: scan the trailing entries).
@@ -715,6 +739,17 @@ export function AiChatPanel({
               <IconNewChat size={15} />
             </button>
           )}
+          {/* Glossary / memory access. Placed after "new chat" on purpose: the
+              header's leading button is the conversation reset, and both tests
+              and muscle memory reach for the first `.ai-header-btn`. */}
+          <button
+            className="ai-header-btn"
+            onClick={() => setStoragePanelOpen(true)}
+            data-tip={t('aiGlossaryPanelTitle')}
+            aria-label={t('aiGlossaryPanelTitle')}
+          >
+            <IconBook size={15} />
+          </button>
           <button
             className="ai-header-btn"
             onClick={onCollapse}
@@ -725,6 +760,13 @@ export function AiChatPanel({
           </button>
         </div>
       </header>
+
+      <TranslationStoragePanel
+        open={storagePanelOpen}
+        onClose={() => setStoragePanelOpen(false)}
+        client={window.desktopApi?.translationStorage ?? null}
+        strings={translationStorageStrings}
+      />
 
       <div className="ai-chat" ref={chatRef} onScroll={onChatScroll}>
         {/* Shared ChatRuntime components (M4). Additive: existing inline UI stays. */}
@@ -1158,6 +1200,20 @@ function IconNewChat({ size }: { size: number }): React.JSX.Element {
         strokeLinejoin="round"
       />
       <path d="M12.2 9.4v4M10.2 11.4h4" />
+    </Svg>
+  )
+}
+
+/** Open book — the glossary / translation-memory entry point. Same glyph as
+ *  docs and slides so the three AI panels read as the same feature. */
+function IconBook({ size }: { size: number }): React.JSX.Element {
+  return (
+    <Svg size={size}>
+      <path
+        d="M8 4.09C6.96 3.3 5.22 2.95 3.22 3.13v9.05c2-.17 3.74.17 4.79.96 1.04-.78 2.78-1.13 4.79-.96V3.13c-2-.17-3.74.17-4.78.96z"
+        strokeLinejoin="round"
+      />
+      <path d="M8 4.09v9.05" />
     </Svg>
   )
 }

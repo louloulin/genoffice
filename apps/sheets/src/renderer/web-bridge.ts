@@ -24,7 +24,15 @@ import {
   isHostDocumentSource,
   resolveEmbedPathPrefix,
 } from '@genoffice/web-sdk/dataflare/integration'
-import { createSheetsApi, createSheetsProjectApi } from '../shared/sheets-api-factory'
+import {
+  buildEmbedTranslateBody,
+  createEmbedTranslateBatchAccumulator,
+  narrowUnitStatus,
+  parseEmbedTranslateStreamEvent,
+} from '@genoffice/translation-core/embed-body'
+import { createDataflareTranslationStorage } from '@genoffice/translation-core/storage'
+import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import { createSheetsApi, createSheetsProjectApi, type SheetsApiOverrides } from '../shared/sheets-api-factory'
 import { createHostDocumentSync } from './dataflare-host-sync'
 import { saveWorkbookOverHttp } from './web-save'
 
@@ -157,6 +165,29 @@ if (!isElectronRuntime()) {
       return await transport.invoke('workbook:open-for-merge', paths)
     },
     saveWorkbook: (request) => saveWorkbookOverHttp(transport, request),
+    // Embedded (Dataflare-hosted) whole-workbook translation rides the host's
+    // SSE feed so the run reports per-cell progress while it is still going;
+    // standalone falls back to the plain batch IPC call. Parsing and
+    // accumulation are shared with docs / slides / pdf via translation-core.
+    aiTranslateBatchStream: (request, options) =>
+      translateBatchThroughHost(dataflare, transport, request, options),
+    /**
+     * Space-scoped glossary / translation memory.
+     *
+     * The embedded test is `isEmbeddedInHost()` and **not** `dataflare.getContext()`:
+     * this object literal is built while the bridge is being assembled, but
+     * `dataflare.install()` only runs further down and the host's `init` command
+     * cannot arrive until after that — asking for the context here answers
+     * `null` on every load and pins the client to `null` forever, which the
+     * panel then renders as "unavailable" for every drive document. The space id
+     * is still read per call, so the panel follows the user across spaces.
+     */
+    translationStorage: isEmbeddedInHost()
+      ? createDataflareTranslationStorage({
+          request: dataflare.request,
+          getSpaceId: () => dataflare.getContext()?.spaceId ?? null,
+        })
+      : null,
     syncHostDocument: (path) => hostSync.sync(path),
     hasPendingHostSync: () => hostSync.hasPending(),
     confirmCsvSave: async () => 'csv',
@@ -210,7 +241,15 @@ if (!isElectronRuntime()) {
     },
   })
   bridgedWindow.projectApi = createSheetsProjectApi(transport)
-  dataflare.install({})
+  // Host commands are broadcast as window events, exactly like docs. Without
+  // `onCommand` the integration silently drops every `translate` /
+  // `cancel-translation` command, so the Dataflare header's translate buttons
+  // look wired up and do nothing.
+  dataflare.install({
+    onCommand: (command) => {
+      window.dispatchEvent(new CustomEvent('dataflare:office-command', { detail: command }))
+    },
+  })
 }
 
 async function captureDisplayFrame(): Promise<{
@@ -248,4 +287,105 @@ async function captureDisplayFrame(): Promise<{
   } catch {
     return null
   }
+}
+
+
+/**
+ * Whole-workbook translation transport for the sheets renderer.
+ *
+ * Two paths, one contract:
+ *   · embedded in a Dataflare host → the host proxies
+ *     `/office-engine/api/ai/translate/stream`, which pushes one SSE event per
+ *     settled cell, so the progress list fills in live;
+ *   · standalone → the plain `ai:translate-batch` IPC, which returns the whole
+ *     batch at once (progress then only moves at batch boundaries — slower,
+ *     not broken).
+ *
+ * A cancel must actually stop the work: unsubscribing from the SSE feed is
+ * what ends the upstream request, and resolving the promise here is what lets
+ * the pipeline report `cancelled` instead of waiting for a feed the user has
+ * already walked away from.
+ */
+async function translateBatchThroughHost(
+  dataflare: ReturnType<typeof createDataflareEmbedIntegration>,
+  transport: Parameters<typeof createSheetsApi>[0],
+  request: Parameters<NonNullable<SheetsApiOverrides['aiTranslateBatchStream']>>[0],
+  options?: Parameters<NonNullable<SheetsApiOverrides['aiTranslateBatchStream']>>[1],
+): Promise<Awaited<ReturnType<NonNullable<SheetsApiOverrides['aiTranslateBatchStream']>>>> {
+  if (!dataflare.isEmbedded()) {
+    const response = (await transport.invoke(
+      'ai:translate-batch',
+      request,
+    )) as Awaited<ReturnType<NonNullable<SheetsApiOverrides['aiTranslateBatchStream']>>>
+    for (const unit of response.units ?? []) {
+      if (unit?.unitId) options?.onUnit?.(unit)
+    }
+    return response
+  }
+
+  const accumulator = createEmbedTranslateBatchAccumulator()
+  const batchId = `sheets-stream-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const context = dataflare.getContext()
+  const body = JSON.stringify(
+    buildEmbedTranslateBody(
+      {
+        requestId: batchId,
+        documentId: context?.documentId,
+        documentType: 'xlsx',
+        scene: request.scene || 'sheet-document',
+        sourceLanguage: request.sourceLang,
+        targetLanguage: request.targetLang,
+        preserveFormatting: request.preserveFormat,
+        memoryEnabled: request.memoryEnabled,
+        qualityCheck: request.qualityCheck,
+        glossaryCategory: request.glossaryCategory,
+        ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+      },
+      request.units,
+    ),
+  )
+
+  await new Promise<void>((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      options?.signal?.removeEventListener('abort', onAbort)
+      unsubscribe()
+      resolve()
+    }
+    function onAbort(): void {
+      finish()
+    }
+    const unsubscribe = dataflare.stream('/office-engine/api/ai/translate/stream', body, {
+      onEvent: (event) => {
+        const payload = parseEmbedTranslateStreamEvent(event.data)
+        if (!payload) return
+        const settledUnit = accumulator.push(payload)
+        if (settledUnit) {
+          options?.onUnit?.(settledUnit)
+          // The host renders its own progress from the same run; without this
+          // the parent page shows nothing until the last cell lands.
+          postToEmbedParent({
+            type: 'ai-progress',
+            status: 'running',
+            progress: accumulator.result().units.length / Math.max(request.units.length, 1),
+            completedUnits: accumulator.result().units.length,
+            totalUnits: request.units.length,
+          })
+        }
+        if (accumulator.settled) finish()
+      },
+      onClose: finish,
+      onError: (error) => {
+        accumulator.push({ type: 'error', message: error.message })
+        finish()
+      },
+    })
+    if (settled) return
+    options?.signal?.addEventListener('abort', onAbort)
+    if (options?.signal?.aborted) finish()
+  })
+
+  return accumulator.result()
 }

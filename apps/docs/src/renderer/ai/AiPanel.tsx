@@ -13,7 +13,94 @@ interface SpeechRecognitionLike {
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
+// Browser-safe entry point: `./document` carries no provider / Node import, so
+// the renderer can share the whole-file pipeline instead of re-implementing it.
+import { translateDocument } from '@genoffice/translation-core/document'
+import type { EditorRange, TranslationUnit } from '@genoffice/translation-core/document'
+// subpath, not the bare entry: `translation-core`'s index re-exports the
+// provider / file-translate / persistent-memory modules, which pull Node
+// built-ins (fs, child_process) into a browser bundle.
+import {
+  deriveTranslatedName,
+  translatedNameSuffixFor,
+} from '@genoffice/translation-core/translated-file-name'
 import type { Block } from '@genoffice/docx-engine'
+
+/**
+ * Map a ProseMirror node name onto the pipeline's `kind` vocabulary.
+ *
+ * The old inline extraction typed `kind` as `string` and passed the node name
+ * straight through, so the value only ever had to satisfy the *transport*
+ * (which echoes it back untouched). `translateDocument` types it as a closed
+ * union — which is the point: an unmapped node name would silently widen the
+ * contract. Unknown shapes fall back to `paragraph`, the one kind every
+ * apply strategy already handles.
+ */
+function documentUnitKind(nodeTypeName: string): TranslationUnit['kind'] {
+  switch (nodeTypeName) {
+    case 'heading':
+      return 'heading'
+    case 'listItem':
+    case 'list_item':
+      return 'list-item'
+    case 'tableCell':
+    case 'table_cell':
+      return 'table-cell'
+    default:
+      return 'paragraph'
+  }
+}
+
+/**
+ * Normalise an editor range for the preview state.
+ *
+ * `EditorRange` has optional `from` / `to` (the translation-core wire shape);
+ * the preview needs concrete numbers because the dialog renders an editable
+ * range per row. A range without bounds is not selectable, so it degrades to
+ * an empty span at the document start rather than to `undefined` — a row with
+ * no range is exactly the "translated but can't be applied" case.
+ */
+function documentRange(range: EditorRange | null | undefined): {
+  from: number
+  to: number
+  scope?: 'document'
+} {
+  const from = range?.from ?? 1
+  const to = range?.to ?? from
+  return { from, to, scope: 'document' }
+}
+
+/** Narrow a unit status off the wire; see the note on the web-bridge twin. */
+function narrowUnitStatus(value: unknown): 'translated' | 'memory-hit' | 'failed' | undefined {
+  return value === 'translated' || value === 'memory-hit' || value === 'failed' ? value : undefined
+}
+
+/**
+ * Walk the document and produce the translatable units, in document order.
+ *
+ * Only text blocks with content become units; everything else (images, tables
+ * as containers, empty paragraphs) is traversed into. The range is stamped now
+ * because the live selection may have wandered by the time the user hits Apply.
+ */
+function extractDocumentUnits(editor: Editor): TranslationUnit[] {
+  const units: TranslationUnit[] = []
+  let order = 0
+  editor.state.doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true
+    const sourceText = node.textBetween(0, node.content.size, '\n', '\ufffc')
+    if (!sourceText.trim()) return true
+    units.push({
+      unitId: `paragraph-${order}`,
+      kind: documentUnitKind(node.type.name),
+      sourceText,
+      order,
+      range: { from: pos + 1, to: pos + 1 + node.content.size, scope: 'document' },
+    })
+    order += 1
+    return true
+  })
+  return units
+}
 import { AgentLoop, composeSkills, streamText, type AgentImage } from '@genoffice/agent-core'
 import { imageGenerationAvailable } from '@genoffice/ai-provider/browser'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
@@ -74,6 +161,7 @@ import {
   AiErrorRecovery,
   AiInlineLauncher,
   TranslateDialog,
+  TranslationStoragePanel,
   ChangeMarker,
   type AiInlineLauncherAnchorRect,
   type TranslateLanguageOption,
@@ -82,7 +170,7 @@ import {
 } from '@genoffice/ui'
 import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
-import { ProviderMark } from '../components/icons'
+import { IconBook, ProviderMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -349,6 +437,14 @@ interface AiPanelProps {
   commentsAccess?: AiCommentsAccess
   /** header/footer state for the set_header_footer tool and per-turn context */
   hfAccess?: AiHeaderFooterAccess
+  /**
+   * Persist the current bytes to a *sibling* cloud-drive file (the
+   * non-destructive "save the translation as a copy" target). Undefined
+   * outside the Dataflare embed, which is the only environment with a
+   * save-as endpoint — without it the dialog hides the choice entirely rather
+   * than offering one that cannot be honoured.
+   */
+  onSaveTranslatedCopy?: (fileName: string) => Promise<boolean>
 }
 
 export function AiPanel({
@@ -362,6 +458,7 @@ export function AiPanel({
   onExpand,
   onCollapse,
   filePath,
+  onSaveTranslatedCopy,
   editQueue = [],
   onQueueEditInstruction,
   onQueueRemove,
@@ -1163,26 +1260,53 @@ export function AiPanel({
   // own busy flag and result text, so this panel only tracks the dialog's
   // open/error state.
   const [translateOpen, setTranslateOpen] = useState(false)
+  // Glossary / memory panel: browsing and adding terms is a document-level
+  // task, not a chat turn, so it is its own dialog rather than a prompt.
+  const [storagePanelOpen, setStoragePanelOpen] = useState(false)
   const [translateError, setTranslateError] = useState<string | null>(null)
   const [translateScope, setTranslateScope] = useState<'selection' | 'document'>('selection')
   const [documentTranslationUnits, setDocumentTranslationUnits] = useState<
     Array<{
       id: string
-      kind: string
+      /** Same closed vocabulary the pipeline uses — see `documentUnitKind`. */
+      kind: TranslationUnit['kind']
       order: number
       sourceText: string
       translatedText?: string
-      status?: string
+      status?: 'translated' | 'memory-hit' | 'failed'
       matchedTerms?: string[]
       warnings?: string[]
-      range: { from: number; to: number; scope?: string }
+      range: { from: number; to: number; scope?: 'document' }
     }>
   >([])
   const [documentTranslationQuality, setDocumentTranslationQuality] = useState<{
     overallScore?: number
     warnings?: string[]
   }>()
+  const [bilingual, setBilingual] = useState<boolean>(false)
+  /**
+   * 译文落点。默认 `copy`（另存翻译副本）而不是 `overwrite`：整篇翻译往往是在
+   * 拿别人的原件读，默认路径不该悄悄把原文顶掉。桌面构建没有云盘可另存，
+   * `canSaveTranslatedCopy` 为假时整个选择器不渲染，`overwrite` 之外的选项
+   * 也就不会出现。
+   */
+  const [saveTarget, setSaveTarget] = useState<'overwrite' | 'copy'>('copy')
+  const canSaveTranslatedCopy = Boolean(onSaveTranslatedCopy)
+  /**
+   * 只在**整篇**翻译时给保存方式。选区翻译改的是文档里一小段，把它整篇另存成
+   * `xxx.translated.docx` 会让用户以为译文覆盖了全文；选区翻译走「改完按 Ctrl+S」
+   * 这条既有路径，不额外发明一个落点。
+   */
+  const showSaveTarget = canSaveTranslatedCopy && translateScope === 'document'
+  /** 副本名在选双语开关时会变，所以显示给用户的名字也要跟着重算 */
+  const translatedFileName = useMemo(() => {
+    if (!canSaveTranslatedCopy) return null
+    const name = (filePath ?? '').split(/[\\/]/).pop() || 'untitled.docx'
+    return deriveTranslatedName(name, translatedNameSuffixFor(bilingual ? 'bilingual' : 'replace'))
+  }, [canSaveTranslatedCopy, filePath, bilingual])
   const translationCancelledRef = useRef(false)
+  /** Abort handle for the in-flight whole-file run; `cancelTranslation` trips it. */
+  const translationAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     const openEmbeddedTranslation = (event: Event) => {
@@ -1195,6 +1319,7 @@ export function AiPanel({
           memoryEnabled?: boolean
           qualityCheck?: boolean
           glossaryCategory?: string
+          bilingual?: boolean
         }>
       ).detail
       setTranslateScope(detail.scope || 'selection')
@@ -1204,6 +1329,7 @@ export function AiPanel({
       setMemoryEnabled(detail.memoryEnabled !== false)
       setQualityCheck(detail.qualityCheck !== false)
       setGlossaryCategory(detail.glossaryCategory?.trim() || 'general')
+      setBilingual(detail.bilingual === true)
       setTranslateError(null)
       setDocumentTranslationUnits([])
       setDocumentTranslationQuality(undefined)
@@ -1300,14 +1426,41 @@ export function AiPanel({
     [],
   )
 
+  const translationStorageStrings = useMemo(
+    () => ({
+      title: t('aiGlossaryPanelTitle'),
+      glossaryTab: t('aiGlossaryTab'),
+      memoryTab: t('aiMemoryTab'),
+      sourceTerm: t('aiGlossarySource'),
+      targetTerm: t('aiGlossaryTarget'),
+      add: t('aiGlossaryAdd'),
+      remove: t('aiGlossaryRemove'),
+      close: t('ribbonClose'),
+      emptyGlossary: t('aiGlossaryEmpty'),
+      emptyMemory: t('aiMemoryEmpty'),
+      scopeShared: t('aiScopeShared'),
+      scopeSpace: t('aiScopeSpace'),
+      loading: t('aiThinking'),
+      retry: t('aiGlossaryRetry'),
+      unavailable: t('aiStorageUnavailable'),
+    }),
+    [],
+  )
+
   const translateDialogStrings: TranslateDialogStrings = useMemo(
     () => ({
       title: t('aiTranslateDialogTitle'),
       targetLang: t('aiTranslateTargetLang'),
       sourceLang: t('aiTranslateSourceLang'),
       preserveFormat: t('aiTranslatePreserveFormat'),
+      bilingual: t('aiTranslateBilingual'),
+      saveTarget: t('aiTranslateSaveTarget'),
+      saveTargetOverwrite: t('aiTranslateSaveOverwrite'),
+      saveTargetCopy: t('aiTranslateSaveCopy'),
+      saveTargetCopyHint: t('aiTranslateSaveCopyHint'),
       swapLanguages: t('aiTranslateSwapLanguages'),
       start: t('aiTranslateStart'),
+      apply: t('aiTranslateApply'),
       original: t('aiTranslateOriginal'),
       translated: t('aiTranslateTranslated'),
       previewTitle: t('aiTranslatePreviewTitle'),
@@ -1350,111 +1503,94 @@ export function AiPanel({
     translationCancelledRef.current = false
     try {
       if (translateScope === 'document') {
-        const units: Array<{
-          unitId: string
-          kind: string
-          sourceText: string
-          order: number
-          range: { from: number; to: number; scope: string }
-        }> = []
-        let order = 0
-        editor.state.doc.descendants((node, pos) => {
-          const sourceText = node.textBetween(0, node.content.size, '\n', '\ufffc')
-          if (!node.isTextblock || !sourceText.trim()) return true
-          const range = { from: pos + 1, to: pos + 1 + node.content.size, scope: 'document' }
-          units.push({
-            unitId: `paragraph-${order}`,
-            kind: node.type.name,
-            sourceText,
-            order,
-            range,
-          })
-          order += 1
-          return true
-        })
+        const units = extractDocumentUnits(editor)
         if (units.length === 0) return null
-        const translatedUnits: typeof documentTranslationUnits = []
-        const batches: (typeof units)[] = []
-        let currentBatch: typeof units = []
-        let currentChars = 0
-        for (const unit of units) {
-          const wouldExceed =
-            currentBatch.length >= 80 || currentChars + unit.sourceText.length > 90_000
-          if (wouldExceed && currentBatch.length > 0) {
-            batches.push(currentBatch)
-            currentBatch = []
-            currentChars = 0
-          }
-          currentBatch.push(unit)
-          currentChars += unit.sourceText.length
-        }
-        if (currentBatch.length > 0) batches.push(currentBatch)
-        const qualityScores: number[] = []
-        const qualityWarnings = new Set<string>()
-        for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
-          if (translationCancelledRef.current) {
-            postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
-            return null
-          }
-          const batch = batches[batchIndex]
-          const streamOrBatch =
-            window.desktop.aiTranslateBatchStream ?? window.desktop.aiTranslateBatch
-          const result = await streamOrBatch({
-            units: batch,
+        const abort = new AbortController()
+        translationAbortRef.current?.abort()
+        translationAbortRef.current = abort
+        // Preview rows accumulate as units settle, so the dialog fills in while
+        // the run is still going instead of appearing all at once at the end.
+        const preview = new Map<string, (typeof documentTranslationUnits)[number]>()
+        const run = await translateDocument(
+          {
+            units,
             sourceLang,
             targetLang,
             preserveFormat,
-            scene: 'document',
             memoryEnabled,
             qualityCheck,
             glossaryCategory,
-          })
-          if (!result.ok && !result.units?.length)
-            throw new Error(result.error || 'Document translation failed')
-          for (const unit of result.units || []) {
-            const source = units.find((input) => input.unitId === unit.unitId)
-            if (!source) continue
-            translatedUnits.push({
-              id: unit.unitId,
-              kind: source.kind,
-              order: source.order,
-              sourceText: source.sourceText,
-              translatedText: unit.translatedText,
-              status: unit.status,
-              matchedTerms: unit.matchedTerms,
-              warnings: [
-                ...(unit.warnings || []),
-                ...(unit.errorMessage ? [unit.errorMessage] : []),
-              ],
-              range: source.range,
-            })
-          }
-          if (result.quality) {
-            if (typeof result.quality.overallScore === 'number')
-              qualityScores.push(result.quality.overallScore)
-            for (const warning of result.quality.warnings || []) qualityWarnings.add(warning)
-          }
-          postToEmbedParent({
-            type: 'ai-progress',
-            status: 'running',
-            progress: Math.min(0.99, (batchIndex + 1) / batches.length),
-          })
-        }
-        const successful = translatedUnits.filter(
-          (unit) => unit.status === 'translated' || unit.status === 'memory-hit',
+            scene: 'document',
+            applyMode: bilingual ? 'bilingual' : 'replace',
+          },
+          {
+            // The renderer never imports the provider: it reaches it through
+            // `window.desktop` (Electron IPC or the Dataflare bridge), and that
+            // is also where the space-scoped glossary / memory get injected.
+            translateBatch: (request, signal, onUnit) => {
+              const call = window.desktop.aiTranslateBatchStream ?? window.desktop.aiTranslateBatch
+              return call(request, { onUnit, signal })
+            },
+            signal: abort.signal,
+            // Write-back is the dialog's Apply step, not the translate step — the
+            // user reviews each unit first. So `apply` is intentionally a no-op
+            // and `TranslateDocumentResult.applied` does not decide success here.
+            apply: () => {},
+            onProgress: (event) => {
+              if (event.unit) {
+                const source = units.find((unit) => unit.unitId === event.unit!.unitId)
+                if (source) {
+                  preview.set(source.unitId, {
+                    id: source.unitId,
+                    kind: source.kind,
+                    order: source.order,
+                    sourceText: source.sourceText,
+                    translatedText: event.unit.translatedText,
+                    status: narrowUnitStatus(event.unit.status),
+                    matchedTerms: event.unit.matchedTerms,
+                    warnings: event.unit.warnings,
+                    range: documentRange(event.unit.range ?? source.range),
+                  })
+                  setDocumentTranslationUnits(
+                    [...preview.values()].sort((left, right) => left.order - right.order),
+                  )
+                }
+              }
+              if (event.quality) setDocumentTranslationQuality(event.quality)
+              postToEmbedParent({
+                type: 'ai-progress',
+                status: event.status,
+                progress: event.progress,
+                completedUnits: event.completedUnits,
+                totalUnits: event.totalUnits,
+                unit: event.unit,
+                quality: event.quality,
+                error: event.error,
+              })
+            },
+          },
         )
-        if (successful.length === 0)
-          throw new Error('Document translation returned no usable units')
-        setDocumentTranslationUnits(translatedUnits)
-        setDocumentTranslationQuality({
-          overallScore:
-            qualityScores.length > 0
-              ? qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length
-              : undefined,
-          warnings: [...qualityWarnings],
-        })
-        postToEmbedParent({ type: 'ai-progress', status: 'completed', progress: 1 })
-        return successful.map((unit) => unit.translatedText || '').join('\n')
+        translationAbortRef.current = null
+        if (run.status === 'cancelled') return null
+        if (run.status === 'failed') {
+          setTranslateError(run.error ?? 'Document translation failed')
+          throw new Error(run.error ?? 'Document translation failed')
+        }
+        setDocumentTranslationUnits(
+          run.units.map((unit) => ({
+            id: unit.unitId,
+            kind: unit.kind,
+            order: unit.order,
+            sourceText: unit.sourceText,
+            translatedText: unit.translatedText,
+            status: narrowUnitStatus(unit.status),
+            matchedTerms: unit.matchedTerms,
+            warnings: unit.warnings,
+            range: documentRange(unit.range),
+          })),
+        )
+        setDocumentTranslationQuality(run.quality)
+        return run.units.map((unit) => unit.translatedText).join('\n')
       }
       const res = await window.desktop.aiTranslate({
         instruction: sourceText,
@@ -1492,10 +1628,15 @@ export function AiPanel({
     liveSelection,
     translateScope,
     documentTranslationUnits,
+    bilingual,
   ])
 
   const cancelTranslation = useCallback(() => {
     translationCancelledRef.current = true
+    // Trip the shared pipeline's abort handle: without this the in-flight
+    // batch keeps settling and the run reports `completed` after the user
+    // already stopped it.
+    translationAbortRef.current?.abort()
     setTranslateOpen(false)
     postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
   }, [])
@@ -1574,9 +1715,39 @@ export function AiPanel({
     targetLang: string
     preserveFormat?: boolean
     range?: { from: number; to: number; scope?: string } | null
+    applyMode?: 'replace' | 'bilingual'
   }
+
+  /**
+   * Full node ranges of every text block, in document order.
+   *
+   * Bilingual undo works off this instead of a recorded offset: after a
+   * bilingual apply the source paragraphs are untouched, so a source range
+   * still identifies its own block, and the translation is simply the next
+   * block. Re-deriving beats remembering — every insert shifts everything
+   * after it, so a stored post-insert offset is wrong the moment the user
+   * types.
+   */
+  const textBlockSpans = (ed: Editor): Array<{ from: number; to: number; text: string }> => {
+    const spans: Array<{ from: number; to: number; text: string }> = []
+    ed.state.doc.descendants((node, pos) => {
+      if (!node.isTextblock) return true
+      spans.push({
+        from: pos + 1,
+        to: pos + 1 + node.content.size,
+        text: node.textContent,
+      })
+      return true
+    })
+    return spans
+  }
+
   const applyTranslate = useCallback(
-    (plan: import('@genoffice/chat-runtime/types').ChatChangePlan) => {
+    async (
+      plan: import('@genoffice/chat-runtime/types').ChatChangePlan,
+      _targetText: string,
+      applySaveTarget?: 'overwrite' | 'copy',
+    ) => {
       const op = plan.ops[0]
       if (op?.kind !== 'translate') return
       const item = op.ops[0]
@@ -1587,6 +1758,9 @@ export function AiPanel({
       // we deliberately don't read `liveSelection` here — by the time the user
       // hits Apply the selection may have wandered to a different paragraph.
       const items: TranslationItem[] = op.ops as TranslationItem[]
+      const bilingual = items.some((entry) => entry.applyMode === 'bilingual')
+      // Descending order is mandatory for both modes: every write shifts every
+      // later position, so applying in document order corrupts the rest.
       const orderedItems = [...items].sort((a, b) => (b.range?.from || 0) - (a.range?.from || 0))
       const docSize = ed.state.doc.content.size
       const appliedItems = orderedItems.filter((entry) => entry.range && entry.targetText)
@@ -1605,9 +1779,17 @@ export function AiPanel({
       }
       let chain = ed.chain().focus()
       for (const entry of appliedItems) {
-        const from = Math.max(1, Math.min(entry.range!.from, docSize))
-        const to = Math.max(from, Math.min(entry.range!.to, docSize))
-        chain = chain.insertContentAt({ from, to }, entry.targetText)
+        if (bilingual) {
+          // Keep the source; drop the translation in as the next paragraph.
+          // Inserting at the block boundary (not inside the text) is what makes
+          // it a sibling paragraph instead of appending onto the source line.
+          const at = Math.max(1, Math.min(entry.range!.to, docSize))
+          chain = chain.insertContentAt(at, '\n\n' + entry.targetText)
+        } else {
+          const from = Math.max(1, Math.min(entry.range!.from, docSize))
+          const to = Math.max(from, Math.min(entry.range!.to, docSize))
+          chain = chain.insertContentAt({ from, to }, entry.targetText)
+        }
       }
       chain.run()
       setLastChangePlan({
@@ -1615,8 +1797,25 @@ export function AiPanel({
         ops: [{ kind: 'translate', description: op.description, ops: appliedItems }],
       })
       setTranslateOpen(false)
+      // 另存副本：写的是**另一个**云盘条目，所以这里刻意不动 `doc.filePath`、
+      // 不清 dirty —— 详见 file-actions 的翻译副本分支注释。原文仍留在云盘里。
+      if (applySaveTarget === 'copy' && translatedFileName && onSaveTranslatedCopy) {
+        postToEmbedParent({
+          type: 'ai-progress',
+          status: 'running',
+          progress: 1,
+        })
+        const ok = await onSaveTranslatedCopy(translatedFileName)
+        // 失败文案由 file-actions 的状态栏 + toast 负责，这里只把结果回给宿主
+        // 面板（DriveOfficeView 的进度条）。两处各弹一次会让用户以为出了两次错。
+        postToEmbedParent({
+          type: 'ai-progress',
+          status: ok ? 'completed' : 'failed',
+          progress: 1,
+        })
+      }
     },
-    [editor],
+    [editor, onSaveTranslatedCopy, translatedFileName],
   )
 
   const undoChange = useCallback(
@@ -1627,6 +1826,31 @@ export function AiPanel({
       if (!items.length) return
       const ed = editor
       if (!ed) return
+      const isBilingual = items.some((item) => (item as TranslationItem).applyMode === 'bilingual')
+      if (isBilingual) {
+        // Bilingual undo is a *delete*, not a rewrite. Rewriting `[from, from+len)`
+        // back to the source would append a second copy of every source
+        // paragraph — the source was never removed in the first place.
+        const spans = textBlockSpans(ed)
+        let chain = ed.chain().focus()
+        for (const item of [...items].sort((a, b) => (b.range?.from || 0) - (a.range?.from || 0))) {
+          const source = (item as TranslationItem).range
+          if (!source) continue
+          const index = spans.findIndex((span) => span.from === source.from && span.text === (item as TranslationItem).sourceText)
+          if (index < 0) continue
+          const next = spans[index + 1]
+          // Only remove it if it really is the translation we inserted; a
+          // mismatched next block means the document changed under us and
+          // deleting it would eat the user's own text.
+          if (!next || next.text !== (item as TranslationItem).targetText) continue
+          const from = next.from - 1
+          const to = from + 1 + next.text.length
+          chain = chain.insertContentAt({ from, to }, '')
+        }
+        chain.run()
+        setLastChangePlan(null)
+        return
+      }
       // True restore: rewrite the translated range back to the original source text.
       // The plan-stamped range points at the post-translate span (since apply
       // kept it untouched in the op). Fall back to live selection if missing.
@@ -2026,6 +2250,17 @@ export function AiPanel({
               <IconNewChat size={16} />
             </button>
           )}
+          <button
+            className="ai-header-btn"
+            onClick={() => setStoragePanelOpen(true)}
+            data-tip={t('aiGlossaryPanelTitle')}
+            aria-label={t('aiGlossaryPanelTitle')}
+          >
+            <IconBook size={16} />
+          </button>
+          {/* Glossary / memory access. Placed after "new chat" on purpose: the
+              header's leading button is the conversation reset, and both tests and
+              muscle memory reach for the first `.ai-header-btn`. */}
           {onCollapse && (
             <button
               className="ai-header-btn"
@@ -2261,6 +2496,11 @@ export function AiPanel({
           onSaveMemory={
             window.dataflareOfficeBridge?.isEmbedded ? saveTranslationMemory : undefined
           }
+          bilingual={bilingual}
+          onBilingualChange={setBilingual}
+          saveTarget={showSaveTarget ? saveTarget : undefined}
+          onSaveTargetChange={showSaveTarget ? setSaveTarget : undefined}
+          translatedFileName={translatedFileName}
           defaultSourceLang={sourceLang === 'auto' ? undefined : sourceLang}
           defaultTargetLang={targetLang}
           languages={TRANSLATE_LANGS}
@@ -2276,6 +2516,14 @@ export function AiPanel({
           onApply={applyTranslate}
           onCancel={cancelTranslation}
           app="docs"
+        />
+
+        <TranslationStoragePanel
+          open={storagePanelOpen}
+          onClose={() => setStoragePanelOpen(false)}
+          client={window.desktop?.translationStorage ?? null}
+          strings={translationStorageStrings}
+          targetLanguage={targetLang}
         />
 
         {lastChangePlan && (

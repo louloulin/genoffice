@@ -95,6 +95,24 @@ export type ChatChangePlanOp =
         range?: { from: number; to: number; scope?: string } | null
         /** True when formatting should be inherited automatically (default true) */
         preserveFormat?: boolean
+        /**
+         * How this item was written back. `replace` (default) overwrites the
+         * source span; `bilingual` leaves the source and inserts the
+         * translation beside it.
+         *
+         * It has to travel **on the op** rather than be re-derived at apply
+         * time: undo replays the same op list, and a bilingual insert has to be
+         * undone by deleting the inserted span, not by rewriting it back to the
+         * source. Without this the undo step silently re-duplicates the
+         * paragraph.
+         */
+        applyMode?: 'replace' | 'bilingual'
+        /**
+         * Bilingual only: the span the translation actually occupies after
+         * insertion. Recorded during apply (positions shift as earlier items are
+         * written) so undo deletes exactly that span.
+         */
+        bilingualRange?: { from: number; to: number } | null
       }>
       description?: string
     }

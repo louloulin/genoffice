@@ -6,6 +6,17 @@ import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mj
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { AiPanel, GensparkMark } from './ai/AiPanel'
+import {
+  TranslatePdfDialog,
+  type TranslatePdfDialogHandle,
+} from './ai/TranslatePdfDialog'
+import type { PdfTranslationPlan } from './ai/document-translate'
+import type {
+  TranslateBatchRequest,
+  TranslateBatchResponse,
+  TranslateBatchUnitResult,
+} from '@genoffice/translation-core/document'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { AiAskPopover, type AskAnchorRect } from './AiAskPopover'
 import { loadSavedAnnots } from './annotation-catalog'
 import {
@@ -1862,6 +1873,131 @@ export default function App() {
     return base.then((idx) => idx.map((entry, i) => ocrPages.get(i)?.entry ?? entry))
   }, [doc, ocrPages])
 
+  // ── Whole-document translation ────────────────────────────────────────────
+  //
+  // A PDF has no editable document model in the renderer, so "apply" means
+  // queueing pending edits exactly like a human text edit does; `pdf:save`
+  // replays them into the content stream in the main process. Both halves of
+  // that path (rebuild-in-place and stacked insert) are the same ops the manual
+  // text editor already produces, which is what keeps CJK output, font
+  // fallback and wrapping correct without a second writer.
+  const translatePdfDialogRef = useRef<TranslatePdfDialogHandle | null>(null)
+
+  const translatePdfBatch = useCallback(
+    async (
+      request: TranslateBatchRequest,
+      signal: AbortSignal | undefined,
+      onUnit?: (unit: TranslateBatchUnitResult) => void,
+    ): Promise<TranslateBatchResponse> => {
+      const api = window.pdfApi
+      if (api.aiTranslateBatchStream) {
+        return await api.aiTranslateBatchStream(request, { onUnit, ...(signal ? { signal } : {}) })
+      }
+      const response = await api.aiTranslateBatch(request)
+      // The fallback runs *after* the stream would have: the dialog always
+      // passes an `onUnit`, but the type is optional, so replaying through it
+      // must not assume it exists.
+      for (const unit of response.units ?? []) {
+        if (unit?.unitId) onUnit?.(unit)
+      }
+      return response
+    },
+    [],
+  )
+
+  /**
+   * MediaBox bottom per page, in PDF user space (pdf.js `page.view[1]`).
+   *
+   * Deliberately NOT the renderer's `sizes`: those are scaled viewport pixels,
+   * and comparing them against user-space rects would make the bilingual
+   * off-page guard fire (or not fire) on the wrong scale. Cached per document
+   * because it is one `getPage` round-trip per page and the answer never
+   * changes while the document does.
+   */
+  const pageBottomsRef = useRef<{ doc: PDFDocumentProxy; promise: Promise<number[]> } | null>(null)
+  const getPdfPageBottoms = useCallback((): Promise<number[]> | undefined => {
+    if (!doc) return undefined
+    if (pageBottomsRef.current?.doc !== doc) {
+      pageBottomsRef.current = {
+        doc,
+        promise: (async () => {
+          const out: number[] = []
+          for (let i = 1; i <= doc.numPages; i++) {
+            try {
+              out.push((await doc.getPage(i)).view[1])
+            } catch {
+              // A page pdf.js cannot hand back has no known bottom; 0 is the
+              // PDF origin and keeps the guard on its conservative side.
+              out.push(0)
+            }
+          }
+          return out
+        })(),
+      }
+    }
+    return pageBottomsRef.current.promise
+  }, [doc])
+
+  /** Turn a reviewed translation plan into pending edits the save path replays. */
+  const applyPdfTranslationPlan = useCallback((plan: PdfTranslationPlan) => {
+    // Ids are minted outside the updater: `applyTextEdits` runs `fn` twice
+    // (ref, then React) so both copies must share one id, or the undo history
+    // ends up with two entries for the same edit.
+    const stamp = Date.now().toString(36)
+    if (plan.edits.length > 0) {
+      const added: LocalTextEdit[] = plan.edits.map((input, i) => ({
+        id: `pdf-translate-${stamp}-${i}`,
+        input,
+      }))
+      applyTextEdits((prev) => [...prev, ...added])
+    }
+    if (plan.inserts.length > 0) {
+      const added: LocalTextInsert[] = plan.inserts.map((input, i) => ({
+        id: `pdf-translate-insert-${stamp}-${i}`,
+        input,
+      }))
+      commitTextInserts([...textInsertsRef.current, ...added])
+    }
+    // No explicit dirty flag: this app derives "unsaved" from the pending-edit
+    // lists themselves, so queueing edits is what makes the document dirty.
+  }, [])
+
+  /**
+   * Host commands for the pdf app.
+   *
+   * Without this the Dataflare header's translate button is inert: the command
+   * is dispatched as a DOM event and nothing listens, so the UI looks wired up
+   * and does nothing at all.
+   */
+  useEffect(() => {
+    const onHostCommand = (event: Event) => {
+      const command = (event as CustomEvent<Record<string, unknown>>).detail
+      if (!command || typeof command.type !== 'string') return
+      if (command.type === 'translate') {
+        const sourceLanguage = typeof command.sourceLanguage === 'string' ? command.sourceLanguage : undefined
+        const glossaryCategory = typeof command.glossaryCategory === 'string' ? command.glossaryCategory : undefined
+        translatePdfDialogRef.current?.open({
+          scope: command.scope === 'document' ? 'document' : 'selection',
+          ...(sourceLanguage ? { sourceLanguage } : {}),
+          targetLanguage: typeof command.targetLanguage === 'string' ? command.targetLanguage : 'zh-CN',
+          bilingual: command.bilingual === true,
+          preserveFormatting: command.preserveFormatting !== false,
+          memoryEnabled: command.memoryEnabled !== false,
+          qualityCheck: command.qualityCheck !== false,
+          ...(glossaryCategory ? { glossaryCategory } : {}),
+        })
+        postToEmbedParent({ type: 'ai-progress', status: 'started', progress: 0 })
+        return
+      }
+      if (command.type === 'cancel-translation') {
+        translatePdfDialogRef.current?.close()
+        postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+      }
+    }
+    window.addEventListener('dataflare:office-command', onHostCommand)
+    return () => window.removeEventListener('dataflare:office-command', onHostCommand)
+  }, [])
+
   // Auto-OCR for scanned pages (issue #119): once the base index shows pages with
   // no extractable text, recognize them sequentially in the background, starting
   // at the current page. Boxes are stored in PDF space, so later zooms/rotations
@@ -3282,6 +3418,47 @@ export default function App() {
   const noticeSkippedImages = (skipped: ImageEditFailure[]) => {
     const pages = [...new Set(skipped.map((s) => s.pageIndex + 1))].sort((a, b) => a - b).join(', ')
     showNotice(`${t('imageEditSkipped', { pages })}${skipDetail(skipped)}`)
+  }
+
+  /**
+   * PDF → editable DOCX: the fallback for a layout the in-place rewrite cannot
+   * carry. The result is an **untranslated** editable copy filed next to the
+   * original, and every message says so — a fallback that handed over
+   * untranslated bytes while claiming to be a translation is the one outcome
+   * worth avoiding here.
+   */
+  const createEditableDocx = async () => {
+    const api = window.pdfApi
+    if (!filePath || !api?.supportsEditableDocx?.() || !api.createEditableDocx) {
+      showNotice(t('aiPdfEditableDocxFailed'))
+      return
+    }
+    showNotice(t('aiPdfEditableDocxRunning'))
+    const out = await api.createEditableDocx({ path: filePath })
+    if (out.ok) {
+      showNotice(
+        out.scannedDocument
+          ? t('aiPdfEditableDocxScanned', { name: out.fileName })
+          : t('aiPdfEditableDocxDone', { name: out.fileName }),
+      )
+      return
+    }
+    // Each reason gets its own sentence: "encrypted", "nothing to convert" and
+    // "the upload was refused" are three different things a user can act on,
+    // and one blanket "conversion failed" is what makes a fallback feel broken.
+    const message =
+      out.reason === 'no-source'
+        ? t('aiPdfEditableDocxNoSource')
+        : out.reason === 'password-required'
+          ? t('aiPdfEditableDocxPassword')
+          : out.reason === 'empty-output'
+            ? t('aiPdfEditableDocxEmpty')
+            : out.reason === 'save-failed'
+              ? t('aiPdfEditableDocxSaveFailed')
+              : t('aiPdfEditableDocxFailed')
+    // The engine's own reason is appended raw: the message alone rarely says
+    // *why* a conversion was refused.
+    showNotice(out.message ? `${message}: ${out.message}` : message)
   }
 
   const noticeSkippedTextInserts = (skipped: TextInsertFailure[]) => {
@@ -6635,6 +6812,27 @@ export default function App() {
             onCollapse={() => setAiCollapsed(true)}
             onRunDone={() => void autoSaveAfterAiRun()}
             onClearSelection={() => setAiSelection(null)}
+            onTranslateDocument={
+              doc && !readOnly
+                ? () =>
+                    translatePdfDialogRef.current?.open({
+                      scope: 'document',
+                      targetLanguage: 'zh-CN',
+                    })
+                : undefined
+            }
+            onCreateEditableDocx={
+              doc && !readOnly && window.pdfApi?.supportsEditableDocx?.()
+                ? () => void createEditableDocx()
+                : undefined
+            }
+          />
+          <TranslatePdfDialog
+            ref={translatePdfDialogRef}
+            getSearchIndex={getSearchIndex}
+            getPageBottoms={getPdfPageBottoms}
+            onApply={applyPdfTranslationPlan}
+            translateBatch={translatePdfBatch}
           />
         </div>
         <div className="app-content">

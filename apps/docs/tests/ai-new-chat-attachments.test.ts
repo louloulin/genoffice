@@ -50,7 +50,7 @@ function mount(element: React.ReactElement): { container: HTMLElement; cleanup: 
 }
 
 function panelProps(editor: Editor) {
-  // No onCollapse: the New chat button is then the only .ai-header-btn,
+  // No onCollapse, so the header holds New chat plus the glossary button;
   // which keeps the selector independent of the active i18n locale.
   return { editor, blocks: [], settings, open: true }
 }
@@ -91,6 +91,22 @@ beforeAll(() => {
   Element.prototype.scrollTo ??= () => {}
 })
 
+  /** `t('aiNewChatTitle')` under the default (zh) module locale. */
+  const NEW_CHAT_LABEL = '新对话'
+
+  /**
+   * The New chat button, located by its accessible name.
+   *
+   * It used to be found as "the only `.ai-header-btn`", which stopped being
+   * true once the header gained a permanent glossary button: the first match
+   * was the glossary one, clicking it changed nothing, and the test failed for
+   * a reason that had nothing to do with New chat.
+   */
+  const newChatButton = (root: ParentNode) =>
+    Array.from(root.querySelectorAll<HTMLButtonElement>('.ai-header-btn')).find(
+      (button) => button.getAttribute('aria-label') === NEW_CHAT_LABEL,
+    )
+
 describe('AiPanel new chat attachments', () => {
   it('drops staged composer files along with the transcript', async () => {
     const restoreApis = mockApis()
@@ -111,7 +127,7 @@ describe('AiPanel new chat attachments', () => {
         expect(container.querySelector('.ai-attachments')).not.toBeNull()
 
         // New chat clears the composer strip (transcript goes with it).
-        const button = container.querySelector<HTMLButtonElement>('.ai-header-btn')
+        const button = newChatButton(container)!
         expect(button).not.toBeNull()
         act(() => button!.click())
         expect(container.querySelector('.ai-attachments')).toBeNull()

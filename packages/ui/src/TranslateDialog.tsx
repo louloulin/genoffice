@@ -27,8 +27,26 @@ export interface TranslateDialogStrings {
   targetLang: string
   sourceLang: string
   preserveFormat: string
+  /** Label for the "keep the original next to the translation" toggle. */
+  bilingual?: string | undefined
+  /** Label for the "where does the translated file land" selector. */
+  saveTarget?: string | undefined
+  /** Option label: write a new version over the document being edited. */
+  saveTargetOverwrite?: string | undefined
+  /** Option label: write a translated sibling file, leaving the original alone. */
+  saveTargetCopy?: string | undefined
+  /** One-line explanation under the selector. */
+  saveTargetCopyHint?: string | undefined
   swapLanguages: string
   start: string
+  /**
+   * Label for the apply step. Deliberately a *separate* key rather than a
+   * reuse of `start`: the same button flips from "translate" to "write the
+   * translation into the document" once the preview lands, and a user who
+   * sees one unchanged label has no way to tell that the second click is the
+   * one that mutates their file.
+   */
+  apply: string
   original: string
   translated: string
   previewTitle: string
@@ -48,6 +66,18 @@ export interface TranslateDialogProps {
    * range because the live selection may have wandered).
    */
   sourceRange?: { from: number; to: number; scope?: string } | null
+  /**
+   * 「有没有可翻译的内容」。缺席时退回 `sourceText` 非空 —— 选区翻译就该是这个判据。
+   *
+   * 为什么整篇翻译的宿主必须显式给：deck / sheet / pdf **没有单一的原文**，
+   * 它们按文本框 / 单元格 / 页面拆成 N 个 unit，只能通过各自的访问器
+   * （`getSlides()` / `getSheet()` / `getSearchIndex()`）知道有没有内容。
+   * 此前它们传 `sourceText=""`，而主按钮的判据是
+   * `sourceText.trim().length === 0` —— 于是按钮**永久 disabled**，
+   * 整篇翻译在 UI 上根本点不动，且不报任何错（对话框照常打开、只是按钮灰着）。
+   * 各自 `handleTranslate` 里其实都写了「没内容」的分支，但那段代码永远走不到。
+   */
+  hasTranslatableContent?: boolean
   defaultSourceLang?: string | undefined
   defaultTargetLang: string
   /** Full target-language list the host wants to expose (e.g. 12 common). */
@@ -64,6 +94,26 @@ export interface TranslateDialogProps {
     range?: { from: number; to: number; scope?: string } | null
   }>
   previewQuality?: { overallScore?: number; warnings?: string[] }
+  /**
+   * Bilingual write-back. Undefined renders no toggle, so a host that has not
+   * implemented the insert strategy cannot accidentally ship a checkbox that
+   * silently does nothing.
+   */
+  bilingual?: boolean
+  onBilingualChange?: (next: boolean) => void
+  /**
+   * Where the translated bytes should land. `overwrite` writes a new version of
+   * the document being edited; `copy` writes a sibling file and leaves the
+   * original untouched. Undefined renders no selector, so a host that has no
+   * cloud-drive save-as target cannot ship a choice that silently does nothing.
+   */
+  saveTarget?: 'overwrite' | 'copy'
+  onSaveTargetChange?: (next: 'overwrite' | 'copy') => void
+  /**
+   * The file name the copy would be written under. Shown next to the selector
+   * because the whole point of `copy` is that the user can predict the name.
+   */
+  translatedFileName?: string | null
   onRetryUnit?: (unitId: string) => Promise<void>
   onSaveMemory?: (args: {
     sourceLang: string
@@ -83,7 +133,7 @@ export interface TranslateDialogProps {
     preserveFormat: boolean
   }) => Promise<string | null>
   /** Apply handler — receives a fully-formed `translate` change plan. */
-  onApply: (plan: ChatChangePlan, targetText: string) => void
+  onApply: (plan: ChatChangePlan, targetText: string, saveTarget?: 'overwrite' | 'copy') => void
   /** Optional cancel handler (Esc / X button). */
   onCancel: () => void
   /** Optional app id stamped on the change plan (defaults to 'unknown'). */
@@ -97,7 +147,7 @@ function nextPlanId(): string {
 }
 
 export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element | null {
-  const { open, sourceText, sourceRange, defaultSourceLang, defaultTargetLang, languages, strings, previewItems, previewQuality, onTranslate, onApply, onCancel, app, onRetryUnit, onSaveMemory } = props
+  const { open, sourceText, sourceRange, defaultSourceLang, defaultTargetLang, languages, strings, previewItems, previewQuality, onTranslate, onApply, onCancel, app, onRetryUnit, onSaveMemory, bilingual, onBilingualChange, saveTarget, onSaveTargetChange, translatedFileName, hasTranslatableContent } = props
   const [sourceLang, setSourceLang] = useState<string>(defaultSourceLang ?? 'auto')
   const [targetLang, setTargetLang] = useState<string>(defaultTargetLang)
   const [preserveFormat, setPreserveFormat] = useState<boolean>(true)
@@ -169,6 +219,10 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
       selectedPreviewIds.has(item.id) && item.translatedText && item.status !== 'failed',
     )
     if (previewItems && previewItems.length > 0 && selectedItems.length === 0) return
+    // `applyMode` travels on every op item: undo replays this same list, and a
+    // bilingual insert has to be undone by deleting the inserted span rather
+    // than by rewriting it back to the source.
+    const applyMode = bilingual ? ('bilingual' as const) : ('replace' as const)
     const translateOps = previewItems && previewItems.length > 0
       ? selectedItems.map((item) => ({
           sourceText: item.sourceText,
@@ -176,6 +230,7 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
           targetLang,
           preserveFormat,
           range: item.range ?? null,
+          applyMode,
         }))
       : [{
           sourceText,
@@ -183,6 +238,7 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
           targetLang,
           preserveFormat,
           range: sourceRange ?? null,
+          applyMode,
         }]
     const plan: ChatChangePlan = {
       id: nextPlanId(),
@@ -202,7 +258,7 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
       requireConfirm: false,
       createdAt: Date.now(),
     }
-    onApply(plan, translated)
+    onApply(plan, translated, saveTarget)
   }
 
   const handleRetryUnit = async (unitId: string) => {
@@ -300,6 +356,44 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
           <span>{strings.preserveFormat}</span>
         </label>
 
+        {onBilingualChange ? (
+          <label className="ai-translate-dialog-toggle">
+            <input
+              type="checkbox"
+              checked={!!bilingual}
+              onChange={(e) => onBilingualChange(e.target.checked)}
+              disabled={busy}
+            />
+            <span>{strings.bilingual ?? 'Bilingual (keep original)'}</span>
+          </label>
+        ) : null}
+
+        {onSaveTargetChange ? (
+          <div className="ai-translate-dialog-save-target">
+            <label className="ai-translate-dialog-field">
+              <span>{strings.saveTarget ?? 'Save translated file as'}</span>
+              <select
+                value={saveTarget ?? 'overwrite'}
+                onChange={(e) => onSaveTargetChange(e.target.value === 'copy' ? 'copy' : 'overwrite')}
+                disabled={busy}
+                data-testid="translate-save-target"
+              >
+                <option value="overwrite">
+                  {strings.saveTargetOverwrite ?? 'Overwrite current file (new version)'}
+                </option>
+                <option value="copy">
+                  {strings.saveTargetCopy ?? 'Save as a translated copy (keeps the original)'}
+                </option>
+              </select>
+            </label>
+            {saveTarget === 'copy' && translatedFileName ? (
+              <p className="ai-translate-dialog-save-target-hint" data-testid="translate-save-target-hint">
+                {strings.saveTargetCopyHint ?? 'The copy lands next to the original:'} {translatedFileName}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
         <div className="ai-translate-dialog-preview" data-busy={busy}>
           <section className="ai-translate-dialog-side">
             <h3>{strings.original}</h3>
@@ -376,7 +470,7 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
               type="button"
               className="ai-translate-dialog-btn ai-translate-dialog-btn--primary"
               onClick={handleTranslate}
-              disabled={busy || sourceText.trim().length === 0}
+              disabled={busy || !(hasTranslatableContent ?? sourceText.trim().length > 0)}
             >
               {strings.start}
             </button>
@@ -398,8 +492,8 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
                 className="ai-translate-dialog-btn ai-translate-dialog-btn--primary"
                 onClick={handleApply}
                 disabled={busy || (previewItems && previewItems.length > 0 && selectedPreviewIds.size === 0)}
-            >
-              {strings.start}
+              >
+                {strings.apply}
               </button>
             </>
           )}

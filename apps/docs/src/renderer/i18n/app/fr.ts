@@ -52,6 +52,7 @@ export const fr = {
   appSaveFailed: "Échec de l'enregistrement : {error}",
   appAutoSavedAt: 'Enregistrement automatique ({time})',
   appSaved: 'Enregistré',
+  appTranslationCopySaved: 'Copie traduite enregistrée : {name}',
   appSectionBreakInserted: 'Saut de section inséré ({type})',
   appSectionBreakPending:
     "Saut de section inséré ; la nouvelle section prendra effet après l'enregistrement",

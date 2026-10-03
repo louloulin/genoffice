@@ -129,6 +129,8 @@ export function AiPanel({
   preset,
   onRunDone,
   onClearSelection,
+  onTranslateDocument,
+  onCreateEditableDocx,
 }: {
   api: PdfAppDeps
   /** Absolute path of the open PDF (chat history is keyed to it) */
@@ -140,6 +142,25 @@ export function AiPanel({
   onRunDone?: () => void
   /** The × on the scope chip: drop the cached selection so runs target the whole document */
   onClearSelection?: () => void
+  /**
+   * Opens the whole-document translation dialog.
+   *
+   * Optional rather than always present: the dialog is supplied by the App,
+   * which owns the document's text layer and pending-edit state. When it is
+   * absent (no document open, or a read-only one) the button is not rendered
+   * at all, rather than rendered and inert.
+   */
+  onTranslateDocument?: () => void
+  /**
+   * Convert this PDF into an editable DOCX filed beside it in the drive.
+   *
+   * Optional for the same reason as `onTranslateDocument`, but with a second
+   * condition: it also needs a **drive** document, because there is nowhere to
+   * put the result otherwise. The App resolves that and leaves the prop unset,
+   * so a knowledge-base or desktop session renders no button rather than one
+   * that can only fail.
+   */
+  onCreateEditableDocx?: () => void
 }): ReactElement {
   const { lang, t } = useI18n()
   const [chat, setChat] = useState<ChatEntry[]>([])
@@ -795,6 +816,26 @@ export function AiPanel({
           {{minimax:'MiniMax',codex:'Codex',anthropic:'Claude',genspark:'Genspark'}[(settingsRef.current?.provider ?? 'minimax') as 'minimax'|'codex'|'anthropic'|'genspark'] || 'AI Assistant'}
         </span>
         <div className="ai-panel-header-actions">
+          {onTranslateDocument && (
+            <button
+              className="ai-header-btn"
+              onClick={onTranslateDocument}
+              data-tip={t('aiTranslatePdfTitle')}
+              aria-label={t('aiTranslatePdfTitle')}
+            >
+              <IconTranslate />
+            </button>
+          )}
+          {onCreateEditableDocx && (
+            <button
+              className="ai-header-btn"
+              onClick={onCreateEditableDocx}
+              data-tip={t('aiPdfEditableDocxTip')}
+              aria-label={t('aiPdfEditableDocx')}
+            >
+              <IconEditableDocx />
+            </button>
+          )}
           {chat.length > 0 && (
             <button
               className="ai-header-btn"
@@ -1261,6 +1302,54 @@ function IconNewChat(): ReactElement {
       />
       <path d="M12.2 9.4v4M10.2 11.4h4" />
     </Svg>
+  )
+}
+
+/* Translate glyph: a globe with a right-pointing arrow — the same "send the
+   text somewhere else" reading the other editors use for this action. */
+function IconTranslate(): ReactElement {
+  return (
+    <svg
+      width={15}
+      height={15}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="7" cy="8" r="5" />
+      <path d="M2 8h10M7 3c1.4 1.4 2.1 3.1 2.1 5S8.4 11.6 7 13M7 3C5.6 4.4 4.9 6.1 4.9 8s.7 3.6 2.1 5" />
+      <path d="M11.5 6.5 14 8l-2.5 1.5" />
+    </svg>
+  )
+}
+
+/* Editable-DOCX glyph: a page whose second line is a folded corner, with a
+   pen tip entering from the right — "this document becomes something you can
+   write in". Deliberately not a second globe-and-arrow: that already means
+   "translate", and putting the two side by side with the same shape would make
+   the fallback read as a duplicate of the action next to it. */
+function IconEditableDocx(): ReactElement {
+  return (
+    <svg
+      width={15}
+      height={15}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3.5 2.5h5.2L12 5.8v7.7a.9.9 0 0 1-.9.9H3.5a.9.9 0 0 1-.9-.9V3.4a.9.9 0 0 1 .9-.9Z" />
+      <path d="M8.7 2.5v2.4a.9.9 0 0 0 .9.9H12" />
+      <path d="M4.9 8.2h4.2" />
+      <path d="M8.6 13.6 13 9.2l1 1-4.4 4.4-1.4.4.4-1.4Z" />
+    </svg>
   )
 }
 

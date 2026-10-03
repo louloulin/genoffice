@@ -29,8 +29,21 @@ export interface DesktopApiOverrides {
    */
   aiTranslateBatchStream?: (
     request: Parameters<DesktopApi['aiTranslateBatch']>[0],
+    options?: {
+      onUnit?: (unit: {
+        unitId: string
+        sourceText: string
+        translatedText?: string
+        status?: 'translated' | 'memory-hit' | 'failed'
+        matchedTerms?: string[]
+        warnings?: string[]
+        errorMessage?: string
+      }) => void
+      signal?: AbortSignal
+    },
   ) => ReturnType<DesktopApi['aiTranslateBatch']>
   saveTranslationMemory?: DesktopApi['saveTranslationMemory']
+  translationStorage?: DesktopApi['translationStorage']
   saveDocx?: DesktopApi['saveDocx']
   /** Web-native pending open (browser URL → open-path). */
   consumePendingOpenDocx?: () => Promise<unknown>
@@ -219,7 +232,11 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
           unitId: unit.unitId,
           sourceText: unit.sourceText,
           translatedText: result.translated,
-          status: result.ok ? 'translated' : 'failed',
+          // `as const`: without it the ternary widens to `string`, which no
+          // longer satisfies the batch contract's closed status union — and the
+          // fix people reach for (widening the union) is what let a failed unit
+          // read as a translated one in the first place.
+          status: (result.ok ? 'translated' : 'failed') as 'translated' | 'failed',
           errorMessage: result.error,
           range: unit.range,
           ...(result.matchedTerms ? { matchedTerms: result.matchedTerms } : {}),
@@ -268,6 +285,10 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
       }) as DesktopApi['aiTranslateBatch']),
     saveTranslationMemory: overrides.saveTranslationMemory ?? ((request) =>
       t.invoke('ai:save-translation-memory', request)),
+    // Only the embedded web build has a Dataflare host to proxy through; the
+    // Electron shell has no glossary/memory storage, so null is the honest
+    // answer there and the panel says so instead of pretending to be empty.
+    translationStorage: overrides.translationStorage ?? null,
     aiGskStatus: (withEmail?: boolean) => t.invoke('ai:gsk-status', withEmail),
     aiGskLogin: () => t.invoke('ai:gsk-login'),
     webSearch: (query: string, maxResults?: number) => t.invoke('ai:web-search', query, maxResults),

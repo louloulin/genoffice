@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { buildEmbedTranslateBody } from '../src/shared/translate-embed-body'
+import { buildEmbedTranslateBody } from '@genoffice/translation-core/embed-body'
 
 const unit = { unitId: 'u1', kind: 'paragraph', sourceText: 'Fabric weight spec', order: 0 }
 

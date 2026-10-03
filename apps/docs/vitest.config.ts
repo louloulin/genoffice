@@ -21,6 +21,21 @@ export default defineConfig({
       '@genoffice/ai-provider': local('../../packages/ai-provider/src/index.ts'),
       '@genoffice/i18n': local('../../packages/i18n/src/index.ts'),
       '@genoffice/ui': local('../../packages/ui/src/index.ts'),
+      // subpath before the bare name: vite treats a string alias as a prefix
+      // replacement, so the bare key last would rewrite
+      // `@genoffice/translation-core/document` into `.../index.ts/document`.
+      // The renderer imports the subpath because it is the browser-safe entry —
+      // the bare entry drags in the provider and its Node built-ins.
+      '@genoffice/translation-core/document': local(
+        '../../packages/translation-core/src/document.ts',
+      ),
+      // Same ordering rule for the embed wire-body builder.
+      '@genoffice/translation-core/embed-body': local(
+        '../../packages/translation-core/src/embed-body.ts',
+      ),
+      '@genoffice/translation-core/translated-file-name': local(
+        '../../packages/translation-core/src/translated-file-name.ts',
+      ),
       '@genoffice/translation-core': local('../../packages/translation-core/src/index.ts'),
       // SDK sub-paths are declared before the bare name: vite treats a string
       // alias as a prefix replacement, so the general key last would swallow

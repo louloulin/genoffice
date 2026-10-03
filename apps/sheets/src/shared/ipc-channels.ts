@@ -87,6 +87,10 @@ export const IPC_CHANNELS = {
   aiStream: 'ai:stream',
   aiStreamCancel: 'ai:stream-cancel',
   aiTranslate: 'ai:translate',
+  // Whole-workbook translation transport (shares translation-core's batch path
+  // with docs / slides / web-server — the one-shot above cannot carry TM,
+  // glossary or a quality report).
+  aiTranslateBatch: 'ai:translate-batch',
   aiStreamChunk: 'ai:stream-chunk',
   aiGskStatus: 'ai:gsk-status',
   aiGskLogin: 'ai:gsk-login',

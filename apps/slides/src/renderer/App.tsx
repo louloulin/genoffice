@@ -93,6 +93,9 @@ import { ToastHost } from './components/toast'
 import { showToast } from './components/toast-bus'
 import { t, useI18n } from './i18n/locale'
 import { AiPanel } from './ai/AiPanel'
+import { TranslateDeckDialog, type TranslateDeckDialogHandle } from './ai/TranslateDeckDialog'
+import type { DeckTranslateBatchFn, DeckTranslateWrite, SlideLike } from './ai/document-translate'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { ChartDataDialog } from './components/ChartDataDialog'
 import type { BrushFormat } from './format-brush'
 import { isTextUndoTarget, shouldRouteUndoToDeck } from './undo-routing'
@@ -382,6 +385,7 @@ export function App() {
   const [scaleBox, setScaleBox] = useState<{ w: number; h: number } | null>(null)
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState('')
+  const translateDeckDialogRef = useRef<TranslateDeckDialogHandle | null>(null)
   // Status messages auto-dismiss after 4s: operation feedback needs only a brief showing; persistent info (page number/file name) lives on the left and in the title bar
   useEffect(() => {
     if (!status) return
@@ -1220,7 +1224,31 @@ export function App() {
         bootHandledRef.current = true
         void bootBlank()
       })
-    return off
+    // Web embed: the host's deck arrives with the `init` command, which is
+    // dispatched by the host *after* this effect has already run — so the
+    // mount-time `consumePendingOpen` above resolved to null and booted a blank
+    // deck. The web-bridge parks the temp path and announces it with this
+    // event. Without a listener the pptx is downloaded, written to a temp file
+    // and then **never opened**: the deck silently stays blank, `slides:open-path`
+    // is never invoked, and every later action (translate / save) operates on
+    // an empty presentation. sheets and pdf both listen here; slides did not.
+    //
+    // No `bootHandledRef` guard on purpose: by the time this fires the blank
+    // deck may already be up, and `applyOpen` replaces the deck wholesale —
+    // which is the point, the user asked for the host's file, not a blank one.
+    const onHostDocument = () => {
+      void window.slidesApi
+        .consumePendingOpen(FIT_WIDTH)
+        .then((r) => applyOpen(r))
+        .catch((err: unknown) => {
+          showToast(err instanceof Error ? err.message : String(err), 'error')
+        })
+    }
+    window.addEventListener('dataflare:open-document', onHostDocument)
+    return () => {
+      off()
+      window.removeEventListener('dataflare:open-document', onHostDocument)
+    }
   }, [applyOpen, newBlank])
 
   // File renamed externally (shell Home list rename) → sync the title-bar path (content unchanged, dirty untouched)
@@ -1488,6 +1516,118 @@ export function App() {
       styleActions.onStroke(ctxRef.current, sourceId, stroke),
     [],
   )
+
+  // ── 整份幻灯片翻译（宿主命令 + 审核后写入）────────────────────────────
+  //
+  // 抽取与写入规则都在 `ai/document-translate.ts`；App 只提供活的对象、传输层
+  // 和真实的写回 op。这样「先翻译后审核再写入」与管线内联写入走同一份实现。
+
+  /** The live deck, or `null` before the first slide is laid out. */
+  function activeTranslateSlides() {
+    return slides.length > 0 ? (slides as unknown as readonly SlideLike[]) : null
+  }
+
+  /**
+   * Batch transport for the whole-deck run.
+   *
+   * Prefers the streaming variant so the host's progress bar and the review
+   * list move per text frame; falls back to the plain batch call, replaying its
+   * units through `onUnit` so the review list is never empty just because the
+   * stream was unavailable.
+   */
+  // Declared as a function (not a const arrow) so the JSX below can reference
+  // it: a `const` here would be a TDZ error at first render.
+  async function translateDeckBatch(
+    request: Parameters<DeckTranslateBatchFn>[0],
+    signal: AbortSignal | undefined,
+    onUnit: Parameters<DeckTranslateBatchFn>[2],
+  ): Promise<Awaited<ReturnType<DeckTranslateBatchFn>>> {
+    const api = window.slidesApi
+    if (api.aiTranslateBatchStream) {
+      return await api.aiTranslateBatchStream(request, { onUnit, ...(signal ? { signal } : {}) })
+    }
+    const response = await api.aiTranslateBatch(request)
+    // The fallback runs *after* the stream would have: the dialog always
+    // passes an `onUnit`, but the type is optional, so replaying through it
+    // must not assume it exists.
+    for (const unit of response.units ?? []) {
+      if (unit?.unitId) onUnit?.(unit)
+    }
+    return response
+  }
+
+  /**
+   * Write the reviewed translations back into the deck.
+   *
+   * Runs only from the dialog's Apply step, so cancelling leaves the deck
+   * untouched. Each write goes through the real `slides:edit-text` op, which
+   * re-runs layout and returns the rebuilt slide — the same path a human
+   * editing that frame takes, so autofit and wrapping stay correct.
+   */
+  const applyDeckTranslations = useCallback(async (writes: readonly DeckTranslateWrite[]) => {
+    let written = 0
+    for (const write of writes) {
+      // `editText` addresses exactly one group level, so a frame nested two or
+      // more groups deep has no honest target. Skipping it (and saying so) is
+      // better than writing the translation into a different frame that happens
+      // to share the durable id suffix.
+      if (write.groupPath.length > 1) continue
+      const updated = await window.slidesApi.editText({
+        slideIndex: write.slideIndex,
+        sourceId: write.sourceId,
+        paragraphs: [{ runs: [{ text: write.text }] }],
+        ...(write.groupPath.length === 1 ? { groupId: write.groupPath[0] } : {}),
+      })
+      if (updated) {
+        setSlides((list) => list.map((sl, i) => (i === write.slideIndex ? updated : sl)))
+        setDirty(true)
+        written += 1
+      }
+    }
+    const skipped = writes.length - written
+    showToast(
+      skipped > 0
+        ? `${t('aiTranslateDeckApplied', { count: written })} · ${t('aiTranslateDeckSkipNote')}`
+        : t('aiTranslateDeckApplied', { count: written }),
+      written > 0 ? 'success' : 'error',
+    )
+  }, [])
+
+  /**
+   * Host commands for the slides app.
+   *
+   * The integration used to be installed with no `onCommand`, so every
+   * `translate` / `cancel-translation` the Dataflare header sent was dropped
+   * on the floor — the buttons looked wired up and did nothing.
+   */
+  useEffect(() => {
+    const onHostCommand = (event: Event) => {
+      const command = (event as CustomEvent<Record<string, unknown>>).detail
+      if (!command || typeof command.type !== 'string') return
+      if (command.type === 'translate') {
+        const sourceLanguage = typeof command.sourceLanguage === 'string' ? command.sourceLanguage : undefined
+        const glossaryCategory = typeof command.glossaryCategory === 'string' ? command.glossaryCategory : undefined
+        translateDeckDialogRef.current?.open({
+          scope: command.scope === 'document' ? 'document' : 'selection',
+          ...(sourceLanguage ? { sourceLanguage } : {}),
+          targetLanguage: typeof command.targetLanguage === 'string' ? command.targetLanguage : 'zh-CN',
+          bilingual: command.bilingual === true,
+          preserveFormatting: command.preserveFormatting !== false,
+          memoryEnabled: command.memoryEnabled !== false,
+          qualityCheck: command.qualityCheck !== false,
+          ...(glossaryCategory ? { glossaryCategory } : {}),
+        })
+        postToEmbedParent({ type: 'ai-progress', status: 'started', progress: 0 })
+        return
+      }
+      if (command.type === 'cancel-translation') {
+        translateDeckDialogRef.current?.close()
+        postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+      }
+    }
+    window.addEventListener('dataflare:office-command', onHostCommand)
+    return () => window.removeEventListener('dataflare:office-command', onHostCommand)
+  }, [])
 
   const applyDeck = useCallback((all: RenderSlide[], goTo?: number) => {
     setSlides(all)
@@ -2928,6 +3068,12 @@ export function App() {
   return (
     <div className="app">
       <ToastHost />
+      <TranslateDeckDialog
+        ref={translateDeckDialogRef}
+        getSlides={activeTranslateSlides}
+        translateBatch={translateDeckBatch}
+        onApply={(writes) => void applyDeckTranslations(writes)}
+      />
       <Ribbon
         hasDoc={!!slide}
         deckEmpty={deckEmpty}
@@ -3286,6 +3432,9 @@ export function App() {
                 onExpand={toggleAi}
                 onCollapse={toggleAi}
                 onUndo={() => void undo()}
+                onTranslateDeck={() =>
+                  translateDeckDialogRef.current?.open({ scope: 'document', targetLanguage: 'zh-CN' })
+                }
                 onPathChange={(p) => {
                   setPath(p)
                   setDirty(false)

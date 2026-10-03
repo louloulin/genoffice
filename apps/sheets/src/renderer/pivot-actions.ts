@@ -414,6 +414,8 @@ export function isSelectionInPivot(ctx: PivotActionContext): boolean {
 export function handleRefreshAllPivots(ctx: PivotActionContext): string | null {
   const state = ctx.lazyWorkbookRef.current
   if (!ctx.univerRef.current || !state) return t('appOpenXlsxFirst')
+  // Safe to read unguarded: `withSheetMetaDefaults` (openLazyWorkbook)
+  // guarantees the array exists on every opened workbook.
   const pivotSheets = state.file.sheets.filter((sheet) => sheet.pivotTables.length > 0)
   if (pivotSheets.length === 0) return t('appWorkbookNoPivot')
   let count = 0

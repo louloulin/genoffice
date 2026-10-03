@@ -52,6 +52,7 @@ export const zh = {
   appSaveFailed: '保存失败: {error}',
   appAutoSavedAt: '已自动保存 ({time})',
   appSaved: '已保存',
+  appTranslationCopySaved: '翻译副本已保存：{name}',
   // Section breaks
   appSectionBreakInserted: '已插入分节符({type})',
   appSectionBreakPending: '已插入分节符,保存后新节生效',

@@ -464,6 +464,19 @@
   font-size: 13px;
   color: var(--color-fg-muted, #888);
 }
+.ai-translate-dialog-save-target {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 0 18px 12px;
+  flex-wrap: wrap;
+}
+.ai-translate-dialog-save-target-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-fg-muted, #888);
+  word-break: break-all;
+}
 .ai-translate-dialog-preview {
   display: grid;
   grid-template-columns: 1fr 1fr;

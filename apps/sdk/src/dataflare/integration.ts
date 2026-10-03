@@ -123,6 +123,13 @@ export function resolveHostDocumentFile(
 export interface HostDocumentPaths {
   download: string
   save: string
+  /**
+   * "Save as a new file in the same folder" endpoint. Optional because only
+   * drive documents have one: a knowledge-base document has no drive space to
+   * put a sibling file in, and pointing it at a drive endpoint would create a
+   * file the user never asked for, in a place they cannot see from here.
+   */
+  saveAs?: string
 }
 
 /**
@@ -137,7 +144,18 @@ export function isHostDocumentSource(source: DataflareOfficeContext['documentSou
 
 /** Outcome of a save, widened enough for the standalone path to pass through. */
 export type DataflareSaveResult =
-  | { ok: true; revision?: string; local?: unknown }
+  | {
+      ok: true
+      revision?: string
+      local?: unknown
+      /**
+       * Set when the bytes landed in a **new sibling file** rather than as a new
+       * version of the open one. The open document's revision is deliberately
+       * unchanged in that case, so callers must not treat this as "the document
+       * I have open is now at revision X".
+       */
+      savedAs?: { fileName: string; itemId?: string; versionId?: string }
+    }
   | { ok: false; reason: 'external-modified' | 'save-failed'; error: string; local?: unknown }
 
 /**
@@ -241,7 +259,23 @@ export interface DataflareEmbedIntegration {
    * when the revision is unknown: a local write would silently detach the
    * document from its knowledge record.
    */
-  saveDocument(path: string, data: ArrayBuffer, auto: boolean): Promise<DataflareSaveResult>
+  saveDocument(
+    path: string,
+    data: ArrayBuffer,
+    auto: boolean,
+    /**
+     * `saveAsFileName` writes a sibling file instead of a new version of the
+     * open one. `contentType` overrides the type the host is told the bytes
+     * are — honoured **only** for a save-as, and only because the fallback
+     * path writes a genuinely different format: the pdf app's PDF→DOCX
+     * conversion hands DOCX bytes to a session whose `documentType` is `pdf`,
+     * so deriving the type from the context would file an editable Word
+     * document as `application/pdf` and the drive would then try to render it
+     * as a PDF. A version bump never takes this override: a new version of a
+     * document is by definition the same kind of document.
+     */
+    saveOptions?: { saveAsFileName?: string; contentType?: string },
+  ): Promise<DataflareSaveResult>
   /**
    * Download + open the host document named by the current context
    * (knowledge or drive, per `documentSource`).
@@ -281,7 +315,7 @@ export function createDataflareEmbedIntegration(
     options.drivePaths ??
     ((documentId: string): HostDocumentPaths => {
       const base = `/crmapi/drive/office-sessions/${encodeURIComponent(documentId)}`
-      return { download: `${base}/content`, save: `${base}/save` }
+      return { download: `${base}/content`, save: `${base}/save`, saveAs: `${base}/save-as` }
     })
   const hostPaths = (
     source: DataflareOfficeContext['documentSource'],
@@ -385,28 +419,62 @@ export function createDataflareEmbedIntegration(
     )
   }
 
-  const saveHostDocument = async (data: ArrayBuffer): Promise<DataflareSaveResult> => {
+  const saveHostDocument = async (
+    data: ArrayBuffer,
+    saveAsFileName?: string,
+    contentTypeOverride?: string,
+  ): Promise<DataflareSaveResult> => {
     const documentId = context?.documentId
     if (!documentId) {
       return { ok: false, reason: 'save-failed', error: 'missing Dataflare documentId' }
     }
     const fileType = resolveHostDocumentFile(context?.documentType)
+    const paths = hostPaths(context?.documentSource, documentId)
+    // A save-as has no optimistic-lock base to check and must not advance the
+    // open document's revision: the bytes went to a *different* item, so
+    // claiming the open one moved would make the next Ctrl+S a false conflict.
+    const saveAs = saveAsFileName ? paths.saveAs : undefined
+    if (saveAsFileName && !saveAs) {
+      // Falling back to a normal save here would write the translation over the
+      // original — the exact thing "save as" promises not to do, and the user
+      // would only find out after losing the source.
+      const error = '该文档没有可另存到的云盘位置，请先从云盘打开'
+      emitError('save-failed', error)
+      return { ok: false, reason: 'save-failed', error }
+    }
     const response = await upload(
-      hostPaths(context?.documentSource, documentId).save,
+      saveAs ? `${saveAs}?fileName=${encodeURIComponent(saveAsFileName!)}` : paths.save,
       data,
-      { expectedRevision: revision },
-      { filename: `${options.app}-${context?.documentSource}.${fileType.extension}`, contentType: fileType.contentType },
+      saveAs ? {} : { expectedRevision: revision },
+      {
+        filename: `${options.app}-${context?.documentSource}.${fileType.extension}`,
+        // Only a save-as may restate the type; see the interface docblock.
+        contentType:
+          (saveAsFileName ? contentTypeOverride : undefined) ?? fileType.contentType,
+      },
     )
     const body = (await response.json().catch(() => null)) as {
       code?: number
       msg?: string
-      data?: { revision?: string }
+      data?: { revision?: string; itemId?: string; versionId?: string }
     } | null
     if (!response.ok || (body?.code ?? 0) !== 0) {
       const conflict = response.status === 409 || body?.code === 409
       const error = body?.msg || `Dataflare document save failed (${response.status})`
       emitError(conflict ? 'document-conflict' : 'save-failed', error, response.status)
       return { ok: false, reason: conflict ? 'external-modified' : 'save-failed', error }
+    }
+    if (saveAsFileName) {
+      // Revision stays put on purpose: the open document did not change.
+      return {
+        ok: true,
+        revision,
+        savedAs: {
+          fileName: saveAsFileName,
+          ...(body?.data?.itemId ? { itemId: body.data.itemId } : {}),
+          ...(body?.data?.versionId ? { versionId: body.data.versionId } : {}),
+        },
+      }
     }
     revision = body?.data?.revision || String(Number(revision) + 1)
     return { ok: true, revision }
@@ -416,6 +484,8 @@ export function createDataflareEmbedIntegration(
     path: string,
     data: ArrayBuffer,
     auto: boolean,
+    /** Set to write a sibling file instead of a new version of the open one. */
+    saveOptions?: { saveAsFileName?: string; contentType?: string },
   ): Promise<DataflareSaveResult> => {
     const isHostDocument = isHostDocumentSource(context?.documentSource) && !!context?.documentId
     if (!isHostDocument) {
@@ -433,8 +503,14 @@ export function createDataflareEmbedIntegration(
       }
       return { ok: true, local: result }
     }
-    const saved = await saveHostDocument(data)
-    if (saved.ok) {
+    const saved = await saveHostDocument(
+      data,
+      saveOptions?.saveAsFileName,
+      saveOptions?.contentType,
+    )
+    if (saved.ok && !saved.savedAs) {
+      // Only a real version bump announces a new revision. A save-as must not:
+      // the host did not move the document the editor has open.
       options.onSaved?.(context!.documentId!, revision)
       emitEvent({
         type: 'document-saved',
@@ -456,7 +532,13 @@ export function createDataflareEmbedIntegration(
       revision = readRevisionHeader(response.headers)
       const bytes = await response.arrayBuffer()
       const { extension } = resolveHostDocumentFile(context?.documentType)
-      const opened = await options.openBytes(bytes, `dataflare-${id}.${extension}`)
+      // Prefer the host's real name; the session-id fallback only applies when
+      // the host predates the `documentName` context field.
+      const hostName = (context?.documentName ?? '').trim()
+      const fileName = hostName
+        ? hostName.toLowerCase().endsWith(`.${extension}`) ? hostName : `${hostName}.${extension}`
+        : `dataflare-${id}.${extension}`
+      const opened = await options.openBytes(bytes, fileName)
       if (context) options.onDocumentOpened?.(opened, context)
     } catch (error) {
       emitError(

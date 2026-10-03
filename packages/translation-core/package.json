@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Shared AI translation core: language list, hardened prompts, document chunking, provider wrapper, quality checks and an in-memory translation memory. Consumed by the docs/sheets/slides main processes and the web build so the three paths stay in lock-step (Node-only \u2014 uses fs/path/crypto; not browser-compatible).",
+  "description": "Shared AI translation core: language list, hardened prompts, document chunking, provider wrapper, quality checks and an in-memory translation memory. The bare entry is Node-only (uses fs/path/crypto); the `./document` and `./embed-body` subpaths are browser-safe and carry no Node built-ins, so the same pipeline runs in the Electron main process, the web build and the Dataflare-embedded editor iframe.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./document": "./src/document.ts",
+    "./embed-body": "./src/embed-body.ts",
+    "./storage": "./src/storage.ts",
+    "./translated-file-name": "./src/translated-file-name.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

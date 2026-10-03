@@ -32,6 +32,25 @@ import { NotFoundError } from '../ai/errors'
 import { atomicWriteFile } from '../common/atomic'
 import { convertPdfToDocxBytes } from './convert'
 
+/**
+ * Normalise the byte shapes a caller can hand to a bytes-based channel.
+ *
+ * The IPC codec decodes its tagged form to a `Uint8Array`, but Node callers
+ * (and the in-process v1 bridge) may pass an `ArrayBuffer` or a `Buffer`, and
+ * `Buffer` is a `Uint8Array` subclass whose `.buffer` is a shared pool — so
+ * the byteOffset/byteLength pair has to be honoured instead of taking the
+ * whole backing store.
+ */
+function toBytes(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array) return value
+  if (value instanceof ArrayBuffer) return new Uint8Array(value)
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+  }
+  return null
+}
+
 interface AnyDocConfig {
   ocrEnabled: boolean
   language: string
@@ -221,6 +240,68 @@ export function registerAnydocHandlers(): void {
       size: outcome.docx.byteLength,
       pages: outcome.pages ?? 0,
       ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+      ...(outcome.scannedDocument ? { scannedDocument: true } : {}),
+    }
+  })
+
+  /**
+   * PDF → DOCX on raw bytes, with no filesystem involved.
+   *
+   * ## Why this exists alongside the path-based `anydoc:convert`
+   *
+   * `anydoc:convert` reads and writes inside the server's own FILES_DIR, which
+   * is the right shape for the desktop / standalone build. The Dataflare drive
+   * has no such path: the document's bytes live in Dataflare's object storage
+   * and reach the editor as an ArrayBuffer. Forcing that through the
+   * path-based channel would mean staging every PDF to the server's disk and
+   * reading the DOCX back off it — a round trip that writes user documents to
+   * a machine that is not the store of record.
+   *
+   * The conversion itself is already implemented and tested in `./convert`;
+   * this handler is the transport-shaped door onto it, nothing more. Bytes
+   * survive the JSON boundary because the IPC codec already tags typed arrays
+   * (`{__ipcBytes:'u8', b64}`) on both the request and the response.
+   *
+   * ## Why it returns a discriminated result instead of throwing
+   *
+   * Same contract as `convertPdfToDocxBytes`: a password-protected PDF needs a
+   * password prompt, not a "conversion failed" toast, and the caller has to be
+   * able to tell "encrypted" from "broken" from "scanned, you probably want
+   * OCR first".
+   */
+  registerHandle('anydoc:pdf-to-docx-bytes', async (_event: unknown, args: unknown) => {
+    const { pdf, password } = (args ?? {}) as { pdf?: unknown; password?: string }
+
+    // `decodeTransportValue` hands back a Uint8Array over HTTP, but the
+    // in-process bridge (`api/v1/ipc-bridge.ts`) skips the codec entirely, so
+    // normalise every shape a caller can legitimately produce. Anything else
+    // is a bad argument, not a conversion failure.
+    const bytes = toBytes(pdf)
+    if (!bytes || bytes.byteLength === 0) {
+      return { ok: false, code: 'EMPTY_INPUT', message: 'no PDF bytes were supplied' }
+    }
+
+    const outcome = await convertPdfToDocxBytes(bytes, {
+      ...(typeof password === 'string' && password.length > 0 ? { password } : {}),
+    })
+
+    if (!outcome.ok || !outcome.docx) {
+      return {
+        ok: false,
+        code: outcome.code ?? 'CONVERT_FAILED',
+        message: outcome.message ?? 'PDF conversion failed',
+      }
+    }
+
+    return {
+      ok: true,
+      docx: outcome.docx,
+      pages: outcome.pages ?? 0,
+      ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+      // Scanned pages convert to pictures inside the DOCX, not to text. Saying
+      // so is the whole point: a "successful" conversion of a scan yields a
+      // document with no editable text, and silently handing that over is how
+      // "translated" ends up meaning "re-typeset the scan".
       ...(outcome.scannedDocument ? { scannedDocument: true } : {}),
     }
   })

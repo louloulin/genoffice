@@ -52,6 +52,7 @@ export const ru = {
   appSaveFailed: 'Не удалось сохранить: {error}',
   appAutoSavedAt: 'Автосохранение ({time})',
   appSaved: 'Сохранено',
+  appTranslationCopySaved: 'Перевод сохранён в копии: {name}',
   appSectionBreakInserted: 'Вставлен разрыв раздела ({type})',
   appSectionBreakPending: 'Разрыв раздела вставлен; новый раздел вступит в силу после сохранения',
   appBreakNextPage: 'Следующая страница',

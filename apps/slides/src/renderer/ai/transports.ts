@@ -8,6 +8,7 @@
 
 import type { AgentTransport } from '@genoffice/agent-core'
 import { createIpcTransport, createWebTransport } from '@genoffice/agent-core'
+import { resolveEmbedPathPrefix } from '@genoffice/web-sdk/dataflare/integration'
 import type { AiSettings } from '../../shared/ipc'
 import { t } from '../i18n/locale'
 
@@ -31,11 +32,15 @@ function getWebServerUrl(): string {
         // Vite 开发服务器，代理到 Web Server
         return `${url.protocol}//${url.hostname}:8080`
       }
-      return url.origin
+      // 嵌入 Dataflare 宿主时页面在 /office-engine/embed/… 下，必须把同样的路径前缀
+      // 带上：否则 /api/ai/stream 会打到宿主根路径（实测 404，且 Dataflare 根路径是
+      // WeKnora 的 /api/），表现为「AI 助手 HTTP 404」而不是可读的 AI 报错。
+      // resolveEmbedPathPrefix 在非嵌入路径下返回空串，所以这条对直连开发服无副作用。
+      return `${url.origin}${resolveEmbedPathPrefix(url.pathname)}`
     }
 
-    // 否则使用当前域名
-    return `${url.protocol}//${url.host}`
+    // 否则使用当前域名（同样要带嵌入前缀，见上）
+    return `${url.protocol}//${url.host}${resolveEmbedPathPrefix(url.pathname)}`
   }
 
   return 'http://localhost:8080'

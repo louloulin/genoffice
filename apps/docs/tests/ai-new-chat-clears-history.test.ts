@@ -51,7 +51,7 @@ function mount(element: React.ReactElement): {
 }
 
 function panelProps(editor: Editor) {
-  // No onCollapse: the New chat button is then the only .ai-header-btn,
+  // No onCollapse, so the header holds New chat plus the glossary button;
   // which keeps the selector independent of the active i18n locale.
   return {
     editor,
@@ -86,6 +86,22 @@ beforeAll(() => {
   Element.prototype.scrollTo ??= () => {}
 })
 
+  /** `t('aiNewChatTitle')` under the default (zh) module locale. */
+  const NEW_CHAT_LABEL = '新对话'
+
+  /**
+   * The New chat button, located by its accessible name.
+   *
+   * It used to be found as "the only `.ai-header-btn`", which stopped being
+   * true once the header gained a permanent glossary button: the first match
+   * was the glossary one, clicking it changed nothing, and the test failed for
+   * a reason that had nothing to do with New chat.
+   */
+  const newChatButton = (root: ParentNode) =>
+    Array.from(root.querySelectorAll<HTMLButtonElement>('.ai-header-btn')).find(
+      (button) => button.getAttribute('aria-label') === NEW_CHAT_LABEL,
+    )
+
 describe('AiPanel new chat', () => {
   it('clears the restored history transcript along with the live turn', async () => {
     const restoreApi = mockProjectApi()
@@ -98,14 +114,14 @@ describe('AiPanel new chat', () => {
         // the previous conversation is painted above the live turn…
         expect(container.querySelectorAll('.ai-msg-historic').length).toBe(1)
         // …and New chat is offered even though the live turn is empty
-        const button = container.querySelector<HTMLButtonElement>('.ai-header-btn')
+        const button = newChatButton(container)!
         expect(button).not.toBeNull()
 
         act(() => button!.click())
 
         // both the transcript and the button are gone
         expect(container.querySelectorAll('.ai-msg-historic').length).toBe(0)
-        expect(container.querySelector('.ai-header-btn')).toBeNull()
+        expect(newChatButton(container)).toBeUndefined()
       } finally {
         cleanup()
         editor.destroy()

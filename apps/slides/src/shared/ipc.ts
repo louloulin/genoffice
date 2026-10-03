@@ -9,6 +9,12 @@ import type { AiPanelPrefs } from '@genoffice/ui'
  * them to the model and rebuilds the RenderSlide.
  */
 import type { RenderSlide } from '@genoffice/pptx-render'
+import type {
+  TranslateBatchRequest,
+  TranslateBatchResponse,
+  TranslateBatchUnitResult,
+} from '@genoffice/translation-core'
+import type { TranslationStorageClient } from '@genoffice/translation-core/storage'
 import type { SlideComment, SectionInfo } from '@genoffice/pptx-engine'
 import type {
   AiSettings,
@@ -1546,6 +1552,35 @@ export interface SlidesApi extends DesktopFilesApi {
     targetLang?: string
     preserveFormat?: boolean
   }>
+  /**
+   * Batch translate through the shared translation-core pipeline.
+   *
+   * Separate from {@link aiTranslate} on purpose: the one-shot has no memory,
+   * no glossary and no quality report, so a whole-deck run built on it would
+   * translate every text frame independently and report nothing about the run.
+   * Types come from translation-core so the two halves cannot drift.
+   */
+  aiTranslateBatch: (request: TranslateBatchRequest) => Promise<TranslateBatchResponse>
+  /**
+   * Optional per-unit streaming batch translate.
+   *
+   * Callers must fall back to `aiTranslateBatch` when absent — that is the
+   * standalone Electron path, where progress then only moves at batch
+   * boundaries rather than per text frame.
+   */
+  aiTranslateBatchStream?: (
+    request: TranslateBatchRequest,
+    options?: {
+      onUnit?: (unit: TranslateBatchUnitResult) => void
+      signal?: AbortSignal
+    },
+  ) => Promise<TranslateBatchResponse>
+  /**
+   * Space-scoped glossary / translation-memory client, or `null` when the
+   * editor is standalone. The panel renders that `null` as an explanation
+   * rather than an error: the terms live in the drive, not in the app.
+   */
+  translationStorage: TranslationStorageClient | null
   /** Genspark account status (gsk login state); with withEmail also fetches the email (needs a network request, slower) */
   aiGskStatus: (withEmail?: boolean) => Promise<GenSparkAccountStatus>
   /** Open the browser to log into Genspark (fire-and-forget; aiGskStatus turns logged-in once done) */

@@ -379,6 +379,16 @@ import { IconsDialog } from './IconsDialog'
 import { RecommendedChartsDialog } from './RecommendedChartsDialog'
 import { installPictureTransfer } from './picture-paste'
 import { ScreenshotDialog } from './ScreenshotDialog'
+import { TranslateSheetDialog, type TranslateSheetDialogHandle } from './ai/TranslateSheetDialog'
+import {
+  applySheetTranslations,
+  parseSheetUnitId,
+  sheetUsedColumns,
+  type SheetTranslateBatchFn,
+  type SheetTranslateWorksheet,
+} from './ai/document-translate'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import { withSheetMetaDefaults } from './workbook-normalize'
 import { SymbolDialog } from './SymbolDialog'
 import {
   calculateNow,
@@ -615,6 +625,10 @@ export function App(): React.JSX.Element {
   /// True while the Insert → Symbol dialog is open.
   const [symbolDialogOpen, setSymbolDialogOpen] = useState(false)
   const [screenshotDialogOpen, setScreenshotDialogOpen] = useState(false)
+  // Whole-worksheet translation. Opened from the ribbon or from a Dataflare
+  // host `translate` command; the dialog owns the run, App only supplies the
+  // live sheet and performs the write on Apply.
+  const translateSheetDialogRef = useRef<TranslateSheetDialogHandle | null>(null)
   const [iconsDialogOpen, setIconsDialogOpen] = useState(false)
   const [equationDialogOpen, setEquationDialogOpen] = useState(false)
   const [recommendedCharts, setRecommendedCharts] = useState<ChartRecommendations | null>(null)
@@ -2338,6 +2352,8 @@ export function App(): React.JSX.Element {
             endColumn: Math.max(...valueEntries.map((entry) => entry.column)),
           })
           // Sparkline values read live from the grid — re-render them too.
+          // Safe to read unguarded: `withSheetMetaDefaults` (openLazyWorkbook)
+          // guarantees the array exists on every opened workbook.
           if (
             state.editJournal.sparklineAdds.length > 0 ||
             state.file.sheets.some((sheet) => sheet.sparklines.length > 0)
@@ -3734,7 +3750,11 @@ export function App(): React.JSX.Element {
 
   function openLazyWorkbook(opened: WorkbookFile): void {
     const selected: WorkbookFile = {
-      ...opened,
+      // Schema-defaulted sheet arrays first: every unguarded
+      // `sheet.<field>.length` below is safe *because* of this call, and a
+      // workbook that skipped it threw inside the Univer command handler —
+      // see workbook-normalize.ts for the failure that forced it.
+      ...withSheetMetaDefaults(opened),
       visuals: opened.visuals.map((visual) =>
         visual.kind === 'chart' && visual.chart !== undefined
           ? { ...visual, chart: withDefaultBarLabels(visual.chart) }
@@ -4207,6 +4227,42 @@ export function App(): React.JSX.Element {
 
   const aiScopeChip = resolveScopeChip(aiRunScope, aiScope, aiScopeDismissed)
 
+  /**
+   * Host commands for the sheets app.
+   *
+   * The integration used to be installed with no `onCommand`, so every
+   * `translate` / `cancel-translation` the Dataflare header sent was dropped
+   * on the floor — the buttons looked wired up and did nothing.
+   */
+  useEffect(() => {
+    const onHostCommand = (event: Event) => {
+      const command = (event as CustomEvent<Record<string, unknown>>).detail
+      if (!command || typeof command.type !== 'string') return
+      if (command.type === 'translate') {
+        const sourceLanguage = typeof command.sourceLanguage === 'string' ? command.sourceLanguage : undefined
+        const glossaryCategory = typeof command.glossaryCategory === 'string' ? command.glossaryCategory : undefined
+        translateSheetDialogRef.current?.open({
+          scope: command.scope === 'document' ? 'document' : 'selection',
+          ...(sourceLanguage ? { sourceLanguage } : {}),
+          targetLanguage: typeof command.targetLanguage === 'string' ? command.targetLanguage : 'zh-CN',
+          bilingual: command.bilingual === true,
+          preserveFormatting: command.preserveFormatting !== false,
+          memoryEnabled: command.memoryEnabled !== false,
+          qualityCheck: command.qualityCheck !== false,
+          ...(glossaryCategory ? { glossaryCategory } : {}),
+        })
+        postToEmbedParent({ type: 'ai-progress', status: 'started', progress: 0 })
+        return
+      }
+      if (command.type === 'cancel-translation') {
+        translateSheetDialogRef.current?.close()
+        postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+      }
+    }
+    window.addEventListener('dataflare:office-command', onHostCommand)
+    return () => window.removeEventListener('dataflare:office-command', onHostCommand)
+  }, [])
+
   return (
     <>
       <ToastHost />
@@ -4396,6 +4452,12 @@ export function App(): React.JSX.Element {
           onClose={() => setSymbolDialogOpen(false)}
         />
       )}
+      <TranslateSheetDialog
+        ref={translateSheetDialogRef}
+        getSheet={activeTranslateSheet}
+        translateBatch={translateSheetBatch}
+        onApply={applySheetTranslationResult}
+      />
       {screenshotDialogOpen && (
         <ScreenshotDialog
           onInsert={(dataUrl, width, height) =>
@@ -4572,6 +4634,90 @@ export function App(): React.JSX.Element {
       return { ranges: [], error: t('appProtectionNeedsIndexed') }
     }
     return { ranges: file ?? [], error: null }
+  }
+
+  // ── 整表翻译（宿主命令 + 审核后写入）────────────────────────────────────
+  //
+  // 抽取与写入规则都在 `ai/document-translate.ts`；App 只提供活的工作表和
+  // 传输层。这样「先翻译后审核再写入」的两步与管线内联写入走同一份实现，
+  // 不会出现两套「译文写到哪」的规则各自漂移。
+
+  /** The live active sheet, or `null` before Univer has mounted. */
+  function activeTranslateSheet(): SheetTranslateWorksheet | null {
+    const sheet = univerRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()
+    return sheet ? (sheet as unknown as SheetTranslateWorksheet) : null
+  }
+
+  /**
+   * Batch transport for the whole-workbook run.
+   *
+   * Prefers the streaming variant so the host's progress bar and the review
+   * list move per cell; falls back to the plain batch call, replaying its
+   * units through `onUnit` so the review list is never empty just because the
+   * stream was unavailable (the standalone Electron path has no SSE).
+   */
+  // Declared as a function (not a const arrow) so the JSX below can reference
+  // it: the component body is one scope, and a `const` here would be a TDZ
+  // error at first render.
+  async function translateSheetBatch(
+    request: Parameters<SheetTranslateBatchFn>[0],
+    signal: AbortSignal | undefined,
+    onUnit: Parameters<SheetTranslateBatchFn>[2],
+  ): Promise<Awaited<ReturnType<SheetTranslateBatchFn>>> {
+    const api = window.desktopApi
+    if (api?.aiTranslateBatchStream) {
+      return await api.aiTranslateBatchStream(request, { onUnit, ...(signal ? { signal } : {}) })
+    }
+    if (!api?.aiTranslateBatch) throw new Error(t('aiTranslateSheetFailed'))
+    const response = await api.aiTranslateBatch(request)
+    for (const unit of response.units ?? []) {
+      if (unit?.unitId) onUnit(unit)
+    }
+    return response
+  }
+
+  /**
+   * Write the reviewed translations back into the sheet.
+   *
+   * Runs only from the dialog's Apply step, so cancelling leaves the workbook
+   * untouched. `usedColumns` is read here — after the review, not before — so a
+   * bilingual run lands beside the block as it stands at write time.
+   */
+  function applySheetTranslationResult({
+    units,
+    bilingual,
+  }: {
+    units: Array<{ unitId: string; sourceText: string; translatedText: string }>
+    bilingual: boolean
+  }): void {
+    const sheet = activeTranslateSheet()
+    if (!sheet) return
+    // Rebuild pipeline-shaped units from the reviewed list. A unit whose id we
+    // cannot parse is dropped rather than guessed at: writing to a
+    // re-derived coordinate is how a translation ends up in the wrong cell.
+    const restored = units.flatMap((unit, order) => {
+      const coordinates = parseSheetUnitId(unit.unitId)
+      if (!coordinates) return []
+      return [
+        {
+          unitId: unit.unitId,
+          kind: 'table-cell' as const,
+          sourceText: unit.sourceText,
+          order,
+          metadata: coordinates,
+          translatedText: unit.translatedText,
+        },
+      ]
+    })
+    if (restored.length === 0) return
+    applySheetTranslations(
+      sheet,
+      restored,
+      bilingual ? 'bilingual' : 'replace',
+      sheetUsedColumns(sheet),
+    )
+    setPendingEdits((count) => count + restored.length)
+    setMessage(t('aiTranslateSheetApplied', { count: restored.length }))
   }
 
   function applyProtectedRanges(ranges: readonly { name: string; sqref: string }[]): string | null {

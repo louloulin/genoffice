@@ -767,6 +767,11 @@ export function save(
   saveAs: boolean,
   auto = false,
   newDocName?: string,
+  /** Write the bytes to a *sibling* file instead of a new version of the open
+   *  document. This is how a translation lands in the drive without touching
+   *  the source; see the copy branch in `saveOnce` for why the document stays
+   *  dirty afterwards. */
+  saveAsCopyFileName?: string,
 ): Promise<boolean> {
   // A save arriving mid-flight waits for the current one instead of failing.
   // Reuse the finished pass only when it left nothing behind — judged by the
@@ -775,8 +780,8 @@ export function save(
   // saveOnce resolves a stale pathless snapshot via pathlessDocSavedPath, so
   // the retry can no longer create a duplicate file.
   return runSerializedSave(
-    () => saveOnce(ctx, saveAs, auto, newDocName),
-    () => !saveAs && !ctx.saveIncompleteRef.current && !isDocDirty(ctx),
+    () => saveOnce(ctx, saveAs, auto, newDocName, saveAsCopyFileName),
+    () => !saveAs && !saveAsCopyFileName && !ctx.saveIncompleteRef.current && !isDocDirty(ctx),
   )
 }
 
@@ -850,6 +855,7 @@ async function saveOnce(
   saveAs: boolean,
   auto: boolean,
   newDocName?: string,
+  saveAsCopyFileName?: string,
 ): Promise<boolean> {
   const { doc, editor } = ctx
   if (!doc || !editor) return false
@@ -876,6 +882,33 @@ async function saveOnce(
     // already landed on disk — overwrite that file instead of creating another
     let savedPath = doc.filePath ?? pathlessDocSavedPath
     let passwordIntentPending = false
+    /**
+     * 翻译副本：字节写进**同目录的新文件**，原条目与本会话的乐观锁基准都不动。
+     *
+     * 这条分支刻意**不把文档标成已保存**。写出去的是另一个条目，磁盘上的原文
+     * 仍然是未翻译的那份；把 `dirtyRef` 清掉等于告诉关闭守卫「没有待保存的改动」，
+     * 用户再按一次 Ctrl+S 就会直接拿译文覆盖原文 —— 恰好是这个选项承诺不做的事。
+     * 保持 dirty 也让 `save()` 的复用判据（`isDocDirty`）自然为假。
+     */
+    // A pathless document has no drive item to sit next to, so there is nowhere
+    // to write a sibling into — fall through to the save-as/new branches below,
+    // which at least ask the user where the bytes go.
+    if (saveAsCopyFileName && savedPath) {
+      const copyResult = await window.desktop.saveDocx(savedPath, buffer, auto, {
+        saveAsFileName: saveAsCopyFileName,
+      })
+      if (!copyResult.ok) {
+        if (copyResult.reason !== 'external-modified') {
+          ctx.setStatus(t('appSaveFailed', { error: copyResult.error ?? '' }))
+          if (!auto) showToast(t('appSaveFailed', { error: copyResult.error ?? '' }), 'error')
+        }
+        return false
+      }
+      const copyName = copyResult.savedAs?.fileName ?? saveAsCopyFileName
+      ctx.setStatus(t('appTranslationCopySaved', { name: copyName }))
+      if (!auto) showToast(t('appTranslationCopySaved', { name: copyName }))
+      return true
+    }
     if (saveAs || !savedPath) {
       // A never-saved document still called "Untitled" gets a name derived from its first heading
       const autoName =

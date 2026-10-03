@@ -36,13 +36,40 @@ interface SidecarResponse {
   readonly error?: { readonly code: string; readonly message: string }
 }
 
-function defaultSidecarPath(): string {
+/**
+ * Locating the native sidecar without `XLSX_SIDECAR_PATH`.
+ *
+ * The relative path used to be hard-wired to the **source** tree's depth
+ * (`src/sheets/sidecar.ts` → repo root). The bundled server that actually runs is
+ * `dist/web-server/src/sheets/sidecar.js` — one level deeper — so the same four
+ * `..` hops land on `apps/web-server` and resolve to a path that does not exist.
+ * The error only surfaces on the first sheets request, as
+ * `xlsx-sidecar binary not found at <a path that obviously isn't there>`.
+ *
+ * Production never hit it because `Dockerfile.genoffice.box` pins
+ * `ENV XLSX_SIDECAR_PATH=/app/bin/xlsx-sidecar`; the default was only ever
+ * exercised locally, where it was wrong. So: walk up from this module looking for
+ * the `apps/sheets/native/xlsx-engine` marker instead of assuming a depth, and
+ * keep the first candidate as the path reported in the error message.
+ */
+// Exported for its unit test: the walk-up only misbehaves under a specific
+// directory depth, and asserting it through a spawn would make the test depend
+// on whether a Rust binary happens to be built on the machine.
+export function defaultSidecarPath(): string {
   if (process.env.XLSX_SIDECAR_PATH) return process.env.XLSX_SIDECAR_PATH
-  // apps/web-server/src/sheets/sidecar.ts → repo root → native binary
-  const here = dirname(fileURLToPath(import.meta.url))
-  const repoRoot = join(here, '..', '..', '..', '..')
   const exe = process.platform === 'win32' ? 'xlsx-sidecar.exe' : 'xlsx-sidecar'
-  return join(repoRoot, 'apps', 'sheets', 'native', 'xlsx-engine', 'target', 'release', exe)
+  const relative = join('apps', 'sheets', 'native', 'xlsx-engine', 'target', 'release', exe)
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let hop = 0; hop < 8; hop++) {
+    const candidate = join(dir, relative)
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  // Nothing on disk: report the source-tree location, which is the one a reader
+  // can act on ("build it here") rather than a path that depends on this file's depth.
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', relative)
 }
 
 export class WebSheetsSidecar {
@@ -65,6 +92,18 @@ export class WebSheetsSidecar {
     readonly range: { startRow: number; endRow: number; startColumn: number; endColumn: number }
   }): Promise<unknown> {
     return this.request({ command: 'read_range', ...input })
+  }
+
+  /**
+   * Release a resident workbook session.
+   *
+   * The Rust side keeps the opened model (and a recalc model that the sidecar's
+   * own comment measures at ~1.2 GB for an 8.8M-cell workbook) alive until
+   * `close` arrives, and web-server workers are long-lived — so a session that
+   * is never closed is memory that outlives the tab that needed it.
+   */
+  async close(sessionId: string): Promise<unknown> {
+    return this.request({ command: 'close', sessionId })
   }
 
   /** Read the archive entry manifest for a workbook. The save pipeline

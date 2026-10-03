@@ -23,6 +23,7 @@
  * pure hash logic and never actually invokes the sidecar.
  */
 import { describe, expect, it } from 'vitest'
+import { WebSheetsSidecar } from '../src/sheets/sidecar'
 import {
   WebSheetsSidecarPool,
   _resetSidecarPoolForTests,
@@ -141,5 +142,39 @@ describe('WebSheetsSidecarPool routing (sdk1 §11.87)', () => {
       pool.pickByPath('/data/e.xlsx'),
     ])
     expect(allWorkers.size).toBeLessThanOrEqual(4)
+  })
+})
+
+describe('WebSheetsSidecarPool.close routing', () => {
+  it('closes on the worker that owns the path, not the one the sessionId hashes to', async () => {
+    // The Rust `sessions` map is per-process, so a close that reaches the wrong
+    // worker closes nothing and the model stays resident for the life of the
+    // server. `workbook:close` therefore passes the registry's `sourcePath` —
+    // the same key `open` was routed by. Spying on the prototype records which
+    // worker instance was actually used without spawning anything.
+    const seen: Array<{ worker: WebSheetsSidecar; id: string }> = []
+    const original = WebSheetsSidecar.prototype.close
+    WebSheetsSidecar.prototype.close = async function close(this: WebSheetsSidecar, id: string) {
+      seen.push({ worker: this, id })
+      return { closed: true }
+    }
+    try {
+      const pool = new WebSheetsSidecarPool(4)
+      const path = '/data/files/close-routing.xlsx'
+      await pool.close({ sessionId: 'sess-close-1', path })
+      expect(seen).toHaveLength(1)
+      expect(seen[0]!.id).toBe('sess-close-1')
+      // The load-bearing assertion: the worker that ran `close` is the one
+      // `open(path)` would have been routed to. Routing by the sessionId hash
+      // instead lands on a different worker ~3/4 of the time, and the model
+      // then stays resident — the exact leak this channel exists to prevent.
+      expect(seen[0]!.worker).toBe(pool.pickByPath(path))
+      // No path → sessionId-hash fallback, still routed and still forwarded.
+      await pool.close({ sessionId: 'sess-close-2' })
+      expect(seen).toHaveLength(2)
+      expect(seen[1]!.worker).toBe(pool.pickBySessionId('sess-close-2'))
+    } finally {
+      WebSheetsSidecar.prototype.close = original
+    }
   })
 })

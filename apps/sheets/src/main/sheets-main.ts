@@ -77,7 +77,8 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { translateOne as translateOneCore } from '@genoffice/translation-core'
+import { translateOne as translateOneCore, translateBatch as translateBatchCore } from '@genoffice/translation-core'
+import type { TranslationUnit } from '@genoffice/translation-core'
 import {
   csvToXlsxBuffer,
   decodeCsvBuffer,
@@ -2387,6 +2388,69 @@ export function registerSheetsIpc(): void {
       return { ...result, error: 'AI service is busy — please retry shortly.' }
     }
     return result
+  })
+
+  // ai:translate-batch — whole-workbook translation for the sheets app.
+  //
+  // Until this handler existed the sheets renderer only had the one-shot
+  // `ai:translate`, so whole-sheet translation was impossible: the shared
+  // pipeline in translation-core needs a *batch* transport, and fanning out
+  // one-shot calls from the renderer would lose the translation memory, the
+  // glossary and the quality report that `ai:translate-batch` computes once
+  // per batch. Same core, same prompt, same memory as docs / slides / pdf.
+  ipcMain.handle('ai:translate-batch', async (_event, request: unknown) => {
+    const req = (request ?? {}) as {
+      units?: unknown
+      sourceLang?: string
+      targetLang?: string
+      preserveFormat?: boolean
+      scene?: string
+      memoryEnabled?: boolean
+      qualityCheck?: boolean
+      glossaryCategory?: string
+      customerName?: string
+    }
+    // `units` crosses a JSON boundary and can be anything; reporting a
+    // malformed request beats throwing out of the handler (which the renderer
+    // would surface as an opaque IPC error with no units at all).
+    if (req.units !== undefined && !Array.isArray(req.units)) {
+      return { ok: false, error: 'ai:translate-batch expected `units` to be an array', units: [] }
+    }
+    const units = ((req.units ?? []) as unknown[]).map((raw) => {
+      const unit = (raw ?? {}) as Record<string, unknown>
+      return {
+        unitId: typeof unit.unitId === 'string' ? unit.unitId : '',
+        kind: (unit.kind ?? 'table-cell') as TranslationUnit['kind'],
+        sourceText: typeof unit.sourceText === 'string' ? unit.sourceText : '',
+        order: typeof unit.order === 'number' ? unit.order : 0,
+        ...(unit.metadata && typeof unit.metadata === 'object'
+          ? { metadata: unit.metadata as Record<string, unknown> }
+          : {}),
+      }
+    })
+    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
+    const settings = resolveAiSettings(stored, defaultAiSettings())
+    settings.provider = activeProvider(settings)
+    const provider: AiProviderId = settings.provider
+    let config = settings.providers?.[provider]
+    if (provider === 'genspark' && config && !config.apiKey) {
+      const gskMod = await import('@genoffice/ai-search')
+      config = { ...config, apiKey: gskMod.gskApiKey() }
+    }
+    return translateBatchCore(
+      {
+        units: units as TranslationUnit[],
+        sourceLang: req.sourceLang,
+        targetLang: req.targetLang ?? '',
+        preserveFormat: req.preserveFormat,
+        scene: req.scene,
+        memoryEnabled: req.memoryEnabled,
+        qualityCheck: req.qualityCheck,
+        glossaryCategory: req.glossaryCategory,
+        ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
+      },
+      { provider, config: config ?? { apiKey: '', model: '' } },
+    )
   })
 
   ipcMain.on(IPC_CHANNELS.recoveryPromptReply, (event, restore: unknown) => {

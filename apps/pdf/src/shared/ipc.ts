@@ -1,6 +1,11 @@
 import type { AiPanelPrefs } from '@genoffice/ui'
 import type { Lang } from '@genoffice/i18n'
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@genoffice/ai-provider'
+import type {
+  TranslateBatchRequest,
+  TranslateBatchResponse,
+  TranslateBatchUnitResult,
+} from '@genoffice/translation-core/document'
 
 export type { AiSettings }
 
@@ -648,6 +653,31 @@ export type ExportImagesResult =
   | { ok: false; error: string }
 
 /** AI channels are app-wide shared ipcMain handlers (shell registers via docs-main registerAiIpc); pass-through only */
+/**
+ * AnyDoc channels live in the web-server (`registerAnydocHandlers`), **not** in
+ * the Electron shell — the shell only registers the AI handlers. So this
+ * channel answers in the web build (including the Dataflare drive embed, which
+ * is served through `/office-engine`) and is absent in the desktop build. The
+ * UI gates on that rather than offering an action that can only fail.
+ */
+export const ANYDOC_CHANNELS = {
+  pdfToDocxBytes: 'anydoc:pdf-to-docx-bytes',
+} as const
+
+/** Discriminated result of the server's PDF → DOCX conversion. */
+export interface PdfToDocxResponse {
+  ok: boolean
+  /** Present only when `ok`. Travels as the IPC codec's tagged-bytes form. */
+  docx?: Uint8Array
+  pages?: number
+  warnings?: string[]
+  /** Most pages had no text layer, so the DOCX holds images rather than text. */
+  scannedDocument?: boolean
+  /** Present only when `!ok`. */
+  code?: 'EMPTY_INPUT' | 'PDF_PASSWORD_REQUIRED' | 'PDF_LOAD_FAILED' | 'CONVERT_FAILED' | string
+  message?: string
+}
+
 export const AI_CHANNELS = {
   getSettings: 'ai:get-settings',
   gskStatus: 'ai:gsk-status',
@@ -655,6 +685,10 @@ export const AI_CHANNELS = {
   streamChunk: 'ai:stream-chunk',
   streamCancel: 'ai:stream-cancel',
   translate: 'ai:translate',
+  // Registered once for every app by the shell's `registerAiIpc()` (docs-main),
+  // so the pdf app declares the channel and passes requests through — it does
+  // not get a private handler like slides/sheets do.
+  translateBatch: 'ai:translate-batch',
   imageSearch: 'ai:image-search',
   fetchImage: 'ai:fetch-image',
 } as const
@@ -674,6 +708,36 @@ export interface ImageSearchResponse {
 }
 
 /** API exposed by preload to the renderer (window.pdfApi) */
+export type EditableDocxFailure =
+  | 'no-source'
+  | 'password-required'
+  | 'convert-failed'
+  | 'empty-output'
+  | 'save-failed'
+
+export interface EditableDocxSuccess {
+  ok: true
+  /** Name the DOCX was filed under in the drive. */
+  fileName: string
+  itemId?: string
+  pages?: number
+  warnings?: string[]
+  /**
+   * Most pages had no text layer, so the DOCX holds page images rather than
+   * editable text. The file is real and worth keeping — but the user has to be
+   * told, or "translated" ends up meaning "re-typeset the scan".
+   */
+  scannedDocument: boolean
+}
+
+export interface EditableDocxFailureResult {
+  ok: false
+  reason: EditableDocxFailure
+  message?: string
+}
+
+export type EditableDocxResult = EditableDocxSuccess | EditableDocxFailureResult
+
 export interface PdfApi {
   /** Take the pdf path pending for this view (queued at tab creation); null if none */
   consumePending(): Promise<string | null>
@@ -794,5 +858,62 @@ export interface PdfApi {
     targetLang?: string
     preserveFormat?: boolean
   }>
+  /**
+   * Batch translate through the shared translation-core pipeline.
+   *
+   * Separate from {@link aiTranslate} on purpose: the one-shot carries no
+   * memory, no glossary and no quality report, so a whole-document PDF run
+   * built on it would translate every paragraph independently and report
+   * nothing about the run. Types come from translation-core so the two halves
+   * cannot drift.
+   */
+  aiTranslateBatch: (request: TranslateBatchRequest) => Promise<TranslateBatchResponse>
+  /**
+   * Per-unit streaming batch translate.
+   *
+   * The standalone Electron build has no SSE channel, so the factory replays
+   * the finished batch through `onUnit` — progress then moves at batch
+   * boundaries rather than per paragraph, but the review list is never empty.
+   */
+  aiTranslateBatchStream?: (
+    request: TranslateBatchRequest,
+    options?: {
+      onUnit?: (unit: TranslateBatchUnitResult) => void
+      signal?: AbortSignal
+    },
+  ) => Promise<TranslateBatchResponse>
+  /**
+   * Convert the open PDF's bytes into DOCX bytes on the server.
+   *
+   * Bytes in, bytes out — the same reason this channel exists separately from
+   * the path-based `anydoc:convert`: a drive document has no path on the
+   * server, and staging it onto one just to convert it would write the user's
+   * document to a disk that is not the store of record.
+   *
+   * Resolves with `ok: false` rather than rejecting when the channel is not
+   * registered (desktop Electron) so callers can report it as a plain failure
+   * instead of an unhandled rejection.
+   */
+  pdfToDocx: (pdf: ArrayBuffer) => Promise<PdfToDocxResponse>
+  /**
+   * Whether this session can file a converted DOCX next to the open document.
+   *
+   * Resolved at **call** time, not at install time: the host's `init` context
+   * arrives after the bridge is wired, so a decision made during install would
+   * always be "no". Absent entirely in the desktop build, where there is no
+   * drive to file into and no anydoc handler to convert with — the UI then
+   * renders no action rather than one that can only fail.
+   */
+  supportsEditableDocx?: () => boolean
+  /**
+   * Convert the open PDF and file the DOCX beside it. See `editable-docx.ts`.
+   *
+   * Takes only the path: the sibling's name comes from the **host's** file
+   * name, not from the managed temp copy the viewer edits. Deriving it from
+   * `path` would file the result under whatever the temp directory called the
+   * document (`dataflare-<id>.pdf`), which the user never sees and cannot
+   * recognise in the drive listing.
+   */
+  createEditableDocx?: (options: { path: string }) => Promise<EditableDocxResult>
   onAiStream(handler: (chunk: AiStreamChunk) => void): () => void
 }

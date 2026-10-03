@@ -52,6 +52,7 @@ export const pt = {
   appSaveFailed: 'Falha ao salvar: {error}',
   appAutoSavedAt: 'Salvo automaticamente ({time})',
   appSaved: 'Salvo',
+  appTranslationCopySaved: 'Cópia traduzida guardada: {name}',
   appSectionBreakInserted: 'Quebra de seção inserida ({type})',
   appSectionBreakPending: 'Quebra de seção inserida; a nova seção entra em vigor após salvar',
   appBreakNextPage: 'Próxima página',

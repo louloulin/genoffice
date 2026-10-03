@@ -119,6 +119,22 @@ export class WebSheetsSidecarPool {
     return worker.readRange(input)
   }
 
+  /**
+   * Close a session on the worker that owns it.
+   *
+   * `path` must be the same string `open` was keyed on, otherwise the close
+   * lands on a different worker whose `sessions` map never had the id and the
+   * real owner keeps the model resident. `webbook:close` reads it from the
+   * registry for exactly that reason; the sessionId hash is the fallback for
+   * callers with no registry entry.
+   */
+  async close(input: { readonly sessionId: string; readonly path?: string }): Promise<unknown> {
+    const worker = input.path
+      ? this.pickByPath(input.path)
+      : this.pickBySessionId(input.sessionId)
+    return worker.close(input.sessionId)
+  }
+
   async archiveManifest(path: string): Promise<unknown> {
     return this.pickByPath(path).archiveManifest(path)
   }

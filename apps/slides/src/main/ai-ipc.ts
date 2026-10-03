@@ -35,7 +35,8 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { translateOne as translateOneCore } from '@genoffice/translation-core'
+import { translateOne as translateOneCore, translateBatch as translateBatchCore } from '@genoffice/translation-core'
+import type { TranslationUnit } from '@genoffice/translation-core'
 import { fetchRemoteImage } from '@genoffice/electron-utils'
 import {
   webSearchTool,
@@ -106,6 +107,74 @@ ipcMain.handle('ai:translate', async (_event, request: unknown) => {
       targetLang: req.targetLang ?? '',
       preserveFormat: req.preserveFormat,
       range: castTranslateRange(req.range),
+    },
+    { provider, config },
+  )
+  if (result.error && isAiOverloadedError(result.error)) {
+    return { ...result, error: 'AI service is busy — please retry shortly.' }
+  }
+  return result
+})
+
+// ai:translate-batch — whole-deck translation for the slides app.
+//
+// Until this handler existed the slides renderer only had the one-shot
+// `ai:translate`, so whole-deck translation was impossible: the shared pipeline
+// needs a *batch* transport, and fanning out one-shot calls from the renderer
+// would lose the translation memory, the glossary and the per-batch quality
+// report. Same core, same prompt, same memory as docs / sheets / web-server.
+ipcMain.handle('ai:translate-batch', async (_event, request: unknown) => {
+  const req = (request ?? {}) as {
+    units?: unknown
+    sourceLang?: string
+    targetLang?: string
+    preserveFormat?: boolean
+    scene?: string
+    memoryEnabled?: boolean
+    qualityCheck?: boolean
+    glossaryCategory?: string
+    customerName?: string
+  }
+  // `units` crosses a JSON boundary and can be any value; reporting a
+  // malformed request beats throwing out of the handler (the renderer would
+  // surface an opaque IPC error with no units at all).
+  if (req.units !== undefined && !Array.isArray(req.units)) {
+    return { ok: false, error: 'ai:translate-batch expected `units` to be an array', units: [] }
+  }
+  const units = ((req.units ?? []) as unknown[]).map((raw) => {
+    const unit = (raw ?? {}) as Record<string, unknown>
+    return {
+      unitId: typeof unit.unitId === 'string' ? unit.unitId : '',
+      kind: (unit.kind ?? 'paragraph') as TranslationUnit['kind'],
+      sourceText: typeof unit.sourceText === 'string' ? unit.sourceText : '',
+      order: typeof unit.order === 'number' ? unit.order : 0,
+      ...(unit.metadata && typeof unit.metadata === 'object'
+        ? { metadata: unit.metadata as Record<string, unknown> }
+        : {}),
+    }
+  })
+  const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
+  const settings = resolveAiSettings(stored, defaultAiSettings())
+  settings.provider = activeProvider(settings)
+  const provider = settings.provider
+  let config = settings.providers?.[provider]
+  if (provider === 'genspark' && config && !config.apiKey) {
+    config = { ...config, apiKey: gskApiKey() }
+  }
+  if (!config) {
+    return { ok: false, error: `AI provider "${provider}" not configured`, units: [] }
+  }
+  const result = await translateBatchCore(
+    {
+      units: units as TranslationUnit[],
+      sourceLang: req.sourceLang,
+      targetLang: req.targetLang ?? '',
+      preserveFormat: req.preserveFormat,
+      scene: req.scene,
+      memoryEnabled: req.memoryEnabled,
+      qualityCheck: req.qualityCheck,
+      glossaryCategory: req.glossaryCategory,
+      ...(req.customerName !== undefined ? { customerName: req.customerName } : {}),
     },
     { provider, config },
   )

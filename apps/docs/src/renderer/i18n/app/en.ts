@@ -52,6 +52,7 @@ export const en = {
   appSaveFailed: 'Save failed: {error}',
   appAutoSavedAt: 'AutoSaved ({time})',
   appSaved: 'Saved',
+  appTranslationCopySaved: 'Translation copy saved: {name}',
   appSectionBreakInserted: 'Section break inserted ({type})',
   appSectionBreakPending: 'Section break inserted; the new section takes effect after saving',
   appBreakNextPage: 'Next Page',

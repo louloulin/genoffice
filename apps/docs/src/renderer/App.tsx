@@ -1488,6 +1488,7 @@ export function App() {
             scope: command.scope,
             sourceLanguage: command.sourceLanguage,
             targetLanguage: command.targetLanguage,
+            bilingual: command.bilingual,
             preserveFormatting: command.preserveFormatting,
             memoryEnabled: command.memoryEnabled,
             qualityCheck: command.qualityCheck,
@@ -1942,6 +1943,20 @@ export function App() {
     (saveAs: boolean, auto = false) => saveImpl(fileCtxRef.current, saveAs, auto),
     [],
   )
+
+  /**
+   * 把当前字节另存为云盘里的**翻译副本**（同目录新文件，原文不动）。
+   *
+   * 只有嵌在 Dataflare 里才提供这个能力：桌面构建的 `saveDocx` 忽略
+   * `saveAsFileName`，传下去等于悄悄改成「覆盖原文」—— 所以这里用
+   * `isEmbedded` 把入口整个关掉，而不是传一个注定被忽略的参数。
+   */
+  // 每次渲染重算（不是 useMemo）：`isEmbedded` 取决于 web-bridge 在模块加载时
+  // 装上的桥，首帧未必就绪，缓存下来会把「本来没有」固化成「永远没有」。
+  const dataflareTranslationCopySave =
+    typeof window !== 'undefined' && window.dataflareOfficeBridge?.isEmbedded
+      ? (fileName: string) => saveImpl(fileCtxRef.current, false, false, undefined, fileName)
+      : undefined
 
   // sdk1 §11.66 — wire the SDK 2.0 Kestrel `editor.command('save')` /
   // `editor.command('isDirty')` round-trip into the existing tiptap save
@@ -5508,6 +5523,7 @@ export function App() {
               onQueueConsume={queueConsume}
               commentsAccess={aiCommentsAccess}
               hfAccess={aiHfAccess}
+              onSaveTranslatedCopy={dataflareTranslationCopySave}
             />
           </div>
         )}

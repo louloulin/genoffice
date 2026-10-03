@@ -53,6 +53,7 @@ export const nl = {
   appSaveFailed: 'Opslaan mislukt: {error}',
   appAutoSavedAt: 'Automatisch opgeslagen ({time})',
   appSaved: 'Opgeslagen',
+  appTranslationCopySaved: 'Vertaalde kopie opgeslagen: {name}',
   appSectionBreakInserted: 'Sectie-einde ingevoegd ({type})',
   appSectionBreakPending:
     'Sectie-einde ingevoegd; de nieuwe sectie wordt van kracht na het opslaan',
