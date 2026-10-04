@@ -34,7 +34,7 @@ export const cs = {
   aiChipShorten: 'Zestručnit tuto pasáž',
   aiChipExpand: 'Rozšířit tuto pasáž',
   aiChipFixGrammar: 'Opravit gramatiku a překlepy',
-  aiChipTranslate: 'Přeložit celý dokument',
+  aiChipTranslate: 'Přeložit',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

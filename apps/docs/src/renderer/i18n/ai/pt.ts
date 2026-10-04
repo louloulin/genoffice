@@ -32,7 +32,7 @@ export const pt = {
   aiChipShorten: 'Tornar este trecho mais conciso',
   aiChipExpand: 'Expandir este trecho',
   aiChipFixGrammar: 'Corrigir gramática e erros de digitação',
-  aiChipTranslate: 'Traduzir documento inteiro',
+  aiChipTranslate: 'Traduzir',
   aiInlineLauncherTitle: 'Assistente de IA',
   aiInlineLauncherPolish: 'Polir',
   aiInlineLauncherExpand: 'Expandir',

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 // legacy build: the modern build relies on new APIs like Math.sumPrecise that the current
 // Electron V8 lacks, making embedded font parsing fail and whole pages render as garbled raw char codes
@@ -1585,10 +1586,19 @@ export default function App() {
     deleted.size > 0 ||
     order !== null ||
     metadata !== null
+  const hostDocIdRef = useRef<string | undefined>(undefined)
 
   // Mirror dirty state to the main process (close-tab/close-window guard)
   useEffect(() => {
     window.pdfApi.setDirty(dirty)
+    // Embedded parity with docs: the host title bar needs the unsaved marker.
+    // Only "dirty" is broadcast; the host clears it on document-saved.
+    if (dirty && isEmbeddedInHost()) {
+      postToEmbedParent({
+        type: 'document-dirty',
+        ...(hostDocIdRef.current !== undefined ? { documentId: hostDocIdRef.current } : {}),
+      })
+    }
   }, [dirty])
 
   // Existing images are listed while edit-image mode is on; `doc` in the deps refreshes
@@ -1981,6 +1991,11 @@ export default function App() {
     const onHostCommand = (event: Event) => {
       const command = (event as CustomEvent<Record<string, unknown>>).detail
       if (!command || typeof command.type !== 'string') return
+      if (command.type === 'init') {
+        const ctx = command.context as { documentId?: unknown } | undefined
+        hostDocIdRef.current = typeof ctx?.documentId === 'string' ? ctx.documentId : undefined
+        return
+      }
       if (command.type === 'translate') {
         const sourceLanguage = typeof command.sourceLanguage === 'string' ? command.sourceLanguage : undefined
         const glossaryCategory = typeof command.glossaryCategory === 'string' ? command.glossaryCategory : undefined

@@ -1180,7 +1180,7 @@ export const ar = {
   appGroupProofing: 'تدقيق',
   appWorkbookStatsLabel: 'إحصائيات المصنف',
   appSheetsCellsFormulas: 'الأوراق والخلايا والصيغ',
-  appTranslate: 'ترجمة',
+  appTranslate: 'ترجم',
   appGroupLanguage: 'اللغة',
   appTranslateTitle: 'ترجمة التحديد بالذكاء الاصطناعي',
   appTranslatePrompt: 'ترجم نص النطاق المحدد إلى {language} واكتب الترجمات في الخلايا نفسها.',

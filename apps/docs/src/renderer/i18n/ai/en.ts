@@ -31,7 +31,7 @@ export const en = {
   aiChipShorten: 'Make this passage more concise',
   aiChipExpand: 'Expand this passage',
   aiChipFixGrammar: 'Fix grammar and typos',
-  aiChipTranslate: 'Translate entire document',
+  aiChipTranslate: 'Translate',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

@@ -1211,7 +1211,7 @@ export const hi = {
   appGroupProofing: 'प्रूफ़िंग',
   appWorkbookStatsLabel: 'कार्यपुस्तिका सांख्यिकी',
   appSheetsCellsFormulas: 'शीट, सेल, सूत्र',
-  appTranslate: 'अनुवाद करें',
+  appTranslate: 'अनुवाद',
   appGroupLanguage: 'भाषा',
   appTranslateTitle: 'चयन का AI से अनुवाद करें',
   appTranslatePrompt:

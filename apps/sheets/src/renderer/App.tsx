@@ -55,6 +55,7 @@ import {
 import { isNumericIdentifierText } from './cell-warning'
 import { consumePendingUndoCarry, undoStackDepth } from './undo-carry'
 import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
+import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import {
   useAutoSavePref,
@@ -519,8 +520,17 @@ export function App(): React.JSX.Element {
     recomputeSheetContent()
   }, [workbookFile, recomputeSheetContent])
   // The close guard lives in the main process; keep it fed with the badge count.
+  const hostDocIdRef = useRef<string | undefined>(undefined)
   useEffect(() => {
     window.desktopApi?.notifyPendingEdits?.(pendingEdits)
+    // Embedded parity with docs: the host title bar needs the unsaved marker.
+    // Only "dirty" is broadcast; the host clears it on document-saved.
+    if (pendingEdits > 0 && isEmbeddedInHost()) {
+      postToEmbedParent({
+        type: 'document-dirty',
+        ...(hostDocIdRef.current !== undefined ? { documentId: hostDocIdRef.current } : {}),
+      })
+    }
   }, [pendingEdits])
   const [autoSave, setAutoSave] = useAutoSavePref('ai-sheets-auto-save', window.desktopApi)
   // Ref mirror for callbacks captured when an AI run starts
@@ -4244,6 +4254,11 @@ export function App(): React.JSX.Element {
     const onHostCommand = (event: Event) => {
       const command = (event as CustomEvent<Record<string, unknown>>).detail
       if (!command || typeof command.type !== 'string') return
+      if (command.type === 'init') {
+        const ctx = command.context as { documentId?: unknown } | undefined
+        hostDocIdRef.current = typeof ctx?.documentId === 'string' ? ctx.documentId : undefined
+        return
+      }
       if (command.type === 'translate') {
         const sourceLanguage = typeof command.sourceLanguage === 'string' ? command.sourceLanguage : undefined
         const glossaryCategory = typeof command.glossaryCategory === 'string' ? command.glossaryCategory : undefined

@@ -311,6 +311,63 @@ for (const entry of TRANSLATION_APPS) {
   coverage.push({ app: entry.app, documentType: entry.documentType, ...entry, checks })
 }
 
+// 6) 四应用翻译主按钮（scopeDocument）译文一致 —— M2-2 防漂移。
+// 四应用 ribbon 共享 packages/ui/src/TranslationRibbonTab.tsx，主按钮文案来自各应用
+// binding 传入的 i18n key：docs/slides/pdf = aiChipTranslate，sheets = appTranslate。
+// 值层一旦漂移（某应用某语言换了叫法），用户在四个编辑器里看到四个不同的主按钮 ——
+// 这正是 2026-10 收口前 docs/pdf 长句（「翻译全文」）、sheets/slides 短词（「翻译」）并存的样式。
+// 结构性存在性由上面第 4 步管；这里钉**值一致**。
+const LANGS = ['zh', 'zh-TW', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'it', 'ru', 'ar', 'he', 'hi', 'th', 'id', 'ms', 'nl', 'pl', 'cs']
+const BTN_KEY = {
+  docs: { dir: 'apps/docs/src/renderer/i18n/ai', key: 'aiChipTranslate' },
+  sheets: { dir: 'apps/sheets/src/renderer/i18n/app', key: 'appTranslate' },
+  slides: { dir: 'apps/slides/src/renderer/i18n/ai', key: 'aiChipTranslate' },
+}
+const btnValues = { docs: {}, sheets: {}, slides: {}, pdf: {} }
+for (const [app, cfg] of Object.entries(BTN_KEY)) {
+  for (const lang of LANGS) {
+    const p = resolve(REPO_DIR, cfg.dir, `${lang}.ts`)
+    const m = existsSync(p) ? readFileSync(p, 'utf8').match(new RegExp(`${cfg.key}: '([^']+)'`)) : null
+    if (m) btnValues[app][lang] = m[1]
+    else failures.push(`${app}: 翻译主按钮 key ${cfg.key} 在 ${lang}.ts 缺失`)
+  }
+}
+// pdf 的文案在单文件 strings.ts 的 20 个语言块里，块顺序固定（zh,en,ja,ko,fr,de,es,
+// th,id,ru,ar,pt,it,pl,cs,nl,ms,he,hi,zh-TW）—— 按出现顺序对号。
+const PDF_LANG_ORDER = ['zh', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'th', 'id', 'ru', 'ar', 'pt', 'it', 'pl', 'cs', 'nl', 'ms', 'he', 'hi', 'zh-TW']
+{
+  const src = readFileSync(resolve(REPO_DIR, 'apps/pdf/src/renderer/i18n/strings.ts'), 'utf8')
+  const vals = [...src.matchAll(/aiChipTranslate: '([^']+)'/g)].map((m) => m[1])
+  if (vals.length !== PDF_LANG_ORDER.length) {
+    failures.push(`pdf: strings.ts 的 aiChipTranslate 有 ${vals.length} 处，期望 ${PDF_LANG_ORDER.length} 处`)
+  }
+  PDF_LANG_ORDER.forEach((lang, i) => { if (vals[i] !== undefined) btnValues.pdf[lang] = vals[i] })
+}
+for (const lang of LANGS) {
+  const vals = ['docs', 'sheets', 'slides', 'pdf'].map((app) => btnValues[app][lang])
+  if (vals.some((v) => v === undefined)) continue // 缺失已在上面积累，不再重复报
+  if (new Set(vals).size !== 1) {
+    failures.push(
+      `翻译主按钮文案漂移 @${lang}: docs='${btnValues.docs[lang]}' sheets='${btnValues.sheets[lang]}' slides='${btnValues.slides[lang]}' pdf='${btnValues.pdf[lang]}'`,
+    )
+  }
+}
+
+// 7) document-dirty 广播四应用齐备 —— M2-1 防漂移。
+// 嵌入宿主时，标题栏的「未保存」标记依赖编辑器向宿主广播 document-dirty
+// （只报 dirty=true，宿主在 document-saved 时清除）。docs 曾是唯一广播者，
+// sheets/slides/pdf 缺席时宿主对三个格式永远不显示未保存状态。这里钉
+// 「广播调用存在」，dirty 的触发语义由各 App.tsx 的实现注释自述。
+for (const entry of TRANSLATION_APPS) {
+  const src = read(entry.hostHandler)
+  const broadcasts = src !== null && /postToEmbedParent\(\{\s*type: 'document-dirty'/.test(src)
+  if (!broadcasts) {
+    failures.push(
+      `${entry.app}: ${entry.hostHandler} 没有 postToEmbedParent({ type: 'document-dirty' ... }) —— 嵌入宿主的未保存标记对该格式静默失效`,
+    )
+  }
+}
+
 if (asJson) {
   console.log(JSON.stringify({ failures, coverage }, null, 2))
 } else {

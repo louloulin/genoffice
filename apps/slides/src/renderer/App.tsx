@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import type {
   GroupRenderNode,
   RenderFill,
@@ -389,6 +390,16 @@ export function App() {
   const zoomBoxRef = useRef<HTMLDivElement | null>(null)
   const [scaleBox, setScaleBox] = useState<{ w: number; h: number } | null>(null)
   const [dirty, setDirty] = useState(false)
+  const hostDocIdRef = useRef<string | undefined>(undefined)
+  // Embedded parity with docs: the host title bar needs the unsaved marker.
+  // Only "dirty" is broadcast; the host clears it on document-saved.
+  useEffect(() => {
+    if (!dirty || !isEmbeddedInHost()) return
+    postToEmbedParent({
+      type: 'document-dirty',
+      ...(hostDocIdRef.current !== undefined ? { documentId: hostDocIdRef.current } : {}),
+    })
+  }, [dirty])
   const [status, setStatus] = useState('')
   const translateDeckDialogRef = useRef<TranslateDeckDialogHandle | null>(null)
   // Status messages auto-dismiss after 4s: operation feedback needs only a brief showing; persistent info (page number/file name) lives on the left and in the title bar
@@ -1609,6 +1620,11 @@ export function App() {
     const onHostCommand = (event: Event) => {
       const command = (event as CustomEvent<Record<string, unknown>>).detail
       if (!command || typeof command.type !== 'string') return
+      if (command.type === 'init') {
+        const ctx = command.context as { documentId?: unknown } | undefined
+        hostDocIdRef.current = typeof ctx?.documentId === 'string' ? ctx.documentId : undefined
+        return
+      }
       if (command.type === 'translate') {
         const sourceLanguage = typeof command.sourceLanguage === 'string' ? command.sourceLanguage : undefined
         const glossaryCategory = typeof command.glossaryCategory === 'string' ? command.glossaryCategory : undefined

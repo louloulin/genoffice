@@ -1232,7 +1232,7 @@ export const ru = {
   appGroupProofing: 'Правописание',
   appWorkbookStatsLabel: 'Статистика книги',
   appSheetsCellsFormulas: 'Листы, ячейки, формулы',
-  appTranslate: 'Перевод',
+  appTranslate: 'Перевести',
   appGroupLanguage: 'Язык',
   appTranslateTitle: 'Перевести выделение с помощью ИИ',
   appTranslatePrompt:

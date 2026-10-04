@@ -31,7 +31,7 @@ export const ms = {
   aiChipShorten: 'Jadikan bahagian ini lebih ringkas',
   aiChipExpand: 'Kembangkan bahagian ini',
   aiChipFixGrammar: 'Betulkan tatabahasa dan kesalahan taip',
-  aiChipTranslate: 'Terjemahkan keseluruhan dokumen',
+  aiChipTranslate: 'Terjemahkan',
   aiInlineLauncherTitle: 'AI assistant',
   aiInlineLauncherPolish: 'Polish',
   aiInlineLauncherExpand: 'Expand',

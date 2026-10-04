@@ -1214,7 +1214,7 @@ export const ms = {
   appGroupProofing: 'Pembacaan Pruf',
   appWorkbookStatsLabel: 'Statistik Buku Kerja',
   appSheetsCellsFormulas: 'Helaian, sel, formula',
-  appTranslate: 'Terjemah',
+  appTranslate: 'Terjemahkan',
   appGroupLanguage: 'Bahasa',
   appTranslateTitle: 'Terjemah pilihan dengan AI',
   appTranslatePrompt:
