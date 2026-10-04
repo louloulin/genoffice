@@ -18,7 +18,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readBody, sendJson, sendError, sendIpcError } from './http-utils'
 import { handleAuthJwt, handleOAuthToken } from './auth'
 import { handleFilesList, handleFilesCreate, handleFilesGet, handleFilesDelete, handleFilesIssueJwt, handleFilesCallback } from './files'
-import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiTranslateStream, handleAiTranslateStreamCancel, handleAiImage, handleAiSkill } from './ai'
+import { handleAiCapabilities, handleAiChat, handleAiTranslate, handleAiTranslateStream, handleAiTranslateStreamCancel, handleAiImage, handleAiSkill, handleAiUsage } from './ai'
 import { handleKbSearch, handleKbEntries } from './kb'
 import { handleWebhooksUpsert, handleWebhooksDelete, handleCallbacksFire } from './webhooks'
 import {
@@ -190,6 +190,9 @@ export async function handleApiV1(ctx: ApiV1Context): Promise<boolean> {
 
   // ai
   if (pathname === '/api/v1/ai/capabilities' && method === 'GET') return handleAiCapabilities(ctx)
+  // Per-tenant usage query (A18/A22/A62/A63). Exact-match, GET-only, so it
+  // can never be swallowed by the `/ai/...` POST routes below.
+  if (pathname === '/api/v1/ai/usage' && method === 'GET') return handleAiUsage(ctx)
   if (pathname === '/api/v1/ai/chat' && method === 'POST') return handleAiChat(ctx)
   // The two `/stream` routes are exact-match, so they can't be swallowed by
   // the bare `/translate` test below — but they are listed first anyway to
@@ -279,6 +282,7 @@ export const v1Routes: V1RouteInfo[] = [
   { pattern: /^\/api\/v1\/files\/[^/]+\/versions\/[^/]+\/restore$/, methods: ['POST'] },
   // ai
   { pattern: /^\/api\/v1\/ai\/capabilities$/, methods: ['GET'] },
+  { pattern: /^\/api\/v1\/ai\/usage$/, methods: ['GET'] },
   { pattern: /^\/api\/v1\/ai\/chat$/, methods: ['POST'] },
   { pattern: /^\/api\/v1\/ai\/translate$/, methods: ['POST'] },
   { pattern: /^\/api\/v1\/ai\/translate\/stream$/, methods: ['POST'] },

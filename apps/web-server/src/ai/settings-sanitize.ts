@@ -139,6 +139,13 @@ export function sanitizeRequestSettings(opts: {
 
   if (embedCaller) {
     stripNetworkFields(clone)
+    // Routing config is server-owned, exactly like the credentials above: a
+    // guest JWT must not choose which of the tenant's providers a failed call
+    // fails over to (A16/A57), or it could spend the tenant's budget on a
+    // provider the tenant never nominated. Take the chain from the server.
+    clone.fallbackProviders = serverSettings.fallbackProviders
+      ? [...serverSettings.fallbackProviders]
+      : undefined
     backfillFromServer(clone, serverSettings)
     return { ok: true, settings: clone }
   }

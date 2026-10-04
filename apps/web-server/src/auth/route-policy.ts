@@ -255,6 +255,10 @@ const JWT_ROUTE_RULES: readonly JwtRouteRule[] = [
   { methods: ['POST'], pattern: /^\/api\/v1\/files\/[^/]+\/versions\/[^/]+\/restore$/, scope: 'files:restore' },
   // ---- v1: ai ----
   { methods: ['GET'], pattern: /^\/api\/v1\/ai\/capabilities$/, scope: 'ai:read' },
+  // Per-tenant usage query (A18/A22/A62/A63). `ai:read` rather than a new
+  // scope: it is a read-only report over the caller's own tenant, and the
+  // handler pins a non-operator to its JWT tenant regardless of `?tenant=`.
+  { methods: ['GET'], pattern: /^\/api\/v1\/ai\/usage$/, scope: 'ai:read' },
   { methods: ['POST'], pattern: /^\/api\/v1\/ai\/chat$/, scope: 'ai:chat' },
   { methods: ['POST'], pattern: /^\/api\/v1\/ai\/translate$/, scope: 'ai:translate' },
   { methods: ['POST'], pattern: /^\/api\/v1\/ai\/translate\/stream$/, scope: 'ai:translate' },

@@ -11,8 +11,19 @@ export type {
   ToolDisplay,
   ToolExecution,
 } from './types'
-export { composeSkills } from './skill'
-export type { AgentSkill, ExecutedToolCall } from './skill'
+export {
+  adaptSkillPackage,
+  composeSkills,
+  defaultSkillToolName,
+  skillDefinitionToTool,
+  skillInputsToJsonSchema,
+} from './skill'
+export type {
+  AdaptedSkillTool,
+  AgentSkill,
+  ExecutedToolCall,
+  SkillPackageAdapterOptions,
+} from './skill'
 export {
   AgentLoop,
   COMPLETED_VIA_TOOLS_TEXT,

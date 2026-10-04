@@ -36,6 +36,11 @@ export default defineConfig({
       '@genoffice/translation-core/translated-file-name': local(
         '../../packages/translation-core/src/translated-file-name.ts',
       ),
+      // Same ordering rule for the language list the ribbon translate tab
+      // imports directly (browser-safe, no provider graph).
+      '@genoffice/translation-core/languages': local(
+        '../../packages/translation-core/src/languages.ts',
+      ),
       '@genoffice/translation-core': local('../../packages/translation-core/src/index.ts'),
       // SDK sub-paths are declared before the bare name: vite treats a string
       // alias as a prefix replacement, so the general key last would swallow

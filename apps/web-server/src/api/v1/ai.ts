@@ -10,7 +10,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
 import { invokeIpc } from './ipc-bridge'
-import { requireScopeFromHeaders } from './auth'
+import { hasScope, requireScopeFromHeaders } from './auth'
+import { tenantFromPayload } from '../../auth/route-policy'
+import { aggregateUsage } from '../../common/usage-meter'
 import { classifyRemoteUrl } from '@genoffice/electron-utils/safe-remote-url'
 import { auditAiCall } from '../../ai/ai-audit'
 import { translateBatchCore, handleTranslateStreamHttp, handleTranslateStreamCancelHttp, type TranslateBatchHttpRequest } from '../../ai/translate-http'
@@ -51,6 +53,90 @@ export async function handleAiCapabilities(ctx: { request: IncomingMessage; resp
   const result = await invokeIpc('home:ai-capabilities', [])
   sendJson(ctx.response, 200, result)
   return true
+}
+
+/**
+ * `GET /api/v1/ai/usage?from=&to=&tenant=`
+ *
+ * Per-tenant aggregated AI usage over a parameterizable time window (A18 /
+ * A22 / A62 / A63). `from` / `to` accept epoch milliseconds, epoch seconds,
+ * or an ISO 8601 timestamp; both default to the trailing 24 hours. The
+ * response is `{ from, to, tenants: [{ tenantId, calls, promptTokens,
+ * completionTokens, totalTokens, avgLatencyMs }], totals }`, one entry per
+ * tenant in the window, sorted by tenant id.
+ *
+ * Scope (A62): the caller must hold `ai:read`. A caller may only see its own
+ * tenant — the `tenant` query parameter is honoured **only** for an
+ * operator-level caller (`admin` scope or the `admin` subject, via `hasScope`
+ * in `./auth.ts`); for everyone else it is ignored and the verified JWT's
+ * tenant is forced, falling back to `'default'` exactly as the audit trail
+ * does. This uses the existing scope model rather than inventing a new one.
+ *
+ * **Required scope**: `ai:read`
+ *
+ * **Errors**: `400 INVALID_ARGUMENT`, `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+ * @public
+ */
+export function handleAiUsage(ctx: { request: IncomingMessage; response: ServerResponse }): boolean {
+  const gate = requireScopeFromHeaders(ctx.request.headers, 'ai:read')
+  if (!gate.ok) {
+    sendError(ctx.response, gate.status, gate.message, gate.code, 'ai:usage')
+    return true
+  }
+  let query: URL
+  try {
+    query = new URL(ctx.request.url ?? '/', 'http://localhost')
+  } catch {
+    sendError(ctx.response, 400, 'malformed request URL', 'INVALID_ARGUMENT', 'ai:usage')
+    return true
+  }
+  const now = Date.now()
+  const rawFrom = query.searchParams.get('from')
+  const rawTo = query.searchParams.get('to')
+  const from = parseTimeParam(rawFrom, now - 24 * 60 * 60 * 1000)
+  const to = parseTimeParam(rawTo, now)
+  if (from === null || to === null) {
+    sendError(
+      ctx.response,
+      400,
+      'from/to must be epoch milliseconds, epoch seconds, or an ISO 8601 timestamp',
+      'INVALID_ARGUMENT',
+      'ai:usage',
+    )
+    return true
+  }
+  if (from > to) {
+    sendError(ctx.response, 400, '`from` must not be after `to`', 'INVALID_ARGUMENT', 'ai:usage')
+    return true
+  }
+  // Operator-level callers may widen the query (or filter to one tenant);
+  // every other caller is pinned to its own tenant. `hasScope` already treats
+  // the `admin` subject and the `admin` / `*` scopes as operator.
+  const operator = hasScope(gate.payload, 'admin')
+  const ownTenant = tenantFromPayload(gate.payload)
+  const requestedTenant = query.searchParams.get('tenant')
+  const tenantId = operator ? requestedTenant ?? undefined : ownTenant
+  const result = aggregateUsage({ fromMs: from, toMs: to, tenantId })
+  sendJson(ctx.response, 200, result)
+  return true
+}
+
+/**
+ * Resolve a `from`/`to` query value to epoch milliseconds. Returns the
+ * `defaultMs` when the parameter is absent/empty; returns `null` (caller
+ * answers 400) when a supplied value is present but unparseable. Bare integers
+ * shorter than 13 digits are treated as epoch seconds; 13+ digits as ms.
+ */
+function parseTimeParam(raw: string | null, defaultMs: number): number | null {
+  if (raw === null || raw.trim() === '') return defaultMs
+  const trimmed = raw.trim()
+  if (/^-?\d+$/.test(trimmed)) {
+    const n = Number(trimmed)
+    if (!Number.isFinite(n)) return null
+    return Math.abs(n) < 1e12 ? n * 1000 : n
+  }
+  const parsed = Date.parse(trimmed)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 /**

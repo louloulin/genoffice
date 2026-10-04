@@ -295,7 +295,13 @@ describe('streamForProvider: anthropic', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
     const { cb } = collector()
     await expect(
-      streamForProvider('anthropic', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
+      // retry disabled: this test isolates the in-band error-event -> throw
+      // mapping. 'Overloaded' is retryable, and the mocked Response is
+      // single-use, so a retry would fail for the wrong reason (the retry path
+      // itself is covered in resilience.test.ts with fresh bodies per call).
+      streamForProvider('anthropic', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb, {
+        retry: { maxRetries: 0 },
+      }),
     ).rejects.toThrow('Overloaded')
   })
 

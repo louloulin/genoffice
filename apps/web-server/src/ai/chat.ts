@@ -38,6 +38,7 @@ import { listCodexModels } from '@genoffice/ai-provider/codex-app-server'
 import { InvalidArgumentError } from './errors'
 import { isEmbedCaller, sanitizeRequestSettings } from './settings-sanitize'
 import { auditAiCall, tenantContextFromEvent } from './ai-audit'
+import { recordAudit } from '../common/audit-log'
 import {
   decryptSecret,
   encryptSecret,
@@ -672,6 +673,33 @@ export async function runProviderStream(
         onActivity: () => {
           // wire-level keepalive so the renderer watchdog can tell a live turn
           sink.send({ requestId: '', type: 'ping' })
+        },
+      },
+      // A16/A57: tenant-configured provider failover. `resolveConfig` is
+      // mandatory here because the chain is cross-vendor — each fallback needs
+      // its own apiKey/model/baseUrl, not the primary's.
+      {
+        ...(settings.fallbackProviders?.length
+          ? { fallbackProviders: settings.fallbackProviders }
+          : {}),
+        resolveConfig: (id) => resolveProviderConfig(settings, id),
+        onProviderSwitch: (info) => {
+          // Every switch is audited (A57). Without this the only trace of a
+          // tenant silently riding a fallback — a revoked key, a regional
+          // outage, a rate-limit storm — would be an unexplained provider
+          // change in the spend report.
+          recordAudit({
+            tenantId: audit?.tenantId ?? 'default',
+            ...(audit?.userId ? { userId: audit.userId } : {}),
+            action: 'ai.provider_switch',
+            resource: audit?.endpoint ?? 'ai:stream',
+            details: {
+              from: info.from,
+              to: info.to,
+              attempt: info.attempt,
+              reason: info.reason,
+            },
+          })
         },
       },
     )

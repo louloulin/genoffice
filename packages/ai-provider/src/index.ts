@@ -83,7 +83,19 @@ export { isAiNetworkError } from './network-error'
 export { isAiOverloadedError, isAiQuotaExhaustedError } from './overload-error'
 export { parseOutputCapRejection } from './output-cap'
 export { AiCreditsError, sseLines, streamForProvider } from './stream'
-export type { StreamCallbacks } from './stream'
+export type {
+  AiRetryPolicy,
+  ProviderSwitchInfo,
+  StreamCallbacks,
+  StreamForProviderOptions,
+} from './stream'
+export {
+  DEFAULT_MAX_RETRIES,
+  DEFAULT_RETRY_BASE_DELAY_MS,
+  classifyProviderError,
+  retryBackoffMs,
+} from './retry'
+export type { ProviderErrorClass } from './retry'
 export {
   AI_CHAT_RESPONSE_TIMEOUT_MS,
   AI_CONNECT_TIMEOUT_MS,

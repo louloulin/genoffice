@@ -283,7 +283,13 @@ describe('all six renderers wire the sink (sdk1.md §11.36)', () => {
         resolve(repoRoot, 'apps', app, 'src', 'renderer', 'web-bridge.ts'),
         'utf8',
       )
-      expect(source).toContain("from '@genoffice/ipc-bridge/sdk-command-sink'")
+      // The installer may be imported from this package or from its sibling
+      // `text-buffer-adapter` (see the contract note above); either wiring
+      // satisfies §11.36, so accept both specifiers.
+      const importsInstaller =
+        source.includes("from '@genoffice/ipc-bridge/sdk-command-sink'") ||
+        source.includes("from '@genoffice/ipc-bridge/text-buffer-adapter'")
+      expect(importsInstaller).toBe(true)
       const usesBufferSink = source.includes('installTextBufferSink(')
       const usesLegacySink = source.includes('installSdkCommandSink({ handlers: defaultSdkCommandHandlers() })')
       expect(usesBufferSink || usesLegacySink).toBe(true)

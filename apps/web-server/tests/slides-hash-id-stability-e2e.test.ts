@@ -25,10 +25,11 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeTransportValue } from '../src/common/codec'
+import { stopServer } from './helpers/server-process'
 
 const here = new URL('.', import.meta.url).pathname
 const pkgRoot = join(here, '..')
@@ -109,9 +110,11 @@ describe.skipIf(skip)('slides:open-path uses hash-based stable ids by default (s
     copyFileSync(fixture, filePath)
   }, 30_000)
 
-  afterAll(() => {
-    if (server && !server.killed) server.kill('SIGTERM')
-    if (dataDir) rmSync(dataDir, { recursive: true, force: true })
+  // The shared helper waits for the SIGTERM'd server to actually exit before
+  // sweeping DATA_DIR; a bare kill + rmSync races the server's shutdown flush
+  // and fails with ENOTEMPTY.
+  afterAll(async () => {
+    await stopServer(server, dataDir)
   })
 
   it('first open-path yields hash-shaped ids (prefix + 10 hex)', async () => {

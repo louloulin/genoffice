@@ -83,9 +83,11 @@ import { registerAnydocHandlers } from './anydoc/index'
 import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
+import { startUsageRotateWorker } from './common/usage-meter'
+import { checkRateLimit } from './common/rate-limit'
 import { auditAiCall } from './ai/ai-audit'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
-import { jwtPayloadFromRequest, jwtScopeFor, openModeAllowed, resolveAuthority, writeForbidden } from './auth/route-policy'
+import { jwtPayloadFromRequest, jwtScopeFor, openModeAllowed, resolveAuthority, tenantFromPayload, writeForbidden } from './auth/route-policy'
 // sdk1 §11.111: handleApiV1 + findV1Route are imported together so the
 // v1 dispatcher catch-all can return 405 METHOD_NOT_ALLOWED with the
 // correct Allow list when a pathname matches a known v1 route but the
@@ -224,6 +226,10 @@ loadCollabStore()
  * GENOFFICE_AUDIT_RETENTION_DAYS (default 90). The timer is unref'd
  * inside startAuditRotateWorker() so it never holds shutdown open. */
 startAuditRotateWorker()
+/* Usage-meter retention worker (A18/A22 backlog close). Mirrors the
+ * audit-log worker above: trims usage-meter.jsonl to entries within
+ * GENOFFICE_USAGE_RETENTION_DAYS (default 90). Unref'd so shutdown stays clean. */
+startUsageRotateWorker()
 /* Rehydrate the persisted upload index BEFORE any handler can serve a
  * `files:read({id})`: an id issued in a previous session must resolve from the
  * first request after a restart, not only after the next upload. */
@@ -516,6 +522,38 @@ const server = createServer(async (request, response) => {
     // `jwt-open` (a verifying JWT on a JWT-only boot) deliberately skips the
     // route table: the dispatchers' own scope checks are the policy there, as
     // they have been for every embed deployment. See route-policy.ts.
+  }
+
+  // A17 / A59 / A60 / A61: per-tenant, per-endpoint rate limiting. Mounted on
+  // the entire `/api/v1/*` surface and the legacy `/api/ai/stream` SSE route.
+  // This runs after the auth gate so tenant identity (the JWT `tenant` claim
+  // via `jwtPayloadFromRequest`) is already available; an unauthenticated
+  // caller falls back to the `'default'` tenant, matching the audit trail.
+  // The bucket is keyed by `(tenantId, normalized pathname)`, so one tenant
+  // exhausting its bucket never affects another's.
+  if (url.pathname.startsWith('/api/v1/') || url.pathname === '/api/ai/stream') {
+    const tenantId = tenantFromPayload(jwtPayloadFromRequest({ headers: request.headers, url }))
+    const decision = checkRateLimit(tenantId, url.pathname)
+    if (!decision.allowed) {
+      response.writeHead(429, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        // Whole seconds, per RFC 7231 / draft-ietf-httpapi-ratelimit-headers.
+        'Retry-After': String(decision.retryAfterSec),
+      })
+      response.end(
+        JSON.stringify({
+          error: {
+            code: 'RATE_LIMITED',
+            message: `rate limit exceeded for ${url.pathname}; retry after ${decision.retryAfterSec}s`,
+            channel: url.pathname,
+            limit: decision.limit,
+            retryAfter: decision.retryAfterSec,
+          },
+        }),
+      )
+      return
+    }
   }
 
   // sdk1 §11.110: wrong-method requests return 405 instead of SPA HTML.

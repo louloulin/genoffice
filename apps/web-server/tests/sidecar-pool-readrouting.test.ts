@@ -25,6 +25,20 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { stopServer } from './helpers/server-process'
 
+// `.playwright-mcp/` is a gitignored Playwright artifact, so on a checkout
+// that never ran the MCP driver this suite cannot run. The workbook/slides
+// e2e suites guard this same fixture with `describe.skipIf`; without the
+// guard this suite hard-fails in beforeAll and takes the whole chain down.
+const supplierFixture = join(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  '.playwright-mcp',
+  'verify-supplier.xlsx',
+)
+const haveFixture = existsSync(supplierFixture)
+
 async function ipc(base: string, channel: string, args: unknown[]): Promise<{ status: number; body: { ok?: boolean; result?: Record<string, unknown> } }> {
   const res = await fetch(`${base}/api/ipc/${encodeURIComponent(channel)}`, {
     method: 'POST',
@@ -46,7 +60,7 @@ async function waitForHealth(base: string, timeoutMs = 30_000): Promise<void> {
   throw new Error('web-server did not become healthy')
 }
 
-describe('sidecar pool read-routing (§11.87 fix)', () => {
+describe.skipIf(!haveFixture)('sidecar pool read-routing (§11.87 fix)', () => {
   let server: ChildProcess | undefined
   let base: string
   let dataDir: string
@@ -84,10 +98,6 @@ describe('sidecar pool read-routing (§11.87 fix)', () => {
     // land on the same worker regardless of the fix).
     const filesDir = join(dataDir, 'files')
     mkdirSync(filesDir, { recursive: true })
-    const fixture = join(__dirname, '..', '..', '..', '.playwright-mcp', 'verify-supplier.xlsx')
-    if (!existsSync(fixture)) {
-      throw new Error(`fixture missing: ${fixture}`)
-    }
     // Stash a few copies for the test to open. The test copies them
     // again under distinct names so the path keys differ.
   }, 60_000)
@@ -99,7 +109,6 @@ describe('sidecar pool read-routing (§11.87 fix)', () => {
   it('a workbook opened and immediately read returns the header cells (every worker)', async () => {
     const filesDir = join(dataDir, 'files')
     mkdirSync(filesDir, { recursive: true })
-    const fixture = join(__dirname, '..', '..', '..', '.playwright-mcp', 'verify-supplier.xlsx')
 
     // Run several rounds so each round exercises the full pool routing
     // surface. Eight files × three rounds = 24 open+read pairs; with the
@@ -111,7 +120,7 @@ describe('sidecar pool read-routing (§11.87 fix)', () => {
       const paths: string[] = []
       for (let i = 0; i < FILES_PER_ROUND; i++) {
         const target = join(filesDir, `book-r${r}-${i}.xlsx`)
-        copyFileSync(fixture, target)
+        copyFileSync(supplierFixture, target)
         paths.push(target)
       }
       const opens = await Promise.all(

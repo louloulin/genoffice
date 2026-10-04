@@ -145,6 +145,15 @@ export interface AiSettings {
    * (absent = the default, so pre-existing settings files keep working).
    */
   maxOutputTokens?: number | undefined
+  /**
+   * Ordered fallback providers (A16/A57). When the primary provider fails —
+   * after exhausting its retry budget, or immediately on a non-retryable error
+   * such as bad credentials — the stream switches to the next entry here that
+   * has its own configured credentials, until one completes. Absent means no
+   * failover. The sequence is per-tenant by construction: each tenant has its
+   * own `AiSettings`, so one tenant's chain never affects another's.
+   */
+  fallbackProviders?: AiProviderId[] | undefined
 }
 
 /** pre-provider settings shape (single OpenAI-compatible endpoint); migrated into "custom" */

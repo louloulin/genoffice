@@ -105,6 +105,11 @@ describe('stream timeouts end to end', () => {
       [],
       100,
       cb,
+      // retry disabled: this case asserts the watchdog's connect timeout
+      // surfaces as AiTimeoutError. A timeout is retryable (A15), so with the
+      // default budget a second 60s timer would need advancing; the retry path
+      // is covered in resilience.test.ts.
+      { retry: { maxRetries: 0 } },
     )
     const result = expect(run).rejects.toBeInstanceOf(AiTimeoutError)
     await vi.advanceTimersByTimeAsync(AI_CONNECT_TIMEOUT_MS)

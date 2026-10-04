@@ -9,6 +9,7 @@
  * present so consumers can rely on the shape.
  */
 import { recordAudit } from '../common/audit-log'
+import { recordUsage } from '../common/usage-meter'
 
 export interface AiCallAuditInput {
   /** route or IPC channel that carried the call ('/api/v1/ai/chat', 'ai:translate', …) */
@@ -29,8 +30,9 @@ export interface AiCallAuditInput {
 }
 
 export function auditAiCall(input: AiCallAuditInput): void {
+  const tenantId = input.tenantId?.trim() || 'default'
   recordAudit({
-    tenantId: input.tenantId?.trim() || 'default',
+    tenantId,
     ...(input.userId ? { userId: input.userId } : {}),
     action: 'ai.call',
     resource: input.endpoint,
@@ -49,6 +51,22 @@ export function auditAiCall(input: AiCallAuditInput): void {
     status: input.ok ? 'success' : 'failure',
     ...(input.ip ? { ip: input.ip } : {}),
     ...(input.userAgent ? { userAgent: input.userAgent } : {}),
+  })
+  // A18/A22/A62/A63: meter the same call for per-tenant usage reporting. This
+  // is the single choke point every AI surface (chat, stream, translate,
+  // image, skill) already funnels through, so recording here keeps the audit
+  // trail and the usage meter from drifting apart. Only the fields the call
+  // path genuinely surfaced are passed on; unknown tokens stay absent (the
+  // meter never invents counts — see common/usage-meter.ts).
+  recordUsage({
+    tenantId,
+    endpoint: input.endpoint,
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(typeof input.promptTokens === 'number' ? { promptTokens: input.promptTokens } : {}),
+    ...(typeof input.completionTokens === 'number' ? { completionTokens: input.completionTokens } : {}),
+    ...(typeof input.totalTokens === 'number' ? { totalTokens: input.totalTokens } : {}),
+    ...(typeof input.durationMs === 'number' ? { latencyMs: input.durationMs } : {}),
   })
 }
 
