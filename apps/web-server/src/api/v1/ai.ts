@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sendJson, sendError, readBody } from './http-utils'
 import { invokeIpc } from './ipc-bridge'
 import { requireScopeFromHeaders } from './auth'
+import { classifyRemoteUrl } from '@genoffice/electron-utils/safe-remote-url'
 import { translateBatchCore, handleTranslateStreamHttp, handleTranslateStreamCancelHttp, type TranslateBatchHttpRequest } from '../../ai/translate-http'
 
 /**
@@ -245,6 +246,24 @@ export async function handleAiImage(ctx: { request: IncomingMessage; response: S
   }
   if (url.length > 4096) {
     sendError(ctx.response, 400, 'url exceeds 4096 char cap', 'INVALID_ARGUMENT', 'ai:image')
+    return true
+  }
+  // A76: this endpoint makes the server fetch a caller-chosen URL and hand the
+  // bytes back — a fetch-any-URL surface. `fetchRemoteImage` already revalidates
+  // every redirect hop, but it collapses a blocked target into the same `null`
+  // it returns for a network failure, so the host cannot tell "refused by
+  // policy" from "unreachable". Pre-flight the target here and answer with a
+  // structured 403 before the fetch is attempted. Only a positively
+  // non-public target is refused; an unresolvable public name falls through to
+  // the fetch's own failure path (and keeps offline behaviour unchanged).
+  if ((await classifyRemoteUrl(url)) === 'blocked') {
+    sendError(
+      ctx.response,
+      403,
+      'url must be a public address (private, link-local, cloud-metadata and loopback targets are refused)',
+      'FORBIDDEN',
+      'ai:image',
+    )
     return true
   }
   const result = await invokeIpc('ai:fetch-image', [url])

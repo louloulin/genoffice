@@ -56,24 +56,42 @@ export function isBlockedAddress(ip: string): boolean {
  * `fetchWithSsrfGuard` rather than relying on a single up-front check.
  */
 export async function isSafeRemoteUrl(raw: unknown): Promise<boolean> {
-  if (typeof raw !== 'string') return false
+  return (await classifyRemoteUrl(raw)) === 'public'
+}
+
+/**
+ * Three-way verdict for a caller-supplied URL.
+ *
+ * `isSafeRemoteUrl`'s boolean conflates two different outcomes that callers
+ * sometimes need to tell apart: a target that policy refuses (`blocked`) and a
+ * target that cannot be classified because name resolution failed
+ * (`unresolvable`). The guard chain only cares that neither is fetched, but a
+ * pre-flight response to a host should report a policy refusal as 403 while
+ * leaving an unresolvable public name to the fetch's own failure path.
+ *
+ * Malformed input, non-http(s) protocols, and private/link-local/loopback
+ * targets are all `blocked` — they are refusals, not uncertainty.
+ */
+export async function classifyRemoteUrl(raw: unknown): Promise<'public' | 'blocked' | 'unresolvable'> {
+  if (typeof raw !== 'string') return 'blocked'
   let url: URL
   try {
     url = new URL(raw)
   } catch {
-    return false
+    return 'blocked'
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'blocked'
   // URL keeps IPv6 literals bracketed; isIP does not accept the brackets
   const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  if (host === '') return false
-  if (isIP(host)) return !isBlockedAddress(host)
-  if (host === 'localhost' || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) return false
+  if (host === '') return 'blocked'
+  if (isIP(host)) return isBlockedAddress(host) ? 'blocked' : 'public'
+  if (host === 'localhost' || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) return 'blocked'
   try {
     const addrs = await lookup(host, { all: true })
-    return addrs.length > 0 && addrs.every((a) => !isBlockedAddress(a.address))
+    if (addrs.length === 0) return 'unresolvable'
+    return addrs.every((a) => !isBlockedAddress(a.address)) ? 'public' : 'blocked'
   } catch {
-    return false
+    return 'unresolvable'
   }
 }
 

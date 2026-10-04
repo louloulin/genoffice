@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fetchWithSsrfGuard, isBlockedAddress, isSafeRemoteUrl } from '../src/safe-remote-url'
+import { fetchWithSsrfGuard, isBlockedAddress, isSafeRemoteUrl, classifyRemoteUrl } from '../src/safe-remote-url'
 
 describe('isBlockedAddress', () => {
   it.each([
@@ -81,6 +81,48 @@ describe('isSafeRemoteUrl', () => {
 
   it('allows a public literal address', async () => {
     await expect(isSafeRemoteUrl('https://8.8.8.8/x.png')).resolves.toBe(true)
+  })
+})
+
+describe('classifyRemoteUrl', () => {
+  it.each([
+    ['http://127.0.0.1/x.png'],
+    ['http://169.254.169.254/latest/meta-data/'],
+    ['http://[::1]/x.png'],
+    ['http://10.0.0.1/x.png'],
+    ['http://192.168.0.9/x.png'],
+  ])('classifies literal internal target %s as blocked', async (url) => {
+    await expect(classifyRemoteUrl(url)).resolves.toBe('blocked')
+  })
+
+  it.each(['http://localhost:8080/x.png', 'http://printer.local/x.png', 'http://metadata.internal/x.png'])(
+    'classifies internal hostname %s as blocked',
+    async (url) => {
+      await expect(classifyRemoteUrl(url)).resolves.toBe('blocked')
+    },
+  )
+
+  it.each(['file:///etc/passwd', 'ftp://example.com/x.png', 'not a url', ''])(
+    'classifies unparseable / non-http input %s as blocked (a refusal, not uncertainty)',
+    async (url) => {
+      await expect(classifyRemoteUrl(url)).resolves.toBe('blocked')
+    },
+  )
+
+  it('classifies a public literal address as public', async () => {
+    await expect(classifyRemoteUrl('https://93.184.216.34/x.png')).resolves.toBe('public')
+  })
+
+  // The distinction the v1 image route relies on: an unresolvable public name
+  // must not be reported as a policy refusal. `.invalid` is reserved and never
+  // resolves, so the lookup throws rather than returning an internal address.
+  it('classifies an unresolvable hostname as unresolvable, not blocked', async () => {
+    await expect(classifyRemoteUrl('https://image-cdn.invalid/x.png')).resolves.toBe('unresolvable')
+  })
+
+  it('keeps isSafeRemoteUrl false for every non-public verdict', async () => {
+    await expect(isSafeRemoteUrl('https://image-cdn.invalid/x.png')).resolves.toBe(false)
+    await expect(isSafeRemoteUrl('http://10.0.0.1/x.png')).resolves.toBe(false)
   })
 })
 

@@ -57,6 +57,7 @@
 - A23 OTel OTLP exporter 上报 `/api/ai/stream` 与翻译主链路 span，测试 collector 收到完整调用链。
 - A24 S3/MinIO StorageBackend 容器测试：上传/下载/删除 roundtrip 成功。
 - A25 决策项文档落地：pi 化评估、主进程双轨债、桌面 safeStorage 债登记到 docs（编号、现状、建议）。
+- A76 fetch-URL 端点收敛（iteration 4，用户决定 2026-10-04）：`/api/v1/ai/image`（IPC `ai:fetch-image`）仅公网地址可抓——云元数据（169.254.169.254 等）、私网与回环目标在发起抓取前被结构化拒绝（HTTP 结构化错误，不静默）；重定向逐跳复验与 DNS 全地址校验既有防护保持；集成测试覆盖拒绝路径（元数据地址 0 外呼）与公网字面量放行。
 
 # Constraints and invariants
 
@@ -80,6 +81,7 @@
 - D9 pi 化为 Phase 4 决策项，不阻塞任何阶段。
 - D10 拓扑=单一 change（用户选定 2026-10-04）：四阶段作为验收分组顺序推进，不拆 Supervisor/children。
 - D11 fail-closed 下的 JWT 例外：`WEB_TOKEN` 未配置且未 `GENOFFICE_ALLOW_OPEN` 时，无凭据请求 401（`locked`）；验证通过的 JWT 仍放行为 `jwt-open` authority（不走 route-policy 三态路由表，逐通道 `requireScopeFromHeaders` 仍是策略），使 Dataflarework 式 JWT-only 部署（无 `WEB_TOKEN`）与嵌入闭环 11/11 行为不变。`WEB_TOKEN` 已配置时的 JWT 走 `jwt` authority + 路由表（现状不变）。
+- D12 分批交付（用户决定 2026-10-04，发布评估后）：批次 1 = 安全基座（A1–A3、A26–A31 等已通过 14 项 + A76 fetch-URL 收口）完成后按**安全补丁**发布 release0919；批次 2+ = 密钥加密（A4/A5）、租户/审计（A6/A7）、翻译可靠性（A8–A14）、provider 韧性（A15–A20）、平台化（A21–A25 及对应 spec 项）按后续迭代交付。75+1 项验收文字保持不变，批次只影响交付顺序，不影响验收标准。
 
 # Open questions
 

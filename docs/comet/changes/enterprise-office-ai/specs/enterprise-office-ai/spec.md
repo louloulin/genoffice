@@ -14,6 +14,7 @@ GenOffice 的 AI 平台在企业级形态下的完整行为规格。全部基建
 - **嵌入/JWT 模式**：请求 body 中的 `settings.baseUrl`、`settings.apiKey` 覆盖一律忽略，provider 配置以服务端（租户）设置为准。落点：`apps/web-server/src/ai/chat.ts` settings 解析前的 sanitize 层。
 - **本地/桌面模式**：保留 BYOK。baseUrl 必须命中 allowlist（默认仅回环地址 127.0.0.1/localhost/::1 + 操作员显式配置条目）；未命中返回结构化错误（含 reason），不发起上游请求。
 - settings 覆盖中的模型名、温度等非网络参数不受 sanitize 影响。
+- **fetch-URL 端点收敛**（A76）：`/api/v1/ai/image`（IPC `ai:fetch-image`）是服务端代抓调用方指定 URL 并返回字节的通道，策略与 provider baseUrl 相反——**仅公网地址可抓**：私网（10/8、172.16/12、192.168/16）、链路本地/云元数据（169.254/16）、回环、`.local/.internal` 等一律拒绝；重定向逐跳复验、hostname 经 DNS 全地址校验（`fetchWithSsrfGuard`/`isSafeRemoteUrl` 既有防护保持）。HTTP 层在发起抓取前预检，未命中时返回**结构化错误**（不再静默 null）；IPC/renderer 路径保持 null 契约（既有 UX：提示图片不可访问）。
 
 ### 1.3 密钥加密存储
 - 新增 `apps/web-server/src/common/secret-store.ts`：AES-256-GCM，主密钥来自环境变量 `GENOFFICE_MASTER_KEY`（64 hex 字符或经 KDF）；密文格式 `v1:<keyId>:<iv>:<ciphertext>:<tag>`，keyId 支持主密钥轮换。

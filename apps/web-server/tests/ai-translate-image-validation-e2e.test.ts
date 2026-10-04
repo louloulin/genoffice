@@ -221,6 +221,26 @@ describe.skipIf(skip)('v1 AI translate + image shape validation', () => {
         expect(r.body.error.message).toContain('4096')
       }
 
+      // A76: this endpoint is a fetch-any-URL surface, so a positively
+      // non-public target is refused before any request goes out — reported as
+      // a structured 403 instead of the silent `null` the fetch itself
+      // collapses network failure into. Literal addresses and `localhost`
+      // classify without DNS, so the outcome is deterministic offline.
+      for (const [label, target] of [
+        ['cloud metadata', 'http://169.254.169.254/latest/meta-data/'],
+        ['RFC1918 private', 'http://10.1.2.3/internal.png'],
+        ['loopback', 'http://127.0.0.1:9/x.png'],
+        ['localhost name', 'http://localhost:9/x.png'],
+      ] as const) {
+        const r = await h.req<{ error: { code: string; message: string } }>(
+          '/api/v1/ai/image',
+          { ...authPost, body: JSON.stringify({ url: target }) },
+        )
+        expect(r.status, `${label} must be refused`).toBe(403)
+        expect(r.body.error.code).toBe('FORBIDDEN')
+        expect(r.body.error.message).toContain('public address')
+      }
+
       // NEGATIVE: ai:image no JWT -> 401
       {
         const r = await h.req('/api/v1/ai/image', {

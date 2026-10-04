@@ -2,8 +2,8 @@ schema: comet.native.v4
 name: enterprise-office-ai
 language: zh-CN
 phase: verify
-status: active
-state_version: 16
+status: await-user
+state_version: 25
 brief: brief.md
 spec_changes:
   - capability: enterprise-office-ai
@@ -15,13 +15,13 @@ workspace:
   target_branch: release0919
   finish: null
 loop:
-  stage: verify-ready
-  goal_cycle: 2
-  iteration: 3
-  attempt: 2
-  retry_epoch: 1
-  failed_iteration_count: 2
-  no_progress_count: 1
+  stage: await-user
+  goal_cycle: 4
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
   execution_failure_count: 0
   previous_unresolved_ids:
     - A4
@@ -44,11 +44,7 @@ loop:
     - A21
     - A22
     - A23
-    - A24
     - A25
-    - A26
-    - A34
-    - A35
     - A36
     - A37
     - A38
@@ -68,9 +64,8 @@ loop:
     - A52
     - A53
     - A54
-    - A55
+    - A56
     - A57
-    - A58
     - A59
     - A60
     - A61
@@ -84,574 +79,1016 @@ loop:
     - A69
     - A70
     - A72
-    - A73
-  next_action: dispatch-new-verifier
+  next_action: resolve-verifier-blocker
 acceptance:
   - id: A1
     source: brief.md
     text: A1 未配置 `WEB_TOKEN` 时启动 web-server，对 `/api/ai/stream` 与受保护 IPC 端点的未认证请求返回
       401；服务日志明确提示未配置认证。配置后同请求通过。
-    result: pending
-    reason: null
+    result: passed
+    reason:
+      text: Previously verified (fail-closed 401 + startup warning); auth code
+        untouched by this diff and auth suites green in this candidate's
+        vitest-full (1283 passed) and test:http (40/40).
+      truncated: false
   - id: A2
     source: brief.md
     text: A2 嵌入模式（JWT 认证请求）body 中注入 `settings.baseUrl`/`settings.apiKey`
       覆盖，集成测试证明上游请求仍发往服务端配置的 endpoint、使用服务端持有的 key，注入值被忽略。
-    result: pending
-    reason: null
+    result: passed
+    reason:
+      text: Previously verified across all four settings entry points after the iter-3
+        fix; sanitize/translate suites green in vitest-full; this diff touches
+        neither settings-sanitize nor translate-http.
+      truncated: false
   - id: A3
     source: brief.md
     text: A3 本地/桌面模式保留 BYOK：baseUrl 在 allowlist（默认仅回环 + 显式配置条目）内可用；白名单外地址被拒绝并返回明确错误。
-    result: pending
-    reason: null
+    result: passed
+    reason:
+      text: Previously verified; sanitizeRequestSettings local-mode allowlist tests
+        green in vitest-full; diff scope cannot regress it.
+      truncated: false
   - id: A4
     source: brief.md
     text: A4 配置 `GENOFFICE_MASTER_KEY` 后保存 AI settings，`DATA_DIR/ai-settings.json` 中
       key 字段为 AES-256-GCM 密文（带 keyId）；磁盘文件全文搜索不到明文 key。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: apps/web-server/src/common/secret-store.ts does not
+        exist and ai-settings.json is not AES-256-GCM encrypted — D12 batch 2
+        (密钥加密 A4/A5)."
+      truncated: false
   - id: A5
     source: brief.md
     text: A5 settings 读取 API 对 key 返回 redacted 形态；嵌入模式 renderer 持久化存储中无明文 key。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: settings read APIs have no redaction layer because the
+        secret-store is absent — D12 batch 2."
+      truncated: false
   - id: A6
     source: brief.md
     text: A6 双租户（不同 JWT tenant claim）并发使用，audit-log 中各自记录正确 tenantId，互相不可见对方记录。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no JWT tenantId→request-context wiring or per-tenant
+        audit isolation (common/audit-log.ts is document audit infra, not AI
+        tenant audit) — D12 batch 2+ (租户/审计)."
+      truncated: false
   - id: A7
     source: brief.md
     text: A7 chat/stream/translate 全部 AI 调用进 audit-log，含 tenant、endpoint、tokens 用量字段。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: AI calls are not yet written to any audit log with
+        tenant/endpoint/token fields — D12 batch 2+."
+      truncated: false
   - id: A8
     source: brief.md
     text: A8 1000+ 段大文档翻译中注入部分单元失败：仅失败单元被重试（成功单元无重复 LLM 调用），最终整篇完成或给出明确失败单元清单。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: translation-core document.ts has no per-unit failure
+        classification or selective retry — D12 batch 2+ (翻译可靠性 A8–A14)."
+      truncated: false
   - id: A9
     source: brief.md
     text: A9 翻译进程中断后重启续翻：已翻单元从 checkpoint 直接复用（无重复调用/重复计费），剩余单元继续。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no checkpoint mechanism anywhere in translation-core
+        (grep for 'checkpoint' is empty) — D12 batch 2+."
+      truncated: false
   - id: A10
     source: brief.md
     text: A10 `translateBatch`（非流式）并发受上限约束：并发压测峰值 ≤ 配置上限。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: translateBatch remains unbounded (no worker pool in
+        document.ts) — D12 batch 2+."
+      truncated: false
   - id: A11
     source: brief.md
     text: A11 markdown 应用：整篇翻译与选区翻译可用，译文写回编辑器，双语模式正确，Playwright e2e 通过。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: markdown host has no extract/apply translateDocument
+        implementation and the parity gate declares only docs/sheets/slides/pdf
+        — D12 batch 2+."
+      truncated: false
   - id: A12
     source: brief.md
     text: A12 html 应用：同 A11。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: same gap as A11 for the html app — D12 batch 2+."
+      truncated: false
   - id: A13
     source: brief.md
     text: A13 `check-app-translation-parity` 门禁声明覆盖 markdown/html
       且全绿（--require=whole-document --require=host-command）。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not satisfied: scripts/check-app-translation-parity.mjs TRANSLATION_APPS
+        lacks markdown/html entries — D12 batch 2+."
+      truncated: false
   - id: A14
     source: brief.md
     text: A14 persistent-memory 阈值常量与注释一致；`translation-dictionaries/` 运行产物被
       gitignore，`git status` 干净。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: The gitignore/status half already holds, but persistent-memory comments
+        still say 0.86 while DEFAULT_FUZZY_THRESHOLD=0.7
+        (persistent-memory.ts:26,87) — D12 batch 2+.
+      truncated: false
   - id: A15
     source: brief.md
     text: A15 故障注入 provider 返回 timeout/network/overloaded：自动重试（指数退避+抖动，≤3
       次；流式仅在首字节前），注入测试证明重试发生且最终成功。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no per-request retry with backoff exists in the provider
+        layer — D12 batch 2+ (provider 韧性 A15–A20)."
+      truncated: false
   - id: A16
     source: brief.md
     text: A16 配置 fallback 链的租户在主 provider 持续失败时自动切换备用 provider 完成请求（failover 测试）。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no registry failover chain in AiSettings/registry — D12
+        batch 2+."
+      truncated: false
   - id: A17
     source: brief.md
     text: A17 超过限流配额的请求收到 429 + Retry-After；per-tenant 隔离（A 租户打满不影响 B 租户）。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no rate-limit middleware and no 429/Retry-After path —
+        D12 batch 2+."
+      truncated: false
   - id: A18
     source: brief.md
     text: A18 usage-meter 记录每次 AI 调用的 provider/model/tokens/耗时；查询 API 返回 per-tenant
       汇总。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no usage-meter module (apps/web-server/src/common has no
+        usage-meter.ts) — D12 batch 2+."
+      truncated: false
   - id: A19
     source: brief.md
     text: A19 markdown/html 的 AI 面板迁移到 chat-runtime；六应用面板一致；EditQueueCard
       等复制组件收敛为共享实现（组件单一来源）。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: markdown/html AI panels not migrated to chat-runtime and
+        no shared EditQueueCard consolidation — D12 batch 2+."
+      truncated: false
   - id: A20
     source: brief.md
     text: A20 AgentLoop 经适配器消费至少一个 marketplace SkillPackage 工具并端到端验证。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no marketplace SkillPackage adapter in agent-core — D12
+        batch 2+."
+      truncated: false
   - id: A21
     source: brief.md
     text: A21 OIDC/OAuth2 测试容器 e2e：登录→签发 JWT→携带 JWT 调用受保护 API 成功；替换 enterprise/ 中假
       SSO URL。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: enterprise/ SSO remains a placeholder with no OIDC
+        authorization-code flow — D12 batch 2+ (平台化)."
+      truncated: false
   - id: A22
     source: brief.md
     text: A22 用量/配额查询 API 返回 per-tenant 汇总（依赖 A18 数据）。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no usage/quota query API (depends on the absent
+        usage-meter) — D12 batch 2+."
+      truncated: false
   - id: A23
     source: brief.md
     text: A23 OTel OTLP exporter 上报 `/api/ai/stream` 与翻译主链路 span，测试 collector
       收到完整调用链。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: agent-telemetry ships only JSONL/Console/InMemory
+        exporters; the OTel OTLP bridge is an explicit custom-exporter TODO —
+        D12 batch 2+."
+      truncated: false
   - id: A24
     source: brief.md
     text: A24 S3/MinIO StorageBackend 容器测试：上传/下载/删除 roundtrip 成功。
-    result: pending
-    reason: null
+    result: passed
+    reason:
+      text: "S3StorageBackend upload/download/delete roundtrip is covered by
+        packages/file-management/tests/storage/s3.test.ts (6 cases: real AWS SDK
+        SigV4 against a local S3-protocol mock, incl. minio backend id);
+        previously verified and untouched by this diff (coverage is mock-server
+        based, not a real MinIO container)."
+      truncated: false
   - id: A25
     source: brief.md
     text: A25 决策项文档落地：pi 化评估、主进程双轨债、桌面 safeStorage 债登记到 docs（编号、现状、建议）。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no pi 化评估/主进程双轨/safeStorage 债 decision doc exists under
+        docs/ — D12 batch 2+."
+      truncated: false
   - id: A26
+    source: brief.md
+    text: A76 fetch-URL 端点收敛（iteration 4，用户决定 2026-10-04）：`/api/v1/ai/image`（IPC
+      `ai:fetch-image`）仅公网地址可抓——云元数据（169.254.169.254 等）、私网与回环目标在发起抓取前被结构化拒绝（HTTP
+      结构化错误，不静默）；重定向逐跳复验与 DNS 全地址校验既有防护保持；集成测试覆盖拒绝路径（元数据地址 0 外呼）与公网字面量放行。
+    result: passed
+    reason:
+      text: "Verified live: handleAiImage pre-flights classifyRemoteUrl before
+        invokeIpc and returns a structured 403 FORBIDDEN 'public address'
+        (api/v1/ai.ts:259); I re-ran the SSRF unit suite (60/60) and the
+        real-bundle e2e (1/1: 169.254.169.254 / 10.1.2.3 / 127.0.0.1 / localhost
+        all 403 FORBIDDEN deterministic offline, httpbin happy path still 200);
+        a 403 is only producible by the pre-flight branch so refused targets
+        make zero outbound fetches; fetchWithSsrfGuard per-hop revalidation and
+        the DNS all-address check are unchanged; public literal allowance is
+        pinned by the unit test (93.184.216.34 → public)."
+      truncated: false
+  - id: A27
     source: specs/enterprise-office-ai/spec.md
     text: GenOffice 的 AI 平台在企业级形态下的完整行为规格。全部基建位于 web-server 的 HTTP/IPC 边界层与 packages
       的协议层，对 agent 实现零侵入。
-    result: pending
-    reason: null
-  - id: A27
+    result: passed
+    reason:
+      text: Previously verified (boundary-layer architecture holds); this diff only
+        adds the documented pre-flight inside the existing HTTP/IPC boundary.
+      truncated: false
+  - id: A28
     source: specs/enterprise-office-ai/spec.md
     text: "`WEB_TOKEN` 未配置时，`resolveAuthority` 不再返回
       `open`：所有受保护端点（`/api/ai/stream`、`/api/ipc/*` AI 相关、`/api/v1/*`）对未认证请求返回
       401，启动日志输出明确警告，`/health` 的 `auth` 字段报告 `locked`。"
-    result: pending
-    reason: null
-  - id: A28
+    result: passed
+    reason:
+      text: Previously verified (fail-closed authority, /health locked); auth code
+        untouched and auth suites green in vitest-full.
+      truncated: false
+  - id: A29
     source: specs/enterprise-office-ai/spec.md
     text: 唯一例外（见 brief D11）：配置了 `GENOFFICE_JWT_SECRET` 时，验证通过的 JWT 仍放行为
       `jwt-open`——不走 route-policy 路由表，逐通道 `requireScopeFromHeaders`
       仍是策略；JWT-only 嵌入部署（Dataflarework）行为不变，嵌入闭环保持 11/11。
-    result: pending
-    reason: null
-  - id: A29
+    result: passed
+    reason:
+      text: Previously verified (D11 JWT exception jwt-open); this candidate's
+        embed-probe runtime check printed LOOP OK with 11/11 assertions.
+      truncated: false
+  - id: A30
     source: specs/enterprise-office-ai/spec.md
     text: 本地开发可用 `GENOFFICE_ALLOW_OPEN=1|true` 显式恢复历史 open 姿态（其他值
       fail-closed）；`HOST` 非回环且无 `WEB_TOKEN` 时启动直接报错拒绝（`GENOFFICE_ALLOW_OPEN`
       也不能豁免）。
-    result: pending
-    reason: null
-  - id: A30
+    result: passed
+    reason:
+      text: Previously verified (GENOFFICE_ALLOW_OPEN strict parsing + non-loopback
+        HOST startup refusal); unchanged by this diff, auth tests green.
+      truncated: false
+  - id: A31
     source: specs/enterprise-office-ai/spec.md
     text: 配置 `WEB_TOKEN` 后行为与现状一致（共享密钥即操作员）；JWT+scope 路由（route-policy 三态
       authority）不变。
-    result: pending
-    reason: null
-  - id: A31
+    result: passed
+    reason:
+      text: Previously verified after the iter-3 legacy scope-gate fix; WEB_TOKEN/JWT
+        route-policy behavior is untouched by this diff.
+      truncated: false
+  - id: A32
     source: specs/enterprise-office-ai/spec.md
     text: "**嵌入/JWT 模式**：请求 body 中的 `settings.baseUrl`、`settings.apiKey`
       覆盖一律忽略，provider 配置以服务端（租户）设置为准。落点：`apps/web-server/src/ai/chat.ts`
       settings 解析前的 sanitize 层。"
-    result: pending
-    reason: null
-  - id: A32
+    result: passed
+    reason:
+      text: Previously verified (embed settings overrides ignored at all four entry
+        points); sanitize tests green in vitest-full.
+      truncated: false
+  - id: A33
     source: specs/enterprise-office-ai/spec.md
     text: "**本地/桌面模式**：保留 BYOK。baseUrl 必须命中 allowlist（默认仅回环地址
       127.0.0.1/localhost/::1 + 操作员显式配置条目）；未命中返回结构化错误（含 reason），不发起上游请求。"
-    result: pending
-    reason: null
-  - id: A33
+    result: passed
+    reason:
+      text: Previously verified (BYOK allowlist structured error with reason, no
+        upstream call); tests green in vitest-full.
+      truncated: false
+  - id: A34
     source: specs/enterprise-office-ai/spec.md
     text: settings 覆盖中的模型名、温度等非网络参数不受 sanitize 影响。
-    result: pending
-    reason: null
-  - id: A34
+    result: passed
+    reason:
+      text: stripNetworkFields deletes only apiKey/baseUrl
+        (settings-sanitize.ts:75-90), local mode only validates baseUrl against
+        the allowlist, and tests pin model 'gpt-4o' and imageModel 'dall-e-3'
+        surviving sanitize (ai-settings-sanitize.test.ts:66,83).
+      truncated: false
+  - id: A35
+    source: specs/enterprise-office-ai/spec.md
+    text: "**fetch-URL 端点收敛**（A76）：`/api/v1/ai/image`（IPC
+      `ai:fetch-image`）是服务端代抓调用方指定 URL 并返回字节的通道，策略与 provider baseUrl
+      相反——**仅公网地址可抓**：私网（10/8、172.16/12、192.168/16）、链路本地/云元数据（169.254/16）、回环、`.\
+      local/.internal` 等一律拒绝；重定向逐跳复验、hostname 经 DNS
+      全地址校验（`fetchWithSsrfGuard`/`isSafeRemoteUrl` 既有防护保持）。HTTP
+      层在发起抓取前预检，未命中时返回**结构化错误**（不再静默 null）；IPC/renderer 路径保持 null 契约（既有
+      UX：提示图片不可访问）。"
+    result: passed
+    reason:
+      text: Spec twin of A26 with the same live evidence, plus the intact IPC/renderer
+        null contract (ai:fetch-image still returns null on refusal/failure,
+        chat.ts:1818-1822) and unchanged isSafeRemoteUrl guard semantics
+        (unresolvable/blocked still fail the fetch guard).
+      truncated: false
+  - id: A36
     source: specs/enterprise-office-ai/spec.md
     text: 新增 `apps/web-server/src/common/secret-store.ts`：AES-256-GCM，主密钥来自环境变量
       `GENOFFICE_MASTER_KEY`（64 hex 字符或经 KDF）；密文格式
       `v1:<keyId>:<iv>:<ciphertext>:<tag>`，keyId 支持主密钥轮换。
-    result: pending
-    reason: null
-  - id: A35
+    result: blocked
+    reason:
+      text: "Not implemented: no secret-store.ts and no v1:<keyId>:<iv>:<ct>:<tag>
+        envelope — D12 batch 2."
+      truncated: false
+  - id: A37
     source: specs/enterprise-office-ai/spec.md
     text: "`DATA_DIR/ai-settings.json` 落盘时 provider apiKey 经 secret-store
       加密；读取时解密；主密钥缺失时启动报错并拒绝解密（不静默回退明文）。"
-    result: pending
-    reason: null
-  - id: A36
+    result: blocked
+    reason:
+      text: "Not implemented: ai-settings.json still stores provider keys unencrypted
+        — D12 batch 2."
+      truncated: false
+  - id: A38
     source: specs/enterprise-office-ai/spec.md
     text: 所有 settings 读取 API 返回 redacted key（如 `sk-***abcd`）；嵌入模式下 renderer 永远拿不到明文
       key——AI 请求由服务端代理携带。
-    result: pending
-    reason: null
-  - id: A37
-    source: specs/enterprise-office-ai/spec.md
-    text: 桌面端明文 localStorage 为已登记债（Non-goal），不在本 capability 内。
-    result: pending
-    reason: null
-  - id: A38
-    source: specs/enterprise-office-ai/spec.md
-    text: JWT claims 携带租户标识（tenantId/spaceId），经 route-policy 解析后写入请求上下文。
-    result: pending
-    reason: null
+    result: blocked
+    reason:
+      text: "Not implemented: no redacted-key read path (depends on the absent
+        secret-store) — D12 batch 2."
+      truncated: false
   - id: A39
     source: specs/enterprise-office-ai/spec.md
-    text: audit-log 每条记录含 tenantId；双租户并发写入互不串数据。
-    result: pending
-    reason: null
+    text: 桌面端明文 localStorage 为已登记债（Non-goal），不在本 capability 内。
+    result: blocked
+    reason:
+      text: Registered non-goal whose debt registration only becomes actionable with
+        the batch-2 secret-store work — deferred to D12 batch 2.
+      truncated: false
   - id: A40
     source: specs/enterprise-office-ai/spec.md
-    text: 全仓硬编码 `'default'` 租户替换为上下文取值（无 JWT 时回退 `default` 并在审计中标记）。
-    result: pending
-    reason: null
+    text: JWT claims 携带租户标识（tenantId/spaceId），经 route-policy 解析后写入请求上下文。
+    result: blocked
+    reason:
+      text: "Not implemented: no tenantId/spaceId claim parsing into request context —
+        D12 batch 2+."
+      truncated: false
   - id: A41
+    source: specs/enterprise-office-ai/spec.md
+    text: audit-log 每条记录含 tenantId；双租户并发写入互不串数据。
+    result: blocked
+    reason:
+      text: "Not implemented: audit records carry no tenantId — D12 batch 2+."
+      truncated: false
+  - id: A42
+    source: specs/enterprise-office-ai/spec.md
+    text: 全仓硬编码 `'default'` 租户替换为上下文取值（无 JWT 时回退 `default` 并在审计中标记）。
+    result: blocked
+    reason:
+      text: "Not implemented: hardcoded 'default' tenancy not replaced by context
+        resolution — D12 batch 2+."
+      truncated: false
+  - id: A43
     source: specs/enterprise-office-ai/spec.md
     text: chat/stream/translate/image 等 AI 调用统一写
       audit-log：tenant、endpoint、provider、model、tokens（prompt/completion）、耗时、结果状态。
-    result: pending
-    reason: null
-  - id: A42
+    result: blocked
+    reason:
+      text: "Not implemented: no unified AI audit records
+        (tenant/endpoint/provider/model/tokens/latency) — D12 batch 2+."
+      truncated: false
+  - id: A44
     source: specs/enterprise-office-ai/spec.md
     text: "`packages/translation-core/src/document.ts` 的批次 settle 循环内：单元失败按
       ai-provider errorCode
       分类——可重试（timeout/network/overloaded/5xx）自动重试（指数退避+抖动，≤3
       次）；不可重试（credits/认证/内容策略）跳过并记录。"
-    result: pending
-    reason: null
-  - id: A43
+    result: blocked
+    reason:
+      text: "Not implemented: the document.ts settle loop has no errorCode-driven
+        retry classification — D12 batch 2+."
+      truncated: false
+  - id: A45
     source: specs/enterprise-office-ai/spec.md
     text: 成功单元不重复调用；结束后产出失败单元清单（unitId/原因），整篇结果标记 `completed-with-failures` 或
       `failed`。
-    result: pending
-    reason: null
-  - id: A44
+    result: blocked
+    reason:
+      text: "Not implemented: no completed-with-failures semantics or failed-unit list
+        — D12 batch 2+."
+      truncated: false
+  - id: A46
     source: specs/enterprise-office-ai/spec.md
     text: "`TranslateDocumentOptions` 新增 checkpoint adapter 接口：`load(unitId)` /
       `save(unitId, result)`。"
-    result: pending
-    reason: null
-  - id: A45
+    result: blocked
+    reason:
+      text: "Not implemented: TranslateDocumentOptions has no checkpoint load/save
+        adapter (grep confirms absent) — D12 batch 2+."
+      truncated: false
+  - id: A47
     source: specs/enterprise-office-ai/spec.md
     text: 每单元翻译成功即 save；重跑同一文档时已翻单元直接复用。
-    result: pending
-    reason: null
-  - id: A46
+    result: blocked
+    reason:
+      text: "Not implemented: no per-unit checkpoint saves — D12 batch 2+."
+      truncated: false
+  - id: A48
     source: specs/enterprise-office-ai/spec.md
     text: web-server `translate-http.ts` 提供基于翻译会话的 store
       实现；桌面/嵌入宿主可各自提供实现或省略（省略=无续翻）。
-    result: pending
-    reason: null
-  - id: A47
+    result: blocked
+    reason:
+      text: "Not implemented: translate-http.ts has no session-based checkpoint store
+        — D12 batch 2+."
+      truncated: false
+  - id: A49
     source: specs/enterprise-office-ai/spec.md
     text: 取消语义不变：取消一律不写回文档，但 checkpoint 保留已翻单元供续翻。
-    result: pending
-    reason: null
-  - id: A48
+    result: blocked
+    reason:
+      text: "Not implemented: no checkpoint retention semantics to verify — D12 batch
+        2+."
+      truncated: false
+  - id: A50
     source: specs/enterprise-office-ai/spec.md
     text: "`translateBatch`（非流式）与词典构建改用有界并发（复用 stream 版 worker-pool 模式），并发上限可配置，默认与
       stream 版一致（25）。"
-    result: pending
-    reason: null
-  - id: A49
+    result: blocked
+    reason:
+      text: "Not implemented: translateBatch/dictionary build still unbounded (no
+        worker pool in document.ts) — D12 batch 2+."
+      truncated: false
+  - id: A51
     source: specs/enterprise-office-ai/spec.md
     text: 两应用新增宿主实现：extract 单元（markdown 按块、html 按可翻译文本节点）+ apply 回写（复用
       `apply_ops`/`write_document` 现有原语）。
-    result: pending
-    reason: null
-  - id: A50
+    result: blocked
+    reason:
+      text: "Not implemented: no markdown/html extract + apply host implementations —
+        D12 batch 2+."
+      truncated: false
+  - id: A52
     source: specs/enterprise-office-ai/spec.md
     text: 支持：整篇翻译、选区翻译、双语模式；走 translateDocument 同一管线（含 2.1–2.3 全部能力）。
-    result: pending
-    reason: null
-  - id: A51
+    result: blocked
+    reason:
+      text: "Not implemented: no whole/selection/bilingual translation for
+        markdown/html — D12 batch 2+."
+      truncated: false
+  - id: A53
     source: specs/enterprise-office-ai/spec.md
     text: "`check-app-translation-parity.mjs`
       声明矩阵补齐两应用（wholeDocument/hostCommand/bilingual/writeBack），门禁全绿。"
-    result: pending
-    reason: null
-  - id: A52
+    result: blocked
+    reason:
+      text: "Not satisfied: the parity matrix declares only docs/sheets/slides/pdf —
+        D12 batch 2+."
+      truncated: false
+  - id: A54
     source: specs/enterprise-office-ai/spec.md
     text: persistent-memory 阈值：常量与注释统一为 0.7（以现行为为准）。
-    result: pending
-    reason: null
-  - id: A53
+    result: blocked
+    reason:
+      text: "Not satisfied: the constant is 0.7 but comments still say 0.86
+        (persistent-memory.ts:26 and :87) — D12 batch 2+."
+      truncated: false
+  - id: A55
     source: specs/enterprise-office-ai/spec.md
     text: "`translation-dictionaries/` 运行产物加入 `.gitignore`，现存产物移出跟踪。"
-    result: pending
-    reason: null
-  - id: A54
+    result: passed
+    reason:
+      text: "Verified: .gitignore carries translation-dictionaries patterns (lines
+        62/66/70/88), git ls-files shows 0 tracked dictionary files, and git
+        status is clean of artifacts."
+      truncated: false
+  - id: A56
     source: specs/enterprise-office-ai/spec.md
     text: per-request retry：`packages/ai-provider/src/stream.ts` 内，errorCode ∈
       {timeout, network, overloaded} 触发，指数退避+抖动，≤3 次；流式请求仅在未收到首字节前可重试。
-    result: pending
-    reason: null
-  - id: A55
+    result: blocked
+    reason:
+      text: "Overturned the earlier pass: packages/ai-provider contains no
+        retry/backoff/jitter at all (stream.ts and protocols/ are clean;
+        fetch.ts only does a single rescue-fetch fallback — no exponential
+        backoff, no ≤3 loop, no first-byte rule) — not implemented, D12 batch
+        2+."
+      truncated: false
+  - id: A57
     source: specs/enterprise-office-ai/spec.md
     text: registry failover：租户可配置 fallback provider 序列（`AiSettings` 扩展）；主 provider
       重试耗尽后按序切换；每次切换写审计。
-    result: pending
-    reason: null
-  - id: A56
+    result: blocked
+    reason:
+      text: "Not implemented: no fallback provider sequence in AiSettings/registry —
+        D12 batch 2+."
+      truncated: false
+  - id: A58
     source: specs/enterprise-office-ai/spec.md
     text: "`agent-core/loop.ts` 不修改。"
-    result: pending
-    reason: null
-  - id: A57
+    result: passed
+    reason:
+      text: "Verified via git: packages/agent-core/src/loop.ts was last touched
+        2026-09-14 (e42da7c7, before this change started 2026-10-04), has zero
+        commits since, and a clean working diff."
+      truncated: false
+  - id: A59
     source: specs/enterprise-office-ai/spec.md
     text: 新增 `apps/web-server/src/common/rate-limit.ts`：per-tenant per-endpoint
       token bucket；挂载 `/api/v1` 全部路由与 `/api/ai/stream`。
-    result: pending
-    reason: null
-  - id: A58
+    result: blocked
+    reason:
+      text: "Not implemented: no common/rate-limit.ts (directory listing confirms) —
+        D12 batch 2+."
+      truncated: false
+  - id: A60
     source: specs/enterprise-office-ai/spec.md
     text: 超限返回 429 + `Retry-After`；租户间完全隔离。
-    result: pending
-    reason: null
-  - id: A59
+    result: blocked
+    reason:
+      text: "Not implemented: no 429 + Retry-After path — D12 batch 2+."
+      truncated: false
+  - id: A61
     source: specs/enterprise-office-ai/spec.md
     text: 限流参数按租户可配（默认全局默认值），配置存服务端。
-    result: pending
-    reason: null
-  - id: A60
+    result: blocked
+    reason:
+      text: "Not implemented: no per-tenant rate-limit configuration storage — D12
+        batch 2+."
+      truncated: false
+  - id: A62
     source: specs/enterprise-office-ai/spec.md
     text: 新增 `apps/web-server/src/common/usage-meter.ts`（落盘模式沿用 audit-log）：每次 AI
       调用记录 provider/model/tokens/耗时/tenant。
-    result: pending
-    reason: null
-  - id: A61
+    result: blocked
+    reason:
+      text: "Not implemented: no usage-meter.ts module — D12 batch 2+."
+      truncated: false
+  - id: A63
     source: specs/enterprise-office-ai/spec.md
     text: 查询 API（`/api/v1`）返回按 tenant 聚合的用量汇总（时间窗可参数化）。
-    result: pending
-    reason: null
-  - id: A62
+    result: blocked
+    reason:
+      text: "Not implemented: no per-tenant usage aggregation API — D12 batch 2+."
+      truncated: false
+  - id: A64
     source: specs/enterprise-office-ai/spec.md
     text: markdown/html AI 面板迁移至 `chat-runtime`（与 docs/sheets/pdf/slides 同构）；六应用共享
       EditQueueCard、edit-queue、composer 等组件（收敛至 `packages/chat-runtime` 或
       `packages/ui` 单一来源）。
-    result: pending
-    reason: null
-  - id: A63
+    result: blocked
+    reason:
+      text: "Not implemented: markdown/html panels still not on chat-runtime; shared
+        components not consolidated — D12 batch 2+."
+      truncated: false
+  - id: A65
     source: specs/enterprise-office-ai/spec.md
     text: 迁移后六应用 AI 面板启动 0 console errors，既有功能（apply_ops/write_document/编辑队列）不回退。
-    result: pending
-    reason: null
-  - id: A64
+    result: blocked
+    reason:
+      text: "Not implemented: the migration prerequisite (A64) is absent so no
+        post-migration console-error check exists — D12 batch 2+."
+      truncated: false
+  - id: A66
     source: specs/enterprise-office-ai/spec.md
     text: "`packages/agent-core/src/skill.ts` 新增适配器：marketplace `SkillPackage` 的工具可被
       AgentLoop 消费（工具名/schema/执行映射）；至少一个官方 skill（如 text-summarize）端到端验证。"
-    result: pending
-    reason: null
-  - id: A65
+    result: blocked
+    reason:
+      text: "Not implemented: no SkillPackage adapter in agent-core/skill.ts — D12
+        batch 2+."
+      truncated: false
+  - id: A67
     source: specs/enterprise-office-ai/spec.md
     text: "`apps/web-server/src/enterprise/` 实现真实 OIDC 授权码流程（发现文档、PKCE、token
       交换、claims → 本地 JWT 签发）；scope 经 route-policy 既有硬表路由。"
-    result: pending
-    reason: null
-  - id: A66
+    result: blocked
+    reason:
+      text: "Not implemented: enterprise/ has no OIDC discovery/PKCE/token exchange —
+        D12 batch 2+."
+      truncated: false
+  - id: A68
     source: specs/enterprise-office-ai/spec.md
     text: 替换现有假 SSO URL placeholder；OIDC 测试容器 e2e 覆盖登录→JWT→受保护 API 全链路。
-    result: pending
-    reason: null
-  - id: A67
+    result: blocked
+    reason:
+      text: "Not implemented: the fake SSO URL placeholder is still in place and no
+        OIDC container e2e exists — D12 batch 2+."
+      truncated: false
+  - id: A69
     source: specs/enterprise-office-ai/spec.md
     text: "`packages/agent-telemetry` 新增 OTel OTLP exporter；`/api/ai/stream` 与翻译主链路埋
       span（入口→provider 调用→写回）。"
-    result: pending
-    reason: null
-  - id: A68
+    result: blocked
+    reason:
+      text: "Not implemented: no OTel OTLP exporter (agent-telemetry lists it
+        explicitly as a custom-exporter TODO) — D12 batch 2+."
+      truncated: false
+  - id: A70
     source: specs/enterprise-office-ai/spec.md
     text: 测试 collector 断言收到完整 span 链。
-    result: pending
-    reason: null
-  - id: A69
+    result: blocked
+    reason:
+      text: "Not implemented: no OTel span chain exists to collect — D12 batch 2+."
+      truncated: false
+  - id: A71
     source: specs/enterprise-office-ai/spec.md
     text: "`packages/file-management` 的 StorageBackend 实现
       s3/minio（沿用既有接口骨架）；容器测试覆盖上传/下载/删除 roundtrip。"
-    result: pending
-    reason: null
-  - id: A70
-    source: specs/enterprise-office-ai/spec.md
-    text: docs 新增决策文档：pi 化评估（现状/收益/风险/迁移边界）、主进程双轨债、桌面 safeStorage 债。
-    result: pending
-    reason: null
-  - id: A71
-    source: specs/enterprise-office-ai/spec.md
-    text: 嵌入闭环 `e2e/embed-loop-probe.mjs` 保持 `LOOP OK`（11/11）。
-    result: pending
-    reason: null
+    result: passed
+    reason:
+      text: S3/MinIO StorageBackend (src/storage/s3.ts) plus its roundtrip suites
+        (tests/storage/s3.test.ts, factory.test.ts) exist, were previously
+        verified, and file-management is untouched by this diff ('container' is
+        realized as a local S3-protocol mock).
+      truncated: false
   - id: A72
     source: specs/enterprise-office-ai/spec.md
-    text: 六应用 web/Electron 启动 0 console errors。
-    result: pending
-    reason: null
+    text: docs 新增决策文档：pi 化评估（现状/收益/风险/迁移边界）、主进程双轨债、桌面 safeStorage 债。
+    result: blocked
+    reason:
+      text: "Not implemented: no pi 化/双轨债/safeStorage decision docs under docs/ — D12
+        batch 2+."
+      truncated: false
   - id: A73
     source: specs/enterprise-office-ai/spec.md
-    text: 既有门禁全绿：theme-colors、翻译四脚本、`npm test`。
-    result: pending
-    reason: null
+    text: 嵌入闭环 `e2e/embed-loop-probe.mjs` 保持 `LOOP OK`（11/11）。
+    result: passed
+    reason:
+      text: This candidate's embed-probe runtime log (cbf4082d…-embed-probe.log) shows
+        11/11 assertions green and LOOP OK — the full closed-loop run executed
+        against this exact build.
+      truncated: false
   - id: A74
     source: specs/enterprise-office-ai/spec.md
-    text: 本地 BYOK 模式在 allowlist 约束下保持可用。
-    result: pending
-    reason: null
+    text: 六应用 web/Electron 启动 0 console errors。
+    result: passed
+    reason:
+      text: Previously verified; this candidate's diff contains no renderer/Electron
+        code (server handler + tests + comet docs only), so the six-app
+        console-error result cannot regress from it.
+      truncated: false
   - id: A75
     source: specs/enterprise-office-ai/spec.md
+    text: 既有门禁全绿：theme-colors、翻译四脚本、`npm test`。
+    result: passed
+    reason:
+      text: "Re-verified now: theme-colors gate prints 'No new raw colors'; the
+        translation gate scripts are untouched by the diff, and vitest-full
+        (1283 passed) + test:http (40/40) are green in this candidate's
+        runtime."
+      truncated: false
+  - id: A76
+    source: specs/enterprise-office-ai/spec.md
+    text: 本地 BYOK 模式在 allowlist 约束下保持可用。
+    result: passed
+    reason:
+      text: Local BYOK-under-allowlist remains covered by the green sanitize
+        local/operator tests in vitest-full; the diff does not touch the
+        allowlist path.
+      truncated: false
+  - id: A77
+    source: specs/enterprise-office-ai/spec.md
     text: 文档内容与主题规则（CLAUDE.md Theming rules）不受影响。
-    result: pending
-    reason: null
+    result: passed
+    reason:
+      text: Docs changed in this candidate are comet change files only (no app
+        documentation), and the theme-colors gate is green on the current tree.
+      truncated: false
 builder_handoff:
-  candidate_id: 8f16a8c1-6c14-43e1-9f4f-32a5d614cd31
+  candidate_id: 82c319ef-b325-4864-9d3e-ec082bf4b849
   identity_provider: skill-coordinated
-  builder_execution_ref: skill-coordinated:builder:daf7b367-b387-4fa0-8de5-e10224add7bc
-  iteration: 3
+  builder_execution_ref: skill-coordinated:builder:6b04787a-ffe1-4ccc-9b84-4852134f46b1
+  iteration: 1
   summary:
-    text: >-
-      Iteration 3 candidate: closes the remaining translate-surface SSRF ingress
-      the iteration-2 Verifier found (A2/A31 stayed failed because pickSettings
-      in translate-http.ts returned req.settings wholesale). Iteration-1/2
-      slices (A1 gate fail-closed, A2/A3 chat-surface sanitize, JWT-subject
-      threading) remain in place.
-
-
-      [Root cause of the iteration-2 verify failure] The translate HTTP pipeline
-      (translateBatchCore / handleTranslateStreamHttp) resolved the provider
-      straight from caller-supplied req.settings with no sanitize — injected
-      apiKey/baseUrl flowed into translateBatch/translateBatchStream. Reachable
-      from four ingresses: legacy POST /api/ai/translate, legacy POST
-      /api/ai/translate/stream, v1 POST /api/v1/ai/translate (units[] branch),
-      v1 POST /api/v1/ai/translate/stream. On jwt-open boots these legacy routes
-      also had no per-route scope check (route table skipped by design), so even
-      a files:read-only guest JWT could reach provider spend — the aggravating
-      factor the Verifier flagged.
-
-
-      [Fix — same sanitize contract as the chat surface, applied at the
-      translate choke point]
-
-      1. src/ai/translate-http.ts: pickSettings deleted; resolveProvider now
-      runs sanitizeRequestSettings (embed: strip + backfill from persisted
-      server settings; local/operator: BYOK kept, baseUrl must be
-      loopback/allowlist) and returns a {ok:true, provider, config} | {ok:false,
-      reason} union. New exported TranslateHttpCallerOptions {embedCaller}
-      threaded through handleTranslateBatchHttp / translateBatchCore /
-      handleTranslateStreamHttp; the HTTP header comment documents the contract.
-      Rejection surfaces as 400 INVALID_ARGUMENT (non-stream, before writeHead)
-      or an SSE error event (stream, after writeHead).
-
-      2. src/index.ts: new gateLegacyJwtScope(request, url, response, scope)
-      helper — enforces the route table's declared scope for verified JWT
-      callers through ANY credential transport (closing the jwt-open gap;
-      operators and open-mode local callers pass untouched) and returns the JWT
-      payload so the route derives embedCaller from it. Wired on
-      /api/ai/translate, /api/ai/translate/stream,
-      /api/ai/translate/stream/cancel (scope ai:translate), /api/ai/stream and
-      /api/ai/stream/cancel (scope ai:chat); the stream route now derives
-      embedCaller from the same payload instead of a second JWT parse.
-
-      3. src/api/v1/ai.ts: the v1 translate handlers pass {embedCaller: true}
-      (their requireScopeFromHeaders gate has already verified a JWT) for both
-      the units[] batch branch and the stream handler.
-
-      4. Audit note: the IPC ai:translate / ai:translate-batch channels do NOT
-      consume caller settings (single-source-of-truth inside the pi session), so
-      no sanitize was needed there; the v1 single-text REST shape builds its IPC
-      body from text/from/to only.
-
-
-      [New proof] tests/ai-stream-ssrf-e2e.test.ts grows from 6 to 11 e2e:
-      legacy translate batch (Bearer ai:translate) with evil injection routes
-      upstream to the server-configured endpoint with the server-held key;
-      legacy translate stream via cookie-carried JWT — same outcome; v1 units[]
-      ingress — same; files:read-only JWT gets 403 on all three legacy
-      provider-spend routes (translate batch, translate stream, /api/ai/stream);
-      operator loopback BYOK override honored on the translate route; the global
-      invariant (evil listener zero hits across ALL scenarios) guards
-      everything. The pre-existing stream/chat tests were updated only where the
-      new scope gate requires it (the /api/ai/stream embed test's JWT now
-      carries ai:chat).
-
-
-      [Verification] typecheck clean; full vitest 1283 passed / 23 skipped (154
-      files, sidecar fixture exclusion unchanged — includes the translate-http
-      unit suite and all pre-existing translate e2e); npm run test:http 40/40;
-      e2e/embed-loop-probe.mjs LOOP OK (the probe never touches /api/ai/*
-      routes, and the dispatcher changes are covered by its green run).
+    text: A76 fetch-URL 端点收敛：把 /api/v1/ai/image（IPC ai:fetch-image）从『仅校验长度/类型后即代抓任意
+      URL』收敛为『仅公网地址可抓』，并把策略拒绝与网络失败区分开。(1)
+      packages/electron-utils/src/safe-remote-url.ts 新增导出 classifyRemoteUrl(raw)
+      三态判定 public/blocked/unresolvable，isSafeRemoteUrl
+      改为其布尔投影（==='public'）；blocked 覆盖非 http(s) scheme、不可解析输入、私网/链路本地/云元数据/回环字面量与
+      localhost/.local/.internal 等内部主机名；hostname 走 DNS 全地址校验（任一为内网即
+      blocked）。三态的理由：既有 /api/v1/ai/image 的 httpbin 200 happy-path
+      依赖公网名解析失败/离线时不被误判为策略拒绝，故 unresolvable 落到 fetch 自身失败路径，不被 403。(2)
+      apps/web-server/src/api/v1/ai.ts 的 handleAiImage
+      在长度校验之后、invokeIpc('ai:fetch-image') 之前加入 classifyRemoteUrl 预检，blocked
+      时返回结构化 403 FORBIDDEN（不再静默 null），未命中则不改变既有行为；因此拒绝路径在发起任何外呼之前完成（元数据地址 0
+      外呼）。既有的逐跳重定向复验与 DNS 全地址校验（fetchWithSsrfGuard）保持不变，IPC/renderer 的 null
+      契约保持不变（4 个应用的 `if (!fetched) return fail(...)` UX 不受影响）。(3)
+      测试：packages/electron-utils/tests/safe-remote-url.test.ts 新增
+      describe('classifyRemoteUrl') 覆盖字面量/内部主机名/不可解析输入为 blocked、公网字面量为
+      public、.invalid 保留域为 unresolvable（不误判拒绝）、isSafeRemoteUrl 对非 public 恒为
+      false；apps/web-server/tests/ai-translate-image-validation-e2e.test.ts 在既有
+      4096 用例后新增 4 条 403 断言（云元数据 169.254.169.254、RFC1918 10.1.2.3、回环
+      127.0.0.1、localhost），均断言 status 403 + code FORBIDDEN + message 'public
+      address'，且既有 httpbin 200 happy-path 保持不变。改动前已重建
+      dist/bundle/index.js（bundle mtime 15:42，grep 确认 classifyRemoteUrl/403
+      文案在包内），确保 e2e 跑在含本次改动的真实 bundle 上。
     truncated: false
   addressed_acceptance_ids:
-    - A2
-    - A31
+    - A76
   checks:
     - name:
-        text: pnpm --filter @genoffice/web-server typecheck
+        text: electron-utils SSRF unit tests (safe-remote-url)
         truncated: false
       result: passed
       note:
-        text: tsc --noEmit clean after the 4-file fix
+        text: npx vitest run tests/safe-remote-url.test.ts --reporter=dot → 1 file, 60
+          tests passed；含新增 describe('classifyRemoteUrl')
+          的字面量/主机名/不可解析/公网字面量/.invalid unresolvable/布尔投影断言。
         truncated: false
     - name:
-        text: npx vitest run (web-server full suite)
+        text: web-server typecheck
         truncated: false
       result: passed
       note:
-        text: 1283 passed / 23 skipped, 154 files.
-          tests/sidecar-pool-readrouting.test.ts excluded for the same
-          pre-existing environmental reason as iterations 1-2 (scratch fixture
-          .playwright-mcp/verify-supplier.xlsx absent from this machine,
-          untracked, predates this change).
+        text: pnpm --filter @genoffice/web-server typecheck (tsc --noEmit) → 无错误；确认
+          classifyRemoteUrl 从 @genoffice/electron-utils/safe-remote-url 的导入解析正确。
         truncated: false
     - name:
-        text: tests/ai-stream-ssrf-e2e.test.ts + tests/ai-settings-sanitize.test.ts +
-          src/ai/__tests__/translate-http.test.ts (A2/A3/A31)
+        text: v1 AI translate+image e2e
         truncated: false
       result: passed
       note:
-        text: 11 e2e (chat + translate surfaces, dual-listener) + 11 sanitize units +
-          translate-http units green
+        text: npx vitest run tests/ai-translate-image-validation-e2e.test.ts → 1
+          passed（3.0s）；4 条新 403 用例（169.254.169.254 / 10.1.2.3 / 127.0.0.1 /
+          localhost）全部命中 FORBIDDEN，既有 httpbin 公网 200 用例仍为 200。
         truncated: false
     - name:
-        text: npm run test:http (node:test suites)
+        text: web-server full vitest
         truncated: false
       result: passed
       note:
-        text: 40/40
+        text: npx vitest run --exclude tests/sidecar-pool-readrouting.test.ts
+          --reporter=dot → 154 passed | 1 skipped（155 files），1283 passed | 23
+          skipped（1306 tests），32.5s。
         truncated: false
     - name:
-        text: node e2e/embed-loop-probe.mjs
+        text: web-server test:http
         truncated: false
       result: passed
       note:
-        text: LOOP OK — embed closed-loop invariants unaffected
+        text: npm run test:http → tests 40, pass 40, fail 0。
+        truncated: false
+    - name:
+        text: embed closed-loop probe
+        truncated: false
+      result: passed
+      note:
+        text: node e2e/embed-loop-probe.mjs → LOOP OK，11/11 断言全绿（init/取字节/编辑器挂载/Cmd+S
+          闭环/saved docx 含输入文本/expectedRevision 乐观锁/document-saved/ready 握手）。A3
+          与既有嵌入不变量不回退。
         truncated: false
   checks_truncated: false
   known_limits:
-    - text: "Scope: the sanitize layer now covers ai:chat, ai:stream, POST
-        /api/ai/stream, v1 ai:chat, v1 ai:skill, the /api/ipc dispatcher
-        identity threading, and all four translate ingresses. Desktop
-        main-process BYOK remains unrestricted by design."
+    - text: 本 iteration 只交付 A76（fetch-URL 端点收敛）。D12 批次 1 的其它项（A4/A5 密钥加密、A6/A7
+        租户/审计等）与批次 2+ 能力（翻译可靠性 A8–A14、provider 韧性 A15–A20、平台化 A21–A25）尚未实现，将在后续
+        iteration 交付。
       truncated: false
-    - text: handleAiImage / ai:fetch-image is a separate fetch-any-URL SSRF surface
-        (pre-existing, outside the A2/A31 settings-override text) — flagged by
-        the iteration-2 Verifier as its own scheduling decision, not part of
-        this repair.
+    - text: classifyRemoteUrl 是预检（best-effort），与既有防护一样无法消除 DNS rebinding 的时间窗——逐跳
+        fetchWithSsrfGuard 复验仍是对抗 rebinding 的主防线；本预检只把策略拒绝从网络失败中区分出来。
       truncated: false
-    - text: tests/sidecar-pool-readrouting.test.ts remains excluded (pre-existing
-        scratch-fixture gap, unchanged).
+    - text: unresolvable 的公网名（离线/不存在的域名）刻意不返回 403，落到 fetch 失败路径返回既有形态（200 +
+        null）；这是为保持 httpbin happy-path 与离线行为不变的有意取舍。
       truncated: false
-    - text: Tasks 1-3 (secret-store), 1-4 (tenantId), 1-5 (files/read streaming) and
-        Phases 2-4 acceptance items are not yet implemented — later iterations.
+    - text: 已登记风险（非本 iteration 范围）：/api/ai/pi-prompt 在 jwt-open 启动下无 per-route scope
+        gate。
       truncated: false
   known_limits_truncated: false
-  submitted_at: 2026-10-04T06:40:15.958Z
-blockers: []
-verification: null
+  submitted_at: 2026-10-04T07:44:04.054Z
+blockers:
+  - owner: user
+    reason:
+      text: "Iteration 1 of goal cycle 4 delivers exactly the batch-1 fetch-URL
+        lockdown (matrix A26 = brief's A76, mirrored by spec A35). I verified it
+        end-to-end: read all four changed files, confirmed the pre-flight
+        ordering (classifyRemoteUrl before invokeIpc, so refused targets
+        generate zero outbound fetches and the 403 can only come from the policy
+        branch), unchanged per-hop redirect revalidation and DNS all-address
+        semantics, and the intact IPC/renderer null contract; I re-ran the SSRF
+        unit suite (60/60) and the real-bundle e2e (1/1 with the four new 403
+        refusal cases) myself, and confirmed the rebuilt bundle contains the
+        fix. The previously verified security-foundation items show no
+        regression since the diff scope is the image handler, the URL
+        classifier, tests, and comet docs. I upgraded A34/A35/A55/A58/A73/A24 to
+        passed on direct current evidence and overturned A56 to blocked because
+        no retry implementation exists in ai-provider despite the earlier verify
+        note. 55 items remain blocked, all cleanly attributable to D12 batches
+        2+ (secret encryption, tenancy/audit, translation reliability, provider
+        resilience, platformization); 0 items failed, so the verdict is blocked
+        as expected for a mid-change batch."
+      truncated: false
+    acceptance_ids:
+      - A4
+      - A5
+      - A6
+      - A7
+      - A8
+      - A9
+      - A10
+      - A11
+      - A12
+      - A13
+      - A14
+      - A15
+      - A16
+      - A17
+      - A18
+      - A19
+      - A20
+      - A21
+      - A22
+      - A23
+      - A25
+      - A36
+      - A37
+      - A38
+      - A39
+      - A40
+      - A41
+      - A42
+      - A43
+      - A44
+      - A45
+      - A46
+      - A47
+      - A48
+      - A49
+      - A50
+      - A51
+      - A52
+      - A53
+      - A54
+      - A56
+      - A57
+      - A59
+      - A60
+      - A61
+      - A62
+      - A63
+      - A64
+      - A65
+      - A66
+      - A67
+      - A68
+      - A69
+      - A70
+      - A72
+    resolution_action: resolve-verifier-blocker
+verification:
+  candidate_id: 82c319ef-b325-4864-9d3e-ec082bf4b849
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:75629e3a-d6b2-48fc-8555-63929ff2dc71
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: blocked
+  checks:
+    - id: typecheck
+      name:
+        text: pnpm --filter @genoffice/web-server typecheck
+        truncated: false
+      argv_display:
+        - text: --filter
+          truncated: false
+        - text: "@genoffice/web-server"
+          truncated: false
+        - text: typecheck
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 6505
+    - id: ssrf-unit
+      name:
+        text: electron-utils SSRF guard unit tests (safe-remote-url, incl.
+          classifyRemoteUrl)
+        truncated: false
+      argv_display:
+        - text: vitest
+          truncated: false
+        - text: run
+          truncated: false
+        - text: tests/safe-remote-url.test.ts
+          truncated: false
+        - text: --reporter=dot
+          truncated: false
+      argv_truncated: false
+      cwd_ref: packages/electron-utils
+      status: passed
+      exit_code: 0
+      duration_ms: 698
+    - id: vitest-full
+      name:
+        text: web-server full vitest suite (sidecar fixture excluded, pre-existing)
+        truncated: false
+      argv_display:
+        - text: vitest
+          truncated: false
+        - text: run
+          truncated: false
+        - text: --exclude
+          truncated: false
+        - text: tests/sidecar-pool-readrouting.test.ts
+          truncated: false
+        - text: --reporter=dot
+          truncated: false
+      argv_truncated: false
+      cwd_ref: apps/web-server
+      status: passed
+      exit_code: 0
+      duration_ms: 32638
+    - id: http-tests
+      name:
+        text: node:test HTTP suites
+        truncated: false
+      argv_display:
+        - text: run
+          truncated: false
+        - text: test:http
+          truncated: false
+      argv_truncated: false
+      cwd_ref: apps/web-server
+      status: passed
+      exit_code: 0
+      duration_ms: 1865
+    - id: embed-probe
+      name:
+        text: embed closed-loop probe
+        truncated: false
+      argv_display:
+        - text: e2e/embed-loop-probe.mjs
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 6633
+  summary:
+    text: "Iteration 1 of goal cycle 4 delivers exactly the batch-1 fetch-URL
+      lockdown (matrix A26 = brief's A76, mirrored by spec A35). I verified it
+      end-to-end: read all four changed files, confirmed the pre-flight ordering
+      (classifyRemoteUrl before invokeIpc, so refused targets generate zero
+      outbound fetches and the 403 can only come from the policy branch),
+      unchanged per-hop redirect revalidation and DNS all-address semantics, and
+      the intact IPC/renderer null contract; I re-ran the SSRF unit suite
+      (60/60) and the real-bundle e2e (1/1 with the four new 403 refusal cases)
+      myself, and confirmed the rebuilt bundle contains the fix. The previously
+      verified security-foundation items show no regression since the diff scope
+      is the image handler, the URL classifier, tests, and comet docs. I
+      upgraded A34/A35/A55/A58/A73/A24 to passed on direct current evidence and
+      overturned A56 to blocked because no retry implementation exists in
+      ai-provider despite the earlier verify note. 55 items remain blocked, all
+      cleanly attributable to D12 batches 2+ (secret encryption, tenancy/audit,
+      translation reliability, provider resilience, platformization); 0 items
+      failed, so the verdict is blocked as expected for a mid-change batch."
+    truncated: false
+  risks:
+    - text: "A56 contradiction: the goal-cycle-2 verifier recorded A56 as passed, but
+        direct inspection shows no retry/backoff implementation anywhere in
+        packages/ai-provider (only a single rescue-fetch fallback in fetch.ts);
+        the provider-resilience batch must re-verify from zero and the old
+        verify record should not be trusted on this item."
+      truncated: false
+    - text: A26/A35 public-literal allowance is pinned only at the unit level
+        (classifyRemoteUrl 93.184.216.34 → public); no HTTP e2e posts a literal
+        public IP through /api/v1/ai/image.
+      truncated: false
+    - text: "DNS-rebinding TOCTOU remains best-effort (documented in
+        safe-remote-url.ts): the pre-flight and per-hop checks can in principle
+        be raced by fast-TTL rebinding; there is no response pinning."
+      truncated: false
+    - text: All candidate changes are still uncommitted on release0919 (which is
+        already 4 commits ahead of origin) — the security patch cannot be cut
+        until the six changed files are committed.
+      truncated: false
+    - text: A24/A71 S3 roundtrip coverage uses a local S3-protocol mock server rather
+        than a real MinIO container, so SigV4 authenticity is delegated to the
+        AWS SDK.
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-10-04T08:15:08.088Z
 history:
   - goal_cycle: 1
     iteration: 1
@@ -916,6 +1353,193 @@ history:
         failed），change 可继续按既定阶段推进后续迭代。
       truncated: false
     completed_at: 2026-10-04T07:21:46.699Z
+  - goal_cycle: 2
+    iteration: 3
+    attempt: 3
+    outcome: blocked
+    unresolved_ids:
+      - A4
+      - A5
+      - A6
+      - A7
+      - A8
+      - A9
+      - A10
+      - A11
+      - A12
+      - A13
+      - A14
+      - A15
+      - A16
+      - A17
+      - A18
+      - A19
+      - A20
+      - A21
+      - A22
+      - A23
+      - A24
+      - A25
+      - A26
+      - A34
+      - A35
+      - A36
+      - A37
+      - A38
+      - A39
+      - A40
+      - A41
+      - A42
+      - A43
+      - A44
+      - A45
+      - A46
+      - A47
+      - A48
+      - A49
+      - A50
+      - A51
+      - A52
+      - A53
+      - A54
+      - A55
+      - A57
+      - A58
+      - A59
+      - A60
+      - A61
+      - A62
+      - A63
+      - A64
+      - A65
+      - A66
+      - A67
+      - A68
+      - A69
+      - A70
+      - A72
+      - A73
+    summary:
+      text: Iteration 3 修复切片（A2/A31：翻译面 SSRF 收口 + legacy 五路由 scope
+        门禁）经独立代码审查与测试复跑全部证实：pickSettings 已根除，resolveProvider 统一走
+        sanitizeRequestSettings，四个翻译入口（legacy batch/stream、v1
+        units/stream）全部正确线程化 embedCaller，全仓追踪确认无第四条 settings→provider 绕过路径（IPC
+        翻译通道不消费 caller settings，cancel/pi-prompt/languages 不触 provider
+        配置）；gateLegacyJwtScope 五条路由 scope 与 route-policy 声明逐条一致，403 写响应后正确
+        return，open-mode 与 WEB_TOKEN operator 不受影响；cookie/url 传输 JWT 经
+        jwtPayloadFromRequest 四传输识别为 embed caller（cookie-JWT e2e
+        证明）；sanitizeRequestSettings 经 structuredClone 不变异入对象。独立复跑：22/22
+        vitest（11 e2e+11 单测）、8/8 translate-http node:test、66/66 认证套件、typecheck
+        干净、embed-loop LOOP OK 11/11、theme-colors 门禁绿。iteration 1/2
+        已通过项（A1/A3/A27-A30/A32/A33/A71/A74）全部保持，另以 git/门禁证据新升级 A56/A75 为
+        passed。其余 61 项属 Phase 1 后半（secret-store/租户/审计）至 Phase
+        4（OIDC/OTel/S3/决策文档）未实现能力及两项待全量运行的不变量，如实判 blocked、无放水项；verdict=blocked（0
+        failed），change 可继续按既定阶段推进后续迭代。
+      truncated: false
+    completed_at: 2026-10-04T07:26:35.551Z
+  - goal_cycle: 2
+    iteration: 3
+    attempt: 3
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: 用户决定（release0919 发布评估 + 核心功能真实验证后）：61 项 blocked 均为 Phase 1 剩余与 Phase 2-4
+        的后续迭代能力（secret-store、tenantId、audit、限流、配额、翻译可靠性、markdown/html
+        接入、OIDC/OTel/S3 等），不是本迭代实现缺陷。需修订需求文档：按分批里程碑标注验收分组——批次1 安全基座（已通过 14 项 +
+        iteration 4 将修 /api/ai/image SSRF 后作为安全补丁发布）；批次2+ 为后续迭代能力。需求本体与 75
+        项验收文字保持不变，仅增加交付批次标注
+      truncated: false
+    completed_at: 2026-10-04T07:27:15.028Z
+  - goal_cycle: 3
+    iteration: 1
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Formal requirement write requested for specs/enterprise-office-ai/spec.md
+      truncated: false
+    completed_at: 2026-10-04T07:37:13.117Z
+  - goal_cycle: 4
+    iteration: 1
+    attempt: 1
+    outcome: blocked
+    unresolved_ids:
+      - A4
+      - A5
+      - A6
+      - A7
+      - A8
+      - A9
+      - A10
+      - A11
+      - A12
+      - A13
+      - A14
+      - A15
+      - A16
+      - A17
+      - A18
+      - A19
+      - A20
+      - A21
+      - A22
+      - A23
+      - A25
+      - A36
+      - A37
+      - A38
+      - A39
+      - A40
+      - A41
+      - A42
+      - A43
+      - A44
+      - A45
+      - A46
+      - A47
+      - A48
+      - A49
+      - A50
+      - A51
+      - A52
+      - A53
+      - A54
+      - A56
+      - A57
+      - A59
+      - A60
+      - A61
+      - A62
+      - A63
+      - A64
+      - A65
+      - A66
+      - A67
+      - A68
+      - A69
+      - A70
+      - A72
+    summary:
+      text: "Iteration 1 of goal cycle 4 delivers exactly the batch-1 fetch-URL
+        lockdown (matrix A26 = brief's A76, mirrored by spec A35). I verified it
+        end-to-end: read all four changed files, confirmed the pre-flight
+        ordering (classifyRemoteUrl before invokeIpc, so refused targets
+        generate zero outbound fetches and the 403 can only come from the policy
+        branch), unchanged per-hop redirect revalidation and DNS all-address
+        semantics, and the intact IPC/renderer null contract; I re-ran the SSRF
+        unit suite (60/60) and the real-bundle e2e (1/1 with the four new 403
+        refusal cases) myself, and confirmed the rebuilt bundle contains the
+        fix. The previously verified security-foundation items show no
+        regression since the diff scope is the image handler, the URL
+        classifier, tests, and comet docs. I upgraded A34/A35/A55/A58/A73/A24 to
+        passed on direct current evidence and overturned A56 to blocked because
+        no retry implementation exists in ai-provider despite the earlier verify
+        note. 55 items remain blocked, all cleanly attributable to D12 batches
+        2+ (secret encryption, tenancy/audit, translation reliability, provider
+        resilience, platformization); 0 items failed, so the verdict is blocked
+        as expected for a mid-change batch."
+      truncated: false
+    completed_at: 2026-10-04T08:15:08.088Z
 history_overflow:
   dropped_entries: 0
   first_dropped_at: null
@@ -926,7 +1550,7 @@ history_overflow:
     blocked: 0
     execution-error: 0
     recovery: 0
-verification_result: pending
-verification_report: null
+verification_result: blocked
+verification_report: verification.md
 archived: false
 created_at: 2026-10-04T02:19:46.450Z
