@@ -16,10 +16,11 @@ distinction sees a 401 with no actionable error, which is why this page exists.
   default: with no `WEB_TOKEN` configured, a request with no valid credential
   answers 401 naming the misconfiguration, and `/health` reports
   `auth: "locked"`. The one exception: a verifying JWT (Gate 2's
-  `GENOFFICE_JWT_SECRET`) still admits and the Gate-2 route policy applies —
-  JWT-only embed deployments depend on this. Local dev / e2e restore the
-  historical open posture explicitly with `GENOFFICE_ALLOW_OPEN=1` (or
-  `true`) — a deliberate opt-in, never an accident of a forgotten variable.
+  `GENOFFICE_JWT_SECRET`) still admits — without the Gate-2 route table, under
+  the per-channel dispatcher scope checks, exactly as embed deployments have
+  always run. Local dev / e2e restore the historical open posture explicitly
+  with `GENOFFICE_ALLOW_OPEN=1` (or `true`) — a deliberate opt-in, never an
+  accident of a forgotten variable.
 - **Gate 1 set ⇒ every non-allowlisted `/api/*` request must carry the secret**,
   *in addition to* whatever Gate 2 wants. A valid JWT does not substitute for
   the shared secret, and the shared secret does not substitute for a JWT.
@@ -89,12 +90,13 @@ The three postures, as reported by `/health`'s `auth` field:
 | unset | `1` / `true` | `open` |
 
 In the locked posture a **verifying JWT still admits** (`resolveAuthority`
-falls back to `GENOFFICE_JWT_SECRET` verification), and the Gate-2 route policy
-applies to it exactly as on an armed boot. This is what keeps JWT-only embed
-deployments — Dataflarework's docker-compose runs `GENOFFICE_JWT_SECRET` with
-no `WEB_TOKEN` at all — working: "locked" means *no anonymous access*, not *no
-access*. With neither `WEB_TOKEN` nor a JWT secret configured, no candidate can
-verify and every request is locked.
+returns the `jwt-open` authority) without the Gate-2 route table — the
+per-channel dispatcher scope checks stay the policy, exactly as they were
+before this gate existed. This is what keeps JWT-only embed deployments —
+Dataflarework's docker-compose runs `GENOFFICE_JWT_SECRET` with no
+`WEB_TOKEN` at all — working: "locked" means *no anonymous access*, not *no
+access*. With neither `WEB_TOKEN` nor a JWT secret configured, no candidate
+can verify and every request is locked.
 
 A non-loopback `HOST` with `WEB_TOKEN` unset is a boot-time error regardless of
 `GENOFFICE_ALLOW_OPEN` (`collectStartupProblems`, `src/common/startup-checks.ts`):

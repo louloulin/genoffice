@@ -5,7 +5,9 @@ GenOffice 的 AI 平台在企业级形态下的完整行为规格。全部基建
 ## 1. 安全基座（认证与密钥）
 
 ### 1.1 认证 fail-closed
-- `WEB_TOKEN` 未配置时，`resolveAuthority` 不再返回 `open`：所有受保护端点（`/api/ai/stream`、`/api/ipc/*` AI 相关、`/api/v1/*`）对未认证请求返回 401，启动日志输出明确警告。
+- `WEB_TOKEN` 未配置时，`resolveAuthority` 不再返回 `open`：所有受保护端点（`/api/ai/stream`、`/api/ipc/*` AI 相关、`/api/v1/*`）对未认证请求返回 401，启动日志输出明确警告，`/health` 的 `auth` 字段报告 `locked`。
+- 唯一例外（见 brief D11）：配置了 `GENOFFICE_JWT_SECRET` 时，验证通过的 JWT 仍放行为 `jwt-open`——不走 route-policy 路由表，逐通道 `requireScopeFromHeaders` 仍是策略；JWT-only 嵌入部署（Dataflarework）行为不变，嵌入闭环保持 11/11。
+- 本地开发可用 `GENOFFICE_ALLOW_OPEN=1|true` 显式恢复历史 open 姿态（其他值 fail-closed）；`HOST` 非回环且无 `WEB_TOKEN` 时启动直接报错拒绝（`GENOFFICE_ALLOW_OPEN` 也不能豁免）。
 - 配置 `WEB_TOKEN` 后行为与现状一致（共享密钥即操作员）；JWT+scope 路由（route-policy 三态 authority）不变。
 
 ### 1.2 SSRF 分场景收敛

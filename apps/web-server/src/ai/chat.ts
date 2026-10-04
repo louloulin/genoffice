@@ -35,6 +35,7 @@ import {
 } from '@genoffice/ai-provider'
 import { listCodexModels } from '@genoffice/ai-provider/codex-app-server'
 import { InvalidArgumentError } from './errors'
+import { isEmbedCaller, sanitizeRequestSettings } from './settings-sanitize'
 import { fetchRemoteImage } from '@genoffice/electron-utils/remote-image'
 import { gskApiKey, hasGskAuth, gskLoginInfo } from '@genoffice/ai-search'
 
@@ -646,12 +647,23 @@ export function registerAiCoreHandlers(): void {
    * route through `chatForProvider` from `@genoffice/ai-provider` (same
    * call the Electron side uses — no duplicate logic).
    */
-  registerHandle('ai:chat', async (_event: unknown, request: unknown) => {
+  registerHandle('ai:chat', async (event: unknown, request: unknown) => {
     const req = request as AiChatRequest | undefined
     if (!req || typeof req.user !== 'string') {
       throw new InvalidArgumentError('ai:chat', 'expected { settings, system, user }')
     }
-    const incoming = req.settings || aiSettings
+    const sanitized = sanitizeRequestSettings({
+      embedCaller: isEmbedCaller(event),
+      requestSettings: req.settings,
+      serverSettings: aiSettings,
+    })
+    if (!sanitized.ok) {
+      return {
+        ok: false,
+        error: `AI settings rejected: ${sanitized.reason}`,
+      } satisfies AiChatResponse
+    }
+    const incoming = sanitized.settings
     const provider = incoming.provider
     const config = resolveProviderConfig(incoming, provider)
     if (!config) {
@@ -1857,7 +1869,15 @@ export function registerAiCoreHandlers(): void {
       maxTokens?: number
     }
     const requestId = req.requestId || `s-${Date.now()}`
-    const settings = req.settings || aiSettings
+    const sanitized = sanitizeRequestSettings({
+      embedCaller: isEmbedCaller(event),
+      requestSettings: req.settings,
+      serverSettings: aiSettings,
+    })
+    if (!sanitized.ok) {
+      throw new InvalidArgumentError('ai:stream', `AI settings rejected: ${sanitized.reason}`)
+    }
+    const settings = sanitized.settings
     const system = req.system || ''
     const messages = req.messages || []
     const tools = req.tools || []

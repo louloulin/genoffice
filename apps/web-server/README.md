@@ -103,14 +103,15 @@ The web-server has no OS-level sandbox. Three things keep it honest:
    names the missing configuration, the startup log warns
    `[auth] … LOCKED`, and `/health` reports `auth: "locked"`. A
    verifying JWT (`GENOFFICE_JWT_SECRET`) still admits under the
-   Gate-2 route policy, which is how JWT-only embed deployments run.
+   per-channel dispatcher scope checks, which is how JWT-only embed
+   deployments run.
 
 Auth posture summary (`/health` → `auth` field):
 
 | `WEB_TOKEN` | `GENOFFICE_ALLOW_OPEN` | posture |
 |---|---|---|
 | set | — | `required` — protected routes demand the token |
-| unset | unset | `locked` — requests with no valid credential answer 401 (a verifying JWT still admits, scoped by the Gate-2 route policy) |
+| unset | unset | `locked` — requests with no valid credential answer 401 (a verifying JWT still admits, under the per-channel dispatcher scope checks) |
 | unset | `1` / `true` | `open` — historical no-auth dev posture |
 
 Quick start with auth in one command:

@@ -44,19 +44,22 @@
  *
  * Two exceptions, both deliberate:
  *
- *   - A verifying JWT still admits in the locked posture and the route policy
- *     below applies to it exactly as on an armed boot. Embed deployments run
- *     `GENOFFICE_JWT_SECRET` with no `WEB_TOKEN` at all — auth is the
- *     gateway's job — so "locked" means "no anonymous access", not "no access".
+ *   - A verifying JWT still admits in the locked posture, as `jwt-open`: the
+ *     route policy below does **not** apply (the table was sized for armed
+ *     boots and does not cover the renderer's channels); each dispatcher's own
+ *     `requireScopeFromHeaders` stays the policy, exactly as before this gate
+ *     existed. Embed deployments run `GENOFFICE_JWT_SECRET` with no
+ *     `WEB_TOKEN` at all — auth is the gateway's job — so "locked" means
+ *     "no anonymous access", not "no access".
  *   - Local development / e2e can restore the historical open posture
  *     explicitly with `GENOFFICE_ALLOW_OPEN=1` (or `true`) — a deliberate,
  *     visible opt-out rather than an accident of configuration.
  *
  * `resolveAuthority` reports `{ kind: 'open' }` only in the second case. The
- * route policy is deliberately **not** applied to `open`: with Gate 1 already
- * open, applying it would only break the dev flows without adding a gate that
- * a third party faces. The policy constrains *guest JWTs*, and those exist on
- * a deployment that configured a credential.
+ * route policy is deliberately **not** applied to `open` or `jwt-open`: with
+ * Gate 1 already admitting, applying the table would only break flows without
+ * adding a gate a third party faces. The policy constrains guest JWTs on an
+ * armed boot, where an operator surface exists to protect.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -67,7 +70,17 @@ export type Authority =
   | { kind: 'open' }
   | { kind: 'locked' }
   | { kind: 'web-token' }
+  /** A guest JWT on a `WEB_TOKEN`-armed boot: the route policy below applies. */
   | { kind: 'jwt'; payload: JwtPayload }
+  /**
+   * A guest JWT on a JWT-only boot (`GENOFFICE_JWT_SECRET` set, no
+   * `WEB_TOKEN` — how embed deployments run). There is no operator surface to
+   * protect, the route table does not cover the renderer's channel surface,
+   * and the embed loop depends on the historical behavior: Gate 1 admits, and
+   * each dispatcher's own `requireScopeFromHeaders` is the policy. Do not
+   * widen this to armed boots.
+   */
+  | { kind: 'jwt-open'; payload: JwtPayload }
 
 /**
  * Open mode must be requested explicitly. Accepting `1`/`true` keeps shell
@@ -142,12 +155,10 @@ function credentialCandidates(request: {
  * With `WEB_TOKEN` unset: open mode (`GENOFFICE_ALLOW_OPEN=1`) admits
  * everything; otherwise the posture is **locked** and a request with no valid
  * credential gets `{ kind: 'locked' }` — also a 401. The one exception is a
- * verifying JWT: embed deployments (Dataflarework's docker-compose is the
- * reference) run `GENOFFICE_JWT_SECRET` with **no** `WEB_TOKEN` — auth is the
- * gateway's job and guests carry scoped JWTs. Locking those out would strand
- * the embed loop, so a valid JWT still admits and the same route policy
- * applies as on an armed boot. With no `WEB_TOKEN` *and* no JWT secret, no
- * candidate can verify and every request is locked.
+ * verifying JWT, which admits as `jwt-open` (see the type): the per-channel
+ * dispatcher scope gates stay the policy, matching how embed deployments have
+ * always run. With no `WEB_TOKEN` *and* no JWT secret, no candidate can verify
+ * and every request is locked.
  */
 export function resolveAuthority(request: {
   headers: IncomingMessage['headers']
@@ -166,7 +177,7 @@ export function resolveAuthority(request: {
 
   if (openModeAllowed()) return { kind: 'open' }
   const payload = firstValidJwt(credentialCandidates(request))
-  if (payload) return { kind: 'jwt', payload }
+  if (payload) return { kind: 'jwt-open', payload }
   return { kind: 'locked' }
 }
 

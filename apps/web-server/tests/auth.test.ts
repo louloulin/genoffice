@@ -48,7 +48,7 @@ describe('auth gate', () => {
       expect(resolveAuthority(fakeRequest({}))).toEqual({ kind: 'locked' })
       expect(openModeAllowed()).toBe(false)
     })
-    it('still admits a verifying JWT in the locked posture — embed boots run without WEB_TOKEN', async () => {
+    it('still admits a verifying JWT in the locked posture as jwt-open — embed boots run without WEB_TOKEN', async () => {
       // api/v1/auth captures GENOFFICE_JWT_SECRET in a module-level constant,
       // so stub the env and re-import both modules fresh.
       vi.stubEnv('GENOFFICE_JWT_SECRET', 'locked-posture-jwt-secret')
@@ -68,8 +68,9 @@ describe('auth gate', () => {
         const authority = policy.resolveAuthority(
           fakeRequest({ authorization: `Bearer ${token}` }),
         )
-        expect(authority?.kind).toBe('jwt')
-        // The scope policy applies to it exactly as on an armed boot.
+        expect(authority?.kind).toBe('jwt-open')
+        // jwt-open deliberately skips the route table — the per-channel
+        // dispatcher scope gates are the policy on a JWT-only boot.
         expect(policy.jwtScopeFor('GET', '/api/v1/files')).toBe('files:read')
       } finally {
         vi.unstubAllEnvs()

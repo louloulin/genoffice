@@ -79,6 +79,7 @@
 - D8 限流/配额做 web-server 中间件（per-tenant per-endpoint token bucket）。
 - D9 pi 化为 Phase 4 决策项，不阻塞任何阶段。
 - D10 拓扑=单一 change（用户选定 2026-10-04）：四阶段作为验收分组顺序推进，不拆 Supervisor/children。
+- D11 fail-closed 下的 JWT 例外：`WEB_TOKEN` 未配置且未 `GENOFFICE_ALLOW_OPEN` 时，无凭据请求 401（`locked`）；验证通过的 JWT 仍放行为 `jwt-open` authority（不走 route-policy 三态路由表，逐通道 `requireScopeFromHeaders` 仍是策略），使 Dataflarework 式 JWT-only 部署（无 `WEB_TOKEN`）与嵌入闭环 11/11 行为不变。`WEB_TOKEN` 已配置时的 JWT 走 `jwt` authority + 路由表（现状不变）。
 
 # Open questions
 

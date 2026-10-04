@@ -53,6 +53,7 @@ import { WEB_SERVER_VERSION } from './common/version'
 import { runStartupChecks, sdkServedFilenames } from './common/startup-checks'
 import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from './common/read-body'
 import { registerAiHandlers, AI_STREAM_SESSIONS, runProviderStream } from './ai/index'
+import { sanitizeRequestSettings } from './ai/settings-sanitize'
 import { loadMarketplace } from './common/marketplace-loader'
 import { getDefaultProviderRegistry } from '@genoffice/ai-provider'
 import { getDefaultSkillRegistry } from '@genoffice/agent-skills'
@@ -470,10 +471,10 @@ const server = createServer(async (request, response) => {
       return
     }
     if (authority.kind === 'jwt') {
-      // A guest JWT is not the operator. It may only reach a route that
-      // declares a required scope, and must carry it — an unlisted route is a
-      // 403, never a fall-through. See `auth/route-policy.ts` for why this is
-      // default-deny rather than per-handler.
+      // A guest JWT on an armed boot is not the operator. It may only reach a
+      // route that declares a required scope, and must carry it — an unlisted
+      // route is a 403, never a fall-through. See `auth/route-policy.ts` for
+      // why this is default-deny rather than per-handler.
       const required = jwtScopeFor(request.method ?? 'GET', url.pathname)
       if (required === null) {
         writeForbidden(response, `JWT callers may not use ${request.method} ${url.pathname}`)
@@ -484,6 +485,9 @@ const server = createServer(async (request, response) => {
         return
       }
     }
+    // `jwt-open` (a verifying JWT on a JWT-only boot) deliberately skips the
+    // route table: the dispatchers' own scope checks are the policy there, as
+    // they have been for every embed deployment. See route-policy.ts.
   }
 
   // sdk1 §11.110: wrong-method requests return 405 instead of SPA HTML.
@@ -952,12 +956,28 @@ const server = createServer(async (request, response) => {
         aiSettings: AiSettings
       }
       // The renderer can include its own settings override; otherwise use
-      // the server's persisted ones.
+      // the server's persisted ones. A JWT-bearing caller is an embed guest:
+      // its settings ride through sanitize (network fields stripped and
+      // backfilled from the tenant's persisted config) instead of being
+      // trusted wholesale — see settings-sanitize.ts.
       const chatMod = (await import('./ai/chat' as string).catch(() => null)) as {
         aiSettings?: AiSettings
       } | null
-      const settings: AiSettings =
-        (req.settings as AiSettings | undefined) ?? chatMod?.aiSettings ?? aiSettingsFallback
+      const serverSettings = chatMod?.aiSettings ?? aiSettingsFallback
+      const bearer = ((request.headers as { authorization?: string }).authorization ?? '').slice(
+        'Bearer '.length,
+      )
+      const embedCaller =
+        hasAuthorizationHeader(request.headers) && verifyJwtWithRevocation(bearer) !== null
+      const sanitized = sanitizeRequestSettings({
+        embedCaller,
+        requestSettings: req.settings as AiSettings | undefined,
+        serverSettings,
+      })
+      if (!sanitized.ok) {
+        throw new InvalidArgumentError('/api/ai/stream', sanitized.reason)
+      }
+      const settings: AiSettings = sanitized.settings
 
       response.writeHead(200, {
         'Content-Type': 'text/event-stream',
