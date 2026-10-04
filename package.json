@@ -26,6 +26,7 @@
     "check:skill-version": "node tools/check-skill-version.mjs",
     "check:app-translation": "node scripts/check-app-translation-parity.mjs --require=whole-document --require=host-command",
     "check:translation-copy-save": "node scripts/check-translation-copy-save.mjs",
+    "check:translation-apply-hardening": "node scripts/check-translation-apply-hardening.mjs",
     "check:translation-storage-panel": "node scripts/check-translation-storage-panel.mjs",
     "check:pdf-editable-docx": "node scripts/check-pdf-editable-docx.mjs",
     "check:embed-ai-base-prefix": "node scripts/check-embed-ai-base-prefix.mjs",

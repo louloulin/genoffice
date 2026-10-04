@@ -290,6 +290,41 @@ export function parseFrameAncestors(envValue: string | undefined): string {
 export const EMBED_FRAME_ANCESTORS: string = parseFrameAncestors(process.env.EMBED_FRAME_ANCESTORS)
 
 /**
+ * Re-scope a renderer-shipped CSP `content` value.
+ *
+ * 只动 `script-src`：把其中的 `'unsafe-inline'` / `'unsafe-eval'` 摘掉，让渲染器
+ * 自带的 meta CSP 不可能悄悄退化成「什么都行」。内联脚本要跑就得自己带 nonce/hash。
+ *
+ * **曾经这里是全局 replace，于是它是一个纯粹的 bug。** 四个渲染器
+ * （docs / sheets / slides / pdf）随包发出来的都是
+ * `style-src 'self' 'unsafe-inline'`，而那句 `.replace(/\s*'unsafe-inline'/g, '')`
+ * 不带作用域地作用于**整条** CSP —— 于是 `style-src` 里的 `'unsafe-inline'`
+ * 一起被摘掉，内嵌页的实际策略变成 `style-src 'self'`。后果：每次打开任何一种
+ * 文档的在线编辑，浏览器控制台固定刷 8~16 条
+ * 「Applying inline style violates ... 'style-src ''self''」，编辑器里由内联样式
+ * 决定的位置与尺寸拿不到样式。
+ *
+ * 为什么当初没被任何门禁抓到：那条改动的**本意**是收紧脚本，而四个渲染器发出来的
+ * `script-src` 本来就只有 `'self'`（slides/pdf 另带 `'wasm-unsafe-eval'`，那是
+ * WASM 需要的、也不该动）—— 也就是说这句全局 replace **对脚本一条都没收紧**，
+ * 全部副作用都落在了样式上。安全的改动没有产生任何安全收益，只产生了故障。
+ *
+ * 保留的只有 `script-src` 内的处理，且 `'wasm-unsafe-eval'` 是另一个 token，
+ * 不会被 `'unsafe-eval'` 的匹配吃掉。
+ */
+export function hardenRendererCsp(content: string): string {
+  return content
+    .split(';')
+    .map((directive) => {
+      if (!/^\s*script-src\s/i.test(directive)) return directive
+      return directive
+        .replace(/\s*'unsafe-inline'/g, '')
+        .replace(/\s*'unsafe-eval'/g, '')
+    })
+    .join(';')
+}
+
+/**
  * Build the embed HTML by reading the editor app's `index.html` and injecting
  * the bridge script + token meta tag right before `</head>`. We avoid
  * rewriting the body so the editor's existing bundle hashes don't drift.
@@ -298,12 +333,9 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   let html = readFileSync(appIndexPath, 'utf-8')
   // The bridge is now an external `<script src>` — no `'unsafe-inline'`
   // required. Two renderer-side quirks still need rewriting:
-  //   1. The renderer's CSP meta tag declares `script-src 'self'`. We
-  //      rewrite it to keep `frame-ancestors` semantics (none in a meta
-  //      tag — that's an HTTP-header-only directive) and to make sure
-  //      any non-self source the renderer had declared is dropped. Inline
-  //      script tags in the renderer's own bundle should already carry a
-  //      nonce/hash, so this rewrite is conservative.
+  //   1. The renderer's CSP meta tag is re-scoped by `hardenRendererCsp()`
+  //      below. It tightens **only** `script-src` — see that function for
+  //      why touching `style-src` is not a hardening move but a bug.
   //   2. The renderer's bundle paths are relative (`./assets/index-XYZ.js`).
   //      They must resolve inside the embed directory, not at the origin
   //      root — see the `<base href="./">` note below, which also explains
@@ -312,14 +344,7 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   if (html.includes('http-equiv="Content-Security-Policy"')) {
     html = html.replace(
       /<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i,
-      (m) =>
-        m
-          // Drop any `'unsafe-inline'` / `'unsafe-eval'` so a re-scoped CSP
-          // on the embed page can never silently relax back to "anything
-          // goes". Inline scripts in the renderer's own bundle are out of
-          // our control — they need to ship with their own nonce/hash.
-          .replace(/\s*'unsafe-inline'/g, '')
-          .replace(/\s*'unsafe-eval'/g, ''),
+      (m) => m.replace(/content="([^"]*)"/i, (_all, content) => `content="${hardenRendererCsp(content)}"`),
     )
   }
   if (!html.includes('http-equiv="Content-Security-Policy"')) {

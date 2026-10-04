@@ -804,7 +804,11 @@ export function registerSheetsHandlers(): void {
   // noise, so the leak was invisible.
   registerHandle('workbook:close', async (_event: unknown, sessionId: unknown) => {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
-      throw new Error('workbook:close requires a sessionId')
+      // 必须是 WorkbookInvalidArgumentError 而不是裸 Error：裸 Error 会被
+      // `ipcErrorStatus()` 归到 500，而 `ipc-error-status-e2e.test.ts` 钉的正是
+      // 「任何通道的缺参调用都不得回无来由的 500」—— 渲染器分不清 500 是自己传错
+      // 还是服务端坏了，真实故障就淹没在噪声里。
+      throw new WorkbookInvalidArgumentError('workbook:close', 'workbook:close requires a sessionId')
     }
     // Route by the path `open` was keyed on — the same reason read-range looks
     // the session up: a sessionId hash would reach the wrong worker ~3/4 of the

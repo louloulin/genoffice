@@ -935,6 +935,8 @@ export function App() {
   // flight, so the file on disk is already one step behind. save() still counts
   // as succeeded; callers that must not lose data (the close guard) save again.
   const saveIncompleteRef = useRef(false)
+  /** 翻译副本落盘那一刻的文档实例；自动保存据此判断「内容没变，别再写原文」 */
+  const copyLandedDocRef = useRef<import('@tiptap/pm/model').Node | null>(null)
 
   const editorRef = useRef<Editor | null>(null)
   const zoteroControllerRef = useRef<ZoteroDocumentController | null>(null)
@@ -1644,6 +1646,7 @@ export function App() {
     dirtyRef,
     saveInFlightRef,
     saveIncompleteRef,
+    copyLandedDocRef,
     pendingMixedExportRef,
     bumpPendingExportTick: () => setPendingExportTick((n) => n + 1),
     printAutoOpenedPreviewRef,

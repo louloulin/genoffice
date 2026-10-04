@@ -1465,7 +1465,13 @@ export function AiPanel({
       translated: t('aiTranslateTranslated'),
       previewTitle: t('aiTranslatePreviewTitle'),
       previewLoading: t('aiTranslatePreviewLoading'),
-      cancel: 'Cancel',
+      // 曾经这里是硬编码的 `'Cancel'`：中文界面里「取消」按钮显示成 Cancel，
+      // 旁边其它按钮全是中文，一眼就是漏网的。跟 save-memory 那几条一起归位。
+      cancel: t('aiTranslateCancel'),
+      saveMemory: t('aiTranslateSaveMemory'),
+      savingMemory: t('aiTranslateSavingMemory'),
+      memorySavedCount: t('aiTranslateMemorySavedCount'),
+      memorySaved: t('aiTranslateMemorySaved'),
       unsupported: t('aiTranslateUnsupported'),
     }),
     [t],
@@ -1557,6 +1563,17 @@ export function AiPanel({
                 }
               }
               if (event.quality) setDocumentTranslationQuality(event.quality)
+              // 翻译步的 `completed` **不**转发给宿主。
+              //
+              // `translateDocument` 在这一层就把 `apply` 接成了空实现（写回是弹窗的
+              // 「应用译文」那一步，用户要先逐段看过），所以它报的 `completed` 意思是
+              // 「译文都算出来了」，不是「译文已经进文档 / 已经落盘」。原样转发时宿主
+              // 顶部进度条会在用户**还没点应用**时就跳到 100% 并显示「翻译完成」——
+              // 真机实测：进度条「翻译完成 100%」，而文档一个字没变、云盘也没有副本，
+              // 那一刻两个后端日志里都没有任何保存记录。
+              //
+              // 终态改由下面的 `applyTranslate` 在真正写完之后发。
+              if (event.status === 'completed') return
               postToEmbedParent({
                 type: 'ai-progress',
                 status: event.status,
@@ -1742,7 +1759,7 @@ export function AiPanel({
     return spans
   }
 
-  const applyTranslate = useCallback(
+  const applyTranslateImpl = useCallback(
     async (
       plan: import('@genoffice/chat-runtime/types').ChatChangePlan,
       _targetText: string,
@@ -1762,9 +1779,21 @@ export function AiPanel({
       // Descending order is mandatory for both modes: every write shifts every
       // later position, so applying in document order corrupts the rest.
       const orderedItems = [...items].sort((a, b) => (b.range?.from || 0) - (a.range?.from || 0))
-      const docSize = ed.state.doc.content.size
       const appliedItems = orderedItems.filter((entry) => entry.range && entry.targetText)
-      if (appliedItems.length === 0) return
+      // 少写一条就等于这一段还是原文，而用户看到的是「翻译完成」。真机实测就是
+      // 文档最后一段没拿到 range，被这里静默过滤掉了。宁可报错也不要假装成功。
+      if (appliedItems.length < items.length) {
+        throw new Error(
+          `有 ${items.length - appliedItems.length}/${items.length} 段译文缺少可写入的位置信息（通常是文档最后一段），已中止写入以免产出半译文。`,
+        )
+      }
+      if (appliedItems.length === 0) {
+        // 曾经这里是裸 `return`：一条都写不进去时，点了「应用译文」既不改文档、
+        // 也不关弹窗、也没有任何提示，宿主进度条就一直挂在「翻译中」。
+        throw new Error(
+          `没有可写入的译文段落（共 ${items.length} 条计划，其中缺 range 或译文的 ${items.length - appliedItems.length} 条）。请重新翻译后再应用。`,
+        )
+      }
       for (const entry of appliedItems) {
         const currentText = ed.state.doc.textBetween(
           entry.range!.from,
@@ -1773,30 +1802,79 @@ export function AiPanel({
           '\ufffc',
         )
         if (currentText !== entry.sourceText) {
-          setTranslateError('文档内容已发生变化，请重新翻译后再应用')
-          return
+          throw new Error('文档内容已发生变化，请重新翻译后再应用')
         }
       }
-      let chain = ed.chain().focus()
+      // 逐条提交，每条写完立刻重取文档坐标。
+      //
+      // 曾经这里是「攒一个 chain 连做 N 次 insertContentAt 再 run()」，看着等价，
+      // 实测在 4 段文档上**只有 1 段译文真的落进文档**：同一条事务里反复按同一份
+      // 事务前坐标插入，后写的会吞掉先写的。而 `lastChangePlan` 仍按 N 条记账 ——
+      // 用户按一次撤销退不回去，说的和做的对不上，比「少翻几段」更难解释。
+      //
+      // 降序（从文末往文首）保证「先插的靠后」不会挪动「后插的靠前」的坐标；
+      // 每次重取 `doc.content.size` 再夹一次范围，去掉对事务前长度的依赖。
+      // 代价是 undo 变成多步 —— 可接受，正确性优先。
+      const written: TranslationItem[] = []
       for (const entry of appliedItems) {
+        const size = ed.state.doc.content.size
         if (bilingual) {
-          // Keep the source; drop the translation in as the next paragraph.
-          // Inserting at the block boundary (not inside the text) is what makes
-          // it a sibling paragraph instead of appending onto the source line.
-          const at = Math.max(1, Math.min(entry.range!.to, docSize))
-          chain = chain.insertContentAt(at, '\n\n' + entry.targetText)
+          // 译文必须是**独立段落**，且必须真的插进去。
+          //
+          // 两个坑都踩过：
+          //  1. 原来插 `'\n\n' + 文本` —— 段落内部的换行只是文本节点里的换行符，
+          //     不会 split 块，译文被塞进原文那一段的末尾（真机实测渲染成同一个
+          //     `<p>`）。要独立段落就得插 paragraph **节点**。
+          //  2. **节点名不是 `paragraph`。** docs 编辑器的段落节点叫 `docParagraph`
+          //     （`editor/extensions.ts`），Tiptap 报的错很直白：
+          //     `RangeError: Unknown node type: paragraph`。而 Tiptap 对无法解析的
+          //     content 只打一条 warn 就**跳过**，不抛 —— 于是 4 段译文一段都没进去，
+          //     `lastChangePlan` 却仍按 4 条记账，「翻译完成」照常上报。
+          //  3. 位置用 `range.to`（段落**内部**末尾），由 Tiptap 负责 split 成两个块。
+          //     曾经试过 `to + 1`（下一段开头），对中间段落没问题，但**文档最后一段**
+          //     的 `to + 1` 正好等于 doc 末尾，块节点插不进去 —— 真机实测 4 段里
+          //     最后一段的译文永远丢失，而界面报「翻译完成」。夹到 `size - 1` 是为了
+          //     再兜一层，保证落在合法位置内。
+          const at = Math.max(1, Math.min(entry.range!.to, Math.max(1, size - 1)))
+          ed.chain()
+            .focus()
+            .insertContentAt(at, { type: 'docParagraph', content: [{ type: 'text', text: entry.targetText }] })
+            .run()
         } else {
-          const from = Math.max(1, Math.min(entry.range!.from, docSize))
-          const to = Math.max(from, Math.min(entry.range!.to, docSize))
-          chain = chain.insertContentAt({ from, to }, entry.targetText)
+          const from = Math.max(1, Math.min(entry.range!.from, size))
+          const to = Math.max(from, Math.min(entry.range!.to, size))
+          ed.chain().focus().insertContentAt({ from, to }, entry.targetText).run()
         }
+        written.push(entry)
       }
-      chain.run()
+      // 应用后回读校验：译文没真正进文档就必须说出来，而且**弹窗要留着**。
+      //
+      // 之前这条 setTranslateError 写在 setTranslateOpen(false) 前面，等于设完
+      // 立刻把弹窗关掉 —— 错误提示一起消失，用户只看到宿主进度条上的「翻译完成」。
+      // 「静默少应用」是最糟的结局：导出的文件少了一半译文，而界面上一切正常。
+      const finalText = ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n', '\ufffc')
+      const missing = written.filter((entry) => !finalText.includes(entry.targetText))
+      if (missing.length > 0) {
+        // 计划里只记真正写进去的那些，撤销才对得上；失败信息抛给弹窗渲染。
+        setLastChangePlan({
+          ...plan,
+          ops: [{ kind: 'translate', description: op.description, ops: written.filter((e) => !missing.includes(e)) }],
+        })
+        throw new Error(
+          `有 ${missing.length}/${written.length} 段译文未能写入文档（已写入 ${written.length - missing.length} 段）。请撤销后重试，或改用「覆盖当前文件」保存方式。`,
+        )
+      }
       setLastChangePlan({
         ...plan,
-        ops: [{ kind: 'translate', description: op.description, ops: appliedItems }],
+        ops: [{ kind: 'translate', description: op.description, ops: written }],
       })
       setTranslateOpen(false)
+      // 覆盖模式：译文已经写进当前文档，这就是终点。宿主进度条需要一个终态 ——
+      // 翻译步的 `completed` 已经被有意压掉（那时还没写），所以这里补上。
+      // 副本模式由下面的 onSaveTranslatedCopy 分支负责报，不在这里报两次。
+      if (applySaveTarget !== 'copy') {
+        postToEmbedParent({ type: 'ai-progress', status: 'completed', progress: 1 })
+      }
       // 另存副本：写的是**另一个**云盘条目，所以这里刻意不动 `doc.filePath`、
       // 不清 dirty —— 详见 file-actions 的翻译副本分支注释。原文仍留在云盘里。
       if (applySaveTarget === 'copy' && translatedFileName && onSaveTranslatedCopy) {
@@ -1816,6 +1894,32 @@ export function AiPanel({
       }
     },
     [editor, onSaveTranslatedCopy, translatedFileName],
+  )
+
+  /**
+   * 「应用译文」的对外入口。
+   *
+   * 内层跑真正的写回；这里只做一件事：**把失败同时告诉宿主**。写回失败时弹窗会
+   * 显示红字（TranslateDialog 现在 await 了这个 Promise），但宿主顶部进度条是
+   * 独立的一条 —— 不发 `ai-progress: failed` 的话它会永远停在「翻译中…」，
+   * 用户在两个界面里看到互相矛盾的状态。
+   */
+  const applyTranslate = useCallback(
+    async (
+      plan: import('@genoffice/chat-runtime/types').ChatChangePlan,
+      targetText: string,
+      applySaveTarget?: 'overwrite' | 'copy',
+    ) => {
+      try {
+        await applyTranslateImpl(plan, targetText, applySaveTarget)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        setTranslateError(message)
+        postToEmbedParent({ type: 'ai-progress', status: 'failed', progress: 0, error: message })
+        throw err
+      }
+    },
+    [applyTranslateImpl],
   )
 
   const undoChange = useCallback(

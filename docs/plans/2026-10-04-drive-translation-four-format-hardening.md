@@ -54,6 +54,13 @@ M 的 Rust 侧协议里本来就有 `close` 命令。补上三处：`sidecar.ts`
 `sidecar-pool.ts` 加**按 `sourcePath` 路由**的 `close`（按 sessionId 路由会在同一文件
 被反复打开时关错会话）、`index.ts` 注册 `workbook:close`。
 
+**接线当场被既有门禁拦下一条回归**：`ipc-error-status-e2e.test.ts` 钉的是
+「任何通道的缺参调用都不得回无来由的 500」（裸 `Error` 会被 `ipcErrorStatus()` 归到
+500，而渲染器分不清 500 是自己传错还是服务端坏了，真实故障就淹没在噪声里）。第一版
+`workbook:close` 抛的是裸 `Error`，于是全量测试立刻红 —— 这条门禁正好证明了
+**新增通道必须走既有的错误类型**。改成 `WorkbookInvalidArgumentError`（映射 400）后
+152 支测试文件全绿。
+
 N 的 `defaultSidecarPath()` 从「写死层数」改成「从模块位置向上 walk 找
 `apps/sheets/native/xlsx-engine` 标记目录」，并导出该纯函数以便单测。
 写死层数的版本在 `dist/web-server/src/sheets/sidecar.js`（深一层）上解析到不存在路径，
@@ -116,5 +123,12 @@ N 的 `defaultSidecarPath()` 从「写死层数」改成「从模块位置向上
 - 只有 `apps/docs` 会向宿主发 `document-dirty`；`sheets` / `slides` / `pdf` 都不发，
   所以宿主侧「有未保存修改」的标记对这三个格式永不出现。这不构成功能缺陷（这三者本来
   就不走宿主保存按钮），但用户从宿主标题栏看不到「我改了还没存」。是否补，待拍板。
+- **同一个主按钮，四种文案**：`packages/ui/src/TranslateDialog.tsx` 是共享组件，
+  `strings.start` 由各应用各自给 —— docs 传 `aiTranslateStart: '翻译'`、
+  sheets 传 `aiTranslateBtn: 'AI 翻译'`、slides 传 `aiTranslateDeckStart: '开始翻译'`、
+  pdf 传 `aiTranslatePdfStart`。同一个对话框、同一个位置的按钮，四种叫法。
+  本轮**刻意不改**：要统一就得在 20 个语言包 × 4 个应用里逐条改 80 个字符串，
+  而计划没要求；走查脚本按 class（`.ai-translate-dialog-btn--primary`）定位，
+  不依赖文案，改与不改都不影响任何判据。这属于产品文案决策，等拍板再动。
 - 渲染器构建有陈旧缓存坑：改 `apps/sheets` 源码后必须
   `npm run build -w @genoffice/sheets`，否则真机跑的还是旧渲染器。

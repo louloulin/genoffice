@@ -7,6 +7,7 @@
  */
 import type { Editor } from '@tiptap/core'
 import { history } from '@tiptap/pm/history'
+import type { Node as PmRuntimeNode } from '@tiptap/pm/model'
 import {
   applyPageNumType,
   applySectionSettings,
@@ -92,6 +93,20 @@ export interface FileActionContext {
   dirtyRef: { current: boolean }
   saveInFlightRef: { current: boolean }
   saveIncompleteRef: { current: boolean }
+  /**
+   * 翻译副本落盘那一刻的 `editor.state.doc` 引用。
+   *
+   * 副本分支刻意不清 dirty（清了就等于告诉关闭守卫「没有待保存改动」，用户再按
+   * 一次 Ctrl+S 就会拿译文覆盖原文，恰好是这个选项承诺不做的事）。但保持 dirty
+   * 有个真机实测出来的副作用：**自动保存定时器**会在几十秒后再跑一次普通保存，
+   * 那一次 `saveAsCopyFileName` 是空的，走的是「写新版本」分支 —— 于是译文被写进
+   * **原文**。真机日志：`副本落盘 07:50:18` → `原文 versionNo=2 07:50:58`。
+   *
+   * 用「文档实例引用是否还是落盘那一个」来判定「内容有没有再变过」：ProseMirror
+   * 每次编辑都产出新的 doc 实例，所以这个判据零误判 —— 引用没变就是内容没变，
+   * 自动保存该跳过；用户真改了任何一个字，引用就变了，自动保存照常恢复。
+   */
+  copyLandedDocRef: { current: PmRuntimeNode | null }
   pendingMixedExportRef: { current: PendingPdfExport | false }
   /** re-arms the deferred-export effect even when the preview is already open */
   bumpPendingExportTick: () => void
@@ -779,6 +794,13 @@ export function save(
   // in-flight edit/password races. A pass that left anything runs its own pass;
   // saveOnce resolves a stale pathless snapshot via pathlessDocSavedPath, so
   // the retry can no longer create a duplicate file.
+  // 译文已经以「副本」形式落盘、且文档此后一个字没动 → 这一趟自动保存无事可做。
+  // 只拦 auto：用户主动按 Ctrl+S 仍然会把当前内容存成原文的新版本，那是用户的
+  // 选择，不该被这里悄悄拦掉（副本选项承诺的是「不主动覆盖」，不是「禁止覆盖」）。
+  if (auto && !saveAs && !saveAsCopyFileName && ctx.copyLandedDocRef.current
+      && ctx.copyLandedDocRef.current === ctx.editor?.state.doc) {
+    return Promise.resolve(true)
+  }
   return runSerializedSave(
     () => saveOnce(ctx, saveAs, auto, newDocName, saveAsCopyFileName),
     () => !saveAs && !saveAsCopyFileName && !ctx.saveIncompleteRef.current && !isDocDirty(ctx),
@@ -904,6 +926,8 @@ async function saveOnce(
         }
         return false
       }
+      // 记下「这份内容已经以副本落盘」，供上面 save() 的自动保存抑制判据使用。
+      ctx.copyLandedDocRef.current = editor.state.doc
       const copyName = copyResult.savedAs?.fileName ?? saveAsCopyFileName
       ctx.setStatus(t('appTranslationCopySaved', { name: copyName }))
       if (!auto) showToast(t('appTranslationCopySaved', { name: copyName }))

@@ -54,6 +54,19 @@ export interface TranslateDialogStrings {
   cancel: string
   unsupported: string
   retry?: string
+  /**
+   * 「存为翻译记忆」相关的文案。
+   *
+   * 这几个曾经是**硬编码英文**（`'Save to memory'` / `'Saving…'` /
+   * `Saved N; skipped M` / `Translation memory saved`），而这个弹窗其余每一句
+   * 都走 `strings` —— 中文界面里就凭空冒出四个英文按钮/状态，且不可翻译。
+   * 缺席时回退英文，保证不传 strings 的调用方（如 Electron 主流程的旧入口）
+   * 仍然渲染得出东西。
+   */
+  saveMemory?: string | undefined
+  savingMemory?: string | undefined
+  memorySavedCount?: string | undefined
+  memorySaved?: string | undefined
 }
 
 export interface TranslateDialogProps {
@@ -132,8 +145,15 @@ export interface TranslateDialogProps {
     targetLang: string
     preserveFormat: boolean
   }) => Promise<string | null>
-  /** Apply handler — receives a fully-formed `translate` change plan. */
-  onApply: (plan: ChatChangePlan, targetText: string, saveTarget?: 'overwrite' | 'copy') => void
+  /**
+   * Apply handler — receives a fully-formed `translate` change plan.
+   *
+   * 允许返回 Promise：`applyTranslate` 是 async 的（要逐段写回文档、要落盘副本），
+   * 而这里过去把它当 `void` 调用，**返回值和抛出的异常都被丢掉**。真机实测的后果：
+   * 4 段译文一段都没写进文档、宿主进度条永远停在「翻译中」、弹窗上没有任何错误提示
+   * —— 用户看到的是「点了应用译文，什么也没发生，也没有报错」。写回失败必须有出口。
+   */
+  onApply: (plan: ChatChangePlan, targetText: string, saveTarget?: 'overwrite' | 'copy') => void | Promise<void>
   /** Optional cancel handler (Esc / X button). */
   onCancel: () => void
   /** Optional app id stamped on the change plan (defaults to 'unknown'). */
@@ -213,7 +233,7 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
     }
   }
 
-  const handleApply = () => {
+  const handleApply = async () => {
     if (translated === null) return
     const selectedItems = (previewItems || []).filter((item) =>
       selectedPreviewIds.has(item.id) && item.translatedText && item.status !== 'failed',
@@ -258,7 +278,17 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
       requireConfirm: false,
       createdAt: Date.now(),
     }
-    onApply(plan, translated, saveTarget)
+    setError(null)
+    setBusy(true)
+    try {
+      await onApply(plan, translated, saveTarget)
+    } catch (e) {
+      // 写回失败必须让人看见：进度条不动、文案不变、又没有红字，用户无从判断
+      // 是没点上还是失败了。
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const handleRetryUnit = async (unitId: string) => {
@@ -291,9 +321,13 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
     try {
       const result = await onSaveMemory({ sourceLang, targetLang, units })
       if (result && (typeof result.savedCount === 'number' || typeof result.skippedCount === 'number')) {
-        setMemoryStatus(`Saved ${result.savedCount ?? 0}; skipped ${result.skippedCount ?? 0}`)
+        setMemoryStatus(
+          (strings.memorySavedCount ?? 'Saved {saved}; skipped {skipped}')
+            .replace('{saved}', String(result.savedCount ?? 0))
+            .replace('{skipped}', String(result.skippedCount ?? 0)),
+        )
       } else {
-        setMemoryStatus('Translation memory saved')
+        setMemoryStatus(strings.memorySaved ?? 'Translation memory saved')
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -394,6 +428,19 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
           </div>
         ) : null}
 
+        {error ? (
+          // 错误必须在这里渲染，**不能**只挂在下面非预览分支里。
+          //
+          // 整篇翻译（docs/sheets/slides/pdf 的 document 模式）会把逐段译文喂进
+          // `previewItems`，于是下面走的是预览分支 —— 那个分支里根本没有 `error`
+          // 节点。结果就是：写回失败（缺 range / 文档被改动 / 宿主保存冲突）时
+          // 弹窗里一个字都不显示，宿主进度条又是独立一条，用户只看到「点了应用
+          // 没反应」。所以红字要提到预览**上面**，两种模式都看得见。
+          <div className="ai-translate-dialog-error-banner" role="alert">
+            {error}
+          </div>
+        ) : null}
+
         <div className="ai-translate-dialog-preview" data-busy={busy}>
           <section className="ai-translate-dialog-side">
             <h3>{strings.original}</h3>
@@ -450,9 +497,7 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
                 ))}
               </div>
             ) : <div className="ai-translate-dialog-text">
-              {error ? (
-                <span className="ai-translate-dialog-error">{error}</span>
-              ) : translated === null ? (
+              {translated === null ? (
                 <span className="ai-translate-dialog-placeholder">{busy ? strings.previewLoading : strings.previewTitle}</span>
               ) : (
                 translated
@@ -483,14 +528,14 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
                   onClick={() => void handleSaveMemory()}
                   disabled={busy || savingMemory || (previewItems && previewItems.length > 0 && selectedPreviewIds.size === 0)}
                 >
-                  {savingMemory ? 'Saving…' : 'Save to memory'}
+                  {savingMemory ? (strings.savingMemory ?? 'Saving…') : (strings.saveMemory ?? 'Save to memory')}
                 </button>
               )}
               {memoryStatus && <span className="ai-translate-dialog-memory-status" role="status">{memoryStatus}</span>}
               <button
                 type="button"
                 className="ai-translate-dialog-btn ai-translate-dialog-btn--primary"
-                onClick={handleApply}
+                onClick={() => void handleApply()}
                 disabled={busy || (previewItems && previewItems.length > 0 && selectedPreviewIds.size === 0)}
               >
                 {strings.apply}
