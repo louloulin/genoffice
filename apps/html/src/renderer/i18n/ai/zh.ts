@@ -1,5 +1,12 @@
 /** ai strings, zh: defines the key set every other locale shard must match. */
 export const zh = {
+  aiModeAsk: '问一问',
+  aiModeAskHint: '只读问答,不改动文档',
+  aiModeCraft: '做一做',
+  aiModeCraftHint: '直接执行修改(默认)',
+  aiModePlan: '想一想',
+  aiModePlanHint: '先给出计划,确认后再执行',
+  aiModeSwitchTitle: '工作模式',
   aiCollapsePanel: '收起面板',
   aiComposerPlaceholder: '让 AI 撰写或修改文档…',
   aiCopyReplyTitle: '复制回复',

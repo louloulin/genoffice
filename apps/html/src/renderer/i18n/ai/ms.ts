@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const ms = {
+  aiModeAsk: 'Tanya',
+  aiModeAskHint: 'Jawapan baca sahaja; dokumen tidak diubah',
+  aiModeCraft: 'Laksana',
+  aiModeCraftHint: 'Buat perubahan terus (lalai)',
+  aiModePlan: 'Rancang',
+  aiModePlanHint: 'Cadangkan pelan dahulu, laksana selepas disahkan',
+  aiModeSwitchTitle: 'Mod kerja',
   aiCollapsePanel: 'Runtuhkan panel',
   aiComposerPlaceholder: 'Minta AI menulis atau menyunting…',
   aiCopyReplyTitle: 'Salin balasan',

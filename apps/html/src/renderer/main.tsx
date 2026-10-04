@@ -14,6 +14,8 @@ import '@genoffice/ui/ribbon-collapse.css'
 import '@genoffice/ui/ai-panel-prefs.css'
 import '@genoffice/ui/ai-scope-quote.css'
 import '@genoffice/ui/ai-composer.css'
+import '@genoffice/ui/ai-runtime.css'
+import '@genoffice/ui/ai-edit-queue.css'
 import '@genoffice/ui/image-dialogs.css'
 import './styles.css'
 

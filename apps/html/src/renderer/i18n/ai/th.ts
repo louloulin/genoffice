@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const th = {
+  aiModeAsk: 'ถาม',
+  aiModeAskHint: 'คำตอบแบบอ่านเท่านั้น เอกสารจะไม่ถูกแก้ไข',
+  aiModeCraft: 'ลงมือทำ',
+  aiModeCraftHint: 'ดำเนินการแก้ไขทันที (ค่าเริ่มต้น)',
+  aiModePlan: 'วางแผน',
+  aiModePlanHint: 'เสนอแผนก่อน แล้วดำเนินการเมื่อยืนยัน',
+  aiModeSwitchTitle: 'โหมดการทำงาน',
   aiCollapsePanel: 'ยุบแผง',
   aiComposerPlaceholder: 'ให้ AI เขียนหรือแก้ไขเอกสาร…',
   aiCopyReplyTitle: 'คัดลอกคำตอบ',

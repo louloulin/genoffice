@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
-import { BrowserWindow } from 'electron'
-import type { Rectangle, WebContents, WebContentsView } from 'electron'
+import { BrowserWindow, WebContentsView } from 'electron'
+import type { Rectangle, WebContents } from 'electron'
 
 import {
   createDocsView,

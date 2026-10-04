@@ -72,16 +72,12 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
       GENOFFICE_LANG: options.lang ?? 'en',
       ...(process.platform === 'linux' ? { ELECTRON_DISABLE_SANDBOX: '1' } : {}),
     },
-    // Playwright's Electron screencast wedges the page CDP session on Linux
-    // (page.url() stays empty, no lifecycle events, evaluate hangs) — record
-    // only where it works
-    recordVideo:
-      process.platform === 'linux'
-        ? undefined
-        : {
-            dir: join(ARTIFACTS_DIR, options.videoDir),
-            size: { width: 1280, height: 800 },
-          },
+    // Playwright's Electron screencast wedges the page CDP session (page.url()
+    // stays empty, no lifecycle events, evaluate hangs) — with the tabs-era
+    // WebContentsView architecture this reproduces on macOS too, not just
+    // Linux CI, so recording stays off everywhere. The suite drives trusted
+    // local builds only.
+    recordVideo: undefined,
   })
   const page = await app.firstWindow()
   await waitForDocumentReady(app, page)

@@ -4,7 +4,6 @@
  * live source on every render, so the excerpt follows the current content
  * instead of the snapshot taken at annotation time.
  */
-import React from 'react'
 import type { ReactElement } from 'react'
 import { AiEditQueueCard, type AiEditQueueRow } from '@genoffice/ui'
 import { useI18n } from '../i18n/locale'

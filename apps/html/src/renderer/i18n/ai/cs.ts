@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const cs = {
+  aiModeAsk: 'Zeptat se',
+  aiModeAskHint: 'Odpovědi jen pro čtení; dokument se nemění',
+  aiModeCraft: 'Provést',
+  aiModeCraftHint: 'Provede změny přímo (výchozí)',
+  aiModePlan: 'Plánovat',
+  aiModePlanHint: 'Nejprve navrhne plán, provede po potvrzení',
+  aiModeSwitchTitle: 'Pracovní režim',
   aiCollapsePanel: 'Sbalit panel',
   aiComposerPlaceholder: 'Požádejte AI o napsání nebo úpravu dokumentu…',
   aiCopyReplyTitle: 'Kopírovat odpověď',

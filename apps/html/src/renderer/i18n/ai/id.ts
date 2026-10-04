@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const id = {
+  aiModeAsk: 'Tanya',
+  aiModeAskHint: 'Jawaban hanya baca; dokumen tidak diubah',
+  aiModeCraft: 'Kerjakan',
+  aiModeCraftHint: 'Langsung menerapkan perubahan (default)',
+  aiModePlan: 'Rencanakan',
+  aiModePlanHint: 'Ajukan rencana dulu, jalankan setelah dikonfirmasi',
+  aiModeSwitchTitle: 'Mode kerja',
   aiCollapsePanel: 'Ciutkan panel',
   aiComposerPlaceholder: 'Minta AI menulis atau mengedit…',
   aiCopyReplyTitle: 'Salin balasan',

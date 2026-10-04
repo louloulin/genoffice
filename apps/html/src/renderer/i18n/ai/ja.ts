@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const ja = {
+  aiModeAsk: '質問',
+  aiModeAskHint: '読み取り専用の回答。文書は変更しません',
+  aiModeCraft: '実行',
+  aiModeCraftHint: '変更をそのまま実行します(既定)',
+  aiModePlan: '計画',
+  aiModePlanHint: '先に計画を提示し、確認後に実行します',
+  aiModeSwitchTitle: '動作モード',
   aiCollapsePanel: 'パネルを折りたたむ',
   aiComposerPlaceholder: 'AI に執筆・編集を依頼…',
   aiCopyReplyTitle: '返信をコピー',

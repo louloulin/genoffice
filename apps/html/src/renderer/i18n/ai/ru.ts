@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const ru = {
+  aiModeAsk: 'Вопрос',
+  aiModeAskHint: 'Ответы только для чтения; документ не изменяется',
+  aiModeCraft: 'Выполнить',
+  aiModeCraftHint: 'Сразу вносит изменения (по умолчанию)',
+  aiModePlan: 'План',
+  aiModePlanHint: 'Сначала предложить план, выполнить после подтверждения',
+  aiModeSwitchTitle: 'Режим работы',
   aiCollapsePanel: 'Свернуть панель',
   aiComposerPlaceholder: 'Попросите ИИ написать или изменить…',
   aiCopyReplyTitle: 'Копировать ответ',

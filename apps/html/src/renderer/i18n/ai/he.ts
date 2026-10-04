@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const he = {
+  aiModeAsk: 'שאל',
+  aiModeAskHint: 'תשובות לקריאה בלבד; המסמך אינו משתנה',
+  aiModeCraft: 'בצע',
+  aiModeCraftHint: 'מבצע את השינויים ישירות (ברירת מחדל)',
+  aiModePlan: 'תכנן',
+  aiModePlanHint: 'הצג תחילה תוכנית, ובצע לאחר אישור',
+  aiModeSwitchTitle: 'מצב עבודה',
   aiCollapsePanel: 'כווצו את החלונית',
   aiComposerPlaceholder: 'בקשו מה-AI לכתוב או לערוך…',
   aiCopyReplyTitle: 'העתקת התשובה',

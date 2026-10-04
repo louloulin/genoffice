@@ -3416,6 +3416,84 @@ function registerHomeIpc(): void {
     },
   )
 
+  // home:list-modules / set-module-enabled / reorder-modules / reset-modules —
+  // the home quick-create row and the settings module manager. The web-server
+  // ships the same four channels over HTTP (web-server shell/modules.ts); the
+  // desktop side was never registered, so the home row rendered with only the
+  // Browse card and the markdown/html quick-card e2e failed. State persists as
+  // a `modules` key inside app-settings.json, merged over the factory list.
+  ipcMain.handle(HOME_CHANNELS.listModules, () => ({ modules: loadHomeModules() }))
+  ipcMain.handle(HOME_CHANNELS.setModuleEnabled, (_event, args: unknown) => {
+    const { id, enabled } = (args ?? {}) as { id?: unknown; enabled?: unknown }
+    if (typeof id !== 'string' || typeof enabled !== 'boolean') {
+      return { modules: loadHomeModules() }
+    }
+    const modules = loadHomeModules().map((m) => (m.id === id ? { ...m, enabled } : m))
+    saveHomeModules(modules)
+    return { modules }
+  })
+  ipcMain.handle(HOME_CHANNELS.reorderModules, (_event, args: unknown) => {
+    const { order } = (args ?? {}) as { order?: unknown }
+    if (!Array.isArray(order)) return { modules: loadHomeModules() }
+    const ids = order.filter((o): o is string => typeof o === 'string')
+    const current = loadHomeModules()
+    const sorted = ids
+      .map((id) => current.find((m) => m.id === id))
+      .filter((m): m is HomeModuleEntry => m !== undefined)
+    // ids missing from `order` keep their existing relative order at the tail
+    const rest = current.filter((m) => !ids.includes(m.id))
+    const modules = [...sorted, ...rest]
+    saveHomeModules(modules)
+    return { modules }
+  })
+  ipcMain.handle(HOME_CHANNELS.resetModules, () => {
+    const modules = DEFAULT_HOME_MODULES.map((m) => ({ ...m }))
+    saveHomeModules(modules)
+    return { modules }
+  })
+}
+
+interface HomeModuleEntry {
+  id: 'docx' | 'xlsx' | 'pptx' | 'md' | 'pdf' | 'html'
+  labelKey: string
+  ext: string
+  path: string
+  enabled: boolean
+}
+
+const DEFAULT_HOME_MODULES: HomeModuleEntry[] = [
+  { id: 'docx', labelKey: 'newDoc', ext: 'docx', path: '/docs/', enabled: true },
+  { id: 'xlsx', labelKey: 'newSheet', ext: 'xlsx', path: '/sheets/', enabled: true },
+  { id: 'pptx', labelKey: 'newSlide', ext: 'pptx', path: '/slides/', enabled: true },
+  { id: 'md', labelKey: 'newMarkdown', ext: 'md', path: '/markdown/', enabled: true },
+  { id: 'pdf', labelKey: 'newPdf', ext: 'pdf', path: '/pdf/', enabled: true },
+  { id: 'html', labelKey: 'newHtml', ext: 'html', path: '/html/', enabled: true },
+]
+
+function loadHomeModules(): HomeModuleEntry[] {
+  try {
+    const saved = readAppSettings(APP_SETTINGS_PATH()).modules
+    if (Array.isArray(saved) && saved.length > 0) {
+      return DEFAULT_HOME_MODULES.map((def) => {
+        const override = saved.find(
+          (p) => typeof p === 'object' && p !== null && (p as { id?: unknown }).id === def.id,
+        ) as { enabled?: unknown } | undefined
+        return {
+          ...def,
+          ...(typeof override?.enabled === 'boolean' ? { enabled: override.enabled } : {}),
+        }
+      })
+    }
+  } catch {
+    // settings read failures fall back to the factory list
+  }
+  return DEFAULT_HOME_MODULES.map((m) => ({ ...m }))
+}
+
+function saveHomeModules(modules: HomeModuleEntry[]): void {
+  writeAppSetting(APP_SETTINGS_PATH(), 'modules', modules)
+}
+
 function stringPaths(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((p): p is string => typeof p === 'string') : []
 }
@@ -4445,7 +4523,6 @@ void installHttpIpcBridge({
 registerAiIpc()
 registerProjectIpc()
 registerDocsIpc()
-}
 registerHomeIpc()
 registerIntegrationsIpc({
   settingsPath: APP_SETTINGS_PATH,

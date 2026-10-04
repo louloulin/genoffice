@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
 import { AgentLoop, composeSkills, streamText } from '@genoffice/agent-core'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
@@ -8,7 +8,17 @@ import {
   AiTypingIndicator,
   Markdown,
   type AiScopeQuoteData,
+  AiRunHeader,
+  AiToolTimeline,
+  AiErrorRecovery,
+  type ChatMode,
+  type ComposerModeOption,
+  DEFAULT_CHAT_MODE,
+  chatModeDirective,
+  composeSystemSuffix,
+  isChatMode,
 } from '@genoffice/ui'
+import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import type { Editor } from '@tiptap/core'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
 import sendEnterOn from '../assets/send-enter-on.png'
@@ -179,6 +189,41 @@ export function AiPanel({
   const [resizing, setResizing] = useState(false)
   const asideRef = useRef<HTMLElement>(null)
   const mountedRef = useRef(true)
+
+  // Shared-component state mirror (M4). Additive layer; inline tool chips keep rendering.
+  const [sharedToolTimeline, setSharedToolTimeline] = useState<ChatToolCallRecord[]>([])
+  const [sharedRunStatus, setSharedRunStatus] = useState<ChatRunStatus>('idle')
+  /** Last error from a finished run; consumed by <AiErrorRecovery>. */
+  const [lastError, setLastError] = useState<string | null>(null)
+  const sharedToolSeqRef = useRef(0)
+  function emitSharedToolStart(name: string, input: unknown) {
+    sharedToolSeqRef.current += 1
+    const rec: ChatToolCallRecord = {
+      id: `md-${sharedToolSeqRef.current}`,
+      name,
+      input: (input ?? {}) as Record<string, unknown>,
+      status: 'running',
+      startedAt: Date.now(),
+    }
+    setSharedToolTimeline((prev) => [...prev, rec])
+    return rec.id
+  }
+  function resetSharedTimeline() {
+    sharedToolSeqRef.current = 0
+    setSharedToolTimeline([])
+  }
+  /** Composer working mode (Ask/Craft/Plan) — drives the per-turn suffix. */
+  const [mode, setMode] = useState<ChatMode>(DEFAULT_CHAT_MODE)
+  const modeRef = useRef<ChatMode>(mode)
+  modeRef.current = mode
+  const modeOptions = useMemo<ComposerModeOption[]>(
+    () => [
+      { id: 'ask', label: t('aiModeAsk'), title: t('aiModeAskHint') },
+      { id: 'craft', label: t('aiModeCraft'), title: t('aiModeCraftHint') },
+      { id: 'plan', label: t('aiModePlan'), title: t('aiModePlanHint') },
+    ],
+    [t],
+  )
 
   useEffect(() => {
     const dock = asideRef.current?.closest('.ai-dock') as HTMLElement | null
@@ -373,11 +418,16 @@ export function AiPanel({
         createSearchSkill(),
       ]),
       captureSnapshot: () => depsRef.current.getSnapshot(),
-      systemSuffix: () => aiLangDirective(langRef.current),
+      systemSuffix: () =>
+        composeSystemSuffix(aiLangDirective(langRef.current), chatModeDirective(modeRef.current)),
       events: {
-        onText: (text) => patchLast({ text }),
+        onText: (text) => {
+          setSharedRunStatus('streaming')
+          patchLast({ text })
+        },
         onToolStart: (call) => {
           // Live "running" chip: replaced in place by onToolExecuted
+          emitSharedToolStart(call.name, call.input)
           patchLast((last) => ({
             tools: [
               ...(last.tools ?? []),
@@ -386,6 +436,35 @@ export function AiPanel({
           }))
         },
         onToolExecuted: ({ call, execution, snapshotBefore }) => {
+          setSharedRunStatus('running')
+          // Complete the record started by onToolStart; a parse-fail call has
+          // none, so it lands as a completed record directly (id is derived
+          // inside the updater — the updater must stay pure)
+          const executedAt = Date.now()
+          setSharedToolTimeline((prev) => {
+            const next = prev.slice()
+            let idx = -1
+            for (let i = next.length - 1; i >= 0; i--) {
+              const rec = next[i]!
+              if (rec.status === 'running' && rec.name === call.name) {
+                idx = i
+                break
+              }
+            }
+            const record: ChatToolCallRecord = {
+              id: idx >= 0 ? next[idx]!.id : `md-x-${next.length}`,
+              name: call.name,
+              input: (call.input ?? {}) as Record<string, unknown>,
+              status: execution.isError ? 'error' : 'executed',
+              startedAt: idx >= 0 ? next[idx]!.startedAt : executedAt,
+              output: execution.output?.slice(0, 500),
+              finishedAt: executedAt,
+              isError: !!execution.isError,
+            }
+            if (idx >= 0) next[idx] = record
+            else next.push(record)
+            return next
+          })
           if (execution.mutated) runMutatedRef.current = true
           if (snapshotBefore !== undefined) {
             const label = runInstructionRef.current.slice(0, 40)
@@ -435,9 +514,12 @@ export function AiPanel({
           const editor = depsRef.current.getEditor()
           if (editor) clearAiHighlights(editor)
           depsRef.current.onRunDone(runMutatedRef.current)
+          setSharedRunStatus(cancelled ? 'cancelled' : 'done')
           setBusy(false)
         },
         onError: (error) => {
+          setSharedRunStatus('error')
+          setLastError(error)
           setChat((prev) => {
             const next = [...prev]
             for (let i = next.length - 1; i >= 0; i--) {
@@ -573,6 +655,8 @@ export function AiPanel({
     ])
     setPrompt('')
     setBusy(true)
+    resetSharedTimeline()
+    setSharedRunStatus('running')
     // persist what the user saw — a restored transcript must not surface the
     // internal batch protocol text behind a queue submission
     persistMessage('user', displayText ?? instruction, undefined, scope)
@@ -797,6 +881,19 @@ export function AiPanel({
       </header>
 
       <div className="ai-chat" ref={chatRef} onScroll={onChatScroll}>
+        {/* Shared ChatRuntime components (M4). Additive layer; inline tool chips keep rendering. */}
+        <AiRunHeader status={sharedRunStatus} model={settingsRef.current?.provider} />
+        <AiToolTimeline tools={sharedToolTimeline} />
+        {sharedRunStatus === 'error' && lastError && (
+          <AiErrorRecovery
+            error={lastError}
+            onEdit={() => inputRef.current?.focus()}
+            onDismiss={() => {
+              setLastError(null)
+              setSharedRunStatus('idle')
+            }}
+          />
+        )}
         {chat.length === 0 && (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-title">{t('aiEmptyTitle')}</div>
@@ -1108,6 +1205,12 @@ export function AiPanel({
           onChange={setPrompt}
           onSend={() => send(prompt)}
           onStop={stop}
+          modes={modeOptions}
+          mode={mode}
+          onModeChange={(m) => {
+            if (isChatMode(m)) setMode(m)
+          }}
+          modeSwitchLabel={t('aiModeSwitchTitle')}
         />
       </div>
     </aside>

@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const hi = {
+  aiModeAsk: 'पूछें',
+  aiModeAskHint: 'केवल-पढ़ने के उत्तर; दस्तावेज़ नहीं बदला जाता',
+  aiModeCraft: 'करें',
+  aiModeCraftHint: 'बदलाव सीधे लागू करता है (डिफ़ॉल्ट)',
+  aiModePlan: 'योजना',
+  aiModePlanHint: 'पहले योजना दें, पुष्टि के बाद लागू करें',
+  aiModeSwitchTitle: 'कार्य मोड',
   aiCollapsePanel: 'पैनल संक्षिप्त करें',
   aiComposerPlaceholder: 'AI से लिखने या संपादित करने को कहें…',
   aiCopyReplyTitle: 'जवाब कॉपी करें',

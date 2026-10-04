@@ -23,7 +23,8 @@ test.describe('html editor', () => {
       // blank document: the AI panel offers the design / write intent cards and swaps its starters
       const copilot = editorPage.locator('.copilot')
       if (!(await copilot.isVisible())) await editorPage.locator('.ai-rail').click()
-      const cards = copilot.getByRole('radio')
+      // scope to the intent radiogroup: the shared composer adds its own mode radios
+      const cards = copilot.locator('.ai-intent-cards [role="radio"]')
       await expect(cards).toHaveCount(2)
       await expect(cards.first()).toHaveAttribute('aria-checked', 'true')
       await cards.nth(1).click()
@@ -295,10 +296,14 @@ test.describe('html editor', () => {
       await expect(editorPage.locator('.crumb')).toHaveCount(2)
       const float = editorPage.locator('.hx-float')
       await expect(float.getByRole('button', { name: /Delete element/ })).toBeEnabled()
-      // the split view halves the stage: park the style panel so it does not sit over the page
-      const panelToggle = float.getByRole('button', { name: /Style panel/ })
+      // the split view halves the stage: the open panel overlaps the toolbar's own
+      // toggle (both anchor at the stage's top edge). Drive the handler directly —
+      // only the toggle turns the panel off persistently (the panel's close button
+      // dismisses for the current selection and resurrects on the next one)
       await expect(editorPage.locator('.hx-panel')).toHaveCount(1)
-      await panelToggle.click()
+      await float
+        .getByRole('button', { name: /Style panel/ })
+        .dispatchEvent('click')
       await expect(editorPage.locator('.hx-panel')).toHaveCount(0)
       await editorPage.screenshot({ path: screenshotPath('html-inspector-select') })
 
@@ -369,6 +374,9 @@ test.describe('html editor', () => {
         .click()
       await expect(editorPage.locator('.crumbs')).toHaveCount(0)
       await frame.locator('h1#title').click()
+      // full-width stage: the toolbar's toggle is clear of the panel again
+      const panelToggle = float.getByRole('button', { name: /Style panel/ })
+      await expect(panelToggle).toHaveAttribute('aria-pressed', 'false')
       await panelToggle.click()
       await expect(editorPage.locator('.preview-stage .hx-panel')).toBeVisible()
       await editorPage.screenshot({ path: screenshotPath('html-inspector-style-panel') })

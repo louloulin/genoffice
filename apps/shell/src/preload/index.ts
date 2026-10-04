@@ -14,3 +14,8 @@ contextBridge.exposeInMainWorld('aiOfficeTabs', createShellTabsApi(transport))
 
 // open documents dragged from the OS anywhere over Home or the tab strip
 installDropOpenBridge()
+
+// Runtime marker consumed by isElectronRuntime() in @genoffice/ipc-bridge:
+// with contextIsolation the page world has no real `process`, so the preload
+// publishes the flag the renderer-side detection expects.
+contextBridge.exposeInMainWorld('process', { contextIsolated: true })

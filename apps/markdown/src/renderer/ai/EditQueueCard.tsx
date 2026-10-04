@@ -4,7 +4,6 @@
  * live document on every render, so the excerpt follows the current content
  * instead of a snapshot taken at annotation time.
  */
-import React from 'react'
 import type { ReactElement } from 'react'
 import type { Editor } from '@tiptap/core'
 import { AiEditQueueCard, type AiEditQueueRow } from '@genoffice/ui'

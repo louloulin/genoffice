@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const ko = {
+  aiModeAsk: '질문',
+  aiModeAskHint: '읽기 전용 답변입니다. 문서를 수정하지 않습니다',
+  aiModeCraft: '실행',
+  aiModeCraftHint: '변경을 바로 실행합니다(기본)',
+  aiModePlan: '계획',
+  aiModePlanHint: '먼저 계획을 제시하고 확인 후 실행합니다',
+  aiModeSwitchTitle: '작업 모드',
   aiCollapsePanel: '패널 접기',
   aiComposerPlaceholder: 'AI에게 작성·수정을 요청하세요…',
   aiCopyReplyTitle: '답변 복사',

@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const zhTW = {
+  aiModeAsk: '問一問',
+  aiModeAskHint: '唯讀問答,不會修改文件',
+  aiModeCraft: '做一做',
+  aiModeCraftHint: '直接執行修改(預設)',
+  aiModePlan: '想一想',
+  aiModePlanHint: '先提出計畫,確認後再執行',
+  aiModeSwitchTitle: '工作模式',
   aiCollapsePanel: '收合面板',
   aiComposerPlaceholder: '讓 AI 撰寫或修改文件…',
   aiCopyReplyTitle: '複製回覆',

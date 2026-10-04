@@ -17,3 +17,8 @@ if (process.env.GENOFFICE_DEBUG_HOOKS === '1') {
 
 // open documents dragged from the OS onto this tab as a new shell tab
 installDropOpenBridge()
+
+// Runtime marker consumed by isElectronRuntime() in @genoffice/ipc-bridge:
+// with contextIsolation the page world has no real `process`, so the preload
+// publishes the flag the renderer-side detection expects.
+contextBridge.exposeInMainWorld('process', { contextIsolated: true })

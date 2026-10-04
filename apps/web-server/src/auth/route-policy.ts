@@ -313,6 +313,20 @@ export const JWT_IPC_CHANNELS: ReadonlySet<string> = new Set([
   'ai:translate',
   'ai:translate-batch',
   'ai:save-translation-memory',
+  // The first half of "open a document" in a browser: the renderer lands the
+  // bytes it received (host-embedded content, file picker, paste) into a temp
+  // file before `docs:open-path` can open it. Listing `docs:open-path` without
+  // this made the embedded editor render an empty document on WEB_TOKEN-armed
+  // boots — the 403 silenced the import and nothing else reported it.
+  // Same exposure class as `files:add` below: sanitized name, random
+  // per-upload directory, per-request size cap.
+  'web:write-temp-file',
+  // Docs open flow resets stale password intents right after opening; without
+  // it the armed-boot open path errors after the document is already loaded.
+  'docs:discard-password-intents',
+  // The AI panel loads the current project's chat history on mount; the
+  // embedded editor's AI surface is blank without it.
+  'project:loadChat',
 ])
 
 /**

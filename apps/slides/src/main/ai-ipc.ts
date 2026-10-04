@@ -76,6 +76,10 @@ function writeJson(path: string, value: unknown): void {
 
 const activeAiStreams = new Map<string, AbortController>()
 
+// Registered from registerAiIpc (not at module scope): the shell bundle imports
+// slides-main, so a module-level handle would claim ai:translate before
+// docs-main.registerAiIpc and crash the shell with a duplicate-handler throw.
+function registerTranslationIpc(): void {
 // ai:translate — one-shot translate for the slides selection assistant.
 // Previously the renderer dispatched `ai:translate` against the docs IPC, so
 // slides would either silently no-op or hit the wrong main process. Real
@@ -183,6 +187,7 @@ ipcMain.handle('ai:translate-batch', async (_event, request: unknown) => {
   }
   return result
 })
+}
 
 function castTranslateRange(
   raw: unknown,
@@ -228,6 +233,7 @@ function appendRunFailure(entry: AiRunFailure): void {
 }
 
 export function registerAiIpc(): void {
+  registerTranslationIpc()
   app.once('before-quit', shutdownCodexAppServers)
   // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack
   setRescueFetch((url, init) => net.fetch(url, init))

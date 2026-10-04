@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const nl = {
+  aiModeAsk: 'Vragen',
+  aiModeAskHint: 'Alleen-lezen antwoorden; het document wordt niet gewijzigd',
+  aiModeCraft: 'Uitvoeren',
+  aiModeCraftHint: 'Voert de wijzigingen direct door (standaard)',
+  aiModePlan: 'Plannen',
+  aiModePlanHint: 'Stel eerst een plan voor en voer het uit na bevestiging',
+  aiModeSwitchTitle: 'Werkmodus',
   aiCollapsePanel: 'Paneel inklappen',
   aiComposerPlaceholder: 'Vraag AI te schrijven of bewerken…',
   aiCopyReplyTitle: 'Antwoord kopiëren',

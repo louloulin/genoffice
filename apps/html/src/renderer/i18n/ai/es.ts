@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const es = {
+  aiModeAsk: 'Preguntar',
+  aiModeAskHint: 'Respuestas de solo lectura; el documento no se modifica',
+  aiModeCraft: 'Ejecutar',
+  aiModeCraftHint: 'Aplica los cambios directamente (por defecto)',
+  aiModePlan: 'Planificar',
+  aiModePlanHint: 'Propone primero un plan y ejecútalo al confirmar',
+  aiModeSwitchTitle: 'Modo de trabajo',
   aiCollapsePanel: 'Contraer panel',
   aiComposerPlaceholder: 'Pide a la IA escribir o editar…',
   aiCopyReplyTitle: 'Copiar respuesta',

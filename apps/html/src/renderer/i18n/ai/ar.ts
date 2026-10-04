@@ -1,6 +1,13 @@
 import type { zh } from './zh'
 
 export const ar = {
+  aiModeAsk: 'اسأل',
+  aiModeAskHint: 'إجابات للقراءة فقط؛ لا يتم تعديل المستند',
+  aiModeCraft: 'نفّذ',
+  aiModeCraftHint: 'ينفّذ التعديلات مباشرة (افتراضي)',
+  aiModePlan: 'خطّط',
+  aiModePlanHint: 'اقترح خطة أولاً ثم نفّذها بعد التأكيد',
+  aiModeSwitchTitle: 'وضع العمل',
   aiCollapsePanel: 'طي اللوحة',
   aiComposerPlaceholder: 'اطلب من الذكاء الاصطناعي الكتابة أو التعديل…',
   aiCopyReplyTitle: 'نسخ الرد',
