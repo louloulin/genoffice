@@ -214,6 +214,7 @@ export default defineConfig({
           { text: 'Roadmap', link: '/about/roadmap' },
           { text: 'Governance', link: '/about/governance' },
           { text: 'RFC Process', link: '/rfcs/README' },
+          { text: 'Decision Records', link: '/decisions/README' },
           { text: 'FAQ', link: '/about/faq' },
         ] },
       ],
