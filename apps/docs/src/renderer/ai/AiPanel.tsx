@@ -4,7 +4,12 @@ interface SpeechRecognitionLike {
   lang: string
   interimResults: boolean
   continuous: boolean
-  onresult: ((ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null  /* event type simplified */
+  onresult:
+    | ((ev: {
+        resultIndex: number
+        results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>
+      }) => void)
+    | null /* event type simplified */
   onerror: (() => void) | null
   onend: (() => void) | null
   start: () => void
@@ -16,7 +21,11 @@ import type { Editor } from '@tiptap/core'
 // Browser-safe entry point: `./document` carries no provider / Node import, so
 // the renderer can share the whole-file pipeline instead of re-implementing it.
 import { translateDocument } from '@genoffice/translation-core/document'
-import type { EditorRange, TranslationUnit } from '@genoffice/translation-core/document'
+import type {
+  EditorRange,
+  TranslationUnit,
+  TranslateProgressStatus,
+} from '@genoffice/translation-core/document'
 // subpath, not the bare entry: `translation-core`'s index re-exports the
 // provider / file-translate / persistent-memory modules, which pull Node
 // built-ins (fs, child_process) into a browser bundle.
@@ -73,6 +82,23 @@ function documentRange(range: EditorRange | null | undefined): {
 /** Narrow a unit status off the wire; see the note on the web-bridge twin. */
 function narrowUnitStatus(value: unknown): 'translated' | 'memory-hit' | 'failed' | undefined {
   return value === 'translated' || value === 'memory-hit' || value === 'failed' ? value : undefined
+}
+
+/**
+ * Narrow the pipeline's progress vocabulary to the host's.
+ *
+ * `completed-with-failures` is the pipeline's partial-success terminal state and
+ * the host's `ai-progress` has no way to render it (markdown/html parity):
+ * reporting it as `completed` would tell the host the document translated
+ * cleanly when part of it was left in the source language, so it is reported
+ * as `failed` — the honest direction to be wrong in.
+ */
+function hostProgressStatus(
+  status: TranslateProgressStatus,
+): 'started' | 'running' | 'completed' | 'failed' | 'cancelled' {
+  if (status === 'started' || status === 'running' || status === 'completed') return status
+  if (status === 'cancelled') return 'cancelled'
+  return 'failed'
 }
 
 /**
@@ -502,8 +528,11 @@ export function AiPanel({
   const voiceRef = useRef<{ recog: unknown; base: string } | null>(null)
   const voiceAvailable =
     typeof window !== 'undefined' &&
-    Boolean((window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition ||
-      (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition)
+    Boolean(
+      (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
+        .SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition,
+    )
   const startVoice = useCallback(() => {
     if (voiceRef.current) return
     const w = window as unknown as {
@@ -517,7 +546,10 @@ export function AiPanel({
     recog.interimResults = true
     recog.continuous = true
     const base = voiceBaseRef.current
-    recog.onresult = (ev: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => {
+    recog.onresult = (ev: {
+      resultIndex: number
+      results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>
+    }) => {
       let interim = ''
       let finalText = ''
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
@@ -542,14 +574,25 @@ export function AiPanel({
   const stopVoice = useCallback(() => {
     const v = voiceRef.current
     if (!v) return
-    try { (v.recog as { stop?: () => void }).stop?.() } catch { /* ignore */ }
+    try {
+      ;(v.recog as { stop?: () => void }).stop?.()
+    } catch {
+      /* ignore */
+    }
     voiceRef.current = null
     setVoiceActive(false)
   }, [])
   const voice = useMemo(
-    () => (voiceAvailable
-      ? { available: true as const, active: voiceActive, label: t('aiVoiceInput'), onStart: startVoice, onStop: stopVoice }
-      : undefined),
+    () =>
+      voiceAvailable
+        ? {
+            available: true as const,
+            active: voiceActive,
+            label: t('aiVoiceInput'),
+            onStart: startVoice,
+            onStop: stopVoice,
+          }
+        : undefined,
     [voiceAvailable, voiceActive, t, startVoice, stopVoice],
   )
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null)
@@ -1030,13 +1073,16 @@ export function AiPanel({
     [attachments, chat, composerSkills, t],
   )
 
-  const onComposerMentionPick = useCallback((pick: { entry: { id: string }; value: string; caret: number }) => {
-    // The composer already mutated the value to insert `@label `. We just
-    // log the pick so future host code (e.g. resolveMentionTokens) can hook
-    // in without touching this file. Keep the handler minimal so the
-    // textarea state stays the single source of truth.
-    void pick
-  }, [])
+  const onComposerMentionPick = useCallback(
+    (pick: { entry: { id: string }; value: string; caret: number }) => {
+      // The composer already mutated the value to insert `@label `. We just
+      // log the pick so future host code (e.g. resolveMentionTokens) can hook
+      // in without touching this file. Keep the handler minimal so the
+      // textarea state stays the single source of truth.
+      void pick
+    },
+    [],
+  )
 
   /** Optional token-budget badge — shows how full the prompt is. The model
    *  context window changes per provider; 8k is a safe default for the docs
@@ -1599,7 +1645,7 @@ export function AiPanel({
               if (event.status === 'completed') return
               emitProgress({
                 type: 'ai-progress',
-                status: event.status,
+                status: hostProgressStatus(event.status),
                 progress: event.progress,
                 completedUnits: event.completedUnits,
                 totalUnits: event.totalUnits,
@@ -1861,7 +1907,10 @@ export function AiPanel({
           const at = Math.max(1, Math.min(entry.range!.to, Math.max(1, size - 1)))
           ed.chain()
             .focus()
-            .insertContentAt(at, { type: 'docParagraph', content: [{ type: 'text', text: entry.targetText }] })
+            .insertContentAt(at, {
+              type: 'docParagraph',
+              content: [{ type: 'text', text: entry.targetText }],
+            })
             .run()
         } else {
           const from = Math.max(1, Math.min(entry.range!.from, size))
@@ -1881,7 +1930,13 @@ export function AiPanel({
         // 计划里只记真正写进去的那些，撤销才对得上；失败信息抛给弹窗渲染。
         setLastChangePlan({
           ...plan,
-          ops: [{ kind: 'translate', description: op.description, ops: written.filter((e) => !missing.includes(e)) }],
+          ops: [
+            {
+              kind: 'translate',
+              description: op.description,
+              ops: written.filter((e) => !missing.includes(e)),
+            },
+          ],
         })
         throw new Error(
           `有 ${missing.length}/${written.length} 段译文未能写入文档（已写入 ${written.length - missing.length} 段）。请撤销后重试，或改用「覆盖当前文件」保存方式。`,
@@ -1963,7 +2018,10 @@ export function AiPanel({
         for (const item of [...items].sort((a, b) => (b.range?.from || 0) - (a.range?.from || 0))) {
           const source = (item as TranslationItem).range
           if (!source) continue
-          const index = spans.findIndex((span) => span.from === source.from && span.text === (item as TranslationItem).sourceText)
+          const index = spans.findIndex(
+            (span) =>
+              span.from === source.from && span.text === (item as TranslationItem).sourceText,
+          )
           if (index < 0) continue
           const next = spans[index + 1]
           // Only remove it if it really is the translation we inserted; a

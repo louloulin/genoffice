@@ -34,6 +34,7 @@ import {
   type TranslateBatchResponse,
   type TranslateBatchUnitResult,
   type TranslateProgress,
+  type TranslateProgressStatus,
   type TranslatedUnit,
   type TranslationUnit,
 } from '@genoffice/translation-core/document'
@@ -141,7 +142,11 @@ export function isTranslatableFrameText(text: string): boolean {
  */
 export function extractDeckTextFrames(slides: readonly SlideLike[]): DeckTextNode[] {
   const found: DeckTextNode[] = []
-  const visit = (nodes: readonly SlideNodeLike[], slideIndex: number, groupPath: string[]): void => {
+  const visit = (
+    nodes: readonly SlideNodeLike[],
+    slideIndex: number,
+    groupPath: string[],
+  ): void => {
     for (const node of nodes) {
       if (node.decoration) continue
       if (node.type === 'group' && node.children) {
@@ -240,7 +245,11 @@ export interface DeckTranslateOptions {
 }
 
 /** Compose the final text for one frame, given the apply mode. */
-export function composeFrameText(source: string, translation: string, mode: TranslateApplyMode): string {
+export function composeFrameText(
+  source: string,
+  translation: string,
+  mode: TranslateApplyMode,
+): string {
   if (mode !== 'bilingual') return translation
   const trimmedSource = source.trim()
   if (trimmedSource === '') return translation
@@ -251,7 +260,7 @@ export async function translateDeckDocument(
   deps: DeckTranslateDeps,
   options: DeckTranslateOptions,
 ): Promise<{
-  status: 'completed' | 'failed' | 'cancelled'
+  status: TranslateProgressStatus
   mode: TranslateApplyMode
   units: TranslatedUnit[]
   quality?: { overallScore?: number; warnings?: string[] } | undefined

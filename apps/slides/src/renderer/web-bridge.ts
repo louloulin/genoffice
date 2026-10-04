@@ -8,7 +8,11 @@
 /// get browser equivalents so the web version keeps the full feature surface.
 /// Inside Electron the preload has already exposed the IPC-backed APIs and this
 /// module leaves them untouched.
-import { createHttpIpcTransport, isElectronRuntime, type IpcTransport } from '@genoffice/ipc-bridge/client'
+import {
+  createHttpIpcTransport,
+  isElectronRuntime,
+  type IpcTransport,
+} from '@genoffice/ipc-bridge/client'
 import {
   createWebFileBridge,
   downloadBytes,
@@ -19,7 +23,10 @@ import {
   webPrint,
 } from '@genoffice/ipc-bridge/web-native'
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
-import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
+import {
+  defaultSdkCommandHandlers,
+  installSdkCommandSink,
+} from '@genoffice/ipc-bridge/sdk-command-sink'
 import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
 import {
@@ -33,7 +40,11 @@ import {
   narrowUnitStatus,
   parseEmbedTranslateStreamEvent,
 } from '@genoffice/translation-core/embed-body'
-import type { TranslateBatchRequest, TranslateBatchResponse, TranslateBatchUnitResult } from '@genoffice/translation-core'
+import type {
+  TranslateBatchRequest,
+  TranslateBatchResponse,
+  TranslateBatchUnitResult,
+} from '@genoffice/translation-core'
 import { createDataflareTranslationStorage } from '@genoffice/translation-core/storage'
 import { isEmbeddedInHost } from '@genoffice/web-sdk/dataflare/guest'
 import { emitTranslateProgress } from './ai/translate-progress'
@@ -305,7 +316,6 @@ if (!isElectronRuntime()) {
       // return `null`, which is the same end-state but pays an HTTP round-trip
       // and races the focus event on each cut/copy/paste. Pin the behaviour
       // locally so the bridge contract matches what `App.tsx` already assumes.
-      return null
     },
     fontInstallLocal: async () => null,
     pickAttachments: async () => {
@@ -348,7 +358,8 @@ if (!isElectronRuntime()) {
         downloadBytes(file.name, file.bytes)
       }
       return result
-    },    uploadFile: async (projectId?: string) => {
+    },
+    uploadFile: async (projectId?: string) => {
       const picked = await pickFileBytes(undefined, false)
       if (!picked) return null
       const file = picked[0]
@@ -362,7 +373,6 @@ if (!isElectronRuntime()) {
         return null
       }
     },
-
   })
   bridgedWindow.desktop = createSlidesFilesApi(transport, {})
   bridgedWindow.projectApi = createSlidesProjectApi(transport)

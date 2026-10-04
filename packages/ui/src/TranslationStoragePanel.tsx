@@ -38,22 +38,30 @@ export interface PanelGlossaryTerm {
   sourceTerm: string
   targetTerm: string
   category?: string
-  spaceId?: number | null
+  /** number = Dataflare space; string = tenant space id; null = tenant-shared */
+  spaceId?: number | string | null
 }
 
 export interface PanelMemoryEntry {
   id?: number | null
   sourceText?: string | null
   translatedText?: string | null
-  spaceId?: number | null
+  spaceId?: number | string | null
   createTime?: string | null
 }
 
 export interface PanelTranslationStorageClient {
-  listGlossary(params?: { targetLanguage?: string; category?: string }): Promise<PanelGlossaryTerm[]>
+  listGlossary(params?: {
+    targetLanguage?: string
+    category?: string
+  }): Promise<PanelGlossaryTerm[]>
   upsertGlossary(term: PanelGlossaryTerm): Promise<void>
   deleteGlossary(id: number): Promise<void>
-  listMemory(params?: { targetLanguage?: string; sourceLanguage?: string; limit?: number }): Promise<PanelMemoryEntry[]>
+  listMemory(params?: {
+    targetLanguage?: string
+    sourceLanguage?: string
+    limit?: number
+  }): Promise<PanelMemoryEntry[]>
 }
 
 export interface TranslationStoragePanelStrings {
@@ -95,7 +103,9 @@ type Tab = 'glossary' | 'memory'
 /** Terms created from a document land in the general category. */
 const DEFAULT_TERM_CATEGORY = 'general'
 
-export function TranslationStoragePanel(props: TranslationStoragePanelProps): React.JSX.Element | null {
+export function TranslationStoragePanel(
+  props: TranslationStoragePanelProps,
+): React.JSX.Element | null {
   const { open, onClose, client, spaceId, initialTerm, strings, targetLanguage } = props
   const [tab, setTab] = useState<Tab>('glossary')
   const [terms, setTerms] = useState<PanelGlossaryTerm[]>([])
@@ -172,7 +182,7 @@ export function TranslationStoragePanel(props: TranslationStoragePanelProps): Re
   )
 
   const scopeLabel = useCallback(
-    (rowSpaceId: number | null | undefined) =>
+    (rowSpaceId: number | string | null | undefined) =>
       rowSpaceId === null || rowSpaceId === undefined
         ? strings.scopeShared
         : strings.scopeSpace.replace('{space}', String(rowSpaceId)),
@@ -246,10 +256,18 @@ export function TranslationStoragePanel(props: TranslationStoragePanelProps): Re
           </button>
         </header>
         <nav className="tsp-tabs">
-          <button type="button" className={tab === 'glossary' ? 'active' : ''} onClick={() => setTab('glossary')}>
+          <button
+            type="button"
+            className={tab === 'glossary' ? 'active' : ''}
+            onClick={() => setTab('glossary')}
+          >
             {strings.glossaryTab}
           </button>
-          <button type="button" className={tab === 'memory' ? 'active' : ''} onClick={() => setTab('memory')}>
+          <button
+            type="button"
+            className={tab === 'memory' ? 'active' : ''}
+            onClick={() => setTab('memory')}
+          >
             {strings.memoryTab}
           </button>
         </nav>
@@ -272,7 +290,9 @@ export function TranslationStoragePanel(props: TranslationStoragePanelProps): Re
         ) : null}
         <div className="tsp-body">{body}</div>
         <footer className="tsp-footer">
-          <span className="tsp-meta">{spaceId ? strings.scopeSpace.replace('{space}', spaceId) : strings.scopeShared}</span>
+          <span className="tsp-meta">
+            {spaceId ? strings.scopeSpace.replace('{space}', spaceId) : strings.scopeShared}
+          </span>
           <button type="button" onClick={onClose}>
             {strings.close}
           </button>

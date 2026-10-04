@@ -22,7 +22,10 @@
 
 import { useCallback, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { TranslateDialog, type TranslateLanguageOption } from '@genoffice/ui'
-import type { TranslateProgress } from '@genoffice/translation-core/document'
+import type {
+  TranslateProgress,
+  TranslateProgressStatus,
+} from '@genoffice/translation-core/document'
 import { emitTranslateProgress } from './translate-progress'
 
 import { t } from '../i18n/locale'
@@ -34,6 +37,22 @@ import {
   type DeckTranslateWrite,
   type SlideLike,
 } from './document-translate'
+
+/**
+ * Narrow the pipeline's progress vocabulary to the host's (markdown/html/docs
+ * parity). `completed-with-failures` is the pipeline's partial-success terminal
+ * state and the host's `ai-progress` cannot render it: reporting it as
+ * `completed` would tell the host the deck translated cleanly when part of it
+ * was left in the source language, so it is reported as `failed` — the honest
+ * direction to be wrong in.
+ */
+function hostProgressStatus(
+  status: TranslateProgressStatus,
+): 'started' | 'running' | 'completed' | 'failed' | 'cancelled' {
+  if (status === 'started' || status === 'running' || status === 'completed') return status
+  if (status === 'cancelled') return 'cancelled'
+  return 'failed'
+}
 
 const TRANSLATE_LANGS: readonly TranslateLanguageOption[] = [
   { value: 'zh-CN', label: '简体中文' },
@@ -93,10 +112,14 @@ export function TranslateDeckDialog(
   const [open, setOpen] = useState(false)
   const [bilingual, setBilingual] = useState(false)
   const [rows, setRows] = useState<PreviewRow[]>([])
-  const [quality, setQuality] = useState<{ overallScore?: number; warnings?: string[] } | undefined>()
+  const [quality, setQuality] = useState<
+    { overallScore?: number; warnings?: string[] } | undefined
+  >()
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const latestRef = useRef<Array<{ unitId: string; sourceText: string; translatedText: string }>>([])
+  const latestRef = useRef<Array<{ unitId: string; sourceText: string; translatedText: string }>>(
+    [],
+  )
 
   const cancel = useCallback(() => {
     abortRef.current?.abort()
@@ -127,7 +150,7 @@ export function TranslateDeckDialog(
     // not present-and-undefined, or the host renders "undefined/undefined".
     emitTranslateProgress({
       type: 'ai-progress',
-      status: event.status,
+      status: hostProgressStatus(event.status),
       progress: event.progress,
       ...(event.completedUnits !== undefined ? { completedUnits: event.completedUnits } : {}),
       ...(event.totalUnits !== undefined ? { totalUnits: event.totalUnits } : {}),
@@ -258,7 +281,9 @@ export function TranslateDeckDialog(
         const writes = latestRef.current.flatMap((unit) => {
           const address = parseDeckUnitId(unit.unitId)
           if (!address) return []
-          return [{ ...address, text: composeFrameText(unit.sourceText, unit.translatedText, mode) }]
+          return [
+            { ...address, text: composeFrameText(unit.sourceText, unit.translatedText, mode) },
+          ]
         })
         onApply(writes)
         setOpen(false)

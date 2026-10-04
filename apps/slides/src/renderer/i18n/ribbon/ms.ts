@@ -753,4 +753,7 @@ export const ms = {
   ribbonEqStdDev: 'Sisihan Piawai',
   ribbonEqFourier: 'Jelmaan Fourier',
   ribbonEqNormalDist: 'Taburan Normal',
+  ribbonGroupFile: 'Fail',
+  ribbonUpload: 'Muat Naik Fail',
+  ribbonUploadTip: 'Muat naik fail ke pelayan web',
 } satisfies Record<keyof typeof zh, string>

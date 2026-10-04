@@ -6,7 +6,7 @@ import { buildDocxFixture, TINY_PNG_BASE64, writeFixture } from './helpers/fixtu
 
 const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
 
-function shell(body: string): Uint8Array {
+function shell(body: string): Promise<Uint8Array> {
   const zip = new JSZip()
   zip.file(
     '[Content_Types].xml',
@@ -115,9 +115,7 @@ describe('extractDocxImages', () => {
   it('returns an empty array when the document has no images', async () => {
     const body = '<w:p><w:r><w:t>No images here.</w:t></w:r></w:p>'
     const path = writeFixture('no-images.docx', await shell(body))
-    const bytes = new Uint8Array(await import('node:fs').then((fs) =>
-      fs.promises.readFile(path),
-    ))
+    const bytes = new Uint8Array(await import('node:fs').then((fs) => fs.promises.readFile(path)))
     const images = await extractDocxImages(bytes)
     expect(images).toEqual([])
   })
