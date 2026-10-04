@@ -1,9 +1,9 @@
 schema: comet.native.v4
 name: enterprise-office-ai
 language: zh-CN
-phase: verify
+phase: build
 status: active
-state_version: 44
+state_version: 47
 brief: brief.md
 spec_changes:
   - capability: enterprise-office-ai
@@ -15,44 +15,32 @@ workspace:
   target_branch: release0919
   finish: null
 loop:
-  stage: verify-ready
+  stage: repairing
   goal_cycle: 4
-  iteration: 5
+  iteration: 6
   attempt: 0
   retry_epoch: 0
-  failed_iteration_count: 3
-  no_progress_count: 2
+  failed_iteration_count: 4
+  no_progress_count: 3
   execution_failure_count: 0
   previous_unresolved_ids:
-    - A15
-    - A16
-    - A17
-    - A18
     - A19
-    - A20
     - A21
-    - A22
     - A23
     - A24
     - A25
-    - A56
-    - A57
-    - A59
-    - A60
-    - A61
-    - A62
-    - A63
     - A64
     - A65
-    - A66
     - A67
     - A68
     - A69
     - A70
     - A71
     - A72
+    - A73
+    - A74
     - A75
-  next_action: run-required-checks-and-dispatch-verifier
+  next_action: submit-builder-candidate
 acceptance:
   - id: A1
     source: brief.md
@@ -492,222 +480,7 @@ acceptance:
     text: 文档内容与主题规则（CLAUDE.md Theming rules）不受影响。
     result: pending
     reason: null
-builder_handoff:
-  candidate_id: c11f3c44-803f-45b3-8952-dba4640c232d
-  identity_provider: skill-coordinated
-  builder_execution_ref: skill-coordinated:builder:0f7815a4-e654-47bf-abc4-bf4fe8591289
-  iteration: 5
-  summary:
-    text: "Iteration 5 (批次 4：provider 韧性 / 限流 / 用量核算 / skill 适配器)。交付
-      A15–A18、A20、A22、A56、A57、A59–A63、A66，并修复 A75 的三处门禁红灯。(1) provider
-      韧性两层：packages/ai-provider/src/retry.ts（新增，ProviderErrorClass 分类
-      timeout/network/overloaded/credits/other + 等抖动指数退避）与 stream.ts 的
-      streamForProvider 新增第 8 参 StreamForProviderOptions——streamWithRetry 在首字节前按
-      class 重试（≤3，默认 400ms 基数），failover 循环在重试耗尽后按 fallbackProviders 有序切换，每次切换触发
-      onProviderSwitch；任何输出（delta/reasoning/tool-call）一旦发出即同时锁死重试与 failover，调用方
-      abort 亦然（A15/A56/A16/A57）。(2) AiSettings 扩展 fallbackProviders?:
-      AiProviderId[]（A57 租户可配）；web-server chat.ts 的 runProviderStream 注入
-      resolveConfig（每个 fallback 用自己的 key/model/baseUrl）+
-      onProviderSwitch→recordAudit('ai.provider_switch')；settings-sanitize.ts 的
-      embed 分支将 fallbackProviders 改为服务端持有，杜绝 guest 借代理链花租户预算。(3) 限流：新增
-      apps/web-server/src/common/rate-limit.ts（per-tenant per-endpoint token
-      bucket，支持全局/租户/租户-端点三级覆盖，配置存 DATA_DIR/rate-limit.json，端点路径规整化数字/哈希段为
-      :id，10000 桶上限先到先逐），于 src/index.ts 认证闸门之后挂载到 /api/v1/* 与
-      /api/ai/stream，超限返回 429 + Retry-After；桶键 (tenantId,
-      pathname)，租户间完全隔离（A17/A59/A60/A61）。(4) 用量核算：新增
-      apps/web-server/src/common/usage-meter.ts（JSONL 追加 + 90 天轮转沿用 audit-log
-      模式），ai-audit.ts 的 auditAiCall 作为唯一收口点调用 recordUsage；新增 GET
-      /api/v1/ai/usage（ai:read scope，时间窗 from/to 可参数化，非 operator 强制钉到自身 JWT
-      tenant，operator 可跨租户），返回 per-tenant 聚合
-      {calls,promptTokens,completionTokens,totalTokens,avgLatencyMs} 与
-      totals（A18/A22/A62/A63）。(5) skill 适配器：packages/agent-core/src/skill.ts 新增
-      adaptSkillPackage / skillDefinitionToTool / skillInputsToJsonSchema，把
-      marketplace SkillPackage 的输入槽映射为 JSON Schema 工具、执行映射为 AgentLoop
-      工具调用并序列化已声明输出，工具名默认取 id 末段；agent-core/package.json 增加
-      @genoffice/agent-skills 依赖（type-only 引用，运行时擦除，无环）（A20/A66）。(6) A75
-      门禁修复：apps/docs/vitest.config.ts 补 @genoffice/translation-core/languages
-      子路径别名（置于裸键之前，避免前缀替换误伤）；packages/ipc-bridge/tests/sdk-command-sink.test.ts
-      断言放宽为接受两个合法子路径之一；apps/web-server/tests/sidecar-pool-readrouting.test.ts 对
-      gitignored 夹具加 describe.skipIf；slides-hash-id-stability-e2e 改用
-      tests/helpers/server-process 的 stopServer。未交付 A19/A64/A65（见
-      known_limits）。"
-    truncated: false
-  addressed_acceptance_ids:
-    - A15
-    - A16
-    - A17
-    - A18
-    - A20
-    - A22
-    - A56
-    - A57
-    - A59
-    - A60
-    - A61
-    - A62
-    - A63
-    - A66
-    - A75
-  checks:
-    - name:
-        text: npm run test -w @genoffice/ai-provider
-        truncated: false
-      result: passed
-      note:
-        text: "270 passed（20 文件）。resilience.test.ts 新增 14
-          例：classifyProviderError、per-request retry（timeout/network/503、默认策略、≤3
-          上限、自定义 maxRetries、收到 delta 后不再重试）、registry failover（耗尽后切换并上报、按序走链、收到
-          delta 后不 failover）。stream.test.ts/watchdog.test.ts 各一处调用补 { retry: {
-          maxRetries: 0 } }（in-band Overloaded 事件 / connect-timeout 用例，底层
-          Response 单次消费），并加注释指向 resilience.test.ts。"
-        truncated: false
-    - name:
-        text: npm run typecheck -w @genoffice/ai-provider
-        truncated: false
-      result: passed
-      note:
-        text: 本 change 触及的文件无错误。整体仍有 8 处告警，均为 pre-existing
-          且与本轮无关：tests/plugin-routing.test.ts 4
-          处、tests/stream.test.ts:1352/1364/1375/1385（chatForProvider 期望 4–6 参得到
-          3）——这些行与 git show HEAD 逐字节一致，不在本 change 的任何 hunk 内。
-        truncated: false
-    - name:
-        text: npm run test -w @genoffice/agent-core
-        truncated: false
-      result: passed
-      note:
-        text: 105 passed（14 文件）。含新增 skill-package-adapter.test.ts 10 例：工具名推导、inputs→JSON
-          Schema（required/enum/integer/description）、i18n 本地化、执行并序列化输出、抛错→isError
-          不冒泡、已取消→拒绝启动、mutated 透传、以及经真实 AgentLoop 的端到端工具执行（模型收到 1 个适配工具、执行 1
-          次、事件回调收到 summary 文本、run 正常收尾）。
-        truncated: false
-    - name:
-        text: npm run typecheck -w @genoffice/agent-core
-        truncated: false
-      result: passed
-      note:
-        text: clean。适配器对 @genoffice/agent-skills/skill-protocol 仅作 import
-          type，运行时被擦除，故不把 agent-skills 的依赖树拉进本包 tsc program。
-        truncated: false
-    - name:
-        text: npm run test -w @genoffice/web-server
-        truncated: false
-      result: passed
-      note:
-        text: 1360 passed | 24 skipped（167 文件），含新增
-          rate-limit.test.ts、rate-limit-e2e.test.ts、usage-meter.test.ts、ai-usage-query.test.ts、ai-usage-query-e2e.test.ts。
-        truncated: false
-    - name:
-        text: npm run test:http -w @genoffice/web-server
-        truncated: false
-      result: passed
-      note:
-        text: 40 passed | 0 failed——HTTP 面（含嵌入闭环）未因限流挂载与 /api/v1/ai/usage 新增而回退。
-        truncated: false
-    - name:
-        text: npm run typecheck -w @genoffice/web-server
-        truncated: false
-      result: passed
-      note:
-        text: clean（含 rate-limit.ts、usage-meter.ts、chat.ts 第 8 参、route-policy
-          新规则、settings-sanitize embed 分支）。
-        truncated: false
-    - name:
-        text: node tools/check-theme-colors.mjs
-        truncated: false
-      result: passed
-      note:
-        text: A75 门禁 1/5：本 change 未触动渲染层 CSS，仍全绿。
-        truncated: false
-    - name:
-        text: npm run check:app-translation && check:translation-copy-save &&
-          check:translation-apply-hardening && check:translation-storage-panel
-        truncated: false
-      result: passed
-      note:
-        text: A75 门禁 2–5/5：翻译四脚本全绿（--require=whole-document --require=host-command）。
-        truncated: false
-    - name:
-        text: npm test (根，32 workspace 串行链)
-        truncated: false
-      result: failed
-      note:
-        text: "链在第 18/32 个 workspace @genoffice/agent-runtime 中断（前置 17 个 workspace
-          全绿）。失败为 1 个 unhandled error：TypeError: ctx.ui.setStatus is not a
-          function，抛出帧全部位于仓库之外——/Users/louloulin/.pi/agent/npm/node_modules/pi-\
-          goal-x/extensions/goal-state.ts:573（clearGoalWidget→renderUI→queueMic\
-          rotask）。该 pi 全局扩展安装于 2026-09-27，早于本 change；packages/agent-runtime 与
-          HEAD 逐字节一致（git status 为空），其依赖全为外部 @earendil-works/pi-*，不引用本 change
-          触及的任何包（agent-core/ai-provider/web-server/ipc-bridge）。触发点是
-          tests/runtime.test.ts 刻意用默认 ~/.pi/agent 起真实 pi 会话（测试内注释明确说明与 apps/docs
-          pi-smoke.ts 一致），因此自动加载了该全局扩展。agent-runtime 自身 43/43 用例通过，仅因该外部
-          unhandled error 使 vitest 非零退出。这是 pre-existing 的环境性红灯，本 change
-          无法导致，也不应由本 change 修复。"
-        truncated: false
-    - name:
-        text: npm run test -w (链未到达的 14 个 workspace，逐个跑)
-        truncated: false
-      result: passed
-      note:
-        text: 14/14 全绿，补齐了被外部错误截断的链条尾部：agent-skills 204/204（16 文件）、translation-core
-          323/323（17
-          文件）、project-store、cli、ui、docs、sheets、shell、slides、pdf、markdown、html、web-server
-          1360 passed | 24 skipped（167 文件）、web-sdk。其中 agent-skills 是本轮
-          agent-core 新增依赖（仅 import type）的目标包，web-server 是本轮限流/用量最重改动所在，均为绿。
-        truncated: false
-  checks_truncated: false
-  known_limits:
-    - text: A19/A64 未交付（本批次延期，非遗漏）：markdown/html 的 AI 面板迁移到 chat-runtime，并将六应用 5 份
-        EditQueueCard、3 份 composer-commands 等复制组件收敛为单一来源。实测规模：六个 app 的 AiPanel
-        合计约 12,300 行（docs 3084 / slides 3260 / html 1744 / pdf 1514 / sheets
-        1373 / markdown 1333）；chat-runtime 目前仅被 docs/pdf/sheets/slides
-        引用；EditQueueCard 的 5 份副本各绑定 app 特有的锚定方式（docs 绑定活的 tiptap Editor、html 用
-        ParseMap sid、markdown 用源码偏移），editor 现场不共享同一抽象。这是一次结构性重构，需要独立迭代以保证
-        six-app 行为不回退，不宜并入本轮韧性/限流批次的候选，故按批次制（D12）延期到下一 Build 轮。
-      truncated: false
-    - text: A65 未交付（依赖 A19/A64）：要求迁移后六应用 AI 面板启动 0 console errors 且既有功能不回退。既然 A19/A64
-        未执行迁移，A65 的前置条件尚不存在；其验证需要真实浏览器逐 app 跑一遍（六个 app 的 dev server +
-        Playwright），不能在本轮纸上断言。
-      truncated: false
-    - text: A66 的端到端用例使用协议一致的 fixture，而非 import 真实 packages/skill-text-summarize：该包的
-        dist/ 被 gitignore（干净 checkout 上构建产物缺失），而 import 其 src 会把整个
-        @genoffice/agent-skills 依赖树（连同 agent-runtime 的 JSX、file-parse 的 pdfjs
-        类型）拉进 @genoffice/agent-core 的 tsc program，使 typecheck
-        因与本适配器无关的原因变红。fixture 以 SkillPackage 类型标注（同一
-        id、同一输入槽、同一声明输出），因此协议漂移会编译失败；测试头部注释已说明该取舍。适配器的真实消费路径（工具名/schema/执行映射/i18n/错误→isError）均经该
-        fixture 端到端覆盖。
-      truncated: false
-    - text: A75 涉及三处既有测试/配置的修补，均在 known_limits 中显式披露以免被当作实现被放宽：(a)
-        packages/ipc-bridge/tests/sdk-command-sink.test.ts 的断言由『必须是
-        @genoffice/ipc-bridge/sdk-command-sink』放宽为『接受 sdk-command-sink 或
-        text-buffer-adapter 两个合法子路径之一』——原断言把实现细节写死，两个子路径都真实导出该 sink；(b)
-        apps/web-server/tests/sidecar-pool-readrouting.test.ts 对夹具
-        .playwright-mcp/verify-supplier.xlsx（gitignored）加 describe.skipIf，使干净
-        checkout 不再因缺夹具而红；(c) apps/docs/vitest.config.ts 补的
-        translation-core/languages
-        子路径别名必须置于裸键之前——字符串别名是前缀替换，裸键在前会吞掉子路径导入。上述三项都不改变被测行为本身。
-      truncated: false
-    - text: 仓库存在一处 pre-existing 的 check:english-comments 失败，与本 change 无关且未被本轮引入：node
-        tools/check-english-comments.mjs 在
-        .webverify-tmp/web-server-full-audit.md 上报错。该文件被 git 跟踪（git ls-files 列出
-        .webverify-tmp/*.mjs，目录未 gitignore），且与 HEAD 逐字节一致。它不在 A75 枚举的门禁集合内（A75
-        明确为 theme-colors、翻译四脚本、npm test），也不在根 npm test
-        链中——check:english-comments 只是 package.json:25 的独立脚本，未被任何 CI workflow 或
-        npm test 引用。按『不扩大范围』原则未改动该既有产物。
-      truncated: false
-    - text: packages/ai-provider 的 8 处 typecheck 告警为 pre-existing（见 checks 中 typecheck
-        条目的说明），本 change 未新增任何类型错误，也未顺带修复它们以保持候选范围最小。
-      truncated: false
-    - text: A75 的 `npm test` 一环在本开发机上为红，但原因是仓库外的环境状态而非本 change：见 checks 中 `npm test
-        (根…)` 条目——@genoffice/agent-runtime 的一个用例会加载开发者 ~/.pi 下的全局 pi 扩展
-        pi-goal-x，该扩展的异步 renderUI 调用了当前 pi 会话 UI 上下文未提供的 ctx.ui.setStatus。该扩展安装于
-        2026-09-27（早于本 change），agent-runtime 与 HEAD 一致且不依赖本 change 触及的任何包。本
-        change 未去修改用户的全局 pi 配置（超出仓库与本次范围，且可能影响其其他 pi 使用），也未改动 agent-runtime
-        的该用例（它刻意匹配 apps/docs pi-smoke.ts 的真实 agentDir 语义，改成隔离目录会改变其所验证的内容）。在无
-        ~/.pi 全局扩展的干净 CI 上此用例为绿。
-      truncated: false
-  known_limits_truncated: false
-  submitted_at: 2026-10-04T13:34:09.960Z
+builder_handoff: null
 blockers: []
 verification: null
 history:
@@ -1399,6 +1172,55 @@ history:
         file-parse/pdfjs-dist issue in an untouched file."
       truncated: false
     completed_at: 2026-10-04T13:07:59.464Z
+  - goal_cycle: 4
+    iteration: 5
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A19
+      - A21
+      - A23
+      - A24
+      - A25
+      - A64
+      - A65
+      - A67
+      - A68
+      - A69
+      - A70
+      - A71
+      - A72
+      - A73
+      - A74
+      - A75
+    summary:
+      text: Batch 4 (commit 3ddbe33c) delivers and passes tests for provider
+        resilience (A15/A16/A56/A57), per-tenant rate limiting (A17/A59-A61),
+        usage-meter + query API (A18/A22/A62/A63), and the marketplace
+        SkillPackage adapter (A20/A66); all relevant unit/e2e checks are green.
+        Thirteen acceptance items remain unimplemented
+        (A19/A21/A23/A24/A25/A64/A65/A67-A72), so at least one item is failed
+        and the verdict is fail. Both required red checks were independently
+        confirmed pre-existing/environmental (developer-global pi extension;
+        pre-existing test type errors), and A75 is blocked because the root npm
+        test gate is falsely red from that out-of-repo extension.
+      truncated: false
+    completed_at: 2026-10-04T13:47:10.716Z
+  - goal_cycle: 4
+    iteration: 5
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: 第 5 轮验收(fail):批次 4(commit 3ddbe33c)交付的 15
+        项(A15-A18/A20/A22/A56/A57/A59-A63/A66)经独立 Verifier 全部 passed,未解决集
+        29→16。剩余 13 项尚未实现(A19/A21/A23-A25/A64/A65/A67-A72),A73/A74
+        依赖前批不变量本轮未重跑,A75 的 npm test 门禁因仓库外 ~/.pi 全局扩展 pi-goal-x 而红(已独立确认与本
+        change 无关)。两个红灯检查(ai-provider-typecheck 的 8 处既有测试类型错误、root-npm-test 的外部
+        unhandled error)均非本候选引入。用户确认:保持 77 项验收文字不变(D12 批次制),回到 Build
+        交付下一批(A19/A64/A65 组件收敛 + 批次 5:A21/A23/A24/A25/A67/A68/A69/A70/A71/A72)。
+      truncated: false
+    completed_at: 2026-10-04T13:48:12.036Z
 history_overflow:
   dropped_entries: 0
   first_dropped_at: null

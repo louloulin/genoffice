@@ -10,7 +10,8 @@
     "./react": "./src/react.ts",
     "./errors": "./src/errors.ts",
     "./types": "./src/types.ts",
-    "./change-plan": "./src/change-plan.ts"
+    "./change-plan": "./src/change-plan.ts",
+    "./edit-queue": "./src/edit-queue.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -24,7 +25,9 @@
     "react": ">=18"
   },
   "peerDependenciesMeta": {
-    "react": { "optional": true }
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

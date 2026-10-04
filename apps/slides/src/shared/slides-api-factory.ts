@@ -135,6 +135,8 @@ export interface SlidesApiOverrides {
   printSlides?: (op: PrintSlidesOp) => Promise<unknown>
   /** Web-native clipboard (navigator.clipboard). */
   clipboardExternal?: () => Promise<unknown>
+  /** Web-native native-clipboard probe (no-op: the browser Clipboard API owns cut/copy/paste). */
+  nativeClipboard?: (op: 'cut' | 'copy' | 'paste') => Promise<void>
   /** Web-native font install (FontFace). */
   fontInstallLocal?: () => Promise<unknown>
   /** Web-native attachment picker (browser file input → temp files → files-add). */
@@ -360,7 +362,8 @@ export function createSlidesApi(t: IpcTransport, overrides: SlidesApiOverrides =
     getComments: (slideIndex: number) => t.invoke('slides:get-comments', slideIndex),
     addComment: (op) => t.invoke('slides:add-comment', op),
     deleteComment: (op) => t.invoke('slides:delete-comment', op),
-    nativeClipboard: (op: 'cut' | 'copy' | 'paste') => t.invoke('slides:native-clipboard', op),
+    nativeClipboard:
+      overrides.nativeClipboard ?? ((op: 'cut' | 'copy' | 'paste') => t.invoke('slides:native-clipboard', op)),
     beginHistoryBatch: () => t.invoke('slides:history-batch-begin'),
     endHistoryBatch: () => t.invoke('slides:history-batch-end'),
     applyEditScript: (op: ApplyEditScriptOp) => t.invoke('slides:apply-edit-script', op),

@@ -34,6 +34,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { withSpan } from '../common/ai-tracing'
+
 import {
   AiSettings,
   type AiProviderConfig,
@@ -602,7 +604,33 @@ export async function handleTranslateBatchHttp(
     sendJson(response, 400, { error: { message: 'invalid JSON body', code: 'INVALID_ARGUMENT' } })
     return
   }
-  return translateBatchCore(body, response, opts)
+  // A23/A69: same entry → provider call → write-back trace as the SSE path.
+  return withSpan(
+    'ai.translate.batch',
+    {
+      route: '/api/ai/translate',
+      ...(body.settings?.provider ? { provider: body.settings.provider } : {}),
+      targetLanguage: body.targetLanguage ?? '',
+      totalUnits: Array.isArray(body.units) ? body.units.length : 0,
+      ...(body.requestId ? { requestId: body.requestId } : {}),
+    },
+    async (span) => {
+      await span.startSpan(
+        {
+          name: 'ai.provider.call',
+          attributes: { units: Array.isArray(body.units) ? body.units.length : 0 },
+        },
+        async () => {
+          await translateBatchCore(body, response, opts)
+        },
+      )
+      // Write-back stage: the JSON result has been flushed to the caller.
+      await span.startSpan(
+        { name: 'ai.translate.write-back', attributes: { status: response.statusCode } },
+        async () => {},
+      )
+    },
+  )
 }
 
 /**
@@ -905,9 +933,25 @@ export async function handleTranslateStreamHttp(
       totalUnits: units.length,
     })
 
+    // A23/A69: translation main path traced entry → provider call → write-back.
+    // No-op unless a collector is configured (common/ai-tracing.ts).
+    await withSpan(
+      'ai.translate.stream',
+      {
+        route: '/api/ai/translate/stream',
+        provider,
+        model: config.model ?? '',
+        targetLanguage: body.targetLanguage ?? '',
+        totalUnits: units.length,
+        requestId: effectiveRequestId,
+      },
+      async (span) => {
     const storage = await translationStorage()
     const inlineMemory = buildInlineMemory(body)
-    const response_ = await translateBatchStream(
+    const response_ = await span.startSpan(
+      { name: 'ai.provider.call', attributes: { provider, units: units.length } },
+      async () =>
+      translateBatchStream(
       {
         units: units as never,
         sourceLang: body.sourceLanguage,
@@ -970,6 +1014,7 @@ export async function handleTranslateStreamHttp(
           })
         },
       },
+      ),
     )
     if (response_.quality) {
       writeSseEvent(response, 'quality', {
@@ -1001,6 +1046,20 @@ export async function handleTranslateStreamHttp(
       elapsedMs: Date.now() - startedAt,
       ...(response_.error ? { errorMessage: response_.error } : {}),
     })
+    // Write-back stage: the per-unit + complete SSE events have been emitted.
+    await span.startSpan(
+      {
+        name: 'ai.translate.write-back',
+        attributes: {
+          requestId: effectiveRequestId,
+          completedUnits: completed,
+          okCount,
+          memoryHitCount,
+          failedCount,
+        },
+      },
+      async () => {},
+    )
     // Tokens stay null — the unit pool inside the core layer does not
     // surface per-call usage.
     auditAiCall({
@@ -1015,6 +1074,8 @@ export async function handleTranslateStreamHttp(
           ? {}
           : { errorCode: 'unit_failed' }),
     })
+      },
+    )
   } catch (error) {
     if (!abort.signal.aborted) {
       auditAiCall({

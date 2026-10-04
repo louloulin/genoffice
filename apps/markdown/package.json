@@ -17,6 +17,7 @@
     "@genoffice/agent-core": "*",
     "@genoffice/ai-provider": "*",
     "@genoffice/ai-search": "*",
+    "@genoffice/chat-runtime": "*",
     "@genoffice/docx-engine": "*",
     "@genoffice/electron-utils": "*",
     "@genoffice/i18n": "*",

@@ -115,7 +115,7 @@ describe('docs SDK save wiring contract (sdk1 §11.66)', () => {
     it('returns the SDK contract shape on success', async () => {
       // Mirror the App.tsx wiring: save(false, false) returns Promise<boolean>;
       // on `true` the adapter must surface { ok: true; savedPath?; savedAt? }.
-      const saveImpl = vi.fn(async () => true)
+      const saveImpl = vi.fn(async (_saveAs: boolean, _auto = false) => true)
       const docPath = '/work/demo.docx'
 
       const adapter = {

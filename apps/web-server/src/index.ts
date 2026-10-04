@@ -85,6 +85,7 @@ import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { startUsageRotateWorker } from './common/usage-meter'
 import { checkRateLimit } from './common/rate-limit'
+import { flushTraces, withSpan } from './common/ai-tracing'
 import { auditAiCall } from './ai/ai-audit'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 import { jwtPayloadFromRequest, jwtScopeFor, openModeAllowed, resolveAuthority, tenantFromPayload, writeForbidden } from './auth/route-policy'
@@ -1062,9 +1063,12 @@ const server = createServer(async (request, response) => {
         'X-Request-Id': streamId,
       })
 
+      // SSE chunks written back to the caller; recorded on the write-back span.
+      let chunkCount = 0
       const send = (chunk: AiStreamChunk) => {
         try {
           response.write(`data: ${JSON.stringify({ ...chunk, requestId: streamId })}\n\n`)
+          chunkCount += 1
         } catch (error) {
           // Client disconnected mid-stream: abort the upstream call so we
           // don't keep producing tokens into the void.
@@ -1082,25 +1086,50 @@ const server = createServer(async (request, response) => {
         AI_STREAM_SESSIONS.delete(streamId)
       })
 
-      await runProviderStream(
-        settings,
-        req.system || '',
-        req.messages || [],
-        req.tools || [],
-        req.maxTokens ?? undefined,
+      // A23/A69: the AI main path is traced entry → provider call → write-back.
+      // The chain is a no-op unless the deployment points at a collector (see
+      // common/ai-tracing.ts), so an untraced install pays only a function call.
+      await withSpan(
+        'ai.stream',
         {
-          onAbort: (c) => {
-            sessionAbort = c
-          },
-          send,
+          route: '/api/ai/stream',
+          provider: settings.provider,
+          model: settings.providers?.[settings.provider]?.model ?? '',
+          requestId: streamId,
+          ...(gate.jwt?.tenant ? { tenant: gate.jwt.tenant } : {}),
         },
-        // A43: the raw claims spread, not tenantFromPayload — absent claims
-        // must stay absent so the audit record marks provenance 'fallback'
-        // rather than pinning a literal 'default' tenant as JWT-sourced.
-        {
-          endpoint: '/api/ai/stream',
-          ...(gate.jwt?.tenant ? { tenantId: gate.jwt.tenant } : {}),
-          ...(gate.jwt?.sub ? { userId: gate.jwt.sub } : {}),
+        async (span) => {
+          await span.startSpan(
+            { name: 'ai.provider.call', attributes: { provider: settings.provider } },
+            async () => {
+              await runProviderStream(
+                settings,
+                req.system || '',
+                req.messages || [],
+                req.tools || [],
+                req.maxTokens ?? undefined,
+                {
+                  onAbort: (c) => {
+                    sessionAbort = c
+                  },
+                  send,
+                },
+                // A43: the raw claims spread, not tenantFromPayload — absent claims
+                // must stay absent so the audit record marks provenance 'fallback'
+                // rather than pinning a literal 'default' tenant as JWT-sourced.
+                {
+                  endpoint: '/api/ai/stream',
+                  ...(gate.jwt?.tenant ? { tenantId: gate.jwt.tenant } : {}),
+                  ...(gate.jwt?.sub ? { userId: gate.jwt.sub } : {}),
+                },
+              )
+            },
+          )
+          // Write-back stage: the SSE response has been drained to the caller.
+          await span.startSpan(
+            { name: 'ai.stream.write-back', attributes: { requestId: streamId, chunks: chunkCount } },
+            async () => {},
+          )
         },
       )
     } catch (error) {
@@ -1638,6 +1667,9 @@ function shutdown(code = 0): void {
     /* Resume checkpoints are debounced too: a translation cancelled moments
      * before shutdown must still leave its settled units for the next run. */
     flushTranslateCheckpoints()
+    /* OTLP spans are batched: ship whatever the last requests produced before
+     * the process exits, or the tail of a trace is lost. */
+    await flushTraces()
   }
   void Promise.allSettled([flushTranslationMemory(), flushState()]).finally(() => {
     server.close(() => process.exit(code))

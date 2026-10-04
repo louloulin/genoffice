@@ -1,3 +1,12 @@
+import {
+  buildQueueSummary,
+  liveItems,
+  EDIT_INSTRUCTION_MAX,
+  EDIT_QUEUE_MAX,
+  truncate,
+  type LiveQueueItem as SharedLiveQueueItem,
+  type ResolvedQueueItem,
+} from '@genoffice/chat-runtime/edit-queue'
 import { sourceText, type ElementEntry, type ParseMap } from '../document/parse-map'
 
 /**
@@ -6,12 +15,13 @@ import { sourceText, type ElementEntry, type ParseMap } from '../document/parse-
  * and the batch is submitted as one agent run. Items anchor to sids, which
  * the parse map keeps stable across rebuilds by tag + path; an item whose
  * element is gone stays visible as stale until removed.
+ *
+ * Caps, truncation, the live/stale split and the submission summary are the
+ * shared scaffolding in `@genoffice/chat-runtime/edit-queue`; what is html's
+ * own is the sid resolution and the sid-addressed batch instruction.
  */
 
-/** hard cap on queued edits: keeps one submission inside the agent's turn budget and the card readable */
-export const EDIT_QUEUE_MAX = 10
-/** soft cap on one instruction; longer requests belong in the main composer */
-export const EDIT_INSTRUCTION_MAX = 500
+export { EDIT_INSTRUCTION_MAX, EDIT_QUEUE_MAX, buildQueueSummary, liveItems, truncate }
 
 export interface EditQueueItem {
   qid: string
@@ -30,17 +40,8 @@ export interface QueueTarget {
   start: number
 }
 
-export interface ResolvedQueueItem {
-  item: EditQueueItem
-  /** null = the element no longer exists in the source */
-  target: QueueTarget | null
-}
-
-export type LiveQueueItem = ResolvedQueueItem & { target: QueueTarget }
-
-export function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text
-}
+export type ResolvedHtmlQueueItem = ResolvedQueueItem<EditQueueItem, QueueTarget>
+export type LiveQueueItem = SharedLiveQueueItem<EditQueueItem, QueueTarget>
 
 /** collapsed text content, or the tag when the element carries none (img, hr, empty div) */
 export function excerptOf(text: string, entry: ElementEntry): string {
@@ -48,11 +49,7 @@ export function excerptOf(text: string, entry: ElementEntry): string {
   return content || `<${entry.tag}>`
 }
 
-export function resolveQueueItem(
-  text: string,
-  map: ParseMap,
-  item: EditQueueItem,
-): ResolvedQueueItem {
+export function resolveQueueItem(text: string, map: ParseMap, item: EditQueueItem): ResolvedHtmlQueueItem {
   const entry = map.bySid.get(item.sid)
   if (!entry || entry.tag !== item.tag) return { item, target: null }
   return {
@@ -66,16 +63,8 @@ export function resolveQueueItem(
   }
 }
 
-export function resolveQueue(
-  text: string,
-  map: ParseMap,
-  items: EditQueueItem[],
-): ResolvedQueueItem[] {
+export function resolveQueue(text: string, map: ParseMap, items: EditQueueItem[]): ResolvedHtmlQueueItem[] {
   return items.map((item) => resolveQueueItem(text, map, item))
-}
-
-export function liveItems(resolved: ResolvedQueueItem[]): LiveQueueItem[] {
-  return resolved.filter((r): r is LiveQueueItem => r.target !== null)
 }
 
 /** "Send now" from the popover: the instruction pinned to its element so a later selection change cannot redirect it */
@@ -103,12 +92,4 @@ export function buildQueueInstruction(entries: LiveQueueItem[]): string {
     '',
     'Apply exactly these changes to exactly the listed elements — address each by its sid in apply_ops (read_source sid=N first when you need the exact markup) and batch them into as few apply_ops calls as possible. Do not modify content outside the listed elements. Finish with a short summary of what was changed.',
   ].join('\n')
-}
-
-/** user-facing echo of a submission, shown as the chat bubble text */
-export function buildQueueSummary(header: string, entries: LiveQueueItem[]): string {
-  const lines = entries.map(
-    (entry, i) => `${i + 1}. ${truncate(entry.target.excerpt, 24)} — ${entry.item.instruction}`,
-  )
-  return [header, ...lines].join('\n')
 }

@@ -244,6 +244,12 @@ export {
 
 // ── Follow-up suggestion chips (under assistant message) ────────────────
 export { SuggestionChips, type Suggestion, type SuggestionChipsProps } from './SuggestionChips'
+// ── AI edit-queue card (docs/markdown/html/slides composer queue) ───────
+export {
+  AiEditQueueCard,
+  type AiEditQueueRow,
+  type AiEditQueueCardLabels,
+} from './AiEditQueueCard'
 export {
   TranslationStoragePanel,
   type PanelGlossaryTerm,

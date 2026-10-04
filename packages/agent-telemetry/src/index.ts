@@ -23,6 +23,15 @@ export {
 	type SpanExporter,
 } from "./exporter";
 
+export {
+	OtlpHttpExporter,
+	resolveTracesUrl,
+	type OtlpHttpExporterOptions,
+	type OtlpTracePayload,
+} from "./otlp";
+
+export { ExportingTelemetryContext, createExportingTelemetry } from "./context";
+
 /**
  * Convenience wrapper around {@link TelemetryContext.startSpan} that flattens
  * the pi-telemetry generic into a one-liner. Returns the callback's return
@@ -58,3 +67,6 @@ export const noopTelemetry: TelemetryContext = NOOP_TELEMETRY_CONTEXT;
 
 /** Re-export the type so consumers do not need a direct dependency. */
 export type { RecordedTelemetrySpan, SpanOptions, TelemetryContext, TelemetrySpan } from "@earendil-works/pi-telemetry";
+
+/** Re-export the pi-telemetry recording context and the shared no-op context. */
+export { InMemoryTelemetryContext, NOOP_TELEMETRY_CONTEXT } from "@earendil-works/pi-telemetry";

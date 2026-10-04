@@ -30,6 +30,7 @@
     "@genoffice/agent-core": "*",
     "@genoffice/agent-runtime": "*",
     "@genoffice/agent-skills": "*",
+    "@genoffice/agent-telemetry": "*",
     "@genoffice/ai-provider": "*",
     "@genoffice/ai-search": "*",
     "@genoffice/file-management": "*",

@@ -844,9 +844,16 @@ describe('IPC dispatcher scope gate — additional sensitive surfaces (sdk1 §11
     expect(r.status).toBe(200)
   })
 
-  it('auth:sso-login soft scope: no auth → legacy pass-through', async () => {
+  it('auth:sso-login soft scope: no auth → gate passes, handler refuses for domain reasons', async () => {
+    // A20→A67: the handler is the real OIDC flow now. Nothing configures an
+    // identity provider in this suite, so reaching the handler answers 400
+    // INVALID_ARGUMENT ("unknown provider — configure it via
+    // GENOFFICE_OIDC_PROVIDERS") rather than the placeholder's fabricated 200.
+    // What this asserts is the *gate*: no 401/403 — an unauthenticated caller
+    // is still admitted to a `soft:`-scoped channel, exactly as before.
     const r = await callIpc('auth:sso-login', null, [{ provider: 'google' }])
-    expect(r.status).toBe(200)
+    expect(r.status).toBe(400)
+    expect(r.body.error?.code).toBe('INVALID_ARGUMENT')
   })
 
   it('auth:sso-login soft scope: wrong-scope JWT → 403', async () => {

@@ -1,50 +1,52 @@
 /**
  * SSO/OIDC auth + audit log channels.
  *
- * The auth side (`auth:sso-login` / `auth:sso-callback` / `auth:logout`)
- * is still a placeholder — a real implementation needs a state-vs-code
- * CSRF check and an exchange against the IdP's token endpoint (M5
- * backlog). The audit side, however, used to live in a process-local
- * `AUDIT_LOGS` Map that vanished on every restart — disastrous for
- * compliance data. As of sdk1.md §M5 / §11.36 the audit log is
- * disk-backed (`apps/web-server/src/common/audit-log.ts`) and survives
- * restarts, so this file now just wires the IPC handlers through to
- * that store.
+ * `auth:sso-login` / `auth:sso-callback` drive the real OIDC authorization-code
+ * flow in `./oidc.ts` (discovery, PKCE, single-use state, token exchange, ID
+ * token verification, local JWT minting). They previously returned a fabricated
+ * `https://sso.genoffice.ai/authorize` URL and, on callback, ignored `state`
+ * and `code` to hand back `token-<now>` — see the module doc for why that was
+ * worse than not having SSO at all.
+ *
+ * The audit side used to live in a process-local `AUDIT_LOGS` Map that vanished
+ * on every restart — disastrous for compliance data. It is disk-backed
+ * (`apps/web-server/src/common/audit-log.ts`) and survives restarts, so this
+ * file just wires the IPC handlers through to that store.
  */
 import { registerHandle } from '../common/index'
 import { exportAudit, queryAudit, recordAudit } from '../common/audit-log'
 import { InvalidArgumentError } from '../ai/errors'
+import { beginAuthorisation, completeAuthorisation } from './oidc'
+
+function asString(value: unknown, field: string, handler: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new InvalidArgumentError(handler, `${field} is required`)
+  }
+  return value.trim()
+}
 
 export function registerAuthHandlers(): void {
-  registerHandle('auth:sso-login', (_event: unknown, args: unknown) => {
+  registerHandle('auth:sso-login', async (_event: unknown, args: unknown) => {
     const { provider, redirectUri } = (args || {}) as {
-      provider: string
-      redirectUri?: string
+      provider?: unknown
+      redirectUri?: unknown
     }
-    return {
-      authUrl: `https://sso.genoffice.ai/authorize?provider=${provider}&redirect_uri=${redirectUri || ''}`,
-      state: `state-${Date.now()}`,
+    const name = asString(provider, 'provider', 'auth:sso-login')
+    if (redirectUri !== undefined && typeof redirectUri !== 'string') {
+      throw new InvalidArgumentError('auth:sso-login', 'redirectUri must be a string when provided')
     }
+    return await beginAuthorisation({
+      provider: name,
+      ...(typeof redirectUri === 'string' && redirectUri.trim() ? { redirectUri: redirectUri.trim() } : {}),
+    })
   }, { scope: 'soft:auth:write' })
 
   registerHandle('auth:sso-callback', async (_event: unknown, args: unknown) => {
-    // NOTE (placeholder): a real OIDC implementation must validate `state`
-    // against the value minted by `auth:sso-login` (CSRF protection) and
-    // exchange `code` at the provider's token endpoint. This stub does neither —
-    // it hands back a fixed bearer token — so both fields stay deliberately
-    // unused rather than read and quietly ignored.
-    const { code: _code, state: _state } = (args || {}) as { code: string; state: string }
-    return {
-      ok: true,
-      accessToken: `token-${Date.now()}`,
-      refreshToken: `refresh-${Date.now()}`,
-      expiresIn: 3600,
-      user: {
-        id: `user-${Date.now()}`,
-        email: 'user@example.com',
-        name: 'SSO User',
-      },
-    }
+    const { code, state } = (args || {}) as { code?: unknown; state?: unknown }
+    return await completeAuthorisation({
+      code: asString(code, 'code', 'auth:sso-callback'),
+      state: asString(state, 'state', 'auth:sso-callback'),
+    })
   }, { scope: 'soft:auth:write' })
 
   registerHandle('auth:logout', (_event: unknown) => ({

@@ -20,3 +20,12 @@ export type { NormalizeChangePlanInput } from './change-plan'
 export { ChatRuntime } from './runtime'
 export { startRun } from './run'
 export type { RunHandle, RunBridge, StartRunOptions } from './run'
+export {
+	EDIT_QUEUE_MAX,
+	EDIT_INSTRUCTION_MAX,
+	buildQueueSummary,
+	liveItems,
+	truncate,
+	type LiveQueueItem,
+	type ResolvedQueueItem,
+} from './edit-queue'

@@ -1,5 +1,14 @@
 import type { Editor } from '@tiptap/core'
 import { NodeSelection, TextSelection, type Selection } from '@tiptap/pm/state'
+import {
+  buildQueueSummary,
+  liveItems,
+  EDIT_INSTRUCTION_MAX,
+  EDIT_QUEUE_MAX,
+  truncate,
+  type LiveQueueItem,
+  type ResolvedQueueItem,
+} from '@genoffice/chat-runtime/edit-queue'
 import { queueAnchorRange } from '../editor/aiQueueAnchors'
 import { blockIndexRange } from '../editor/ops'
 
@@ -9,12 +18,14 @@ import { blockIndexRange } from '../editor/ops'
  * submitted as one agent run. Anchors live as decorations (aiQueueAnchors.ts),
  * so they migrate through edits character-precisely; block indexes are derived
  * only at render/submit time and never stored.
+ *
+ * Caps, truncation, the live/stale split and the submission summary are the
+ * shared scaffolding in `@genoffice/chat-runtime/edit-queue`; what is
+ * markdown's own is the anchor resolution and the block-index batch
+ * instruction.
  */
 
-/** Hard cap on queued edits: keeps one submission inside the agent's turn budget and the card readable */
-export const EDIT_QUEUE_MAX = 10
-/** Soft cap on one instruction; longer requests belong in the main composer */
-export const EDIT_INSTRUCTION_MAX = 500
+export { EDIT_INSTRUCTION_MAX, EDIT_QUEUE_MAX, buildQueueSummary, liveItems, truncate }
 
 export interface EditQueueItem {
   qid: string
@@ -23,18 +34,17 @@ export interface EditQueueItem {
   capturedText: string
 }
 
-export interface ResolvedQueueItem {
-  item: EditQueueItem
-  /** null = the anchored text has been deleted since annotation */
-  target: { startIndex: number; endIndex: number; excerpt: string } | null
+export interface QueueBlockRange {
+  startIndex: number
+  endIndex: number
+  excerpt: string
 }
 
-export function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text
-}
+export type ResolvedMarkdownQueueItem = ResolvedQueueItem<EditQueueItem, QueueBlockRange>
+type LiveItem = LiveQueueItem<EditQueueItem, QueueBlockRange>
 
 /** locate an item's anchor in the current document (block indexes + live excerpt) */
-export function resolveQueueItem(editor: Editor, item: EditQueueItem): ResolvedQueueItem {
+export function resolveQueueItem(editor: Editor, item: EditQueueItem): ResolvedMarkdownQueueItem {
   const range = queueAnchorRange(editor.state, item.qid)
   if (!range) return { item, target: null }
   const indexes = blockIndexRange(editor.state.doc, range.from, range.to)
@@ -48,7 +58,7 @@ export function resolveQueueItem(editor: Editor, item: EditQueueItem): ResolvedQ
   return { item, target: { ...indexes, excerpt } }
 }
 
-export function resolveQueue(editor: Editor, items: EditQueueItem[]): ResolvedQueueItem[] {
+export function resolveQueue(editor: Editor, items: EditQueueItem[]): ResolvedMarkdownQueueItem[] {
   return items.map((item) => resolveQueueItem(editor, item))
 }
 
@@ -68,14 +78,8 @@ export function selectionForAnchor(editor: Editor, qid: string): Selection | nul
   return TextSelection.between(doc.resolve(range.from), doc.resolve(range.to))
 }
 
-type LiveItem = ResolvedQueueItem & { target: NonNullable<ResolvedQueueItem['target']> }
-
-export function liveItems(resolved: ResolvedQueueItem[]): LiveItem[] {
-  return resolved.filter((r): r is LiveItem => r.target !== null)
-}
-
-const blocksLabel = (t: LiveItem['target']): string =>
-  t.startIndex === t.endIndex ? `Block ${t.startIndex}` : `Blocks ${t.startIndex}-${t.endIndex}`
+const blocksLabel = (target: QueueBlockRange): string =>
+  target.startIndex === target.endIndex ? `Block ${target.startIndex}` : `Blocks ${target.startIndex}-${target.endIndex}`
 
 /**
  * The batch instruction handed to the model (English regardless of UI
@@ -97,12 +101,4 @@ export function buildQueueInstruction(entries: LiveItem[]): string {
     '',
     'Apply exactly these changes to exactly the listed target passages — verify the quoted target text before rewriting, and re-read with get_document_context if block counts changed unexpectedly. Do not modify content outside the listed targets. Finish with a short summary of what was changed.',
   ].join('\n')
-}
-
-/** user-facing echo of a submission, shown as the chat bubble text */
-export function buildQueueSummary(header: string, entries: LiveItem[]): string {
-  const lines = entries.map(
-    (entry, i) => `${i + 1}. ${truncate(entry.target.excerpt, 24)} — ${entry.item.instruction}`,
-  )
-  return [header, ...lines].join('\n')
 }

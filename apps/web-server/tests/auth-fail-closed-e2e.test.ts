@@ -13,12 +13,17 @@
  * Both boots strip the env keys explicitly: the vitest config injects
  * `GENOFFICE_ALLOW_OPEN=1` for the rest of the suite, and `...process.env`
  * would otherwise smuggle the open posture into the child.
+ *
+ * Each boot takes a free port from the OS and confirms the responder reports
+ * the posture it booted for, so a suite running in parallel on a colliding
+ * port can never be mistaken for this child.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
+import { reserveFreePort } from './helpers/server-process'
 
 const OPERATOR_TOKEN = 'fail-closed-e2e-operator'
 
@@ -54,39 +59,71 @@ async function call(method: string, path: string, credential?: string): Promise<
 }
 
 async function boot(env: Record<string, string | undefined>): Promise<void> {
-  stderrTail = ''
-  const port = 18800 + Math.floor(Math.random() * 200)
-  const bundle = join(__dirname, '..', 'dist', 'bundle', 'index.js')
-  if (!existsSync(bundle)) throw new Error(`bundle not found at ${bundle} — build before running`)
-  const fullEnv: Record<string, string | undefined> = {
-    ...process.env,
-    ...env,
-    PORT: String(port),
-  }
-  delete fullEnv.GENOFFICE_ALLOW_OPEN
-  for (const [k, v] of Object.entries(env)) {
-    if (v === undefined) delete fullEnv[k]
-  }
+  const expectedPosture = env.WEB_TOKEN ? 'required' : 'locked'
+  let lastFailure = ''
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    stderrTail = ''
+    const port = await reserveFreePort()
+    const bundle = join(__dirname, '..', 'dist', 'bundle', 'index.js')
+    if (!existsSync(bundle)) throw new Error(`bundle not found at ${bundle} — build before running`)
+    const fullEnv: Record<string, string | undefined> = {
+      ...process.env,
+      ...env,
+      PORT: String(port),
+    }
+    delete fullEnv.GENOFFICE_ALLOW_OPEN
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete fullEnv[k]
+    }
 
-  child = fork(bundle, [], {
-    env: fullEnv as NodeJS.ProcessEnv,
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-  })
-  child.stderr?.on('data', (chunk: Buffer) => {
-    stderrTail = (stderrTail + chunk.toString()).slice(-4000)
-  })
-  baseUrl = `http://127.0.0.1:${port}`
+    child = fork(bundle, [], {
+      env: fullEnv as NodeJS.ProcessEnv,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString()).slice(-4000)
+    })
+    baseUrl = `http://127.0.0.1:${port}`
 
-  for (let i = 0; i < 80; i++) {
+    const booted = await waitForPosture(expectedPosture)
+    if (booted === 'ready') return
+    lastFailure =
+      booted === 'exited'
+        ? `server exited before becoming ready on ${baseUrl}\nstderr:\n${stderrTail}`
+        : `nothing answered auth=${expectedPosture} on ${baseUrl} within 20s`
+    await shutdown()
+  }
+  throw new Error(`server never reached the ${expectedPosture} posture after 3 attempts — ${lastFailure}`)
+}
+
+/**
+ * Poll `/health` until *our* server answers with the expected posture.
+ *
+ * Waiting for any 200 is not enough: a sibling suite running in parallel may
+ * hold the port, and its own `/health` (no `auth`, or the other posture) would
+ * satisfy a bare readiness check while every subsequent assertion ran against
+ * the wrong process. Matching the posture we booted for ties the probe to the
+ * child we spawned.
+ */
+async function waitForPosture(
+  expected: 'locked' | 'required',
+): Promise<'ready' | 'exited' | 'timeout'> {
+  const deadline = Date.now() + 20_000
+  const proc = child
+  while (Date.now() < deadline) {
+    if (proc && proc.exitCode !== null) return 'exited'
     try {
-      const r = await fetch(`${baseUrl}/health`)
-      if (r.ok) return
+      const res = await fetch(`${baseUrl}/health`)
+      if (res.ok) {
+        const body = (await res.json()) as { auth?: string }
+        if (body.auth === expected) return 'ready'
+      }
     } catch {
       /* still booting */
     }
     await new Promise((r) => setTimeout(r, 250))
   }
-  throw new Error(`server did not become ready on ${baseUrl}\nstderr:\n${stderrTail}`)
+  return 'timeout'
 }
 
 async function shutdown(): Promise<void> {

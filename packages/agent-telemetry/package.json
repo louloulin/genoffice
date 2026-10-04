@@ -7,7 +7,8 @@
   "description": "Thin wrapper around @earendil-works/pi-telemetry + span exporters (local JSONL, console, in-memory, OTel interface)",
   "exports": {
     ".": "./src/index.ts",
-    "./exporter": "./src/exporter.ts"
+    "./exporter": "./src/exporter.ts",
+    "./otlp": "./src/otlp.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

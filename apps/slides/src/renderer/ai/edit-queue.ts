@@ -18,6 +18,11 @@ import type {
   ShapeRenderNode,
   TableRenderNode,
 } from '@genoffice/pptx-render'
+// Caps + truncation are the shared queue scaffolding; slides' own parts are
+// the deck-outline resolution and the per-page batch instruction.
+import { EDIT_INSTRUCTION_MAX, EDIT_QUEUE_MAX, truncate } from '@genoffice/chat-runtime/edit-queue'
+
+export { EDIT_INSTRUCTION_MAX, EDIT_QUEUE_MAX, truncate }
 import type { StringKey } from '../i18n/locale'
 
 /** Localized noun for an element kind, shared by the popover title and the queue rows */
@@ -30,11 +35,6 @@ export const NODE_NOUN_KEY: Record<RenderNodeType, StringKey> = {
   group: 'aiElGroup',
   'placeholder-chip': 'aiElShape',
 }
-
-/** Hard cap on queued edits: keeps one submission inside the agent's turn budget and the card readable */
-export const EDIT_QUEUE_MAX = 10
-/** Soft cap on one instruction; longer requests belong in the main composer */
-export const EDIT_INSTRUCTION_MAX = 500
 
 export type EditQueueStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
@@ -100,10 +100,6 @@ export function describeNode(node: RenderNode): NodeDescriptor {
     desc.cols = Math.max(0, table.gridX.length - 1)
   }
   return desc
-}
-
-export function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
 /** English one-liner handed to the model (the prompt is English regardless of UI language) */

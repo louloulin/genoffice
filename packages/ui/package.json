@@ -17,6 +17,7 @@
     "./ai-panel-prefs.css": "./src/ai-panel-prefs.css",
     "./ai-scope-quote.css": "./src/ai-scope-quote.css",
     "./ai-composer.css": "./src/ai-composer.css",
+    "./ai-edit-queue.css": "./src/ai-edit-queue.css",
     "./translation-ribbon.css": "./src/translation-ribbon.css",
     "./image-dialogs.css": "./src/image-dialogs.css",
     "./fonts/*": "./src/fonts/*",
