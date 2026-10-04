@@ -45,6 +45,12 @@ const tsxCli = join(dirname(tsxPackagePath), typeof tsxBin === 'string' ? tsxBin
 
 process.stderr.write(`[test-http] running ${files.length} node:test suite(s)\n`)
 
+// Default the node:test suites to the historical open posture. Production is
+// fail-closed (route-policy `locked`); suites that test the posture itself
+// control GENOFFICE_ALLOW_OPEN explicitly. Set here (not on the spawn env) so
+// an explicit caller-provided value always wins.
+process.env.GENOFFICE_ALLOW_OPEN ??= '1'
+
 const result = spawnSync(process.execPath, [tsxCli, '--test', ...files], {
   cwd: packageRoot,
   stdio: 'inherit',

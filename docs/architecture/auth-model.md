@@ -12,8 +12,14 @@ distinction sees a 401 with no actionable error, which is why this page exists.
 | **Gate 1 — shared secret** | `WEB_TOKEN` | every `/api/*` request, minus the public allowlist | `Authorization: Bearer`, `X-GenOffice-Token`, `auth_token` cookie, `?token=` | globally, in `src/index.ts` before dispatch |
 | **Gate 2 — JWT + scope** | `GENOFFICE_JWT_SECRET` (or `GENOFFICE_JWT_ALG=RS256` + keys) | per-channel, only channels that declare a `scope` | `Authorization: Bearer <jwt>` | inside each dispatcher, via `requireScopeFromHeaders` |
 
-- **Gate 1 unset ⇒ gate 1 is a no-op.** That is the desktop / e2e / dev
-  posture: no `WEB_TOKEN`, everything under `/api/*` is accepted.
+- **Gate 1 unset ⇒ the gate is locked (401), not a no-op.** Fail-closed is the
+  default: with no `WEB_TOKEN` configured, a request with no valid credential
+  answers 401 naming the misconfiguration, and `/health` reports
+  `auth: "locked"`. The one exception: a verifying JWT (Gate 2's
+  `GENOFFICE_JWT_SECRET`) still admits and the Gate-2 route policy applies —
+  JWT-only embed deployments depend on this. Local dev / e2e restore the
+  historical open posture explicitly with `GENOFFICE_ALLOW_OPEN=1` (or
+  `true`) — a deliberate opt-in, never an accident of a forgotten variable.
 - **Gate 1 set ⇒ every non-allowlisted `/api/*` request must carry the secret**,
   *in addition to* whatever Gate 2 wants. A valid JWT does not substitute for
   the shared secret, and the shared secret does not substitute for a JWT.
@@ -69,9 +75,38 @@ proxy that injects `X-GenOffice-Token` (as Dataflarework does on every
 
 | Env | Default | What |
 |---|---|---|
-| `WEB_TOKEN` | unset | The secret. Unset ⇒ Gate 1 is a no-op. |
+| `WEB_TOKEN` | unset | The shared secret. Resolution lives in `resolveAuthority` (`src/auth/route-policy.ts`). |
+| `GENOFFICE_ALLOW_OPEN` | unset | Local-dev escape hatch. `1` / `true` restore the historical no-auth open posture; anything else fails closed. Never set it on a network-reachable deployment. |
 | `HOST` | `127.0.0.1` | The bind address (`src/common/paths.ts`). `0.0.0.0` exposes everything on the LAN — pair it with `WEB_TOKEN`. |
 | `PORT` | `18081` | The listen port. |
+
+The three postures, as reported by `/health`'s `auth` field:
+
+| `WEB_TOKEN` | `GENOFFICE_ALLOW_OPEN` | posture |
+|---|---|---|
+| set | — | `required` |
+| unset | unset | `locked` — requests with no valid credential answer 401 |
+| unset | `1` / `true` | `open` |
+
+In the locked posture a **verifying JWT still admits** (`resolveAuthority`
+falls back to `GENOFFICE_JWT_SECRET` verification), and the Gate-2 route policy
+applies to it exactly as on an armed boot. This is what keeps JWT-only embed
+deployments — Dataflarework's docker-compose runs `GENOFFICE_JWT_SECRET` with
+no `WEB_TOKEN` at all — working: "locked" means *no anonymous access*, not *no
+access*. With neither `WEB_TOKEN` nor a JWT secret configured, no candidate can
+verify and every request is locked.
+
+A non-loopback `HOST` with `WEB_TOKEN` unset is a boot-time error regardless of
+`GENOFFICE_ALLOW_OPEN` (`collectStartupProblems`, `src/common/startup-checks.ts`):
+the server refuses to start instead of serving an unauthenticated API on the
+LAN. A loopback bind in the locked posture boots, but logs
+`[auth] WEB_TOKEN is unset and GENOFFICE_ALLOW_OPEN is not set: the API is LOCKED (401)`.
+
+Local development with auth in one command:
+
+```bash
+WEB_TOKEN=$(openssl rand -hex 24) pnpm --filter @genoffice/web-server dev
+```
 
 There is no `WEB_PUBLIC_PATHS` knob — the allowlist is hardcoded in
 `isPublicApiPath`.
@@ -87,6 +122,18 @@ Content-Type: application/json
 
 {
   "error": { "code": "UNAUTHORIZED", "message": "Missing or invalid token for /api/ipc/files:read" }
+}
+```
+
+The **locked** posture uses the same code and header, but the message names the
+misconfiguration instead of blaming the caller:
+
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Authentication is not configured on this server (WEB_TOKEN unset), so /api/ai/stream is locked. Set WEB_TOKEN=<secret> and send it as a Bearer token, or opt into open mode for local development with GENOFFICE_ALLOW_OPEN=1."
+  }
 }
 ```
 
@@ -189,11 +236,13 @@ a JWT carrying `files:read` will **not** open `/api/v1/ai/chat`, and there is no
 implicit scope inheritance beyond the `*` / `action:*` wildcards.
 
 > **`/api/v1/metrics` and `/api/v1/meta` declare no scope.** They are the
-> exception in the table: with `WEB_TOKEN` unset they are fully open, and with
-> it set they need only the shared secret. Both leak operational detail —
-> per-tenant audit record counts and queue depths in the Prometheus exposition,
-> and the server/SDK/protocol versions in `/api/v1/meta`. If your deployment is
-> not already behind a private network, set `WEB_TOKEN`.
+> exception in the table: they need only the shared secret (Gate 1), never a
+> JWT. In the locked posture they answer 401 like every other protected route;
+> only an explicitly-open dev boot serves them anonymously. Both leak
+> operational detail — per-tenant audit record counts and queue depths in the
+> Prometheus exposition, and the server/SDK/protocol versions in
+> `/api/v1/meta`. If your deployment is not already behind a private network,
+> set `WEB_TOKEN`.
 
 There is no `/api/v1/agents/*` route group and no `/api/v1/translate/*` group.
 Agent-shaped work goes through `/api/v1/ai/chat`; translation through
@@ -240,10 +289,15 @@ gates like any other `/api/*` path.
    signature check (B.9). Shorten the `scope` array or the subject claim. This
    also means a very long token fails identically to a malformed one, so check
    the length before debugging the signature.
-3. **Expecting a 401 from `/api/ipc/events/<sessionId>` and not getting one.**
-   In the default (no `WEB_TOKEN`) posture there is no gate at all, so the SSE
-   stream is open. If you need it closed, set `WEB_TOKEN` — the session id is
-   not a credential and the path is not allowlisted.
+3. **A 401 with "locked" in the message right after a fresh boot.** That is the
+   fail-closed posture talking: `WEB_TOKEN` is unset and
+   `GENOFFICE_ALLOW_OPEN` is not set, so every request without a valid
+   credential — including the SSE stream at `/api/ipc/events/<sessionId>` —
+   answers 401. Arm a token (`WEB_TOKEN=<secret>`), present a JWT if
+   `GENOFFICE_JWT_SECRET` is configured, or, for a loopback-only dev server,
+   set `GENOFFICE_ALLOW_OPEN=1`. The session id is not a credential and the
+   path is not allowlisted, so the stream is closed in the `required` posture
+   too.
 4. **iframe inside `WEB_TOKEN` mode** — the bridge in `/embed/<docId>` relies
    on the `auth_token` cookie, which only travels same-origin. Load the iframe
    cross-origin and the cookie is stripped, so the bridge 401s immediately.
@@ -276,9 +330,10 @@ gates like any other `/api/*` path.
    secret and Gate 1 accepts. The backend → backend path (`GenOfficeTranslationTools
    .postTranslate` → `POST /api/ai/translate`) does **not** go through the
    proxy: it is a plain `java.net.http.HttpClient` call that sets only
-   `Content-Type` / `Accept`. With `WEB_TOKEN` unset the call works because
-   Gate 1 is a no-op; the instant `WEB_TOKEN` is armed, every such call 401s
-   and the GenOffice-driven translation path silently breaks. The fix lives
+   `Content-Type` / `Accept`. In the locked posture (`WEB_TOKEN` unset,
+   open mode not requested) the call 401s immediately; the same is true the
+   instant `WEB_TOKEN` is armed, and in both cases the GenOffice-driven
+   translation path silently breaks. The fix lives
    in Dataflarework (forward `properties.webToken` on `postTranslate` the
    same way the proxy does), not here. Symptom: log line
    `GenOffice 翻译调用失败:status=401 body={"error":{"code":"UNAUTHORIZED",…}}`.

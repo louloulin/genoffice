@@ -51,6 +51,7 @@ const TRANSLATION_APPS = [
     adapter: 'apps/docs/src/renderer/ai/AiPanel.tsx',
     hostHandler: 'apps/docs/src/renderer/App.tsx',
     hostBridge: 'apps/docs/src/renderer/web-bridge.ts',
+    ribbonTab: { binding: 'apps/docs/src/renderer/components/ribbon-translate-tab.tsx', host: 'apps/docs/src/renderer/components/Ribbon.tsx', id: 'translate', hostImport: 'apps/docs/src/renderer/App.tsx' },
   },
   {
     app: 'sheets',
@@ -63,6 +64,7 @@ const TRANSLATION_APPS = [
     adapter: 'apps/sheets/src/renderer/ai/document-translate.ts',
     hostHandler: 'apps/sheets/src/renderer/App.tsx',
     hostBridge: 'apps/sheets/src/renderer/web-bridge.ts',
+    ribbonTab: { binding: 'apps/sheets/src/renderer/ribbon-translate-tab.tsx', host: 'apps/sheets/src/renderer/ExcelShell.tsx', id: 'Translate', hostImport: 'apps/sheets/src/renderer/App.tsx' },
   },
   {
     app: 'slides',
@@ -81,6 +83,7 @@ const TRANSLATION_APPS = [
     adapter: 'apps/slides/src/renderer/ai/document-translate.ts',
     hostHandler: 'apps/slides/src/renderer/App.tsx',
     hostBridge: 'apps/slides/src/renderer/web-bridge.ts',
+    ribbonTab: { binding: 'apps/slides/src/renderer/components/ribbon-translate-tab.tsx', host: 'apps/slides/src/renderer/components/Ribbon.tsx', id: 'translate', hostImport: 'apps/slides/src/renderer/App.tsx' },
   },
   {
     app: 'pdf',
@@ -103,6 +106,7 @@ const TRANSLATION_APPS = [
     adapter: 'apps/pdf/src/renderer/ai/document-translate.ts',
     hostHandler: 'apps/pdf/src/renderer/App.tsx',
     hostBridge: 'apps/pdf/src/renderer/web-bridge.ts',
+    ribbonTab: { binding: 'apps/pdf/src/renderer/components-ribbon-translate-tab.tsx', host: 'apps/pdf/src/renderer/App.tsx', id: 'translate', hostImport: 'apps/pdf/src/renderer/App.tsx' },
   },
 ]
 
@@ -265,7 +269,38 @@ for (const entry of TRANSLATION_APPS) {
     checks.push({ name: '回写路径（未声明）', ok: true })
   }
 
-  // 4) --require：把“待办”升级成硬门禁
+  // 4) 独立翻译页签：必须真的挂在 ribbon 上，而不是只有一个孤立组件
+  //
+  // 上一段只钉「宿主命令能不能到应用」。这一段钉反向的入口：用户自己点 ribbon 里的
+  // 「翻译」页签。少任何一环的症状都极其安静 —— 组件建好了但没 import，页签列表里
+  // 没有那个 id，或者 App 没把 `onTranslateStart` 传下去：类型检查在 pages 里全绿
+  // （Ribbon 的 props 都是可选的），真机点下去是「翻译」两个字都找不到。
+  if (entry.ribbonTab) {
+    const binding = read(entry.ribbonTab.binding)
+    const ribbon = read(entry.ribbonTab.host)
+    const app = read(entry.ribbonTab.hostImport)
+    const hasBinding = binding !== null && /export function TranslateTab\b/.test(binding)
+    const wiredInRibbon = ribbon !== null && /<TranslateTab[\s>]/.test(ribbon)
+    // 页签 id 必须真的进列表：匹配引号包起来的 `'translate'` / `'Translate'`，
+    // 避免注释或字符串字面量里出现过就判绿。
+    const idListed = ribbon !== null && new RegExp(`['"\`]${entry.ribbonTab.id}['"\`]`).test(ribbon)
+    // App 侧必须把入口回调传下去，否则点「翻译全文」是死的。两种写法都算数：
+    // docs 把整组回调收在 `ribbonActions` 里用 `{...ribbonActions}` 展开，
+    // pdf 直接写 `onStart=`。只认其中一种会把另外两个应用判红。
+    const appWired =
+      app !== null && (/onTranslateStart[=:]/.test(app) || /onStart=\{?onTranslateStart/.test(app))
+    checks.push({ name: '独立翻译页签绑定', ok: hasBinding })
+    checks.push({ name: 'ribbon 渲染 <TranslateTab>', ok: wiredInRibbon })
+    checks.push({ name: `ribbon 页签 id ${entry.ribbonTab.id} 已登记`, ok: idListed })
+    checks.push({ name: 'App 传入 onTranslateStart', ok: appWired })
+    if (binding === null) failures.push(`${entry.app}: 找不到声明的翻译页签绑定 ${entry.ribbonTab.binding}`)
+    if (!hasBinding) failures.push(`${entry.app}: 翻译页签绑定没有导出 TranslateTab 组件`)
+    if (!wiredInRibbon) failures.push(`${entry.app}: ribbon 里没有渲染 <TranslateTab> —— 独立翻译页签是死代码`)
+    if (!idListed) failures.push(`${entry.app}: ribbon 页签列表里没有 '${entry.ribbonTab.id}'，用户找不到翻译入口`)
+    if (!appWired) failures.push(`${entry.app}: App 没有向 ribbon 传 onTranslateStart，页签里的「翻译全文」点了没反应`)
+  }
+
+  // 5) --require：把“待办”升级成硬门禁
   for (const key of ['whole-document', 'host-command']) {
     if (!required.has(key)) continue
     const declared = key === 'whole-document' ? entry.wholeDocument : entry.hostCommand

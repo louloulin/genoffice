@@ -23,6 +23,14 @@ export default defineConfig({
     environment: 'node',
     testTimeout: 60_000,
     hookTimeout: 60_000,
+    // Most suites spawn the bundled server (or drive handlers) in the
+    // historical open posture — they are not auth tests. Production is
+    // fail-closed (route-policy `locked`), so the suite opts into open mode
+    // once here; suites that test the posture itself override this via
+    // process.env surgery (auth.test.ts, jwt-route-policy.test.ts).
+    env: {
+      GENOFFICE_ALLOW_OPEN: '1',
+    },
     // Mirror the bundle's --external list so server modules resolve cleanly.
     server: {
       deps: {

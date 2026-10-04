@@ -64,7 +64,8 @@ const WIRE_ALIASES: Record<string, TranslationTabState> = { started: 'pending' }
 
 export function translationTabStateOf(status: unknown): TranslationTabState {
   if (typeof status !== 'string') return 'idle'
-  if (status in WIRE_ALIASES) return WIRE_ALIASES[status]
+  const aliased = WIRE_ALIASES[status]
+  if (aliased) return aliased
   return (STATES as readonly string[]).includes(status) ? (status as TranslationTabState) : 'idle'
 }
 

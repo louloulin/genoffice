@@ -26,13 +26,17 @@ pnpm --filter @genoffice/web-server start
 ## Configuration
 
 All knobs are environment variables. Defaults are tuned for a developer
-running on the same machine as the renderer (no auth, loopback-only).
+running on the same machine as the renderer. Authentication is
+**fail-closed**: with `WEB_TOKEN` unset the gate-protected API answers 401
+until you either arm a token or explicitly opt into open mode for local
+development.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `HOST` | `127.0.0.1` | Bind address. Set to `0.0.0.0` to expose on the LAN — **always pair with `WEB_TOKEN`** in that case. |
 | `PORT` | `18081` | HTTP port. |
-| `WEB_TOKEN` | (unset) | When set, every `/api/*` request must carry `Authorization: Bearer <token>` (or `X-GenOffice-Token: <token>`). Health, channel discovery, and HTML preview stay open. |
+| `WEB_TOKEN` | (unset) | When set, every `/api/*` request must carry `Authorization: Bearer <token>` (or `X-GenOffice-Token: <token>`). Health, channel discovery, and HTML preview stay open. When unset, gate-protected routes answer **401** — see the auth posture below. |
+| `GENOFFICE_ALLOW_OPEN` | (unset) | Local-dev escape hatch: set to `1` or `true` to restore the historical no-auth open posture on a loopback bind. Any other value fails closed. |
 | `DATA_DIR` | `/tmp/genoffice-data` | Persistent state: `projects.json`, `docs-recent.json`, `docs-starred.json`, `ai-settings.json`, `translation-kb.json`, KB/TM, upload `files/`. |
 | `WEB_TEMP_ROOT` | `$TMPDIR/genoffice-web-temp` | Disposable per-upload directories; swept every boot, age > 24 h. |
 | `WEB_STATIC_ROOT` | `<repo>/apps` | Override where the server looks for the renderer `out/` directories. |
@@ -91,10 +95,35 @@ The web-server has no OS-level sandbox. Three things keep it honest:
 2. **Path containment** — every channel that touches the disk starts
    with `requireManagedPath(channel, path)`. The managed area is
    `DATA_DIR` plus `WEB_TEMP_ROOT`.
-3. **Token gate** — setting `WEB_TOKEN` activates a Bearer-token
-   middleware on every `/api/*` request. `/health`, `/api/channels`,
-   and `/api/html/preview/*` stay open so health probes and the
-   iframe preview keep working.
+3. **Token gate (fail-closed)** — with `WEB_TOKEN` armed, every `/api/*`
+   request must carry the token; `/health`, `/api/channels`, and
+   `/api/html/preview/*` stay open so health probes and the iframe
+   preview keep working. With `WEB_TOKEN` **unset** the gate is locked:
+   requests with no valid credential answer 401 with a message that
+   names the missing configuration, the startup log warns
+   `[auth] … LOCKED`, and `/health` reports `auth: "locked"`. A
+   verifying JWT (`GENOFFICE_JWT_SECRET`) still admits under the
+   Gate-2 route policy, which is how JWT-only embed deployments run.
+
+Auth posture summary (`/health` → `auth` field):
+
+| `WEB_TOKEN` | `GENOFFICE_ALLOW_OPEN` | posture |
+|---|---|---|
+| set | — | `required` — protected routes demand the token |
+| unset | unset | `locked` — requests with no valid credential answer 401 (a verifying JWT still admits, scoped by the Gate-2 route policy) |
+| unset | `1` / `true` | `open` — historical no-auth dev posture |
+
+Quick start with auth in one command:
+
+```bash
+WEB_TOKEN=$(openssl rand -hex 24) pnpm --filter @genoffice/web-server dev
+```
+
+Then send the token as `Authorization: Bearer <token>`,
+`X-GenOffice-Token: <token>`, `?token=<token>`, or let the browser pick
+up the `auth_token` cookie from the first HTML response. For a throwaway
+loopback-only dev server, `GENOFFICE_ALLOW_OPEN=1` restores the old
+no-auth behaviour explicitly instead of by accident.
 
 Together with `sanitizeFileName` (path-traversal-proof basenames),
 `assertMagicMatchesExtension` (refuse bytes that don't match the
@@ -121,7 +150,7 @@ re-runs the esbuild bundle when `src/` is newer than `dist/bundle`.
 src/
 ├── ai/            AI settings, KB/TM, chat/stream, HTTP translate
 ├── anydoc/        Format recognition, conversion, extraction, preview
-├── auth/          Static-token auth gate (optional, WEB_TOKEN)
+├── auth/          Static-token auth gate (fail-closed; WEB_TOKEN)
 ├── collab/        Collaboration sessions
 ├── common/        Shared utilities (paths, registry, state, magic, atomic)
 ├── docs/          Docs IPC (open/save/recents)

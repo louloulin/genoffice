@@ -1,10 +1,11 @@
 import { IncomingMessage, ServerResponse } from 'node:http'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   isAuthorised,
   isPublicApiPath,
   writeUnauthorized,
 } from '../src/auth/index'
+import { openModeAllowed, resolveAuthority } from '../src/auth/route-policy'
 
 function fakeRequest(headers: Record<string, string>): IncomingMessage {
   return { headers } as unknown as IncomingMessage
@@ -12,14 +13,98 @@ function fakeRequest(headers: Record<string, string>): IncomingMessage {
 
 describe('auth gate', () => {
   const originalToken = process.env.WEB_TOKEN
+  const originalAllowOpen = process.env.GENOFFICE_ALLOW_OPEN
   beforeEach(() => {
+    // The vitest config injects GENOFFICE_ALLOW_OPEN=1 so ordinary suites run
+    // in the historical open posture; these tests control the posture itself
+    // and therefore start from a clean slate every time.
     delete process.env.WEB_TOKEN
+    delete process.env.GENOFFICE_ALLOW_OPEN
   })
 
-  describe('open posture (no WEB_TOKEN)', () => {
-    it('passes any request through', () => {
+  describe('gate posture with no WEB_TOKEN configured (resolveAuthority)', () => {
+    it('is locked by default — no credential exists to match, so serve nothing', () => {
+      expect(resolveAuthority(fakeRequest({}))).toEqual({ kind: 'locked' })
+    })
+    it('stays locked even when a credential is presented (it cannot match an unset secret)', () => {
+      expect(
+        resolveAuthority(fakeRequest({ authorization: 'Bearer wrong' })),
+      ).toEqual({ kind: 'locked' })
+      expect(
+        resolveAuthority(fakeRequest({ 'x-genoffice-token': 'wrong' })),
+      ).toEqual({ kind: 'locked' })
+    })
+    it('restores the open posture when GENOFFICE_ALLOW_OPEN=1', () => {
+      process.env.GENOFFICE_ALLOW_OPEN = '1'
+      expect(resolveAuthority(fakeRequest({}))).toEqual({ kind: 'open' })
+      expect(openModeAllowed()).toBe(true)
+    })
+    it('accepts GENOFFICE_ALLOW_OPEN=true (YAML-style env blocks)', () => {
+      process.env.GENOFFICE_ALLOW_OPEN = 'true'
+      expect(resolveAuthority(fakeRequest({}))).toEqual({ kind: 'open' })
+    })
+    it('fails closed on a value that is neither 1 nor true', () => {
+      process.env.GENOFFICE_ALLOW_OPEN = 'yes-please'
+      expect(resolveAuthority(fakeRequest({}))).toEqual({ kind: 'locked' })
+      expect(openModeAllowed()).toBe(false)
+    })
+    it('still admits a verifying JWT in the locked posture — embed boots run without WEB_TOKEN', async () => {
+      // api/v1/auth captures GENOFFICE_JWT_SECRET in a module-level constant,
+      // so stub the env and re-import both modules fresh.
+      vi.stubEnv('GENOFFICE_JWT_SECRET', 'locked-posture-jwt-secret')
+      vi.resetModules()
+      try {
+        const { signJwt } = await import('../src/api/v1/auth')
+        const policy = await import('../src/auth/route-policy')
+        const now = Math.floor(Date.now() / 1000)
+        const token = signJwt({
+          sub: 'embed-guest',
+          scope: ['files:read'],
+          iat: now,
+          exp: now + 600,
+          iss: 'genoffice',
+          aud: 'genoffice-web',
+        })
+        const authority = policy.resolveAuthority(
+          fakeRequest({ authorization: `Bearer ${token}` }),
+        )
+        expect(authority?.kind).toBe('jwt')
+        // The scope policy applies to it exactly as on an armed boot.
+        expect(policy.jwtScopeFor('GET', '/api/v1/files')).toBe('files:read')
+      } finally {
+        vi.unstubAllEnvs()
+        vi.resetModules()
+      }
+    })
+  })
+
+  describe('isAuthorised (HTML token-injection path — behaviour unchanged)', () => {
+    // This helper predates the posture split and only decides whether an HTML
+    // response may carry the auth_token cookie. The HTTP gate consults
+    // resolveAuthority, not this function, so it keeps admitting everything
+    // when WEB_TOKEN is unset; the gate itself is what the posture tests above
+    // and the fail-closed e2e cover.
+    it('passes any request through when WEB_TOKEN is unset', () => {
       expect(isAuthorised(fakeRequest({}))).toBe(true)
       expect(isAuthorised(fakeRequest({ authorization: 'Bearer wrong' }))).toBe(true)
+    })
+  })
+
+  describe('gate posture with WEB_TOKEN configured (resolveAuthority)', () => {
+    beforeEach(() => {
+      process.env.WEB_TOKEN = 's3cret-token'
+    })
+
+    it('admits the matching secret as web-token authority', () => {
+      expect(resolveAuthority(fakeRequest({ authorization: 'Bearer s3cret-token' }))).toEqual({
+        kind: 'web-token',
+      })
+    })
+    it('returns null when no credential is presented — the caller must 401', () => {
+      expect(resolveAuthority(fakeRequest({}))).toBeNull()
+    })
+    it('returns null for a wrong credential', () => {
+      expect(resolveAuthority(fakeRequest({ authorization: 'Bearer wrong' }))).toBeNull()
     })
   })
 
@@ -131,5 +216,7 @@ describe('auth gate', () => {
   afterEach(() => {
     if (originalToken === undefined) delete process.env.WEB_TOKEN
     else process.env.WEB_TOKEN = originalToken
+    if (originalAllowOpen === undefined) delete process.env.GENOFFICE_ALLOW_OPEN
+    else process.env.GENOFFICE_ALLOW_OPEN = originalAllowOpen
   })
 })

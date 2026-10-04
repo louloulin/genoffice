@@ -80,7 +80,7 @@ import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
-import { jwtScopeFor, resolveAuthority, writeForbidden } from './auth/route-policy'
+import { jwtScopeFor, openModeAllowed, resolveAuthority, writeForbidden } from './auth/route-policy'
 // sdk1 §11.111: handleApiV1 + findV1Route are imported together so the
 // v1 dispatcher catch-all can return 405 METHOD_NOT_ALLOWED with the
 // correct Allow list when a pathname matches a known v1 route but the
@@ -444,8 +444,10 @@ const server = createServer(async (request, response) => {
   // `WEB_TOKEN` is set; the small public allowlist (`/health`,
   // `/api/channels`, `/api/html/preview/*`) stays open so health
   // probes, channel discovery, and anonymous previews keep working.
-  // Without `WEB_TOKEN`, the gate is a no-op — dev / e2e / desktop
-  // preload builds all rely on that open posture.
+  // Without `WEB_TOKEN` the server is **locked** (401) unless open mode
+  // was explicitly requested with `GENOFFICE_ALLOW_OPEN=1` — the dev /
+  // e2e escape hatch. A forgotten `WEB_TOKEN` must not silently turn
+  // into an unauthenticated API.
   if (url.pathname.startsWith('/api/') && !isPublicApiPath(url.pathname)) {
     // Pass url so the auth gate can read `?token=` (the only token transport
     // EventSource supports). Same-origin browser traffic that loaded the
@@ -457,6 +459,14 @@ const server = createServer(async (request, response) => {
     const authority = resolveAuthority({ headers: request.headers, url })
     if (!authority) {
       writeUnauthorized(response, `Missing or invalid token for ${url.pathname}`)
+      return
+    }
+    if (authority.kind === 'locked') {
+      writeUnauthorized(
+        response,
+        `Authentication is not configured on this server (WEB_TOKEN unset), so ${url.pathname} is locked. ` +
+          'Set WEB_TOKEN=<secret> and send it as a Bearer token, or opt into open mode for local development with GENOFFICE_ALLOW_OPEN=1.',
+      )
       return
     }
     if (authority.kind === 'jwt') {
@@ -503,7 +513,7 @@ const server = createServer(async (request, response) => {
         tmPairs: translation.tmPairs,
         defaultProvider: translation.defaultProvider,
       },
-      auth: process.env.WEB_TOKEN ? 'required' : 'open',
+      auth: process.env.WEB_TOKEN ? 'required' : openModeAllowed() ? 'open' : 'locked',
     })
     return
   }

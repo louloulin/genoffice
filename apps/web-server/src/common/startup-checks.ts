@@ -142,16 +142,28 @@ export function collectStartupProblems(): StartupProblem[] {
     })
   }
 
-  // 3. Auth posture. `isAuthorised` is open when WEB_TOKEN is unset, which is
-  //    the right default for a loopback-only dev server and a wide-open door
-  //    for anything reachable from the network.
+  // 3. Auth posture. With `WEB_TOKEN` unset the gate is now **locked** (401)
+  //    unless `GENOFFICE_ALLOW_OPEN=1` explicitly restores the historical
+  //    open posture for loopback-only dev servers. Flag both halves:
+  //    a network-reachable boot without a token (the old wide-open door —
+  //    now it also means "the API answers 401 to everyone", which is a
+  //    config mistake even when intentional), and a locked boot (most
+  //    likely a forgotten WEB_TOKEN rather than a deliberate lockdown).
   const token = process.env.WEB_TOKEN
-  if (!isLoopbackHost(HOST) && (!token || token.length === 0)) {
-    problems.push({
-      check: 'auth posture',
-      detail: `HOST=${HOST} is reachable from outside this machine but WEB_TOKEN is unset, so every IPC channel and AI endpoint is unauthenticated`,
-      fix: 'set WEB_TOKEN=<random secret> (embed callers must send it as ?token=, the x-genoffice-token header, or a Bearer token), or bind HOST=127.0.0.1',
-    })
+  const openAllowed = process.env.GENOFFICE_ALLOW_OPEN === '1' || process.env.GENOFFICE_ALLOW_OPEN === 'true'
+  if (!token || token.length === 0) {
+    if (!isLoopbackHost(HOST)) {
+      problems.push({
+        check: 'auth posture',
+        detail: `HOST=${HOST} is reachable from outside this machine but WEB_TOKEN is unset — the API is locked (401) for every caller, local or remote`,
+        fix: 'set WEB_TOKEN=<random secret> (embed callers must send it as ?token=, the x-genoffice-token header, or a Bearer token), or bind HOST=127.0.0.1',
+      })
+    } else if (!openAllowed) {
+      console.warn(
+        '[auth] WEB_TOKEN is unset and GENOFFICE_ALLOW_OPEN is not set: the API is LOCKED (401). ' +
+          'Set WEB_TOKEN=<secret>, or for local development only set GENOFFICE_ALLOW_OPEN=1.',
+      )
+    }
   }
 
   return problems

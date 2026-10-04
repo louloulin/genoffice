@@ -9,7 +9,9 @@
  *
  * ## Gate 1 — `WEB_TOKEN` (env-gated shared secret)
  *
- * - Default posture: **open**. `WEB_TOKEN` unset = no gate.
+ * - Default posture: **locked**. `WEB_TOKEN` unset = every protected route
+ *   answers 401. Local dev / e2e restore the historical open posture
+ *   explicitly with `GENOFFICE_ALLOW_OPEN=1` (see `route-policy.ts`).
  * - When set: every `/api/*` request (except the public allowlist) must
  *   present the secret. The secret is the same in every transport:
  *     - `Authorization: Bearer <token>`

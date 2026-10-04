@@ -36,12 +36,27 @@
  *
  * # Posture when no credential is configured
  *
- * `resolveAuthority` reports `{ kind: 'open' }` when `WEB_TOKEN` is unset —
- * the pre-existing dev / e2e / desktop posture, in which Gate 1 is a no-op.
- * The route policy is deliberately **not** applied to `open`: with Gate 1
- * already open, applying it would only break the dev flows without adding a
- * gate that a third party faces. The policy constrains *guest JWTs*, and those
- * exist on a deployment that configured a secret.
+ * `resolveAuthority` reports `{ kind: 'locked' }` when `WEB_TOKEN` is unset and
+ * open mode was not explicitly requested: every gate-protected route answers
+ * 401 rather than silently serving an unauthenticated API. Enterprise and
+ * embedded deployments are the primary consumers of this server, and a
+ * forgotten `WEB_TOKEN` there used to mean a wide-open AI spend surface.
+ *
+ * Two exceptions, both deliberate:
+ *
+ *   - A verifying JWT still admits in the locked posture and the route policy
+ *     below applies to it exactly as on an armed boot. Embed deployments run
+ *     `GENOFFICE_JWT_SECRET` with no `WEB_TOKEN` at all — auth is the
+ *     gateway's job — so "locked" means "no anonymous access", not "no access".
+ *   - Local development / e2e can restore the historical open posture
+ *     explicitly with `GENOFFICE_ALLOW_OPEN=1` (or `true`) — a deliberate,
+ *     visible opt-out rather than an accident of configuration.
+ *
+ * `resolveAuthority` reports `{ kind: 'open' }` only in the second case. The
+ * route policy is deliberately **not** applied to `open`: with Gate 1 already
+ * open, applying it would only break the dev flows without adding a gate that
+ * a third party faces. The policy constrains *guest JWTs*, and those exist on
+ * a deployment that configured a credential.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -50,12 +65,34 @@ import { getHandlerEntry } from '../common/registry'
 
 export type Authority =
   | { kind: 'open' }
+  | { kind: 'locked' }
   | { kind: 'web-token' }
   | { kind: 'jwt'; payload: JwtPayload }
+
+/**
+ * Open mode must be requested explicitly. Accepting `1`/`true` keeps shell
+ * profiles (`GENOFFICE_ALLOW_OPEN=1 npm run …`) and YAML env blocks (`true`)
+ * both working; anything else is treated as not requested so a typo like
+ * `GENOFFICE_ALLOW_OPEN=yes-please` fails closed.
+ */
+export function openModeAllowed(): boolean {
+  const flag = process.env.GENOFFICE_ALLOW_OPEN
+  return flag === '1' || flag === 'true'
+}
 
 /** A JWT is three base64url segments; anything else (e.g. the raw `WEB_TOKEN`) is not a candidate. */
 function looksLikeJwt(value: string): boolean {
   return value.split('.').length === 3
+}
+
+/** The payload of the first candidate that verifies as a JWT, if any. */
+function firstValidJwt(candidates: string[]): JwtPayload | null {
+  for (const candidate of candidates) {
+    if (!looksLikeJwt(candidate)) continue
+    const payload = verifyJwtWithRevocation(candidate)
+    if (payload) return payload
+  }
+  return null
 }
 
 /**
@@ -98,27 +135,39 @@ function credentialCandidates(request: {
 /**
  * Resolve which credential (if any) authorises this request.
  *
- * Returns `null` when a credential is configured and none was presented — the
- * caller must answer 401. The `WEB_TOKEN` comparison comes first so a shared
- * secret is never run through JWT parsing, and so the operator path keeps its
- * exact previous meaning.
+ * With `WEB_TOKEN` armed: a matching shared secret is the operator
+ * (`web-token`); a verifying JWT is a guest (`jwt`) and the route policy
+ * applies; anything else is `null` — the caller must answer 401.
+ *
+ * With `WEB_TOKEN` unset: open mode (`GENOFFICE_ALLOW_OPEN=1`) admits
+ * everything; otherwise the posture is **locked** and a request with no valid
+ * credential gets `{ kind: 'locked' }` — also a 401. The one exception is a
+ * verifying JWT: embed deployments (Dataflarework's docker-compose is the
+ * reference) run `GENOFFICE_JWT_SECRET` with **no** `WEB_TOKEN` — auth is the
+ * gateway's job and guests carry scoped JWTs. Locking those out would strand
+ * the embed loop, so a valid JWT still admits and the same route policy
+ * applies as on an armed boot. With no `WEB_TOKEN` *and* no JWT secret, no
+ * candidate can verify and every request is locked.
  */
 export function resolveAuthority(request: {
   headers: IncomingMessage['headers']
   url?: { searchParams?: { get(name: string): string | null } }
 }): Authority | null {
   const expected = process.env.WEB_TOKEN
-  if (!expected || expected.length === 0) return { kind: 'open' }
-
-  const candidates = credentialCandidates(request)
-  if (candidates.includes(expected)) return { kind: 'web-token' }
-
-  for (const candidate of candidates) {
-    if (!looksLikeJwt(candidate)) continue
-    const payload = verifyJwtWithRevocation(candidate)
+  if (expected && expected.length > 0) {
+    const candidates = credentialCandidates(request)
+    // The shared secret is compared raw and first, so it is never run through
+    // JWT parsing and the operator path keeps its exact previous meaning.
+    if (candidates.includes(expected)) return { kind: 'web-token' }
+    const payload = firstValidJwt(candidates)
     if (payload) return { kind: 'jwt', payload }
+    return null
   }
-  return null
+
+  if (openModeAllowed()) return { kind: 'open' }
+  const payload = firstValidJwt(credentialCandidates(request))
+  if (payload) return { kind: 'jwt', payload }
+  return { kind: 'locked' }
 }
 
 interface JwtRouteRule {

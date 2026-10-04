@@ -132,3 +132,66 @@ N 的 `defaultSidecarPath()` 从「写死层数」改成「从模块位置向上
   不依赖文案，改与不改都不影响任何判据。这属于产品文案决策，等拍板再动。
 - 渲染器构建有陈旧缓存坑：改 `apps/sheets` 源码后必须
   `npm run build -w @genoffice/sheets`，否则真机跑的还是旧渲染器。
+
+---
+
+# 追加：独立「翻译」菜单（ribbon 页签）
+
+## 6. 为什么是独立页签
+
+主流 AI 翻译产品（DeepL、沉浸式翻译、Word 内置「翻译」组）都把**语言对 + 范围 +
+选项 + 主操作 + 实时进度**收在**一个可见入口**后面。本仓此前把翻译藏在 AI 面板里的
+一个小 chip 里：用户得先打开面板、再找那个按钮。现在四个编辑器都多了一个独立
+ribbon 页签「翻译」，四个应用的入口位置、文案与状态机完全一致。
+
+## 7. 共享状态通道（`packages/ui`）
+
+页签与翻译运行**在不同组件**里：运行在 AI 面板 / 各应用翻译对话框，页签在 ribbon 带。
+`postToEmbedParent` 只在 iframe 里才到达 Dataflare 宿主，所以桌面壳里发起的运行
+**没有任何本地出口** —— 页签一直停在 idle，而对话框正在翻译。
+
+新增 `packages/ui/src/translation-status.ts`：一个 `window` CustomEvent 通道
+（`genoffice:translation-status`），**一个 payload、两个消费者**（宿主 iframe +
+页签），不做第二个 store（各应用本来就自己持有运行状态）。三个 relay
+（slides/sheets/pdf 的 `emitTranslateProgress`）把每次 `ai-progress` 同时推给
+`postToEmbedParent` 和 `publishTranslationStatus`，两者互不覆盖。
+
+**wire 词表 ≠ 页签词表**：`translationTabStateOf` 把宿主/管线的 `started` 映射到
+页签的 `pending`。不映射的话一次运行的**第一帧**是 `started`，被当成未知值回落
+`idle` —— 页签在首批语段算完之前一直显示「未开始」，慢首帧看起来像点击没生效。
+
+## 8. 四应用接线
+
+| 应用 | 绑定文件 | 页签 id | 备注 |
+| --- | --- | --- | --- |
+| docs | `components/ribbon-translate-tab.tsx` | `translate` | 复用既有 `dataflare:open-translate` 通道 |
+| slides | `components/ribbon-translate-tab.tsx` | `translate` | 只支持整篇（管线只译整场），不渲染选区按钮 |
+| sheets | `ribbon-translate-tab.tsx` | `Translate` | 语言对默认 `en-US` |
+| pdf | `components-ribbon-translate-tab.tsx` | `translate` | `allowSelection={false}` |
+
+四个绑定都是**门面**：收集设置、渲染状态、把动作交回 App，由 App 路由进各应用
+**既有**的 `TranslateDeckDialog` / `TranslateSheetDialog` / `TranslatePdfDialog` /
+AiPanel 翻译对话框 —— 与宿主 `translate` 命令走同一条管线，**不是第二条代码路径**。
+语言对按应用记在 `localStorage`（主流产品的共性：记住上次语言对）。
+
+## 9. 门禁（`check-app-translation-parity` 扩四条）
+
+| 判据 | 钉住的缺陷 | 变异 |
+| --- | --- | --- |
+| 独立翻译页签绑定 | 组件建好但没导出 `TranslateTab` | — |
+| ribbon 渲染 `<TranslateTab>` | 组件孤立、页签是死代码 | 去渲染 → 1 红 ✅ |
+| ribbon 页签 id 已登记 | id 不在页签列表，用户找不到入口 | — |
+| App 传入 `onTranslateStart` | 页签渲染了但回调没接，「翻译全文」点了没反应 | — |
+
+写法上两种接法都算：**docs** 把整组回调收在 `ribbonActions` 里 `{...ribbonActions}`
+展开，**pdf** 直接 `onStart=`。只认一种会把另外两个应用判红（第一版就这么假红过）。
+
+## 10. 真机结果（18086 后端 + 18081 web-server，真实浏览器，真 MiniMax provider）
+
+- 四个应用 ribbon 都出现独立「翻译」页签（截图：`.playwright-mcp/*-translate-tab.png`）。
+- 云盘在线编辑（docx）里经 iframe 走真链路：点页签 → 「翻译全文」→ 弹窗 → 应用，
+  页签状态带真实推进 `is-running | 正在翻译… | 4/4 | 质量 100%` → 写回后 `is-completed`。
+- 终态诚实：写回失败显示 `is-failed`（不是静默）。
+- 覆盖保存（`overwrite`）走通并落云盘（日志 `onboarding.translated.docx`）。
+- 另存副本（`copy`）在本机多轮走查下报 `is-failed` —— 已知是
+  `uk_crm_drive_item_sibling_name` 重名碰撞（重复走查同一文件），非本次回归。
