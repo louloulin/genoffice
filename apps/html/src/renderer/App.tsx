@@ -61,11 +61,32 @@ import {
 import { compileOps, type HtmlOp, type OpError } from './document/ops'
 import { injectBrief, parseBrief, type Brief } from './document/brief'
 import { applyPatches } from './document/patch'
+import { translateHtmlDocument } from './ai/document-translate'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import type { TranslateProgressStatus } from '@genoffice/translation-core/document'
 import { deriveAutoFileName, deriveNameFromPrompt, derivePageTitleName } from './document/auto-name'
 import type { ExportFormat, SaveMode } from '../shared/ipc'
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
+
+/**
+ * Narrow the pipeline's progress vocabulary to the host's.
+ *
+ * `completed-with-failures` is the pipeline's partial-success terminal state and
+ * the host's `ai-progress` has no way to render it. Reporting it as `completed`
+ * would tell the host — and the user — that the document translated cleanly
+ * when part of it was left in the source language, so it is reported as
+ * `failed`: the host's only "something went wrong" state, and the honest
+ * direction to be wrong in.
+ */
+function hostProgressStatus(
+  status: TranslateProgressStatus,
+): 'started' | 'running' | 'completed' | 'failed' | 'cancelled' {
+  if (status === 'started' || status === 'running' || status === 'completed') return status
+  if (status === 'cancelled') return 'cancelled'
+  return 'failed'
+}
 
 interface TextSel {
   sid: number
@@ -228,6 +249,9 @@ export default function App() {
   const flushingStylesRef = useRef(false)
   const stageRef = useRef<HTMLDivElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
+  /** in-flight host-driven translation; a new command or a cancel aborts it */
+  const hostTranslationAbortRef = useRef<AbortController | null>(null)
+  const textSelRef = useRef<TextSel | null>(null)
   pathRef.current = path
   textRef.current = text
   editQueueRef.current = editQueue
@@ -235,6 +259,7 @@ export default function App() {
   savedTextRef.current = savedText
   statusRef.current = status
   selectedSidRef.current = selectedSid
+  textSelRef.current = textSel
   const dirty = text !== savedText
 
   const getMap = useCallback((): ParseMap => {
@@ -1470,6 +1495,112 @@ export default function App() {
       selectSid(sid, { reveal: true })
     },
   }
+
+  /**
+   * 宿主命令：Dataflare 头部下发「翻译全文 / 翻译选区 / 取消翻译」。
+   *
+   * 三种模式（整篇 / 选区 / 双语）都走同一条 `translateDocument` 管线，写回由本应用
+   * 自己的 `HtmlOp` 层完成 —— 与手动编辑、AI `apply_ops` 产生的文档完全同构。
+   *
+   * 这段监听与 web-bridge 的 `dataflare.install({ onCommand })` 缺一不可：只做一半
+   * 时宿主按钮看起来接好了却毫无反应，不报错、零 console error。
+   */
+  useEffect(() => {
+    const runHostTranslation = async (command: Record<string, unknown>): Promise<void> => {
+      const scope = command.scope === 'selection' ? 'selection' : 'document'
+      const selection = textSelRef.current
+      if (scope === 'selection' && !selection) {
+        // 没有选区时**不能**悄悄退化成整篇翻译：宿主点的是「翻译选区」，把整篇
+        // 文档翻掉是不可撤销的越权。如实报失败，让宿主提示用户先选文本。
+        postToEmbedParent({
+          type: 'ai-progress',
+          status: 'failed',
+          progress: 0,
+          error: '未选择文本',
+        })
+        return
+      }
+      const controller = new AbortController()
+      hostTranslationAbortRef.current?.abort()
+      hostTranslationAbortRef.current = controller
+      try {
+        await translateHtmlDocument(
+          {
+            text: textRef.current,
+            map: getMap(),
+            // 渲染进程从不直连 provider：嵌入时消费宿主的逐节点 SSE，独立运行时
+            // 退回整批 IPC（进度只在批边界推进，慢而不是坏）。
+            translateBatch: (request, signal, onUnit) => {
+              const call =
+                window.htmlApi.aiTranslateBatchStream ?? window.htmlApi.aiTranslateBatch
+              return call(request, {
+                ...(onUnit ? { onUnit } : {}),
+                signal: signal ?? controller.signal,
+              })
+            },
+            applyOps,
+            onProgress: (progress) => {
+              // `exactOptionalPropertyTypes`：缺省的计数必须是「不存在」而不是
+              // undefined，否则宿主渲染成 "undefined/undefined"。
+              postToEmbedParent({
+                type: 'ai-progress',
+                status: hostProgressStatus(progress.status),
+                progress: progress.progress,
+                ...(progress.completedUnits !== undefined
+                  ? { completedUnits: progress.completedUnits }
+                  : {}),
+                ...(progress.totalUnits !== undefined ? { totalUnits: progress.totalUnits } : {}),
+                ...(progress.error !== undefined ? { error: progress.error } : {}),
+              })
+            },
+          },
+          {
+            scope,
+            ...(scope === 'selection' && selection
+              ? { selection: { sid: selection.sid, index: selection.textNodeIndex } }
+              : {}),
+            targetLang:
+              typeof command.targetLanguage === 'string' ? command.targetLanguage : 'zh-CN',
+            ...(typeof command.sourceLanguage === 'string'
+              ? { sourceLang: command.sourceLanguage }
+              : {}),
+            applyMode: command.bilingual === true ? 'bilingual' : 'replace',
+            preserveFormat: command.preserveFormatting !== false,
+            memoryEnabled: command.memoryEnabled !== false,
+            qualityCheck: command.qualityCheck !== false,
+            ...(typeof command.glossaryCategory === 'string'
+              ? { glossaryCategory: command.glossaryCategory }
+              : {}),
+            signal: controller.signal,
+          },
+        )
+      } catch (error) {
+        // 管线自己会报 finished/failed；这里兜住的是「提取/回写阶段」抛出的错，
+        // 没有它宿主会永远停在「翻译中」。
+        postToEmbedParent({
+          type: 'ai-progress',
+          status: 'failed',
+          progress: 0,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        if (hostTranslationAbortRef.current === controller) hostTranslationAbortRef.current = null
+      }
+    }
+
+    const onHostCommand = (event: Event): void => {
+      const command = (event as CustomEvent<Record<string, unknown>>).detail
+      if (!command || typeof command.type !== 'string') return
+      if (command.type === 'translate') {
+        void runHostTranslation(command)
+      } else if (command.type === 'cancel-translation') {
+        // 取消由管线自己通过 onProgress 报 `cancelled`（并保证一个字都不写回）。
+        hostTranslationAbortRef.current?.abort()
+      }
+    }
+    window.addEventListener('dataflare:office-command', onHostCommand)
+    return () => window.removeEventListener('dataflare:office-command', onHostCommand)
+  }, [applyOps, getMap])
 
   const statusText = useMemo(() => {
     if (saveState === 'saving') return t('saving')

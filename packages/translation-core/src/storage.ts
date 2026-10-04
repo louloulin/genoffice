@@ -37,8 +37,16 @@ export interface GlossaryTerm {
   targetLang?: string
   category?: string
   remark?: string | null
-  /** null = tenant-shared; a number = private to that drive space. */
-  spaceId?: number | null
+  /**
+   * null = tenant-shared; a value = private to that drive space.
+   *
+   * `string | number` on purpose: the cloud-drive id is a snowflake
+   * (`2106454674846117890` ≈ 2.1e18) that exceeds
+   * `Number.MAX_SAFE_INTEGER`, so the host serialises it as a JSON string.
+   * Typing it as `number` invited a `Number()` round-trip that silently
+   * flattened the last digits (see `upsertGlossary`).
+   */
+  spaceId?: number | string | null
 }
 
 /** One memory row, as Dataflare returns it. */
@@ -49,8 +57,8 @@ export interface MemoryEntry {
   sourceLanguage?: string | null
   targetLanguage?: string | null
   scene?: string | null
-  /** null = tenant-shared; a number = private to that drive space. */
-  spaceId?: number | null
+  /** null = tenant-shared; see {@link GlossaryTerm.spaceId} for the string id. */
+  spaceId?: number | string | null
   createTime?: string | null
 }
 

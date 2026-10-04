@@ -1,9 +1,9 @@
 schema: comet.native.v4
 name: enterprise-office-ai
 language: zh-CN
-phase: verify
-status: await-user
-state_version: 25
+phase: build
+status: active
+state_version: 43
 brief: brief.md
 spec_changes:
   - capability: enterprise-office-ai
@@ -15,26 +15,15 @@ workspace:
   target_branch: release0919
   finish: null
 loop:
-  stage: await-user
+  stage: repairing
   goal_cycle: 4
-  iteration: 1
-  attempt: 1
+  iteration: 5
+  attempt: 0
   retry_epoch: 0
-  failed_iteration_count: 0
-  no_progress_count: 0
+  failed_iteration_count: 3
+  no_progress_count: 2
   execution_failure_count: 0
   previous_unresolved_ids:
-    - A4
-    - A5
-    - A6
-    - A7
-    - A8
-    - A9
-    - A10
-    - A11
-    - A12
-    - A13
-    - A14
     - A15
     - A16
     - A17
@@ -44,26 +33,8 @@ loop:
     - A21
     - A22
     - A23
+    - A24
     - A25
-    - A36
-    - A37
-    - A38
-    - A39
-    - A40
-    - A41
-    - A42
-    - A43
-    - A44
-    - A45
-    - A46
-    - A47
-    - A48
-    - A49
-    - A50
-    - A51
-    - A52
-    - A53
-    - A54
     - A56
     - A57
     - A59
@@ -78,8 +49,10 @@ loop:
     - A68
     - A69
     - A70
+    - A71
     - A72
-  next_action: resolve-verifier-blocker
+    - A75
+  next_action: repair-failed-acceptance
 acceptance:
   - id: A1
     source: brief.md
@@ -87,9 +60,12 @@ acceptance:
       401；服务日志明确提示未配置认证。配置后同请求通过。
     result: passed
     reason:
-      text: Previously verified (fail-closed 401 + startup warning); auth code
-        untouched by this diff and auth suites green in this candidate's
-        vitest-full (1283 passed) and test:http (40/40).
+      text: "Carried forward (earlier iteration; batch 3 does not touch
+        auth/route-policy). Fail-closed:
+        apps/web-server/src/auth/route-policy.ts resolveAuthority returns
+        'locked' when WEB_TOKEN is unset, so /api/ai/stream and protected IPC
+        endpoints 401 unauthenticated requests; startup log warns and /health
+        auth reports 'locked'. Auth commits ea9d5c3a/d51191c1."
       truncated: false
   - id: A2
     source: brief.md
@@ -97,208 +73,272 @@ acceptance:
       覆盖，集成测试证明上游请求仍发往服务端配置的 endpoint、使用服务端持有的 key，注入值被忽略。
     result: passed
     reason:
-      text: Previously verified across all four settings entry points after the iter-3
-        fix; sanitize/translate suites green in vitest-full; this diff touches
-        neither settings-sanitize nor translate-http.
+      text: Carried forward (earlier iteration). Embedded-mode (JWT) requests ignore
+        body settings.baseUrl/settings.apiKey via the sanitize layer in
+        apps/web-server/src/ai/chat.ts; upstream goes to the
+        server/tenant-configured endpoint with the server-held key. Untouched by
+        batch 3.
       truncated: false
   - id: A3
     source: brief.md
     text: A3 本地/桌面模式保留 BYOK：baseUrl 在 allowlist（默认仅回环 + 显式配置条目）内可用；白名单外地址被拒绝并返回明确错误。
     result: passed
     reason:
-      text: Previously verified; sanitizeRequestSettings local-mode allowlist tests
-        green in vitest-full; diff scope cannot regress it.
+      text: "Carried forward (earlier iteration). Local/desktop BYOK: baseUrl allowed
+        only when in the allowlist (default loopback 127.0.0.1/localhost/::1 +
+        operator entries); off-list returns a structured error without an
+        upstream request. Untouched by batch 3."
       truncated: false
   - id: A4
     source: brief.md
     text: A4 配置 `GENOFFICE_MASTER_KEY` 后保存 AI settings，`DATA_DIR/ai-settings.json` 中
       key 字段为 AES-256-GCM 密文（带 keyId）；磁盘文件全文搜索不到明文 key。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: apps/web-server/src/common/secret-store.ts does not
-        exist and ai-settings.json is not AES-256-GCM encrypted — D12 batch 2
-        (密钥加密 A4/A5)."
+      text: Carried forward (earlier iteration).
+        apps/web-server/src/common/secret-store.ts implements AES-256-GCM with
+        GENOFFICE_MASTER_KEY; DATA_DIR/ai-settings.json stores apiKey as
+        v1:keyId:iv:ciphertext:tag — no plaintext on disk. Untouched by batch 3.
       truncated: false
   - id: A5
     source: brief.md
     text: A5 settings 读取 API 对 key 返回 redacted 形态；嵌入模式 renderer 持久化存储中无明文 key。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: settings read APIs have no redaction layer because the
-        secret-store is absent — D12 batch 2."
+      text: Carried forward (earlier iteration). Settings read APIs return redacted
+        keys (sk-***abcd); embedded-mode renderer never receives plaintext keys.
+        Untouched by batch 3.
       truncated: false
   - id: A6
     source: brief.md
     text: A6 双租户（不同 JWT tenant claim）并发使用，audit-log 中各自记录正确 tenantId，互相不可见对方记录。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no JWT tenantId→request-context wiring or per-tenant
-        audit isolation (common/audit-log.ts is document audit infra, not AI
-        tenant audit) — D12 batch 2+ (租户/审计)."
+      text: "Carried forward (earlier iteration). Dual-tenant (distinct JWT tenant
+        claims) audit-log isolation: each record carries its own tenantId; no
+        cross-tenant leakage. Artifact: apps/web-server/src/common/audit-log.ts
+        + request-context tenant. Untouched by batch 3."
       truncated: false
   - id: A7
     source: brief.md
     text: A7 chat/stream/translate 全部 AI 调用进 audit-log，含 tenant、endpoint、tokens 用量字段。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: AI calls are not yet written to any audit log with
-        tenant/endpoint/token fields — D12 batch 2+."
+      text: "Carried forward (earlier iteration). chat/stream/translate AI calls all
+        write audit-log with tenant, endpoint, provider, model, tokens, latency.
+        Artifact: apps/web-server/src/enterprise/auth-audit.ts + audit-log.
+        Untouched by batch 3."
       truncated: false
   - id: A8
     source: brief.md
     text: A8 1000+ 段大文档翻译中注入部分单元失败：仅失败单元被重试（成功单元无重复 LLM 调用），最终整篇完成或给出明确失败单元清单。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: translation-core document.ts has no per-unit failure
-        classification or selective retry — D12 batch 2+ (翻译可靠性 A8–A14)."
+      text: "Batch 3. packages/translation-core/src/document.ts:
+        RETRYABLE_ERROR_CODES={timeout,network,overloaded,server}; settlePass
+        only re-queues retryable units; accept() settles successes once. Test
+        document.test.ts asserts seen==[['P0','P1','P2'],['P1']] (successes
+        never re-sent) and a permanent failure lists
+        {unitId,errorCode,attempts}. Runtime unit-translation-core-checkpoint
+        green (119 tests)."
       truncated: false
   - id: A9
     source: brief.md
     text: A9 翻译进程中断后重启续翻：已翻单元从 checkpoint 直接复用（无重复调用/重复计费），剩余单元继续。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no checkpoint mechanism anywhere in translation-core
-        (grep for 'checkpoint' is empty) — D12 batch 2+."
+      text: Batch 3. document.ts resume block loads checkpoint and accept()s hits
+        before planning batches; test asserts the provider is only asked for the
+        non-cached units (['P1','P2']). Durable store proven by
+        translate-checkpoint-e2e (SIGTERM flush → second boot reads r1/甲).
+        Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A10
     source: brief.md
     text: A10 `translateBatch`（非流式）并发受上限约束：并发压测峰值 ≤ 配置上限。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: translateBatch remains unbounded (no worker pool in
-        document.ts) — D12 batch 2+."
+      text: Batch 3. provider.ts driveBounded is an index-pull worker pool;
+        translateBatch computes
+        concurrency=Math.max(1,Math.min(options.concurrency ?? 25,total)).
+        provider.test.ts instruments in-flight calls and asserts peak<=4 and
+        default peak<=25. Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A11
     source: brief.md
     text: A11 markdown 应用：整篇翻译与选区翻译可用，译文写回编辑器，双语模式正确，Playwright e2e 通过。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: markdown host has no extract/apply translateDocument
-        implementation and the parity gate declares only docs/sheets/slides/pdf
-        — D12 batch 2+."
+      text: Batch 3. apps/markdown/src/renderer/ai/document-translate.ts routes
+        whole/selection/bilingual through translateDocument; App.tsx
+        host-command effect drives it. e2e/markdown-translate.spec.ts (3 tests)
+        passed in a real browser against the built bundle, asserting real editor
+        write-back (e.g. textContent==='[Title One][First paragraph.][Inline
+        bold tail]'). Runtime e2e-html-markdown-translate green (6 passed).
       truncated: false
   - id: A12
     source: brief.md
     text: A12 html 应用：同 A11。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: same gap as A11 for the html app — D12 batch 2+."
+      text: Batch 3. apps/html/src/renderer/ai/document-translate.ts routes
+        whole/selection/bilingual through translateDocument; App.tsx
+        host-command effect drives it. e2e/html-translate.spec.ts (3 tests)
+        passed asserting real write-back. Runtime e2e-html-markdown-translate
+        green (6 passed).
       truncated: false
   - id: A13
     source: brief.md
     text: A13 `check-app-translation-parity` 门禁声明覆盖 markdown/html
       且全绿（--require=whole-document --require=host-command）。
-    result: blocked
+    result: passed
     reason:
-      text: "Not satisfied: scripts/check-app-translation-parity.mjs TRANSLATION_APPS
-        lacks markdown/html entries — D12 batch 2+."
+      text: "Batch 3. scripts/check-app-translation-parity.mjs declares markdown/html
+        with wholeDocument/hostCommand true; Runtime gate-app-translation-parity
+        green: six apps, zero gaps, exit 0 under
+        --require=whole-document,host-command."
       truncated: false
   - id: A14
     source: brief.md
     text: A14 persistent-memory 阈值常量与注释一致；`translation-dictionaries/` 运行产物被
       gitignore，`git status` 干净。
-    result: blocked
+    result: passed
     reason:
-      text: The gitignore/status half already holds, but persistent-memory comments
-        still say 0.86 while DEFAULT_FUZZY_THRESHOLD=0.7
-        (persistent-memory.ts:26,87) — D12 batch 2+.
+      text: Batch 3. persistent-memory.ts DEFAULT_FUZZY_THRESHOLD=0.7 with matching
+        header/option comments; .gitignore covers translation-dictionaries
+        (lines 62/66/70/88); git ls-files shows none tracked and git status none
+        untracked. Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A15
     source: brief.md
     text: A15 故障注入 provider 返回 timeout/network/overloaded：自动重试（指数退避+抖动，≤3
       次；流式仅在首字节前），注入测试证明重试发生且最终成功。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no per-request retry with backoff exists in the provider
-        layer — D12 batch 2+ (provider 韧性 A15–A20)."
+      text: "Definitively absent. No per-request retry for provider
+        timeout/network/overloaded: grep for retry|backoff|jitter|maxRetries
+        across packages/ai-provider/src returns nothing, and
+        packages/ai-provider/src/stream.ts is untouched by this candidate (git
+        status empty; batch-3 ai-provider diff is stream-transport only:
+        protocols/*.ts+types.ts+index.ts). The spec's errorCode-driven
+        exp-backoff retry in stream.ts does not exist."
       truncated: false
   - id: A16
     source: brief.md
     text: A16 配置 fallback 链的租户在主 provider 持续失败时自动切换备用 provider 完成请求（failover 测试）。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no registry failover chain in AiSettings/registry — D12
-        batch 2+."
+      text: Definitively absent. No registry-level fallback provider chain / failover
+        in packages/ai-provider (no failover|providerChain|nextProvider symbol);
+        AiSettings has no fallback sequence. The only 'fallback' hits are
+        unrelated (output-cap, plugin-flat-config).
       truncated: false
   - id: A17
     source: brief.md
     text: A17 超过限流配额的请求收到 429 + Retry-After；per-tenant 隔离（A 租户打满不影响 B 租户）。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no rate-limit middleware and no 429/Retry-After path —
-        D12 batch 2+."
+      text: Definitively absent. apps/web-server/src/common/rate-limit.ts does not
+        exist and no tokenBucket symbol exists in apps/web-server/src; no 429 +
+        Retry-After per-tenant limiter is mounted. (Only an unrelated comment
+        mention of 'rate-limit' in ai/chat.ts.)
       truncated: false
   - id: A18
     source: brief.md
     text: A18 usage-meter 记录每次 AI 调用的 provider/model/tokens/耗时；查询 API 返回 per-tenant
       汇总。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no usage-meter module (apps/web-server/src/common has no
-        usage-meter.ts) — D12 batch 2+."
+      text: Definitively absent. apps/web-server/src/common/usage-meter.ts does not
+        exist and no usageMeter symbol anywhere; no per-call
+        provider/model/tokens/latency usage record. (Pre-existing
+        reserveDailyPasteQuota is a paste-byte budget and
+        isAiQuotaExhaustedError is quota-error handling — neither is a usage
+        meter.)
       truncated: false
   - id: A19
     source: brief.md
     text: A19 markdown/html 的 AI 面板迁移到 chat-runtime；六应用面板一致；EditQueueCard
       等复制组件收敛为共享实现（组件单一来源）。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: markdown/html AI panels not migrated to chat-runtime and
-        no shared EditQueueCard consolidation — D12 batch 2+."
+      text: Definitively absent. Neither apps/markdown/src nor apps/html/src imports
+        chat-runtime (grep empty); each app keeps its own EditQueueCard.tsx
+        copy, so the migration to chat-runtime and the single-source convergence
+        of EditQueueCard/edit-queue/composer is not done. (The
+        packages/chat-runtime package exists but is pre-existing and unused by
+        these two apps.)
       truncated: false
   - id: A20
     source: brief.md
     text: A20 AgentLoop 经适配器消费至少一个 marketplace SkillPackage 工具并端到端验证。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no marketplace SkillPackage adapter in agent-core — D12
-        batch 2+."
+      text: Definitively absent. packages/agent-core/src/skill.ts is 87 lines,
+        contains no SkillPackage adapter, and is unmodified; there is no adapter
+        making a marketplace SkillPackage tool consumable by AgentLoop, and no
+        official-skill e2e. (The SkillPackage protocol exists elsewhere —
+        packages/agent-skills/src/skill-protocol.ts:248 and
+        apps/web-server/src/common/marketplace-loader.ts — pre-existing; the
+        required agent-core adapter is what is missing.)
       truncated: false
   - id: A21
     source: brief.md
     text: A21 OIDC/OAuth2 测试容器 e2e：登录→签发 JWT→携带 JWT 调用受保护 API 成功；替换 enterprise/ 中假
       SSO URL。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: enterprise/ SSO remains a placeholder with no OIDC
-        authorization-code flow — D12 batch 2+ (平台化)."
+      text: "Definitively absent. apps/web-server/src/enterprise/auth-audit.ts:31 is
+        an explicit placeholder ('NOTE (placeholder): a real OIDC implementation
+        must validate state'); there is no OIDC/OAuth2 authorization-code flow
+        (discovery, PKCE, token exchange, claims→JWT) and no OIDC test container
+        e2e; the fake SSO URL is not replaced."
       truncated: false
   - id: A22
     source: brief.md
     text: A22 用量/配额查询 API 返回 per-tenant 汇总（依赖 A18 数据）。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no usage/quota query API (depends on the absent
-        usage-meter) — D12 batch 2+."
+      text: Definitively absent. No per-tenant usage/quota query API on /api/v1
+        (depends on the absent A18 usage-meter); no such route registered in
+        apps/web-server/src/index.ts.
       truncated: false
   - id: A23
     source: brief.md
     text: A23 OTel OTLP exporter 上报 `/api/ai/stream` 与翻译主链路 span，测试 collector
       收到完整调用链。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: agent-telemetry ships only JSONL/Console/InMemory
-        exporters; the OTel OTLP bridge is an explicit custom-exporter TODO —
-        D12 batch 2+."
+      text: "Definitively absent. No OTel OTLP exporter:
+        packages/agent-telemetry/src/otel.ts does not exist, there is no
+        @opentelemetry dependency, and the package's SpanExporter doc frames an
+        OTLP bridge as a future custom exporter; no /api/ai/stream or
+        translation-chain spans are emitted."
       truncated: false
   - id: A24
     source: brief.md
     text: A24 S3/MinIO StorageBackend 容器测试：上传/下载/删除 roundtrip 成功。
-    result: passed
+    result: failed
     reason:
-      text: "S3StorageBackend upload/download/delete roundtrip is covered by
-        packages/file-management/tests/storage/s3.test.ts (6 cases: real AWS SDK
-        SigV4 against a local S3-protocol mock, incl. minio backend id);
-        previously verified and untouched by this diff (coverage is mock-server
-        based, not a real MinIO container)."
+      text: "Criterion unmet (narrowed). The interface half is pre-existing:
+        packages/file-management/src/storage/s3.ts:129 defines S3StorageBackend,
+        storage/factory.ts:28-62 maps s3/rustfs/minio to it, and
+        tests/storage/s3.test.ts:127 covers a PUT/GET byte roundtrip — but that
+        code is untouched by this change (git status -- packages/file-management
+        empty; HEAD ce04555d). The acceptance's second clause, a container test
+        covering upload/download/delete roundtrip, is absent: no
+        testcontainers/GenericContainer/minio-minio harness exists anywhere. A24
+        = 容器测试部分未满足。"
       truncated: false
   - id: A25
     source: brief.md
     text: A25 决策项文档落地：pi 化评估、主进程双轨债、桌面 safeStorage 债登记到 docs（编号、现状、建议）。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no pi 化评估/主进程双轨/safeStorage 债 decision doc exists under
-        docs/ — D12 batch 2+."
+      text: Definitively absent. No decision document under
+        docs/comet/changes/enterprise-office-ai/ (only brief.md,
+        comet-state.yaml, specs/) covering pi-ification evaluation, main-process
+        dual-track debt, and desktop safeStorage debt.
       truncated: false
   - id: A26
     source: brief.md
@@ -307,15 +347,13 @@ acceptance:
       结构化错误，不静默）；重定向逐跳复验与 DNS 全地址校验既有防护保持；集成测试覆盖拒绝路径（元数据地址 0 外呼）与公网字面量放行。
     result: passed
     reason:
-      text: "Verified live: handleAiImage pre-flights classifyRemoteUrl before
-        invokeIpc and returns a structured 403 FORBIDDEN 'public address'
-        (api/v1/ai.ts:259); I re-ran the SSRF unit suite (60/60) and the
-        real-bundle e2e (1/1: 169.254.169.254 / 10.1.2.3 / 127.0.0.1 / localhost
-        all 403 FORBIDDEN deterministic offline, httpbin happy path still 200);
-        a 403 is only producible by the pre-flight branch so refused targets
-        make zero outbound fetches; fetchWithSsrfGuard per-hop revalidation and
-        the DNS all-address check are unchanged; public literal allowance is
-        pinned by the unit test (93.184.216.34 → public)."
+      text: "Carried forward (batch-1/iteration-4 item; commit 3ef4ead4). fetch-URL
+        convergence: /api/v1/ai/image and IPC ai:fetch-image reject
+        cloud-metadata (169.254.169.254), private, and loopback targets before
+        fetching, returning a structured HTTP error (not silent null); redirect
+        hop re-validation and DNS all-address checks preserved; integration test
+        covers the rejection path (metadata address 0 egress) and public-literal
+        pass. Batch 3 does not touch this path."
       truncated: false
   - id: A27
     source: specs/enterprise-office-ai/spec.md
@@ -323,8 +361,12 @@ acceptance:
       的协议层，对 agent 实现零侵入。
     result: passed
     reason:
-      text: Previously verified (boundary-layer architecture holds); this diff only
-        adds the documented pre-flight inside the existing HTTP/IPC boundary.
+      text: "Carried forward (earlier iteration). Architecture invariant: all
+        enterprise infra lives at the web-server HTTP/IPC boundary and packages
+        protocol layer, zero intrusion into the agent — evidenced by
+        packages/agent-core/src/loop.ts being unmodified and enterprise code
+        confined to apps/web-server/src/{auth,enterprise,common}. Batch 3
+        changes none of these."
       truncated: false
   - id: A28
     source: specs/enterprise-office-ai/spec.md
@@ -333,8 +375,11 @@ acceptance:
       401，启动日志输出明确警告，`/health` 的 `auth` 字段报告 `locked`。"
     result: passed
     reason:
-      text: Previously verified (fail-closed authority, /health locked); auth code
-        untouched and auth suites green in vitest-full.
+      text: "Carried forward (earlier iteration).
+        apps/web-server/src/auth/route-policy.ts: with WEB_TOKEN unset,
+        resolveAuthority no longer returns 'open'; /api/ai/stream, AI IPC, and
+        /api/v1/* return 401 to unauthenticated requests; startup warns and
+        /health auth='locked'."
       truncated: false
   - id: A29
     source: specs/enterprise-office-ai/spec.md
@@ -343,8 +388,11 @@ acceptance:
       仍是策略；JWT-only 嵌入部署（Dataflarework）行为不变，嵌入闭环保持 11/11。
     result: passed
     reason:
-      text: Previously verified (D11 JWT exception jwt-open); this candidate's
-        embed-probe runtime check printed LOOP OK with 11/11 assertions.
+      text: "Carried forward (earlier iteration). JWT exception per D11: with
+        GENOFFICE_JWT_SECRET set, a verified JWT is admitted as 'jwt-open'
+        (bypassing the route-policy table; per-channel requireScopeFromHeaders
+        still applies), so JWT-only Dataflarework embedding is unchanged —
+        corroborated by the embed loop remaining LOOP OK 11/11 (A73)."
       truncated: false
   - id: A30
     source: specs/enterprise-office-ai/spec.md
@@ -353,8 +401,10 @@ acceptance:
       也不能豁免）。
     result: passed
     reason:
-      text: Previously verified (GENOFFICE_ALLOW_OPEN strict parsing + non-loopback
-        HOST startup refusal); unchanged by this diff, auth tests green.
+      text: Carried forward (earlier iteration). GENOFFICE_ALLOW_OPEN=1|true restores
+        the open posture for local dev (other values fail closed); HOST
+        non-loopback with no WEB_TOKEN aborts startup even under
+        GENOFFICE_ALLOW_OPEN.
       truncated: false
   - id: A31
     source: specs/enterprise-office-ai/spec.md
@@ -362,8 +412,9 @@ acceptance:
       authority）不变。
     result: passed
     reason:
-      text: Previously verified after the iter-3 legacy scope-gate fix; WEB_TOKEN/JWT
-        route-policy behavior is untouched by this diff.
+      text: Carried forward (earlier iteration). With WEB_TOKEN configured, behavior
+        matches prior (shared-secret = operator); JWT+scope three-state
+        route-policy authority unchanged.
       truncated: false
   - id: A32
     source: specs/enterprise-office-ai/spec.md
@@ -372,8 +423,10 @@ acceptance:
       settings 解析前的 sanitize 层。"
     result: passed
     reason:
-      text: Previously verified (embed settings overrides ignored at all four entry
-        points); sanitize tests green in vitest-full.
+      text: Carried forward (earlier iteration). Embedded/JWT mode ignores
+        request-body settings.baseUrl/settings.apiKey; provider config comes
+        from server/tenant settings via the sanitize layer in
+        apps/web-server/src/ai/chat.ts.
       truncated: false
   - id: A33
     source: specs/enterprise-office-ai/spec.md
@@ -381,18 +434,18 @@ acceptance:
       127.0.0.1/localhost/::1 + 操作员显式配置条目）；未命中返回结构化错误（含 reason），不发起上游请求。"
     result: passed
     reason:
-      text: Previously verified (BYOK allowlist structured error with reason, no
-        upstream call); tests green in vitest-full.
+      text: Carried forward (earlier iteration). Local/desktop mode keeps BYOK;
+        baseUrl must hit the allowlist (default loopback + explicit operator
+        entries); misses return a structured error with reason and no upstream
+        call.
       truncated: false
   - id: A34
     source: specs/enterprise-office-ai/spec.md
     text: settings 覆盖中的模型名、温度等非网络参数不受 sanitize 影响。
     result: passed
     reason:
-      text: stripNetworkFields deletes only apiKey/baseUrl
-        (settings-sanitize.ts:75-90), local mode only validates baseUrl against
-        the allowlist, and tests pin model 'gpt-4o' and imageModel 'dall-e-3'
-        surviving sanitize (ai-settings-sanitize.test.ts:66,83).
+      text: Carried forward (earlier iteration). Non-network settings (model name,
+        temperature) are unaffected by the sanitize layer.
       truncated: false
   - id: A35
     source: specs/enterprise-office-ai/spec.md
@@ -405,78 +458,87 @@ acceptance:
       UX：提示图片不可访问）。"
     result: passed
     reason:
-      text: Spec twin of A26 with the same live evidence, plus the intact IPC/renderer
-        null contract (ai:fetch-image still returns null on refusal/failure,
-        chat.ts:1818-1822) and unchanged isSafeRemoteUrl guard semantics
-        (unresolvable/blocked still fail the fetch guard).
+      text: "Carried forward (earlier iteration; spec mirror of A26). fetch-URL
+        convergence: /api/v1/ai/image + IPC ai:fetch-image are public-only;
+        private/link-local-metadata/loopback/.local/.internal rejected; redirect
+        hop re-check and DNS all-address validation preserved; structured
+        pre-fetch rejection on HTTP, null contract on IPC/renderer."
       truncated: false
   - id: A36
     source: specs/enterprise-office-ai/spec.md
     text: 新增 `apps/web-server/src/common/secret-store.ts`：AES-256-GCM，主密钥来自环境变量
       `GENOFFICE_MASTER_KEY`（64 hex 字符或经 KDF）；密文格式
       `v1:<keyId>:<iv>:<ciphertext>:<tag>`，keyId 支持主密钥轮换。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no secret-store.ts and no v1:<keyId>:<iv>:<ct>:<tag>
-        envelope — D12 batch 2."
+      text: "Carried forward (earlier iteration).
+        apps/web-server/src/common/secret-store.ts: AES-256-GCM, master key from
+        GENOFFICE_MASTER_KEY (64 hex or via KDF), ciphertext
+        v1:<keyId>:<iv>:<ciphertext>:<tag> with keyId rotation support."
       truncated: false
   - id: A37
     source: specs/enterprise-office-ai/spec.md
     text: "`DATA_DIR/ai-settings.json` 落盘时 provider apiKey 经 secret-store
       加密；读取时解密；主密钥缺失时启动报错并拒绝解密（不静默回退明文）。"
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: ai-settings.json still stores provider keys unencrypted
-        — D12 batch 2."
+      text: Carried forward (earlier iteration). DATA_DIR/ai-settings.json persists
+        provider apiKey encrypted via secret-store and decrypts on read; a
+        missing master key aborts startup rather than silently falling back to
+        plaintext.
       truncated: false
   - id: A38
     source: specs/enterprise-office-ai/spec.md
     text: 所有 settings 读取 API 返回 redacted key（如 `sk-***abcd`）；嵌入模式下 renderer 永远拿不到明文
       key——AI 请求由服务端代理携带。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no redacted-key read path (depends on the absent
-        secret-store) — D12 batch 2."
+      text: Carried forward (earlier iteration). Settings read APIs return redacted
+        keys; in embedded mode the renderer never holds plaintext keys (AI
+        requests proxied server-side).
       truncated: false
   - id: A39
     source: specs/enterprise-office-ai/spec.md
     text: 桌面端明文 localStorage 为已登记债（Non-goal），不在本 capability 内。
-    result: blocked
+    result: passed
     reason:
-      text: Registered non-goal whose debt registration only becomes actionable with
-        the batch-2 secret-store work — deferred to D12 batch 2.
+      text: Carried forward (earlier iteration). Desktop plaintext localStorage is a
+        registered debt (Non-goal) and out of scope for this capability.
       truncated: false
   - id: A40
     source: specs/enterprise-office-ai/spec.md
     text: JWT claims 携带租户标识（tenantId/spaceId），经 route-policy 解析后写入请求上下文。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no tenantId/spaceId claim parsing into request context —
-        D12 batch 2+."
+      text: Carried forward (earlier iteration). JWT claims carrying tenantId/spaceId
+        are parsed by route-policy and written into the request context.
       truncated: false
   - id: A41
     source: specs/enterprise-office-ai/spec.md
     text: audit-log 每条记录含 tenantId；双租户并发写入互不串数据。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: audit records carry no tenantId — D12 batch 2+."
+      text: Carried forward (earlier iteration). Each audit-log record carries
+        tenantId; dual-tenant concurrent writes do not mix data.
       truncated: false
   - id: A42
     source: specs/enterprise-office-ai/spec.md
     text: 全仓硬编码 `'default'` 租户替换为上下文取值（无 JWT 时回退 `default` 并在审计中标记）。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: hardcoded 'default' tenancy not replaced by context
-        resolution — D12 batch 2+."
+      text: Carried forward (earlier iteration). Hardcoded 'default' tenant replaced
+        with context-derived value (fallback 'default' with an audit marker when
+        no JWT).
       truncated: false
   - id: A43
     source: specs/enterprise-office-ai/spec.md
     text: chat/stream/translate/image 等 AI 调用统一写
       audit-log：tenant、endpoint、provider、model、tokens（prompt/completion）、耗时、结果状态。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no unified AI audit records
-        (tenant/endpoint/provider/model/tokens/latency) — D12 batch 2+."
+      text: Carried forward (earlier iteration). chat/stream/translate/image AI calls
+        uniformly write audit-log with tenant, endpoint, provider, model, tokens
+        (prompt/completion), latency, and result status.
       truncated: false
   - id: A44
     source: specs/enterprise-office-ai/spec.md
@@ -484,432 +546,501 @@ acceptance:
       ai-provider errorCode
       分类——可重试（timeout/network/overloaded/5xx）自动重试（指数退避+抖动，≤3
       次）；不可重试（credits/认证/内容策略）跳过并记录。"
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: the document.ts settle loop has no errorCode-driven
-        retry classification — D12 batch 2+."
+      text: "Batch 3. document.ts classifies unit failures by ai-provider errorCode:
+        retryable {timeout,network,overloaded,5xx(server)} auto-retry with
+        exponential backoff+jitter, default maxRetries=3; non-retryable
+        {credits,auth,content-policy} are skipped and recorded. provider.ts
+        classifyTranslationFailure + document.ts
+        RETRYABLE_ERROR_CODES/retryDelay. Tests: provider.test.ts classify
+        cases, document.test.ts 'does not retry a permanent failure' (calls==1).
+        Runtime unit-translation-core-checkpoint green."
       truncated: false
   - id: A45
     source: specs/enterprise-office-ai/spec.md
     text: 成功单元不重复调用；结束后产出失败单元清单（unitId/原因），整篇结果标记 `completed-with-failures` 或
       `failed`。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no completed-with-failures semantics or failed-unit list
-        — D12 batch 2+."
+      text: Batch 3. Successes settle only via accept() (never re-queued); failures[]
+        carries {unitId,reason,errorCode,attempts}; finalStatus is
+        'completed-with-failures' when failures>0 else 'completed', and 'failed'
+        when nothing settled. document.test.ts asserts status+applied:true+exact
+        failures entry. Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A46
     source: specs/enterprise-office-ai/spec.md
     text: "`TranslateDocumentOptions` 新增 checkpoint adapter 接口：`load(unitId)` /
       `save(unitId, result)`。"
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: TranslateDocumentOptions has no checkpoint load/save
-        adapter (grep confirms absent) — D12 batch 2+."
+      text: Batch 3. document.ts defines TranslateCheckpoint {load(unitId),
+        save(unitId,result)} and adds TranslateDocumentOptions.checkpoint.
+        Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A47
     source: specs/enterprise-office-ai/spec.md
     text: 每单元翻译成功即 save；重跑同一文档时已翻单元直接复用。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no per-unit checkpoint saves — D12 batch 2+."
+      text: Batch 3. accept() calls options.checkpoint.save on every settled success;
+        the resume path loads and reuses without provider calls. Markdown/html
+        tests assert saved length 2; resume test asserts provider only sees
+        uncached units. Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A48
     source: specs/enterprise-office-ai/spec.md
     text: web-server `translate-http.ts` 提供基于翻译会话的 store
       实现；桌面/嵌入宿主可各自提供实现或省略（省略=无续翻）。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: translate-http.ts has no session-based checkpoint store
-        — D12 batch 2+."
+      text: Batch 3. apps/web-server/src/ai/translate-http.ts provides a
+        tenant-scoped, file-backed session checkpoint store
+        (TRANSLATE_CHECKPOINTS + save/load/flush, HTTP POST/GET handlers
+        registered in index.ts); omission = no resume, as spec allows.
+        translate-checkpoint-e2e asserts verbatim round-trip, session isolation,
+        and restart persistence. Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A49
     source: specs/enterprise-office-ai/spec.md
     text: 取消语义不变：取消一律不写回文档，但 checkpoint 保留已翻单元供续翻。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no checkpoint retention semantics to verify — D12 batch
-        2+."
+      text: Batch 3. document.ts both abort paths return status:'cancelled' with
+        applied:false and never call apply; already-settled units were saved by
+        accept() so the checkpoint survives. document.test.ts 'a cancel mid-run
+        keeps the checkpoint but writes nothing' asserts apply not called and
+        saved keys==['P0']. Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A50
     source: specs/enterprise-office-ai/spec.md
     text: "`translateBatch`（非流式）与词典构建改用有界并发（复用 stream 版 worker-pool 模式），并发上限可配置，默认与
       stream 版一致（25）。"
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: translateBatch/dictionary build still unbounded (no
-        worker pool in document.ts) — D12 batch 2+."
+      text: Batch 3. provider.ts DEFAULT_BATCH_CONCURRENCY=25 is shared by
+        translateBatch and translateBatchStream via driveBounded; concurrency is
+        configurable. Dictionary build (dictionary.ts) calls
+        deps.translateBatch, wired through batchTranslator()->translateBatch
+        (translate-skill.ts:184-185), so it inherits the bounded pool.
+        provider.test.ts asserts peak<=4 / default peak<=25 / clamp 0->1.
+        Runtime unit-translation-core-checkpoint green.
       truncated: false
   - id: A51
     source: specs/enterprise-office-ai/spec.md
     text: 两应用新增宿主实现：extract 单元（markdown 按块、html 按可翻译文本节点）+ apply 回写（复用
       `apply_ops`/`write_document` 现有原语）。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no markdown/html extract + apply host implementations —
-        D12 batch 2+."
+      text: Batch 3. markdown extractMarkdownTextBlocks + buildMarkdownApplyOps use
+        existing replaceText/insertContent via runOps; html extractHtmlTextNodes
+        + buildHtmlApplyOps use set_text_node/insert_html via the existing
+        apply_ops path. Unit suites (apps/html, apps/markdown) green — runtime
+        unit-html-markdown (38 files/439 tests).
       truncated: false
   - id: A52
     source: specs/enterprise-office-ai/spec.md
     text: 支持：整篇翻译、选区翻译、双语模式；走 translateDocument 同一管线（含 2.1–2.3 全部能力）。
-    result: blocked
+    result: passed
     reason:
-      text: "Not implemented: no whole/selection/bilingual translation for
-        markdown/html — D12 batch 2+."
+      text: Batch 3. Both adapters call translateDocument with scope
+        document|selection and applyMode replace|bilingual, forwarding
+        checkpoint/retry/maxUnitsPerBatch (2.1-2.3). Unit tests cover whole-doc,
+        bilingual-preserves-source, selection-only, and completed-with-failures;
+        Playwright e2e covers all three modes in a real browser (runtime
+        e2e-html-markdown-translate, 6 passed).
       truncated: false
   - id: A53
     source: specs/enterprise-office-ai/spec.md
     text: "`check-app-translation-parity.mjs`
       声明矩阵补齐两应用（wholeDocument/hostCommand/bilingual/writeBack），门禁全绿。"
-    result: blocked
+    result: passed
     reason:
-      text: "Not satisfied: the parity matrix declares only docs/sheets/slides/pdf —
-        D12 batch 2+."
+      text: Batch 3. scripts/check-app-translation-parity.mjs adds markdown and html
+        matrix entries with wholeDocument/hostCommand/bilingual/writeBack +
+        writePrimitives; Runtime gate-app-translation-parity green (six apps,
+        zero gaps, exit 0).
       truncated: false
   - id: A54
     source: specs/enterprise-office-ai/spec.md
     text: persistent-memory 阈值：常量与注释统一为 0.7（以现行为为准）。
-    result: blocked
+    result: passed
     reason:
-      text: "Not satisfied: the constant is 0.7 but comments still say 0.86
-        (persistent-memory.ts:26 and :87) — D12 batch 2+."
+      text: Batch 3. persistent-memory.ts:59 DEFAULT_FUZZY_THRESHOLD=0.7 with header
+        (line 26) and options (line 87) comments both stating 0.7; the constant
+        was unchanged and the comments were updated (0.86->0.7). Runtime
+        unit-translation-core-checkpoint green.
       truncated: false
   - id: A55
     source: specs/enterprise-office-ai/spec.md
     text: "`translation-dictionaries/` 运行产物加入 `.gitignore`，现存产物移出跟踪。"
     result: passed
     reason:
-      text: "Verified: .gitignore carries translation-dictionaries patterns (lines
-        62/66/70/88), git ls-files shows 0 tracked dictionary files, and git
-        status is clean of artifacts."
+      text: Carried forward (earlier iteration; corroborated by batch-3 A14).
+        .gitignore covers translation-dictionaries (lines 62/66/70/88); git
+        ls-files shows no tracked dictionary artifacts and git status shows none
+        untracked.
       truncated: false
   - id: A56
     source: specs/enterprise-office-ai/spec.md
     text: per-request retry：`packages/ai-provider/src/stream.ts` 内，errorCode ∈
       {timeout, network, overloaded} 触发，指数退避+抖动，≤3 次；流式请求仅在未收到首字节前可重试。
-    result: blocked
+    result: failed
     reason:
-      text: "Overturned the earlier pass: packages/ai-provider contains no
-        retry/backoff/jitter at all (stream.ts and protocols/ are clean;
-        fetch.ts only does a single rescue-fetch fallback — no exponential
-        backoff, no ≤3 loop, no first-byte rule) — not implemented, D12 batch
-        2+."
+      text: Definitively absent. packages/ai-provider/src/stream.ts has no errorCode
+        in {timeout,network,overloaded} retry, no backoff/jitter, and is
+        untouched by this candidate; the batch-3 ai-provider diff is
+        protocol/transport only. The stream-retry clause is unimplemented.
       truncated: false
   - id: A57
     source: specs/enterprise-office-ai/spec.md
     text: registry failover：租户可配置 fallback provider 序列（`AiSettings` 扩展）；主 provider
       重试耗尽后按序切换；每次切换写审计。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no fallback provider sequence in AiSettings/registry —
-        D12 batch 2+."
+      text: Definitively absent. No registry failover with a tenant-configurable
+        fallback provider sequence in AiSettings; no ordered provider switch
+        after retry exhaustion and no audit write per switch (no failover symbol
+        in packages/ai-provider/src).
       truncated: false
   - id: A58
     source: specs/enterprise-office-ai/spec.md
     text: "`agent-core/loop.ts` 不修改。"
     result: passed
     reason:
-      text: "Verified via git: packages/agent-core/src/loop.ts was last touched
-        2026-09-14 (e42da7c7, before this change started 2026-10-04), has zero
-        commits since, and a clean working diff."
+      text: Carried forward (earlier iteration). packages/agent-core/src/loop.ts is
+        unmodified — git status -- packages/agent-core/src/loop.ts is empty and
+        batch 3 does not touch agent-core.
       truncated: false
   - id: A59
     source: specs/enterprise-office-ai/spec.md
     text: 新增 `apps/web-server/src/common/rate-limit.ts`：per-tenant per-endpoint
       token bucket；挂载 `/api/v1` 全部路由与 `/api/ai/stream`。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no common/rate-limit.ts (directory listing confirms) —
-        D12 batch 2+."
+      text: Definitively absent. apps/web-server/src/common/rate-limit.ts (per-tenant
+        per-endpoint token bucket, mounted on /api/v1/* and /api/ai/stream) does
+        not exist.
       truncated: false
   - id: A60
     source: specs/enterprise-office-ai/spec.md
     text: 超限返回 429 + `Retry-After`；租户间完全隔离。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no 429 + Retry-After path — D12 batch 2+."
+      text: Definitively absent. No 429+Retry-After response and no per-tenant
+        isolation, because no rate limiter exists.
       truncated: false
   - id: A61
     source: specs/enterprise-office-ai/spec.md
     text: 限流参数按租户可配（默认全局默认值），配置存服务端。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no per-tenant rate-limit configuration storage — D12
-        batch 2+."
+      text: Definitively absent. No per-tenant rate-limit parameter configuration
+        served from the server.
       truncated: false
   - id: A62
     source: specs/enterprise-office-ai/spec.md
     text: 新增 `apps/web-server/src/common/usage-meter.ts`（落盘模式沿用 audit-log）：每次 AI
       调用记录 provider/model/tokens/耗时/tenant。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no usage-meter.ts module — D12 batch 2+."
+      text: Definitively absent. apps/web-server/src/common/usage-meter.ts (per-call
+        provider/model/tokens/latency/tenant record, audit-log-style
+        persistence) does not exist.
       truncated: false
   - id: A63
     source: specs/enterprise-office-ai/spec.md
     text: 查询 API（`/api/v1`）返回按 tenant 聚合的用量汇总（时间窗可参数化）。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no per-tenant usage aggregation API — D12 batch 2+."
+      text: Definitively absent. No /api/v1 query API returning per-tenant aggregated
+        usage (time-window parameterizable); depends on the absent A62.
       truncated: false
   - id: A64
     source: specs/enterprise-office-ai/spec.md
     text: markdown/html AI 面板迁移至 `chat-runtime`（与 docs/sheets/pdf/slides 同构）；六应用共享
       EditQueueCard、edit-queue、composer 等组件（收敛至 `packages/chat-runtime` 或
       `packages/ui` 单一来源）。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: markdown/html panels still not on chat-runtime; shared
-        components not consolidated — D12 batch 2+."
+      text: Definitively absent. Neither apps/markdown/src nor apps/html/src imports
+        chat-runtime (grep empty), and EditQueueCard/edit-queue/composer remain
+        per-app copies rather than a single source in chat-runtime or ui; the
+        panel migration is not done. (packages/chat-runtime exists but is
+        pre-existing and unused by these apps.)
       truncated: false
   - id: A65
     source: specs/enterprise-office-ai/spec.md
     text: 迁移后六应用 AI 面板启动 0 console errors，既有功能（apply_ops/write_document/编辑队列）不回退。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: the migration prerequisite (A64) is absent so no
-        post-migration console-error check exists — D12 batch 2+."
+      text: Definitively absent. The post-migration invariant (six apps AI panels boot
+        with 0 console errors, existing apply_ops/write_document/edit-queue
+        behavior non-regressed) cannot hold because the A64 migration has not
+        occurred; no migration run exists to assert against.
       truncated: false
   - id: A66
     source: specs/enterprise-office-ai/spec.md
     text: "`packages/agent-core/src/skill.ts` 新增适配器：marketplace `SkillPackage` 的工具可被
       AgentLoop 消费（工具名/schema/执行映射）；至少一个官方 skill（如 text-summarize）端到端验证。"
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no SkillPackage adapter in agent-core/skill.ts — D12
-        batch 2+."
+      text: Definitively absent. packages/agent-core/src/skill.ts (87 lines) contains
+        no SkillPackage adapter and is unmodified; a marketplace SkillPackage
+        tool cannot be consumed by AgentLoop, and no official-skill (e.g.
+        text-summarize) end-to-end verification exists. (SkillPackage exists in
+        packages/agent-skills/src/skill-protocol.ts:248 — pre-existing; the
+        agent-core adapter is missing.)
       truncated: false
   - id: A67
     source: specs/enterprise-office-ai/spec.md
     text: "`apps/web-server/src/enterprise/` 实现真实 OIDC 授权码流程（发现文档、PKCE、token
       交换、claims → 本地 JWT 签发）；scope 经 route-policy 既有硬表路由。"
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: enterprise/ has no OIDC discovery/PKCE/token exchange —
-        D12 batch 2+."
+      text: Definitively absent. apps/web-server/src/enterprise/ has no real OIDC
+        authorization-code flow (discovery, PKCE, token exchange, claims→local
+        JWT); auth-audit.ts:31 remains an explicit placeholder.
       truncated: false
   - id: A68
     source: specs/enterprise-office-ai/spec.md
     text: 替换现有假 SSO URL placeholder；OIDC 测试容器 e2e 覆盖登录→JWT→受保护 API 全链路。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: the fake SSO URL placeholder is still in place and no
-        OIDC container e2e exists — D12 batch 2+."
+      text: Definitively absent. The fake SSO URL placeholder is not replaced and
+        there is no OIDC test-container e2e covering login→JWT→protected API.
       truncated: false
   - id: A69
     source: specs/enterprise-office-ai/spec.md
     text: "`packages/agent-telemetry` 新增 OTel OTLP exporter；`/api/ai/stream` 与翻译主链路埋
       span（入口→provider 调用→写回）。"
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no OTel OTLP exporter (agent-telemetry lists it
-        explicitly as a custom-exporter TODO) — D12 batch 2+."
+      text: Definitively absent. packages/agent-telemetry has no OTel OTLP exporter
+        (no packages/agent-telemetry/src/otel.ts, no @opentelemetry dependency)
+        and no spans are emitted for /api/ai/stream or the translation chain.
       truncated: false
   - id: A70
     source: specs/enterprise-office-ai/spec.md
     text: 测试 collector 断言收到完整 span 链。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no OTel span chain exists to collect — D12 batch 2+."
+      text: Definitively absent. No test collector asserting a complete span chain,
+        since no OTLP exporter/spans exist (depends on A69).
       truncated: false
   - id: A71
     source: specs/enterprise-office-ai/spec.md
     text: "`packages/file-management` 的 StorageBackend 实现
       s3/minio（沿用既有接口骨架）；容器测试覆盖上传/下载/删除 roundtrip。"
-    result: passed
+    result: failed
     reason:
-      text: S3/MinIO StorageBackend (src/storage/s3.ts) plus its roundtrip suites
-        (tests/storage/s3.test.ts, factory.test.ts) exist, were previously
-        verified, and file-management is untouched by this diff ('container' is
-        realized as a local S3-protocol mock).
+      text: "Criterion unmet (narrowed). The interface half is pre-existing/untouched:
+        packages/file-management/src/storage/s3.ts:129 defines S3StorageBackend,
+        storage/factory.ts:28-62 maps s3/rustfs/minio to it, and
+        tests/storage/s3.test.ts:127 covers a PUT/GET byte roundtrip (git status
+        -- packages/file-management empty; HEAD ce04555d). The acceptance's
+        container-test clause (upload/download/delete roundtrip via a container
+        harness) is absent — no testcontainers/GenericContainer/minio-minio
+        exists. A71 = 容器测试部分未满足。"
       truncated: false
   - id: A72
     source: specs/enterprise-office-ai/spec.md
     text: docs 新增决策文档：pi 化评估（现状/收益/风险/迁移边界）、主进程双轨债、桌面 safeStorage 债。
-    result: blocked
+    result: failed
     reason:
-      text: "Not implemented: no pi 化/双轨债/safeStorage decision docs under docs/ — D12
-        batch 2+."
+      text: Definitively absent. No docs decision records (pi-ification evaluation,
+        main-process dual-track debt, desktop safeStorage debt) added under the
+        change.
       truncated: false
   - id: A73
     source: specs/enterprise-office-ai/spec.md
     text: 嵌入闭环 `e2e/embed-loop-probe.mjs` 保持 `LOOP OK`（11/11）。
     result: passed
     reason:
-      text: This candidate's embed-probe runtime log (cbf4082d…-embed-probe.log) shows
-        11/11 assertions green and LOOP OK — the full closed-loop run executed
-        against this exact build.
+      text: "Runtime embed-probe (operationId 410f5555) green:
+        e2e/embed-loop-probe.mjs reports LOOP OK 11/11. The batch-3
+        dataflare.install({}) change in
+        apps/{html,markdown}/src/renderer/web-bridge.ts did not break the loop —
+        the probe still exercises guest→host document bytes, Cmd+S across the
+        loop, revision lock, document-saved, and the ready handshake."
       truncated: false
   - id: A74
     source: specs/enterprise-office-ai/spec.md
     text: 六应用 web/Electron 启动 0 console errors。
     result: passed
     reason:
-      text: Previously verified; this candidate's diff contains no renderer/Electron
-        code (server handler + tests + comet docs only), so the six-app
-        console-error result cannot regress from it.
+      text: Six apps boot with 0 console errors on the web/embed path; exercised by
+        the two Playwright translate specs (6 passed) and the embed probe
+        (11/11). Runtime e2e-html-markdown-translate + embed-probe green.
       truncated: false
   - id: A75
     source: specs/enterprise-office-ai/spec.md
     text: 既有门禁全绿：theme-colors、翻译四脚本、`npm test`。
-    result: passed
+    result: failed
     reason:
-      text: "Re-verified now: theme-colors gate prints 'No new raw colors'; the
-        translation gate scripts are untouched by the diff, and vitest-full
-        (1283 passed) + test:http (40/40) are green in this candidate's
-        runtime."
+      text: "`npm test` 在第 14/32 个 workspace 失败于
+        packages/ipc-bridge/tests/sdk-command-sink.test.ts:286：该用例断言六个 renderer
+        的 web-bridge.ts 均含 from '@genoffice/ipc-bridge/sdk-command-sink'，而
+        apps/docs/src/renderer/web-bridge.ts 从兄弟路径
+        @genoffice/ipc-bridge/text-buffer-adapter 导入 installTextBufferSink（第 23
+        行导入，第 79
+        行安装）——该用例自身的注释承认这一兄弟路径是合法接线。apps/docs/src/renderer/web-bridge.ts 与测试文件对
+        HEAD 均无改动（commit 8e9bcad2 把 sink 换到 sheets/slides/pdf/markdown/html
+        五个应用，漏了 docs），batch 3 未触碰 docs 或 ipc-bridge，属既有缺陷。另：&& 链在第 14 个
+        workspace 即中止，第 15-32 个 workspace 本轮未验证。门禁既非全绿，A75 不满足。"
       truncated: false
   - id: A76
     source: specs/enterprise-office-ai/spec.md
     text: 本地 BYOK 模式在 allowlist 约束下保持可用。
     result: passed
     reason:
-      text: Local BYOK-under-allowlist remains covered by the green sanitize
-        local/operator tests in vitest-full; the diff does not touch the
-        allowlist path.
+      text: Carried forward (earlier iteration). Local BYOK mode remains usable under
+        the allowlist constraint; batch 3 changes only the translation pipeline
+        and the markdown/html translate adapters, leaving the BYOK/allowlist
+        path (A3/A33) intact.
       truncated: false
   - id: A77
     source: specs/enterprise-office-ai/spec.md
     text: 文档内容与主题规则（CLAUDE.md Theming rules）不受影响。
     result: passed
     reason:
-      text: Docs changed in this candidate are comet change files only (no app
-        documentation), and the theme-colors gate is green on the current tree.
+      text: "Carried forward (earlier iteration). Document-content and theming rules
+        are unaffected: batch 3 introduces no renderer chrome colors or
+        document-content re-authoring, and the theme-colors gate remains green.
+        (A75 fails only on npm test, not on the theme/document gates.)"
       truncated: false
 builder_handoff:
-  candidate_id: 82c319ef-b325-4864-9d3e-ec082bf4b849
+  candidate_id: d4e0bc3e-08cc-4ee1-a5c6-ceacca99f2ff
   identity_provider: skill-coordinated
-  builder_execution_ref: skill-coordinated:builder:6b04787a-ffe1-4ccc-9b84-4852134f46b1
-  iteration: 1
+  builder_execution_ref: skill-coordinated:builder:2638c585-003d-43c4-b2ee-373b48d22328
+  iteration: 4
   summary:
-    text: A76 fetch-URL 端点收敛：把 /api/v1/ai/image（IPC ai:fetch-image）从『仅校验长度/类型后即代抓任意
-      URL』收敛为『仅公网地址可抓』，并把策略拒绝与网络失败区分开。(1)
-      packages/electron-utils/src/safe-remote-url.ts 新增导出 classifyRemoteUrl(raw)
-      三态判定 public/blocked/unresolvable，isSafeRemoteUrl
-      改为其布尔投影（==='public'）；blocked 覆盖非 http(s) scheme、不可解析输入、私网/链路本地/云元数据/回环字面量与
-      localhost/.local/.internal 等内部主机名；hostname 走 DNS 全地址校验（任一为内网即
-      blocked）。三态的理由：既有 /api/v1/ai/image 的 httpbin 200 happy-path
-      依赖公网名解析失败/离线时不被误判为策略拒绝，故 unresolvable 落到 fetch 自身失败路径，不被 403。(2)
-      apps/web-server/src/api/v1/ai.ts 的 handleAiImage
-      在长度校验之后、invokeIpc('ai:fetch-image') 之前加入 classifyRemoteUrl 预检，blocked
-      时返回结构化 403 FORBIDDEN（不再静默 null），未命中则不改变既有行为；因此拒绝路径在发起任何外呼之前完成（元数据地址 0
-      外呼）。既有的逐跳重定向复验与 DNS 全地址校验（fetchWithSsrfGuard）保持不变，IPC/renderer 的 null
-      契约保持不变（4 个应用的 `if (!fetched) return fail(...)` UX 不受影响）。(3)
-      测试：packages/electron-utils/tests/safe-remote-url.test.ts 新增
-      describe('classifyRemoteUrl') 覆盖字面量/内部主机名/不可解析输入为 blocked、公网字面量为
-      public、.invalid 保留域为 unresolvable（不误判拒绝）、isSafeRemoteUrl 对非 public 恒为
-      false；apps/web-server/tests/ai-translate-image-validation-e2e.test.ts 在既有
-      4096 用例后新增 4 条 403 断言（云元数据 169.254.169.254、RFC1918 10.1.2.3、回环
-      127.0.0.1、localhost），均断言 status 403 + code FORBIDDEN + message 'public
-      address'，且既有 httpbin 200 happy-path 保持不变。改动前已重建
-      dist/bundle/index.js（bundle mtime 15:42，grep 确认 classifyRemoteUrl/403
-      文案在包内），确保 e2e 跑在含本次改动的真实 bundle 上。
+    text: Iteration 4：交付 translation-reliability 批次（A8–A14、A44–A54）。①
+      单元级重试（A8/A44/A45）：translation-core 批次 settle 循环内按 ai-provider errorCode
+      分类——timeout/network/overloaded/5xx 走指数退避+抖动自动重试（≤3
+      次），credits/认证/内容策略不重试、跳过并记录；成功单元不重复调用，结束后产出失败单元清单（unitId+原因），整篇结果为
+      completed-with-failures/failed。② checkpoint
+      续翻（A9/A46/A47/A48/A49）：TranslateDocumentOptions 新增
+      load(unitId)/save(unitId,result) 适配器，每单元成功即 save；web-server
+      translate-http.ts 提供基于翻译会话的 store 实现，桌面/嵌入宿主可省略（省略=无续翻）；取消语义不变（一个字都不写回，但
+      checkpoint 保留已单元供续翻）。③ 有界并发（A10/A50）：translateBatch（非流式）与词典构建复用 stream 版
+      worker-pool，上限可配置、默认 25。④ markdown/html 接入（A11/A12/A51/A52）：两应用新增
+      extract（markdown 按顶层块、html 按可翻译文本节点）+ apply 回写，复用各自
+      apply_ops/write_document 原语，三模式（整篇/选区/双语）同走 translateDocument 管线。⑤
+      门禁（A13/A53）：check-app-translation-parity.mjs 声明矩阵补
+      markdown/html（wholeDocument/hostCommand/bilingual/writeBack），--require=whole-document,host-command
+      全绿。⑥ 小修（A14/A54）：persistent-memory DEFAULT_FUZZY_THRESHOLD=0.7
+      与注释一致；translation-dictionaries/ 运行产物已 gitignore、git status 干净。另：新增
+      Playwright e2e（html-translate/markdown-translate，走真实 web-server + 构建产物 +
+      宿主 dataflare:office-command 信封，仅桩 provider 调用），e2e 暴露并修复了 html
+      双语排序缺陷——extractHtmlTextNodes 原按元素顺序而非文档顺序产出，导致 <p>Inline <b>bold</b>
+      tail</p> 的双语结果被拼成 [Inline] [tail] [bold]；改为按源码偏移排序后修正，并补单测/顺序回归。
     truncated: false
   addressed_acceptance_ids:
-    - A76
+    - A8
+    - A9
+    - A10
+    - A11
+    - A12
+    - A13
+    - A14
+    - A44
+    - A45
+    - A46
+    - A47
+    - A48
+    - A49
+    - A50
+    - A51
+    - A52
+    - A53
+    - A54
   checks:
     - name:
-        text: electron-utils SSRF unit tests (safe-remote-url)
+        text: "unit: translation-core document/provider/storage + web-server
+          translate-checkpoint-e2e"
         truncated: false
       result: passed
       note:
-        text: npx vitest run tests/safe-remote-url.test.ts --reporter=dot → 1 file, 60
-          tests passed；含新增 describe('classifyRemoteUrl')
-          的字面量/主机名/不可解析/公网字面量/.invalid unresolvable/布尔投影断言。
+        text: npx vitest run
+          packages/translation-core/tests/{document,provider,storage}.test.ts
+          apps/web-server/tests/translate-checkpoint-e2e.test.ts → 4 files / 119
+          tests passed（含单元重试分类、成功不重试、失败清单、checkpoint load/save 与续翻复用、取消保留
+          checkpoint、translateBatch/词典有界并发上限）
         truncated: false
     - name:
-        text: web-server typecheck
+        text: "unit: html + markdown suites (含两应用 document-translate 单测)"
         truncated: false
       result: passed
       note:
-        text: pnpm --filter @genoffice/web-server typecheck (tsc --noEmit) → 无错误；确认
-          classifyRemoteUrl 从 @genoffice/electron-utils/safe-remote-url 的导入解析正确。
+        text: npx vitest run apps/html/tests apps/markdown/tests → 38 files / 439 tests
+          passed；apps/html/tests/ai-document-translate.test.ts 19
+          passed（含新增双语顺序回归）
         truncated: false
     - name:
-        text: v1 AI translate+image e2e
+        text: "e2e: html-translate.spec.ts + markdown-translate.spec.ts (A11/A12)"
         truncated: false
       result: passed
       note:
-        text: npx vitest run tests/ai-translate-image-validation-e2e.test.ts → 1
-          passed（3.0s）；4 条新 403 用例（169.254.169.254 / 10.1.2.3 / 127.0.0.1 /
-          localhost）全部命中 FORBIDDEN，既有 httpbin 公网 200 用例仍为 200。
+        text: npx playwright test html-translate.spec.ts markdown-translate.spec.ts → 6
+          passed（整篇/双语/选区各 2 应用）；真实 web-server 服务构建产物，仅桩 ai:translate-batch，经
+          window dataflare:office-command 驱动
         truncated: false
     - name:
-        text: web-server full vitest
+        text: "gate: scripts/check-app-translation-parity.mjs
+          --require=whole-document,host-command (A13/A53)"
         truncated: false
       result: passed
       note:
-        text: npx vitest run --exclude tests/sidecar-pool-readrouting.test.ts
-          --reporter=dot → 154 passed | 1 skipped（155 files），1283 passed | 23
-          skipped（1306 tests），32.5s。
+        text: exit 0；六应用完整覆盖，缺口（无）
         truncated: false
     - name:
-        text: web-server test:http
+        text: "typecheck: @genoffice/markdown (tsc --noEmit)"
         truncated: false
       result: passed
       note:
-        text: npm run test:http → tests 40, pass 40, fail 0。
+        text: clean
         truncated: false
     - name:
-        text: embed closed-loop probe
+        text: "typecheck: @genoffice/html (tsc --noEmit)"
+        truncated: false
+      result: failed
+      note:
+        text: 1 个既有、与本批次无关的错误：packages/file-parse/src/pdf.ts(147,16) TS7016 缺
+          pdfjs-dist/legacy/build/pdf.worker.mjs 声明；该文件相对 HEAD 无改动（git diff
+          --stat HEAD 为空），错误不涉及 html/markdown/translation 代码
+        truncated: false
+    - name:
+        text: "inspect: A14/A54 阈值与 gitignore"
         truncated: false
       result: passed
       note:
-        text: node e2e/embed-loop-probe.mjs → LOOP OK，11/11 断言全绿（init/取字节/编辑器挂载/Cmd+S
-          闭环/saved docx 含输入文本/expectedRevision 乐观锁/document-saved/ready 握手）。A3
-          与既有嵌入不变量不回退。
+        text: persistent-memory.ts:59 DEFAULT_FUZZY_THRESHOLD = 0.7 与 25-26
+          行注释一致；.gitignore 含 /translation-dictionaries/ 等四条，git status 无未跟踪词典产物
         truncated: false
   checks_truncated: false
   known_limits:
-    - text: 本 iteration 只交付 A76（fetch-URL 端点收敛）。D12 批次 1 的其它项（A4/A5 密钥加密、A6/A7
-        租户/审计等）与批次 2+ 能力（翻译可靠性 A8–A14、provider 韧性 A15–A20、平台化 A21–A25）尚未实现，将在后续
-        iteration 交付。
+    - text: html 应用 typecheck 存在一个既有失败（packages/file-parse 的 pdfjs-dist
+        声明缺失），先于本批次存在且与本批次改动无关，未在本次处理。
       truncated: false
-    - text: classifyRemoteUrl 是预检（best-effort），与既有防护一样无法消除 DNS rebinding 的时间窗——逐跳
-        fetchWithSsrfGuard 复验仍是对抗 rebinding 的主防线；本预检只把策略拒绝从网络失败中区分出来。
+    - text: markdown 整篇翻译为块粒度：replace 走 replaceText 重写整块文本，e2e 断言块级文本内容，未断言块内内联 mark（如
+        **bold**）在 replace 后保留；双语路径保持原文块（含内联 <strong>）不变并在其后插入译文段（该点由 e2e 断言覆盖）。
       truncated: false
-    - text: unresolvable 的公网名（离线/不存在的域名）刻意不返回 403，落到 fetch 失败路径返回既有形态（200 +
-        null）；这是为保持 httpbin happy-path 与离线行为不变的有意取舍。
+    - text: markdown 双语的译文插入为段落（insertContent，markdown 文本），即使源块是标题也落在其后为 <p>；html
+        双语复用最近块祖先标签（结构性块回退 <p>）。两者均为既有设计取舍，非本批次引入。
       truncated: false
-    - text: 已登记风险（非本 iteration 范围）：/api/ai/pi-prompt 在 jwt-open 启动下无 per-route scope
-        gate。
+    - text: 并发压测（A10）以单测断言上限行为，未做真机高并发负载压测。
       truncated: false
   known_limits_truncated: false
-  submitted_at: 2026-10-04T07:44:04.054Z
+  submitted_at: 2026-10-04T12:44:34.803Z
 blockers:
-  - owner: user
+  - owner: builder
     reason:
-      text: "Iteration 1 of goal cycle 4 delivers exactly the batch-1 fetch-URL
-        lockdown (matrix A26 = brief's A76, mirrored by spec A35). I verified it
-        end-to-end: read all four changed files, confirmed the pre-flight
-        ordering (classifyRemoteUrl before invokeIpc, so refused targets
-        generate zero outbound fetches and the 403 can only come from the policy
-        branch), unchanged per-hop redirect revalidation and DNS all-address
-        semantics, and the intact IPC/renderer null contract; I re-ran the SSRF
-        unit suite (60/60) and the real-bundle e2e (1/1 with the four new 403
-        refusal cases) myself, and confirmed the rebuilt bundle contains the
-        fix. The previously verified security-foundation items show no
-        regression since the diff scope is the image handler, the URL
-        classifier, tests, and comet docs. I upgraded A34/A35/A55/A58/A73/A24 to
-        passed on direct current evidence and overturned A56 to blocked because
-        no retry implementation exists in ai-provider despite the earlier verify
-        note. 55 items remain blocked, all cleanly attributable to D12 batches
-        2+ (secret encryption, tenancy/audit, translation reliability, provider
-        resilience, platformization); 0 items failed, so the verdict is blocked
-        as expected for a mid-change batch."
+      text: Native verification has not made reliable progress twice; use a different
+        repair hypothesis before resubmitting.
       truncated: false
     acceptance_ids:
-      - A4
-      - A5
-      - A6
-      - A7
-      - A8
-      - A9
-      - A10
-      - A11
-      - A12
-      - A13
-      - A14
       - A15
       - A16
       - A17
@@ -919,26 +1050,8 @@ blockers:
       - A21
       - A22
       - A23
+      - A24
       - A25
-      - A36
-      - A37
-      - A38
-      - A39
-      - A40
-      - A41
-      - A42
-      - A43
-      - A44
-      - A45
-      - A46
-      - A47
-      - A48
-      - A49
-      - A50
-      - A51
-      - A52
-      - A53
-      - A54
       - A56
       - A57
       - A59
@@ -953,89 +1066,124 @@ blockers:
       - A68
       - A69
       - A70
+      - A71
       - A72
-    resolution_action: resolve-verifier-blocker
+      - A75
+    resolution_action: return-build
 verification:
-  candidate_id: 82c319ef-b325-4864-9d3e-ec082bf4b849
+  candidate_id: d4e0bc3e-08cc-4ee1-a5c6-ceacca99f2ff
   identity_provider: skill-coordinated
-  verifier_execution_ref: skill-coordinated:verifier:75629e3a-d6b2-48fc-8555-63929ff2dc71
-  iteration: 1
-  attempt: 1
+  verifier_execution_ref: skill-coordinated:verifier:43517e4d-fc19-4541-a470-c4e39b72f181
+  iteration: 4
+  attempt: 2
   assurance: skill-coordinated
-  verdict: blocked
+  verdict: fail
   checks:
-    - id: typecheck
+    - id: unit-translation-core-checkpoint
       name:
-        text: pnpm --filter @genoffice/web-server typecheck
+        text: "unit: translation-core document/provider/storage + web-server
+          translate-checkpoint-e2e (A8/A9/A10, A44-A50)"
         truncated: false
       argv_display:
-        - text: --filter
+        - text: run
           truncated: false
-        - text: "@genoffice/web-server"
+        - text: packages/translation-core/tests/document.test.ts
           truncated: false
-        - text: typecheck
+        - text: packages/translation-core/tests/provider.test.ts
+          truncated: false
+        - text: packages/translation-core/tests/storage.test.ts
+          truncated: false
+        - text: apps/web-server/tests/translate-checkpoint-e2e.test.ts
           truncated: false
       argv_truncated: false
       cwd_ref: .
       status: passed
       exit_code: 0
-      duration_ms: 6505
-    - id: ssrf-unit
+      duration_ms: 2199
+    - id: unit-html-markdown
       name:
-        text: electron-utils SSRF guard unit tests (safe-remote-url, incl.
-          classifyRemoteUrl)
-        truncated: false
-      argv_display:
-        - text: vitest
-          truncated: false
-        - text: run
-          truncated: false
-        - text: tests/safe-remote-url.test.ts
-          truncated: false
-        - text: --reporter=dot
-          truncated: false
-      argv_truncated: false
-      cwd_ref: packages/electron-utils
-      status: passed
-      exit_code: 0
-      duration_ms: 698
-    - id: vitest-full
-      name:
-        text: web-server full vitest suite (sidecar fixture excluded, pre-existing)
-        truncated: false
-      argv_display:
-        - text: vitest
-          truncated: false
-        - text: run
-          truncated: false
-        - text: --exclude
-          truncated: false
-        - text: tests/sidecar-pool-readrouting.test.ts
-          truncated: false
-        - text: --reporter=dot
-          truncated: false
-      argv_truncated: false
-      cwd_ref: apps/web-server
-      status: passed
-      exit_code: 0
-      duration_ms: 32638
-    - id: http-tests
-      name:
-        text: node:test HTTP suites
+        text: "unit: html + markdown suites incl. both document-translate adapters
+          (A11/A12/A51/A52)"
         truncated: false
       argv_display:
         - text: run
           truncated: false
-        - text: test:http
+        - text: apps/html/tests
+          truncated: false
+        - text: apps/markdown/tests
           truncated: false
       argv_truncated: false
-      cwd_ref: apps/web-server
+      cwd_ref: .
       status: passed
       exit_code: 0
-      duration_ms: 1865
+      duration_ms: 5179
+    - id: e2e-html-markdown-translate
+      name:
+        text: "e2e: html-translate.spec.ts + markdown-translate.spec.ts (A11/A12) — real
+          web-server + built bundles + host command"
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+        - text: --config
+          truncated: false
+        - text: e2e/playwright.config.ts
+          truncated: false
+        - text: html-translate.spec.ts
+          truncated: false
+        - text: markdown-translate.spec.ts
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 6028
+    - id: gate-app-translation-parity
+      name:
+        text: "gate: scripts/check-app-translation-parity.mjs
+          --require=whole-document,host-command (A13/A53)"
+        truncated: false
+      argv_display:
+        - text: scripts/check-app-translation-parity.mjs
+          truncated: false
+        - text: --require=whole-document,host-command
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 49
+    - id: typecheck-markdown
+      name:
+        text: "typecheck: @genoffice/markdown (tsc --noEmit)"
+        truncated: false
+      argv_display:
+        - text: --noEmit
+          truncated: false
+      argv_truncated: false
+      cwd_ref: apps/markdown
+      status: passed
+      exit_code: 0
+      duration_ms: 2671
+    - id: typecheck-html
+      name:
+        text: "typecheck: @genoffice/html (tsc --noEmit) — expected RED, pre-existing
+          packages/file-parse pdfjs-dist TS7016"
+        truncated: false
+      argv_display:
+        - text: --noEmit
+          truncated: false
+      argv_truncated: false
+      cwd_ref: apps/html
+      status: failed
+      exit_code: 2
+      duration_ms: 2633
     - id: embed-probe
       name:
-        text: embed closed-loop probe
+        text: "invariant A73: e2e/embed-loop-probe.mjs — real-browser Dataflarework
+          embed loop, expect LOOP OK 11/11 (batch-3 changed
+          dataflare.install({}) -> onCommand handler in
+          apps/{html,markdown}/src/renderer/web-bridge.ts)"
         truncated: false
       argv_display:
         - text: e2e/embed-loop-probe.mjs
@@ -1044,51 +1192,126 @@ verification:
       cwd_ref: .
       status: passed
       exit_code: 0
-      duration_ms: 6633
+      duration_ms: 6303
+    - id: vitest-full
+      name:
+        text: "invariant A74/A75 regression: full workspace vitest suite (all packages +
+          apps)"
+        truncated: false
+      argv_display:
+        - text: run
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: failed
+      exit_code: 1
+      duration_ms: 185426
+    - id: typecheck-web-server
+      name:
+        text: "typecheck: @genoffice/web-server (tsc --noEmit)"
+        truncated: false
+      argv_display:
+        - text: run
+          truncated: false
+        - text: typecheck
+          truncated: false
+        - text: -w
+          truncated: false
+        - text: "@genoffice/web-server"
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 5475
+    - id: web-server-suite
+      name:
+        text: "invariant A75 (canonical vitest-full): web-server workspace suite, run
+          from its own package dir — matches the change's prior-iteration plan
+          (~155 files / ~1283 tests green)"
+        truncated: false
+      argv_display:
+        - text: run
+          truncated: false
+      argv_truncated: false
+      cwd_ref: apps/web-server
+      status: failed
+      exit_code: 1
+      duration_ms: 33209
+    - id: npm-test-all
+      name:
+        text: "invariant A75 (canonical gate): root `npm test` — per-workspace `vitest
+          run` across all 32 workspaces, the literal A75 gate"
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: failed
+      exit_code: 1
+      duration_ms: 178102
   summary:
-    text: "Iteration 1 of goal cycle 4 delivers exactly the batch-1 fetch-URL
-      lockdown (matrix A26 = brief's A76, mirrored by spec A35). I verified it
-      end-to-end: read all four changed files, confirmed the pre-flight ordering
-      (classifyRemoteUrl before invokeIpc, so refused targets generate zero
-      outbound fetches and the 403 can only come from the policy branch),
-      unchanged per-hop redirect revalidation and DNS all-address semantics, and
-      the intact IPC/renderer null contract; I re-ran the SSRF unit suite
-      (60/60) and the real-bundle e2e (1/1 with the four new 403 refusal cases)
-      myself, and confirmed the rebuilt bundle contains the fix. The previously
-      verified security-foundation items show no regression since the diff scope
-      is the image handler, the URL classifier, tests, and comet docs. I
-      upgraded A34/A35/A55/A58/A73/A24 to passed on direct current evidence and
-      overturned A56 to blocked because no retry implementation exists in
-      ai-provider despite the earlier verify note. 55 items remain blocked, all
-      cleanly attributable to D12 batches 2+ (secret encryption, tenancy/audit,
-      translation reliability, provider resilience, platformization); 0 items
-      failed, so the verdict is blocked as expected for a mid-change batch."
+    text: "Iteration 4 / attempt 2. Verdict fail: pass requires all 77 acceptance
+      items and 28 are unmet. Passed: 18 batch-3 translation-reliability items
+      (A8-A14, A44-A54) plus 31 carried-forward invariants (A1-A7, A26-A43, A55,
+      A58, A73, A74, A76, A77) — corroborated this round by 6 Runtime checks
+      (translation-core+checkpoint 119 tests; html+markdown 439 tests; the 2
+      Playwright translate specs 6 passed; parity gate six-apps zero-gaps; embed
+      probe LOOP OK 11/11; markdown + web-server typecheck clean). Failed: 27
+      definitively-absent items (A15-A25, A56, A57, A59-A72) and A75, whose 'npm
+      test' criterion is red due to a pre-existing ipc-bridge/docs wiring defect
+      unrelated to batch 3 (so the gate is not 全绿). The html typecheck failure
+      is a pre-existing file-parse/pdfjs-dist issue in an untouched file."
     truncated: false
   risks:
-    - text: "A56 contradiction: the goal-cycle-2 verifier recorded A56 as passed, but
-        direct inspection shows no retry/backoff implementation anywhere in
-        packages/ai-provider (only a single rescue-fetch fallback in fetch.ts);
-        the provider-resilience batch must re-verify from zero and the old
-        verify record should not be trusted on this item."
+    - text: typecheck-html is red on a pre-existing error at
+        packages/file-parse/src/pdf.ts(147,16) TS7016 (missing
+        pdfjs-dist/legacy/build/pdf.worker.mjs declaration). packages/file-parse
+        is byte-identical to HEAD (git status/diff empty); the batch adds no
+        html type errors. Pre-existing, unrelated to batch 3.
       truncated: false
-    - text: A26/A35 public-literal allowance is pinned only at the unit level
-        (classifyRemoteUrl 93.184.216.34 → public); no HTTP e2e posts a literal
-        public IP through /api/v1/ai/image.
+    - text: A75's npm test red is a pre-existing ipc-bridge/docs defect (docs
+        web-bridge.ts wired via the sibling text-buffer-adapter path, which the
+        test's own comment calls legitimate), not a batch-3 regression; the &&
+        chain aborted at workspace 14, so workspaces 15-32 are unverified this
+        round.
       truncated: false
-    - text: "DNS-rebinding TOCTOU remains best-effort (documented in
-        safe-remote-url.ts): the pre-flight and per-hop checks can in principle
-        be raced by fast-TTL rebinding; there is no response pinning."
+    - text: "vitest-full (root-invoked ./node_modules/.bin/vitest run) was a
+        mis-specified verifier check and is NOT used as evidence: there is no
+        root vitest.config.*, so the root runner resolved workspaces differently
+        and produced a spurious '@genoffice/translation-core/languages'
+        resolution error although that subpath is exported at HEAD and imported
+        by four apps. Superseded by web-server-suite (apps/web-server canonical
+        runner) and npm-test-all."
       truncated: false
-    - text: All candidate changes are still uncommitted on release0919 (which is
-        already 4 commits ahead of origin) — the security patch cannot be cut
-        until the six changed files are committed.
+    - text: "web-server-suite reported 1330 passed with 2 environmental suite
+        failures: tests/sidecar-pool-readrouting.test.ts (missing generated
+        fixture .playwright-mcp/verify-supplier.xlsx) and
+        tests/slides-hash-id-stability-e2e.test.ts (ENOTEMPTY in afterAll
+        rmSync), the latter consistent with two overlapping check runs
+        contending on the same temp dirs. The change's canonical run was green
+        (155 files / 1283 tests)."
       truncated: false
-    - text: A24/A71 S3 roundtrip coverage uses a local S3-protocol mock server rather
-        than a real MinIO container, so SigV4 authenticity is delegated to the
-        AWS SDK.
+    - text: "Batch-3 disclosed limits: markdown whole-document 'replace' is
+        block-granular (inline marks inside a replaced block not asserted to
+        survive); markdown bilingual inserts a paragraph even for heading
+        sources; A10's concurrency bound is asserted at unit level by
+        instrumenting in-flight calls, not by a machine-level high-concurrency
+        load test."
+      truncated: false
+    - text: A9/A47 resume is proven at the core layer and via the web-server durable
+        store; the html/markdown host-command effects deliberately omit the
+        checkpoint adapter (= no resume for those two apps), which spec 2.2
+        explicitly permits.
+      truncated: false
+    - text: 24 of the 27 absent items are cleanly absent; A71's interface half
+        (S3StorageBackend + roundtrip tests) pre-exists in
+        packages/file-management, so its failed verdict rests solely on the
+        missing container-test clause (accepted by coordinator).
       truncated: false
   risks_truncated: false
-  completed_at: 2026-10-04T08:15:08.088Z
+  completed_at: 2026-10-04T13:07:59.464Z
 history:
   - goal_cycle: 1
     iteration: 1
@@ -1540,6 +1763,244 @@ history:
         as expected for a mid-change batch."
       truncated: false
     completed_at: 2026-10-04T08:15:08.088Z
+  - goal_cycle: 4
+    iteration: 1
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: 批次 1（安全基座 + A76 fetch-URL 收口）已验收并提交（3ef4ead4，22 passed / 0 failed / 55
+        blocked，blocked 全部属于 D12 批次 2+）。按用户 D12 分批交付决定：验收标准不变，回到 Build 继续批次
+        2（密钥加密 A4/A5、租户/审计 A6/A7 等），后续迭代交付。
+      truncated: false
+    completed_at: 2026-10-04T08:17:51.942Z
+  - goal_cycle: 4
+    iteration: 2
+    attempt: 1
+    outcome: execution-error
+    unresolved_ids: []
+    summary:
+      text: "Native Verifier response was invalid: Native Verifier final result fields
+        are invalid"
+      truncated: false
+    completed_at: 2026-10-04T10:46:54.783Z
+  - goal_cycle: 4
+    iteration: 2
+    attempt: 2
+    outcome: fail
+    unresolved_ids:
+      - A4
+      - A5
+      - A8
+      - A9
+      - A10
+      - A11
+      - A12
+      - A13
+      - A14
+      - A15
+      - A16
+      - A17
+      - A18
+      - A19
+      - A20
+      - A21
+      - A22
+      - A23
+      - A25
+      - A37
+      - A38
+      - A43
+      - A44
+      - A45
+      - A46
+      - A47
+      - A48
+      - A49
+      - A50
+      - A51
+      - A52
+      - A53
+      - A54
+      - A56
+      - A57
+      - A59
+      - A60
+      - A61
+      - A62
+      - A63
+      - A64
+      - A65
+      - A66
+      - A67
+      - A68
+      - A69
+      - A70
+      - A72
+    summary:
+      text: "Iteration 2 batch 2 (secret encryption + tenant/audit) is partially
+        delivered. Passing: A36 (AES-256-GCM envelope, keyId rotation),
+        A40/A41/A42 (JWT tenant claim validated, threaded onto IPC events and
+        HTTP handlers; audit records carry tenantId with jwt/fallback
+        provenance; dual-tenant isolation proven), plus unchanged batch-1
+        invariants A1-A3, A26-A35, and S3 (A24/A71), embed loop, gates, BYOK,
+        theming. FAILED: A4/A5/A37/A38 — encryption, decryption, redaction and
+        redacted-echo-restore cover only settings.providers; the apiKey-bearing
+        media.providers and search.providers surfaces remain plaintext on disk
+        and unredacted through ai:get-settings; and A43 — the IPC ai:fetch-image
+        channel and /api/ai/pi-prompt write no audit records (only the HTTP
+        image wrapper audits). 43 items for the translation-reliability (A8-A14,
+        A44-A54), provider-resilience/rate-limit/usage-meter (A15-A20, A56-A66)
+        and platformization OIDC/OTel/decision-doc (A21-A23, A25, A67-A70, A72)
+        batches remain deliberately undelivered and are marked blocked. No item
+        was passed on assumption: each was checked against source and tests.
+        Verdict = fail (5 failed, 0 unverifiable)."
+      truncated: false
+    completed_at: 2026-10-04T10:54:42.706Z
+  - goal_cycle: 4
+    iteration: 3
+    attempt: 1
+    outcome: execution-error
+    unresolved_ids: []
+    summary:
+      text: "Native Verifier response was invalid: Native pass requires every
+        acceptance criterion to pass"
+      truncated: false
+    completed_at: 2026-10-04T11:14:09.344Z
+  - goal_cycle: 4
+    iteration: 3
+    attempt: 2
+    outcome: execution-error
+    unresolved_ids: []
+    summary:
+      text: "Native Verifier response was invalid: Native fail requires at least one
+        failed acceptance criterion"
+      truncated: false
+    completed_at: 2026-10-04T11:19:11.378Z
+  - goal_cycle: 4
+    iteration: 3
+    attempt: 3
+    outcome: fail
+    unresolved_ids:
+      - A8
+      - A9
+      - A10
+      - A11
+      - A12
+      - A13
+      - A14
+      - A15
+      - A16
+      - A17
+      - A18
+      - A19
+      - A20
+      - A21
+      - A22
+      - A23
+      - A24
+      - A25
+      - A44
+      - A45
+      - A46
+      - A47
+      - A48
+      - A49
+      - A50
+      - A51
+      - A52
+      - A53
+      - A54
+      - A56
+      - A57
+      - A59
+      - A60
+      - A61
+      - A62
+      - A63
+      - A64
+      - A65
+      - A66
+      - A67
+      - A68
+      - A69
+      - A70
+      - A71
+      - A72
+    summary:
+      text: Iteration 3 修复切片（secret-store 三表全覆盖 + A43 IPC/pi-prompt 审计）经独立复跑证实：聚焦单测
+        37/37（secret-store 13、ai-settings-encryption 11、ai-audit
+        9、pi-prompt-endpoint 4）、e2e 5/5（auth-tenant-audit
+        4、ai-translate-image-validation 1）、tsc --noEmit 干净、theme 门禁绿。32 项交付项判
+        passed（含批次1 安全基座、密钥加密 A4/A5/A36-A38、租户/审计
+        A6/A7/A40-A43、A55/A58/A73-A77）。45 项属后续批次未实现能力（翻译可靠性
+        A8-A14、A44-A54；provider 韧性/限流/用量 A15-A20、A56-A66；平台化 OIDC/OTel/S3/决策文档
+        A21-A25、A67-A72），已逐一以源码缺失确认判 failed——非不可判定，而是明确缺席。verdict=fail（45 failed
+        / 32 passed / 0 blocked），符合本 change 分批交付下『未实现即未通过』的判定规则。
+      truncated: false
+    completed_at: 2026-10-04T11:23:25.917Z
+  - goal_cycle: 4
+    iteration: 4
+    attempt: 1
+    outcome: execution-error
+    unresolved_ids: []
+    summary:
+      text: "Native Verifier response was invalid: Native Verifier acceptance coverage
+        is invalid (duplicate: none; unknown: none; missing: A1, A2, A3, A4, A5,
+        A6, A7, A15, A16, A17, A18, A19, A20, A21, A22, A23, A24, A25, A26, A27,
+        A28, A29, A30, A31, A32, A33, A34, A35, A36, A37, A38, A39, A40, A41,
+        A42, A43, A55, A56, A57, A58, A59, A60, A61, A62, A63, A64, A65, A66,
+        A67, A68, A69, A70, A71, A72, A73, A74, A75, A76, A77)"
+      truncated: false
+    completed_at: 2026-10-04T12:51:34.330Z
+  - goal_cycle: 4
+    iteration: 4
+    attempt: 2
+    outcome: fail
+    unresolved_ids:
+      - A15
+      - A16
+      - A17
+      - A18
+      - A19
+      - A20
+      - A21
+      - A22
+      - A23
+      - A24
+      - A25
+      - A56
+      - A57
+      - A59
+      - A60
+      - A61
+      - A62
+      - A63
+      - A64
+      - A65
+      - A66
+      - A67
+      - A68
+      - A69
+      - A70
+      - A71
+      - A72
+      - A75
+    summary:
+      text: "Iteration 4 / attempt 2. Verdict fail: pass requires all 77 acceptance
+        items and 28 are unmet. Passed: 18 batch-3 translation-reliability items
+        (A8-A14, A44-A54) plus 31 carried-forward invariants (A1-A7, A26-A43,
+        A55, A58, A73, A74, A76, A77) — corroborated this round by 6 Runtime
+        checks (translation-core+checkpoint 119 tests; html+markdown 439 tests;
+        the 2 Playwright translate specs 6 passed; parity gate six-apps
+        zero-gaps; embed probe LOOP OK 11/11; markdown + web-server typecheck
+        clean). Failed: 27 definitively-absent items (A15-A25, A56, A57,
+        A59-A72) and A75, whose 'npm test' criterion is red due to a
+        pre-existing ipc-bridge/docs wiring defect unrelated to batch 3 (so the
+        gate is not 全绿). The html typecheck failure is a pre-existing
+        file-parse/pdfjs-dist issue in an untouched file."
+      truncated: false
+    completed_at: 2026-10-04T13:07:59.464Z
 history_overflow:
   dropped_entries: 0
   first_dropped_at: null
@@ -1550,7 +2011,7 @@ history_overflow:
     blocked: 0
     execution-error: 0
     recovery: 0
-verification_result: blocked
+verification_result: fail
 verification_report: verification.md
 archived: false
 created_at: 2026-10-04T02:19:46.450Z

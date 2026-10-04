@@ -1,10 +1,10 @@
 /**
- * check-app-translation-parity.mjs — 四种格式的整篇翻译能力对等门禁。
+ * check-app-translation-parity.mjs — 各应用整篇翻译能力对等门禁。
  *
  * 背景：计划《GenOffice × DataflareWork 文档翻译生产化计划 v2》要求
- * “四应用 `translate` 命令存在性 + 应用回写路径”成为门禁。此前只有 docx 有整篇
- * 翻译。四格式现已全部接入共享管线；本门禁核对的是**声明与源码是否一致**，
- * 命令 —— 宿主点“翻译全文”在另外三个应用里毫无反应，也不报错。
+ * “各应用 `translate` 命令存在性 + 应用回写路径”成为门禁。此前只有 docx 有整篇
+ * 翻译。docs/sheets/slides/pdf/markdown/html 现已全部接入共享管线；本门禁核对的是**声明与源码是否一致**，
+ * 命令 —— 宿主点“翻译全文”在未接线的应用里毫无反应，也不报错。
  *
  * 这个门禁**不是**“四个都必须已实现”——那会让 CI 长期红、然后被加豁免、
  * 最后什么也拦不住。它是**声明驱动**的：
@@ -107,6 +107,41 @@ const TRANSLATION_APPS = [
     hostHandler: 'apps/pdf/src/renderer/App.tsx',
     hostBridge: 'apps/pdf/src/renderer/web-bridge.ts',
     ribbonTab: { binding: 'apps/pdf/src/renderer/components-ribbon-translate-tab.tsx', host: 'apps/pdf/src/renderer/App.tsx', id: 'translate', hostImport: 'apps/pdf/src/renderer/App.tsx' },
+  },
+  {
+    app: 'markdown',
+    documentType: 'markdown',
+    wholeDocument: true,
+    hostCommand: true,
+    bilingual: true,
+    // ProseMirror text blocks rewritten through the app's own op vocabulary:
+    // `replaceText` / `insertContent` are compiled by `applyMarkdownTranslations`,
+    // the same entry point the AI's `apply_ops` tool and the review dialog use.
+    writeBack: 'in-place',
+    writePrimitives: ['applyMarkdownTranslations', 'replaceText', 'insertContent'],
+    adapter: 'apps/markdown/src/renderer/ai/document-translate.ts',
+    hostHandler: 'apps/markdown/src/renderer/App.tsx',
+    hostBridge: 'apps/markdown/src/renderer/web-bridge.ts',
+    // 未保存广播在桥里（save 落盘后翻 dirty），不在 App.tsx 里。
+    dirtyBroadcast: 'apps/markdown/src/renderer/web-bridge.ts',
+  },
+  {
+    app: 'html',
+    documentType: 'html',
+    wholeDocument: true,
+    hostCommand: true,
+    bilingual: true,
+    // The parse map's text nodes are rewritten through the shared `HtmlOp`
+    // vocabulary: `set_text_node` in place, `insert_html` for the bilingual
+    // sibling block, compiled by `applyHtmlTranslations` into the app's own
+    // dispatcher (`applyOps` → `compileOps` → patches).
+    writeBack: 'in-place',
+    writePrimitives: ['applyHtmlTranslations', 'set_text_node', 'insert_html'],
+    adapter: 'apps/html/src/renderer/ai/document-translate.ts',
+    hostHandler: 'apps/html/src/renderer/App.tsx',
+    hostBridge: 'apps/html/src/renderer/web-bridge.ts',
+    // 未保存广播在桥里（html:save 落盘后翻 dirty），不在 App.tsx 里。
+    dirtyBroadcast: 'apps/html/src/renderer/web-bridge.ts',
   },
 ]
 
@@ -353,17 +388,21 @@ for (const lang of LANGS) {
   }
 }
 
-// 7) document-dirty 广播四应用齐备 —— M2-1 防漂移。
+// 7) document-dirty 广播六应用齐备 —— M2-1 防漂移。
 // 嵌入宿主时，标题栏的「未保存」标记依赖编辑器向宿主广播 document-dirty
 // （只报 dirty=true，宿主在 document-saved 时清除）。docs 曾是唯一广播者，
 // sheets/slides/pdf 缺席时宿主对三个格式永远不显示未保存状态。这里钉
 // 「广播调用存在」，dirty 的触发语义由各 App.tsx 的实现注释自述。
+//
+// 广播的落点各应用不同：docs/sheets/slides/pdf 在 App.tsx，markdown/html 在桥里
+// （save 落盘后翻 dirty）。`dirtyBroadcast` 声明后者，缺省仍看 hostHandler。
 for (const entry of TRANSLATION_APPS) {
-  const src = read(entry.hostHandler)
+  const target = entry.dirtyBroadcast ?? entry.hostHandler
+  const src = read(target)
   const broadcasts = src !== null && /postToEmbedParent\(\{\s*type: 'document-dirty'/.test(src)
   if (!broadcasts) {
     failures.push(
-      `${entry.app}: ${entry.hostHandler} 没有 postToEmbedParent({ type: 'document-dirty' ... }) —— 嵌入宿主的未保存标记对该格式静默失效`,
+      `${entry.app}: ${target} 没有 postToEmbedParent({ type: 'document-dirty' ... }) —— 嵌入宿主的未保存标记对该格式静默失效`,
     )
   }
 }
@@ -371,7 +410,7 @@ for (const entry of TRANSLATION_APPS) {
 if (asJson) {
   console.log(JSON.stringify({ failures, coverage }, null, 2))
 } else {
-  console.log('\n=== 四格式整篇翻译能力对等（声明 vs 源码）===')
+  console.log('\n=== 应用整篇翻译能力对等（声明 vs 源码）===')
   for (const entry of coverage) {
     const flags = [
       entry.wholeDocument ? '整篇' : '仅选区',

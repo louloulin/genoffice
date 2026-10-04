@@ -38,6 +38,9 @@ import { buildPrintHtml } from './export/printHtml'
 import { mermaidSvgToPng, renderMermaid } from './editor/mermaid'
 import { resolveImageSrc } from './editor/localImage'
 import type { ExportFormat, SaveMode } from '../shared/ipc'
+import type { TranslateProgressStatus } from '@genoffice/translation-core/document'
+import { translateMarkdownDocument } from './ai/document-translate'
+import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { uiOp } from './editor/ops'
 import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { ExportFormatUnsupportedError, type DownloadAsResult } from '@genoffice/ipc-bridge/sdk-command-sink'
@@ -127,6 +130,22 @@ export function deriveAutoFileName(editor: Editor): string {
   return ''
 }
 
+/**
+ * Narrow the pipeline's progress vocabulary to the host's.
+ *
+ * `completed-with-failures` is the pipeline's partial-success terminal state and
+ * the host's `ai-progress` has no way to render it. Reporting it as `completed`
+ * would tell the host — and the user — that the document translated cleanly
+ * when part of it was left in the source language, so it is reported as
+ * `failed`: the host's only "something went wrong" state, and the honest
+ * direction to be wrong in.
+ */
+function hostProgressStatus(status: TranslateProgressStatus): 'started' | 'running' | 'completed' | 'failed' | 'cancelled' {
+  if (status === 'started' || status === 'running' || status === 'completed') return status
+  if (status === 'cancelled') return 'cancelled'
+  return 'failed'
+}
+
 export default function App() {
   const { t } = useI18n()
   const [status, setStatus] = useState<LoadStatus>('loading')
@@ -158,6 +177,9 @@ export default function App() {
   const filePathRef = useRef<string | null>(null)
   const slashMenuRef = useRef<SlashMenuHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  /** In-flight host translation run; a second `translate` command or
+   *  `cancel-translation` aborts it before starting/leaving. */
+  const hostTranslationAbortRef = useRef<AbortController | null>(null)
 
   const zoomOut = useCallback(
     () => setZoom((value) => Math.max(MIN_ZOOM, Math.round(value) - ZOOM_STEP)),
@@ -302,6 +324,87 @@ export default function App() {
     const onHostDocument = (): void => setHostOpenTick((tick) => tick + 1)
     window.addEventListener('dataflare:open-document', onHostDocument)
     return () => window.removeEventListener('dataflare:open-document', onHostDocument)
+  }, [])
+
+  /**
+   * 宿主命令：Dataflare 头部下发「翻译全文 / 取消翻译」。
+   *
+   * 三种模式（整篇 / 选区 / 双语）都走同一条 `translateDocument` 管线，写回由本应用
+   * 自己的 `MdOp` 层完成 —— 与手动编辑、AI `apply_ops` 产生的文档完全同构。
+   *
+   * 这段监听与 web-bridge 的 `dataflare.install({ onCommand })` 缺一不可：只做一半
+   * 时宿主按钮看起来接好了却毫无反应，不报错、零 console error。
+   */
+  useEffect(() => {
+    const runHostTranslation = async (command: Record<string, unknown>): Promise<void> => {
+      const current = editorRef.current
+      if (!current) return
+      const controller = new AbortController()
+      hostTranslationAbortRef.current?.abort()
+      hostTranslationAbortRef.current = controller
+      try {
+        await translateMarkdownDocument(
+          {
+            editor: current,
+            // 渲染进程从不直连 provider：嵌入时消费宿主的逐块 SSE，独立运行时
+            // 退回整批 IPC（进度只在批边界推进，慢而不是坏）。
+            translateBatch: (request, signal, onUnit) => {
+              const call =
+                window.markdownApi.aiTranslateBatchStream ?? window.markdownApi.aiTranslateBatch
+              return call(request, {
+                ...(onUnit ? { onUnit } : {}),
+                signal: signal ?? controller.signal,
+              })
+            },
+            onProgress: (progress) => {
+              // `exactOptionalPropertyTypes`：缺省的计数必须是「不存在」而不是
+              // undefined，否则宿主渲染成 "undefined/undefined"。
+              postToEmbedParent({
+                type: 'ai-progress',
+                status: hostProgressStatus(progress.status),
+                progress: progress.progress,
+                ...(progress.completedUnits !== undefined
+                  ? { completedUnits: progress.completedUnits }
+                  : {}),
+                ...(progress.totalUnits !== undefined ? { totalUnits: progress.totalUnits } : {}),
+                ...(progress.error !== undefined ? { error: progress.error } : {}),
+              })
+            },
+          },
+          {
+            scope: command.scope === 'selection' ? 'selection' : 'document',
+            targetLang:
+              typeof command.targetLanguage === 'string' ? command.targetLanguage : 'zh-CN',
+            ...(typeof command.sourceLanguage === 'string'
+              ? { sourceLang: command.sourceLanguage }
+              : {}),
+            applyMode: command.bilingual === true ? 'bilingual' : 'replace',
+            preserveFormat: command.preserveFormatting !== false,
+            memoryEnabled: command.memoryEnabled !== false,
+            qualityCheck: command.qualityCheck !== false,
+            ...(typeof command.glossaryCategory === 'string'
+              ? { glossaryCategory: command.glossaryCategory }
+              : {}),
+            signal: controller.signal,
+          },
+        )
+      } finally {
+        if (hostTranslationAbortRef.current === controller) hostTranslationAbortRef.current = null
+      }
+    }
+
+    const onHostCommand = (event: Event): void => {
+      const command = (event as CustomEvent<Record<string, unknown>>).detail
+      if (!command || typeof command.type !== 'string') return
+      if (command.type === 'translate') {
+        void runHostTranslation(command)
+      } else if (command.type === 'cancel-translation') {
+        // 取消由管线自己通过 onProgress 报 `cancelled`（并保证一个字都不写回）。
+        hostTranslationAbortRef.current?.abort()
+      }
+    }
+    window.addEventListener('dataflare:office-command', onHostCommand)
+    return () => window.removeEventListener('dataflare:office-command', onHostCommand)
   }, [])
 
   useEffect(() => {

@@ -85,6 +85,8 @@ export interface TranslateResponse {
   translated?: string | undefined
   planId?: string | undefined
   error?: string | undefined
+  /** Set when `ok === false`; retry-relevant failure class. */
+  errorCode?: TranslationErrorCode | undefined
   sourceLang?: string | undefined
   targetLang?: string | undefined
   preserveFormat?: boolean | undefined
@@ -157,6 +159,31 @@ export interface TranslateBatchRequest {
   cacheScope?: string | undefined
 }
 
+/**
+ * Machine-readable class of a unit (or batch) failure.
+ *
+ * Mirrors `@genoffice/ai-provider`'s `errorCode` vocabulary (`timeout`,
+ * `credits`, `network`, `overloaded`) and adds the causes translation-core
+ * itself can distinguish. The whole-document pipeline keys its retry decision
+ * on this: `timeout` / `network` / `overloaded` / `server` are transient and
+ * retried; `credits` / `auth` / `content-policy` are permanent for this run and
+ * skipped. It is deliberately a closed union so a caller can `switch` on it
+ * without a default arm drifting silently.
+ */
+export type TranslationErrorCode =
+  | 'timeout'
+  | 'network'
+  | 'overloaded'
+  /** The provider answered 5xx — a server-side fault, retryable. */
+  | 'server'
+  | 'credits'
+  | 'auth'
+  /** The provider refused the content itself; retrying repeats the refusal. */
+  | 'content-policy'
+  /** A 200 that parsed but carried no usable translation text. */
+  | 'invalid-response'
+  | 'unknown'
+
 export interface TranslateBatchUnitResult {
   unitId: string
   sourceText: string
@@ -165,6 +192,8 @@ export interface TranslateBatchUnitResult {
   matchedTerms?: string[] | undefined
   warnings?: string[] | undefined
   errorMessage?: string | undefined
+  /** Set when `status === 'failed'`; drives the pipeline's retry decision. */
+  errorCode?: TranslationErrorCode | undefined
   range?: EditorRange | null | undefined
 }
 

@@ -29,6 +29,7 @@ import type {
   TranslateBatchRequest,
   TranslateBatchResponse,
   TranslateBatchUnitResult,
+  TranslationErrorCode,
   TranslationUnit,
 } from './types'
 
@@ -42,6 +43,7 @@ export type {
   TranslateBatchRequest,
   TranslateBatchResponse,
   TranslateBatchUnitResult,
+  TranslationErrorCode,
   TranslationUnit,
 } from './types'
 
@@ -82,7 +84,13 @@ export type TranslateBatchFn = (
  * a host that forwards {@link TranslateProgress.onProgress} verbatim produces a
  * protocol-valid event stream without a per-app translation table.
  */
-export type TranslateProgressStatus = 'started' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type TranslateProgressStatus =
+  | 'started'
+  | 'running'
+  | 'completed'
+  | 'completed-with-failures'
+  | 'failed'
+  | 'cancelled'
 
 export interface TranslateProgress {
   status: TranslateProgressStatus
@@ -166,19 +174,117 @@ export interface TranslateDocumentOptions extends TranslateDocumentAdapters {
    */
   maxUnitsPerBatch?: number | undefined
   maxCharsPerBatch?: number | undefined
+  /**
+   * Retry policy for transient per-unit failures. Defaults to 3 retries with
+   * exponential backoff + jitter (see {@link TranslateRetryPolicy}).
+   */
+  retry?: TranslateRetryPolicy | undefined
+  /**
+   * Resume store. When supplied, a unit whose translation is already recorded
+   * is reused verbatim (no provider call) and every newly settled unit is
+   * saved. Omit it for a one-shot run with no resume.
+   */
+  checkpoint?: TranslateCheckpoint | undefined
+}
+
+/**
+ * A unit that could not be translated, with the reason the pipeline will show
+ * the user. `attempts` counts the initial call plus every retry.
+ */
+export interface TranslateUnitFailure {
+  unitId: string
+  reason: string
+  errorCode: TranslationErrorCode
+  attempts: number
+}
+
+/** Persisted per-unit translation, keyed by `unitId`. */
+export interface TranslateCheckpoint {
+  /** Return a previously settled result, or null/undefined for a cache miss. */
+  load(unitId: string): TranslateBatchUnitResult | null | undefined | Promise<TranslateBatchUnitResult | null | undefined>
+  /** Record a settled result. Called once per successfully translated unit. */
+  save(unitId: string, result: TranslateBatchUnitResult): void | Promise<void>
+}
+
+/**
+ * Backoff for retryable failures. Only `timeout` / `network` / `overloaded` /
+ * `server` are retried — `credits`, `auth` and `content-policy` are permanent
+ * for the run, so retrying would just repeat the refusal.
+ */
+export interface TranslateRetryPolicy {
+  /** Retries *after* the initial attempt. Default 3. */
+  maxRetries?: number | undefined
+  /** First backoff in ms; doubles each retry. Default 500. */
+  baseDelayMs?: number | undefined
+  /** Ceiling for a single backoff. Default 8000. */
+  maxDelayMs?: number | undefined
+  /** Random fraction (0..1) added to each delay to de-synchronise retries. Default 0.25. */
+  jitter?: number | undefined
+  /** Sleep seam for tests; defaults to `setTimeout`. */
+  sleep?: ((ms: number) => Promise<void>) | undefined
 }
 
 export interface TranslateDocumentResult {
-  status: 'completed' | 'failed' | 'cancelled'
+  status: 'completed' | 'completed-with-failures' | 'failed' | 'cancelled'
   mode: TranslateApplyMode
   units: TranslatedUnit[]
   quality?: QualityReport | undefined
   error?: string | undefined
   applied: boolean
+  /** Units that exhausted their retries (or failed permanently) this run. */
+  failures: TranslateUnitFailure[]
 }
 
 const DEFAULT_MAX_UNITS_PER_BATCH = 80
 const DEFAULT_MAX_CHARS_PER_BATCH = 90_000
+const DEFAULT_MAX_RETRIES = 3
+const DEFAULT_RETRY_BASE_DELAY_MS = 500
+const DEFAULT_RETRY_MAX_DELAY_MS = 8_000
+const DEFAULT_RETRY_JITTER = 0.25
+
+/** Failure classes worth retrying; everything else is permanent for the run. */
+const RETRYABLE_ERROR_CODES: ReadonlySet<TranslationErrorCode> = new Set<TranslationErrorCode>([
+  'timeout',
+  'network',
+  'overloaded',
+  'server',
+])
+
+interface ResolvedRetryPolicy {
+  maxRetries: number
+  baseDelayMs: number
+  maxDelayMs: number
+  jitter: number
+  sleep: (ms: number) => Promise<void>
+}
+
+function resolveRetryPolicy(policy: TranslateRetryPolicy | undefined): ResolvedRetryPolicy {
+  const clampInt = (value: number | undefined, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback
+  const base = clampInt(policy?.baseDelayMs, DEFAULT_RETRY_BASE_DELAY_MS)
+  const max = clampInt(policy?.maxDelayMs, DEFAULT_RETRY_MAX_DELAY_MS)
+  const jitter = typeof policy?.jitter === 'number' && policy.jitter >= 0 ? policy.jitter : DEFAULT_RETRY_JITTER
+  return {
+    maxRetries: clampInt(policy?.maxRetries, DEFAULT_MAX_RETRIES),
+    baseDelayMs: base,
+    maxDelayMs: Math.max(max, base),
+    jitter,
+    sleep: policy?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+  }
+}
+
+/** Exponential backoff with jitter; attempt is 1-based (the first retry). */
+function retryDelay(policy: ResolvedRetryPolicy, attempt: number): number {
+  const exponential = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (attempt - 1))
+  return exponential + exponential * policy.jitter * Math.random()
+}
+
+/** Whether a settled result carries a usable translation. */
+function isUsableResult(result: TranslateBatchUnitResult | null | undefined): boolean {
+  if (!result) return false
+  if (result.status !== 'translated' && result.status !== 'memory-hit') return false
+  return typeof result.translatedText === 'string' && result.translatedText.trim().length > 0
+}
 
 /** Group units into provider-sized batches without reordering them. */
 export function planTranslateBatches(
@@ -232,25 +338,28 @@ export async function translateDocument(
 
   if (totalUnits === 0) {
     await report({ status: 'completed', progress: 1, completedUnits: 0, totalUnits: 0 })
-    return { status: 'completed', mode, units: [], applied: false }
+    return { status: 'completed', mode, units: [], applied: false, failures: [] }
   }
   if (!request.targetLang || !request.targetLang.trim()) {
     const error = 'translateDocument expected non-empty `targetLang`'
     await report({ status: 'failed', progress: 0, completedUnits: 0, totalUnits, error })
-    return { status: 'failed', mode, units: [], error, applied: false }
+    return { status: 'failed', mode, units: [], error, applied: false, failures: [] }
   }
 
   await report({ status: 'started', progress: 0, completedUnits: 0, totalUnits })
 
-  const batches = planTranslateBatches(
-    request.units,
-    options.maxUnitsPerBatch ?? DEFAULT_MAX_UNITS_PER_BATCH,
-    options.maxCharsPerBatch ?? DEFAULT_MAX_CHARS_PER_BATCH,
-  )
   const byId = new Map(request.units.map((unit) => [unit.unitId, unit]))
   const settled: TranslatedUnit[] = []
   const scores: number[] = []
   const warnings = new Set<string>()
+  const failures: TranslateUnitFailure[] = []
+  /** Failures not yet given up on — a later retry can still clear them. */
+  const pendingFailures = new Map<
+    string,
+    { reason: string; errorCode: TranslationErrorCode; attempts: number }
+  >()
+  const retry = resolveRetryPolicy(options.retry)
+
   // Units the transport has reported, including ones still to be classified
   // below (a failed / blank unit is reported by the transport but never lands
   // in `settled`). Progress must count *reported* units, not *applied* ones —
@@ -259,6 +368,141 @@ export async function translateDocument(
   /** One number for every progress event, so the stream and the terminal event
    *  can never disagree about how far the run got. */
   const completedCount = (): number => Math.max(reported, settled.length)
+
+  /** Land a usable result in `settled` and persist it to the checkpoint. */
+  const accept = async (result: TranslateBatchUnitResult, source: TranslationUnit): Promise<void> => {
+    const unitWarnings = [
+      ...(result.warnings ?? []),
+      ...(result.errorMessage ? [result.errorMessage] : []),
+    ]
+    for (const warning of unitWarnings) warnings.add(warning)
+    settled.push({
+      unitId: source.unitId,
+      order: source.order,
+      kind: source.kind,
+      sourceText: source.sourceText,
+      translatedText: result.translatedText ?? '',
+      status: result.status as 'translated' | 'memory-hit',
+      matchedTerms: result.matchedTerms,
+      warnings: unitWarnings.length > 0 ? unitWarnings : undefined,
+      range: result.range ?? source.range,
+      metadata: source.metadata,
+    })
+    pendingFailures.delete(source.unitId)
+    if (options.checkpoint) {
+      try {
+        await options.checkpoint.save(source.unitId, result)
+      } catch {
+        // Resume is best-effort: a store that cannot persist must not fail the
+        // run the user actually asked for.
+      }
+    }
+  }
+
+  // Resume: reuse every unit the checkpoint already holds, and only send the
+  // rest to the provider. A recorded unit is never re-translated — that is the
+  // whole point of the checkpoint (no duplicate calls, no duplicate billing).
+  const pendingUnits: TranslationUnit[] = []
+  if (options.checkpoint) {
+    for (const unit of request.units) {
+      let hit: TranslateBatchUnitResult | null | undefined
+      try {
+        hit = await options.checkpoint.load(unit.unitId)
+      } catch {
+        hit = null
+      }
+      if (isUsableResult(hit) && hit) await accept(hit, unit)
+      else pendingUnits.push(unit)
+    }
+    reported = settled.length
+    if (settled.length > 0) {
+      await report({
+        status: 'running',
+        progress: settled.length / totalUnits,
+        completedUnits: settled.length,
+        totalUnits,
+      })
+    }
+  } else {
+    pendingUnits.push(...request.units)
+  }
+
+  const batches = planTranslateBatches(
+    pendingUnits,
+    options.maxUnitsPerBatch ?? DEFAULT_MAX_UNITS_PER_BATCH,
+    options.maxCharsPerBatch ?? DEFAULT_MAX_CHARS_PER_BATCH,
+  )
+
+  const runBatch = (
+    batchUnits: TranslationUnit[],
+    stream: boolean,
+  ): Promise<TranslateBatchResponse> => {
+    const onUnit: TranslateUnitListener | undefined =
+      stream && options.onProgress
+        ? async (result) => {
+            reported += 1
+            await report({
+              status: 'running',
+              progress: reported / totalUnits,
+              completedUnits: reported,
+              totalUnits,
+              unit: result,
+            })
+          }
+        : undefined
+    return options.translateBatch(
+      {
+        units: batchUnits,
+        sourceLang: request.sourceLang,
+        targetLang: request.targetLang,
+        preserveFormat: request.preserveFormat !== false,
+        scene: request.scene,
+        memoryEnabled: request.memoryEnabled,
+        qualityCheck: request.qualityCheck,
+        glossaryCategory: request.glossaryCategory,
+        cacheScope: request.cacheScope,
+      },
+      options.signal,
+      onUnit,
+    )
+  }
+
+  /**
+   * One pass over a batch's results: land the usable ones, remember the failed
+   * ones, and return the units worth retrying. Successes are never re-sent —
+   * only the units in the returned array go back to the transport.
+   */
+  const settlePass = async (
+    results: TranslateBatchUnitResult[],
+    attempt: number,
+  ): Promise<TranslationUnit[]> => {
+    const retryable: TranslationUnit[] = []
+    for (const result of results) {
+      const source = byId.get(result.unitId)
+      if (!source) continue
+      if (isUsableResult(result)) {
+        await accept(result, source)
+        continue
+      }
+      const errorCode: TranslationErrorCode = result.errorCode ?? 'unknown'
+      pendingFailures.set(source.unitId, {
+        reason: result.errorMessage || 'Translation failed',
+        errorCode,
+        attempts: attempt,
+      })
+      if (RETRYABLE_ERROR_CODES.has(errorCode)) retryable.push(source)
+    }
+    return retryable
+  }
+
+  const failedRun = async (
+    error: string,
+    progress: number,
+    completed: number,
+  ): Promise<TranslateDocumentResult> => {
+    await report({ status: 'failed', progress, completedUnits: completed, totalUnits, error })
+    return { status: 'failed', mode, units: settled, error, applied: false, failures }
+  }
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     if (options.signal?.aborted) {
@@ -274,89 +518,66 @@ export async function translateDocument(
         units: settled,
         applied: false,
         error: 'cancelled',
+        failures: [],
       }
     }
     const batch = batches[batchIndex] ?? []
-    let response
+    let response: TranslateBatchResponse
     try {
-      const onUnit: TranslateUnitListener | undefined = options.onProgress
-        ? async (result) => {
-            reported += 1
-            await report({
-              status: 'running',
-              progress: reported / totalUnits,
-              completedUnits: reported,
-              totalUnits,
-              unit: result,
-            })
-          }
-        : undefined
-      response = await options.translateBatch(
-        {
-          units: batch,
-          sourceLang: request.sourceLang,
-          targetLang: request.targetLang,
-          preserveFormat: request.preserveFormat !== false,
-          scene: request.scene,
-          memoryEnabled: request.memoryEnabled,
-          qualityCheck: request.qualityCheck,
-          glossaryCategory: request.glossaryCategory,
-          cacheScope: request.cacheScope,
-        },
-        options.signal,
-        onUnit,
-      )
+      response = await runBatch(batch, true)
     } catch (cause) {
       // A throwing transport is still a failed run with a real message: the
       // host UI shows `error`, so collapsing it into `failed` here keeps the
       // "no silent degradation" rule intact.
       const error = cause instanceof Error ? cause.message : String(cause)
-      await report({
-        status: 'failed',
-        progress: completedCount() / totalUnits,
-        completedUnits: completedCount(),
-        totalUnits,
-        error,
-      })
-      return { status: 'failed', mode, units: settled, error, applied: false }
+      return failedRun(error, completedCount() / totalUnits, completedCount())
     }
 
     if (!response.ok && !(response.units && response.units.length > 0)) {
-      const error = response.error || 'Document translation failed'
-      await report({
-        status: 'failed',
-        progress: completedCount() / totalUnits,
-        completedUnits: completedCount(),
-        totalUnits,
-        error,
-      })
-      return { status: 'failed', mode, units: settled, error, applied: false }
+      return failedRun(
+        response.error || 'Document translation failed',
+        completedCount() / totalUnits,
+        completedCount(),
+      )
     }
 
-    for (const result of response.units ?? []) {
-      const source = byId.get(result.unitId)
-      if (!source) continue
-      const translatedText = result.translatedText ?? ''
-      if (result.status !== 'translated' && result.status !== 'memory-hit') continue
-      if (!translatedText.trim()) continue
-      const unitWarnings = [
-        ...(result.warnings ?? []),
-        ...(result.errorMessage ? [result.errorMessage] : []),
-      ]
-      for (const warning of unitWarnings) warnings.add(warning)
-      settled.push({
-        unitId: source.unitId,
-        order: source.order,
-        kind: source.kind,
-        sourceText: source.sourceText,
-        translatedText,
-        status: result.status,
-        matchedTerms: result.matchedTerms,
-        warnings: unitWarnings.length > 0 ? unitWarnings : undefined,
-        range: result.range ?? source.range,
-        metadata: source.metadata,
-      })
+    let pending = await settlePass(response.units ?? [], 1)
+
+    // Retry only the transient failures, with exponential backoff + jitter.
+    // Cancelling mid-retry keeps the checkpoint (the accumulated `settled`
+    // units are already saved) but still writes nothing back to the document.
+    let attempt = 0
+    while (pending.length > 0 && attempt < retry.maxRetries) {
+      attempt += 1
+      if (options.signal?.aborted) {
+        await report({
+          status: 'cancelled',
+          progress: completedCount() / totalUnits,
+          completedUnits: completedCount(),
+          totalUnits,
+        })
+        return {
+          status: 'cancelled',
+          mode,
+          units: settled,
+          applied: false,
+          error: 'cancelled',
+          failures: [],
+        }
+      }
+      await retry.sleep(retryDelay(retry, attempt))
+      let retryResponse: TranslateBatchResponse
+      try {
+        retryResponse = await runBatch(pending, false)
+      } catch (cause) {
+        const error = cause instanceof Error ? cause.message : String(cause)
+        return failedRun(error, completedCount() / totalUnits, completedCount())
+      }
+      pending = await settlePass(retryResponse.units ?? [], attempt + 1)
     }
+    // Units still in `pending` after the budget are swept into `failures` by
+    // the single post-loop pass over `pendingFailures` — recording them here
+    // too would list each one twice.
 
     // The transport may not have streamed (batched mode), so make sure the
     // per-batch report still reflects the units this batch actually settled.
@@ -377,16 +598,21 @@ export async function translateDocument(
     })
   }
 
+  // Permanent failures recorded during the passes never entered `pending`.
+  for (const [unitId, info] of pendingFailures) {
+    failures.push({ unitId, ...info })
+    warnings.add(info.reason)
+  }
+
+  if (settled.length === 0 && failures.length > 0) {
+    const error = `Document translation failed for all ${failures.length} unit(s)`
+    await report({ status: 'failed', progress: 0, completedUnits: 0, totalUnits, error })
+    return { status: 'failed', mode, units: [], error, applied: false, failures }
+  }
   if (settled.length === 0) {
     const error = 'Document translation returned no usable units'
-    await report({
-      status: 'failed',
-      progress: 0,
-      completedUnits: 0,
-      totalUnits,
-      error,
-    })
-    return { status: 'failed', mode, units: [], error, applied: false }
+    await report({ status: 'failed', progress: 0, completedUnits: 0, totalUnits, error })
+    return { status: 'failed', mode, units: [], error, applied: false, failures }
   }
 
   // Extraction order is apply order: a bilingual insert shifts every later
@@ -413,7 +639,7 @@ export async function translateDocument(
       totalUnits,
       error,
     })
-    return { status: 'failed', mode, units: settled, error, applied: false }
+    return { status: 'failed', mode, units: settled, error, applied: false, failures }
   }
 
   let applied = true
@@ -433,15 +659,18 @@ export async function translateDocument(
       totalUnits,
       error,
     })
-    return { status: 'failed', mode, units: settled, error, applied: false }
+    return { status: 'failed', mode, units: settled, error, applied: false, failures }
   }
 
+  // A run with skipped units is not a clean success: the host must be able to
+  // tell "everything translated" from "translated what it could".
+  const finalStatus = failures.length > 0 ? 'completed-with-failures' : 'completed'
   await report({
-    status: 'completed',
+    status: finalStatus,
     progress: 1,
     completedUnits: completedCount(),
     totalUnits,
     quality: finalQuality,
   })
-  return { status: 'completed', mode, units: settled, quality: finalQuality, applied: true }
+  return { status: finalStatus, mode, units: settled, quality: finalQuality, applied: true, failures }
 }

@@ -5,6 +5,13 @@
  * (one-to-one in top-level shape order). Phase 1 supports: text boxes / pictures /
  * simple shapes; everything else → passthrough.
  */
+// Must be a static import: a lazy `require('node:crypto')` looks fine in the
+// esbuild web-server bundle (which injects `createRequire` at the top) and is
+// masked by vitest's require shim, but throws "require is not defined" under
+// every plain-ESM host — tsx dev and `node --experimental-strip-types` — so
+// `slides:open-path` failed for every real deck (blank `slides:new-blank`
+// decks never parse, so it hid).
+import { createHash } from 'node:crypto'
 import { XMLParser } from 'fast-xml-parser'
 import { layoutHierTree, parseHierConstraints } from './dgm-hier'
 import { scanSlide, type SpElement } from './scan'
@@ -203,8 +210,6 @@ function uid(prefix: string): string {
     // sha1 is overkill for 10 hex chars but already in the stdlib.
     // Truncated to 10 hex = 40 bits, ample for a single-deck
     // collision space (one in a trillion for 1M elements).
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { createHash } = require('node:crypto') as typeof import('node:crypto')
     const hash = createHash('sha1').update(`${prefix}\u0000${currentFragment}`).digest('hex').slice(0, 10)
     return `${prefix}_${hash}`
   }

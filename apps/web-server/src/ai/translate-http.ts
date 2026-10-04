@@ -31,6 +31,8 @@
  * SSRF surface as `ai:chat`/`ai:stream`.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import {
   AiSettings,
@@ -48,7 +50,10 @@ import {
   translateBatchStream,
 } from '@genoffice/translation-core'
 
+import { atomicWriteJson } from '../common/atomic'
 import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from '../common/read-body'
+import { DATA_DIR } from '../common/state'
+import { auditAiCall } from './ai-audit'
 import { sanitizeRequestSettings } from './settings-sanitize'
 import {
   aiSettings as defaultSettings,
@@ -173,14 +178,173 @@ function evictOldestTranslateSession(): void {
   }
 }
 
+// ----- Translation-session checkpoints (A46/A47/A48/A49) --------------------
+
+/**
+ * Durable checkpoint store for `translateDocument`'s resume contract.
+ *
+ * The renderer owns the document pipeline: it extracts units, asks this server
+ * to translate them, and writes the result back. A run that is cancelled or
+ * outlives the browser tab leaves the units it already paid for here, so the
+ * next attempt reuses them instead of paying again. The renderer cannot do that
+ * itself — inside the Dataflare embed there is no durable origin storage, and
+ * the DATA_DIR the rest of the persisted state already lives in is right here.
+ *
+ * A session is keyed by **tenant and** the caller's `sessionId`: the tenant
+ * comes from the verified JWT, never the body, so a caller cannot read another
+ * tenant's units by guessing an id. The in-memory map is authoritative for the
+ * life of the process; the file is write-through (coalesced) so a restart can
+ * still resume.
+ */
+const TRANSLATE_CHECKPOINT_FILE = join(DATA_DIR, 'translate-checkpoints.json')
+/** Sessions kept (and persisted) at once; the least recently touched is dropped. */
+const MAX_CHECKPOINT_SESSIONS = 32
+/** Units one session may hold; the oldest is dropped past this. */
+const MAX_CHECKPOINT_UNITS = 2000
+/** Coalesce writes: a 1000-unit run must not rewrite the file 1000 times. */
+const CHECKPOINT_FLUSH_MS = 150
+
+type CheckpointUnitMap = Map<string, TranslateBatchUnitResult>
+const TRANSLATE_CHECKPOINTS = new Map<string, CheckpointUnitMap>()
+let checkpointsHydrated = false
+let checkpointFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Tenant-scope the key so one tenant can never read another's session. */
+function checkpointStorageKey(tenantId: string | undefined, sessionId: string): string {
+  return `${tenantId && tenantId.trim() ? tenantId.trim() : 'local'}\u0000${sessionId}`
+}
+
+/**
+ * Validate a caller-supplied session id. It reaches a Map key and a JSON object
+ * key, so it is bounded and charset-limited rather than passed through.
+ */
+export function normalizeCheckpointSessionId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const id = raw.trim()
+  if (id.length === 0 || id.length > 200) return null
+  return /^[\w.:-]+$/.test(id) ? id : null
+}
+
+/** A stored unit must be a usable translation; a failed one is retried anyway. */
+function isCheckpointUnitResult(value: unknown): value is TranslateBatchUnitResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const result = value as Record<string, unknown>
+  return (
+    typeof result.unitId === 'string' &&
+    typeof result.translatedText === 'string' &&
+    (result.status === 'translated' || result.status === 'memory-hit')
+  )
+}
+
+function hydrateTranslateCheckpoints(): void {
+  if (checkpointsHydrated) return
+  checkpointsHydrated = true
+  try {
+    if (!existsSync(TRANSLATE_CHECKPOINT_FILE)) return
+    const raw = JSON.parse(readFileSync(TRANSLATE_CHECKPOINT_FILE, 'utf-8')) as unknown
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      const units = new Map<string, TranslateBatchUnitResult>()
+      for (const [unitId, result] of Object.entries(value as Record<string, unknown>)) {
+        if (isCheckpointUnitResult(result)) units.set(unitId, result)
+      }
+      if (units.size > 0) TRANSLATE_CHECKPOINTS.set(key, units)
+    }
+  } catch {
+    // A corrupt file costs one re-translation; refusing to start costs the
+    // server. Drop it and carry on.
+    TRANSLATE_CHECKPOINTS.clear()
+  }
+}
+
+/** Write the store to DATA_DIR. Exported so tests and shutdown can force it. */
+export function flushTranslateCheckpoints(): void {
+  if (checkpointFlushTimer) {
+    clearTimeout(checkpointFlushTimer)
+    checkpointFlushTimer = null
+  }
+  const payload: Record<string, Record<string, TranslateBatchUnitResult>> = {}
+  for (const [key, units] of TRANSLATE_CHECKPOINTS) {
+    payload[key] = Object.fromEntries(units)
+  }
+  try {
+    atomicWriteJson(TRANSLATE_CHECKPOINT_FILE, payload)
+  } catch {
+    // A read-only DATA_DIR (packaged/embedded) degrades resume to the lifetime
+    // of this process; translation itself must still work.
+  }
+}
+
+function scheduleTranslateCheckpointFlush(): void {
+  if (checkpointFlushTimer) return
+  checkpointFlushTimer = setTimeout(flushTranslateCheckpoints, CHECKPOINT_FLUSH_MS)
+  // A pending checkpoint write must never hold the event loop (or a test
+  // runner) open.
+  checkpointFlushTimer.unref?.()
+}
+
+/** Persist one settled unit. Returns false when the result is not resumable. */
+export function saveTranslateCheckpoint(
+  tenantId: string | undefined,
+  sessionId: string,
+  unitId: string,
+  result: TranslateBatchUnitResult,
+): boolean {
+  if (!isCheckpointUnitResult(result)) return false
+  hydrateTranslateCheckpoints()
+  const key = checkpointStorageKey(tenantId, sessionId)
+  let units = TRANSLATE_CHECKPOINTS.get(key)
+  if (units) {
+    // Re-insert so a session that keeps receiving units stays out of the
+    // eviction window.
+    TRANSLATE_CHECKPOINTS.delete(key)
+  } else {
+    units = new Map<string, TranslateBatchUnitResult>()
+  }
+  TRANSLATE_CHECKPOINTS.set(key, units)
+  while (TRANSLATE_CHECKPOINTS.size > MAX_CHECKPOINT_SESSIONS) {
+    const oldest = TRANSLATE_CHECKPOINTS.keys().next().value
+    if (oldest === undefined || oldest === key) break
+    TRANSLATE_CHECKPOINTS.delete(oldest)
+  }
+  units.delete(unitId)
+  units.set(unitId, result)
+  while (units.size > MAX_CHECKPOINT_UNITS) {
+    const oldest = units.keys().next().value
+    if (oldest === undefined) break
+    units.delete(oldest)
+  }
+  scheduleTranslateCheckpointFlush()
+  return true
+}
+
+/** Every unit stored for a session, newest last. Empty when there is none. */
+export function loadTranslateCheckpoints(
+  tenantId: string | undefined,
+  sessionId: string,
+): TranslateBatchUnitResult[] {
+  hydrateTranslateCheckpoints()
+  const units = TRANSLATE_CHECKPOINTS.get(checkpointStorageKey(tenantId, sessionId))
+  return units ? [...units.values()] : []
+}
+
 /**
  * Caller identity for the translate HTTP surface. `embedCaller` must reflect
  * whether the request presented a verified JWT (through any credential
  * transport) — see the module header. Callers that omit it are treated as
  * local/operator, so every HTTP ingress must thread it explicitly.
+ *
+ * `endpoint` / `userId` / `tenantId` (A43) feed the `ai.call` audit record:
+ * the route name for `resource`, and the verified JWT identity. The tenant
+ * claim spreads raw — absent must stay absent so the record marks provenance
+ * 'fallback' instead of pinning a literal 'default' tenant as JWT-sourced.
  */
 export interface TranslateHttpCallerOptions {
   embedCaller?: boolean
+  endpoint?: string
+  userId?: string
+  tenantId?: string
 }
 
 type ResolvedProvider =
@@ -203,6 +367,23 @@ function resolveProvider(
 }
 
 type CoreScope = 'selection' | 'document' | 'paragraph' | 'cell' | 'table'
+
+/**
+ * The audit identity block both HTTP translate pipelines stamp on their
+ * `ai.call` record. Endpoint falls back to a module-level name for callers
+ * that didn't thread their route.
+ */
+function translateAuditContext(opts: TranslateHttpCallerOptions): {
+  endpoint: string
+  tenantId?: string
+  userId?: string
+} {
+  return {
+    endpoint: opts.endpoint ?? 'translate-http',
+    ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
+    ...(opts.userId ? { userId: opts.userId } : {}),
+  }
+}
 
 function castScope(raw: string | undefined): CoreScope | undefined {
   return raw === 'selection' ||
@@ -487,6 +668,11 @@ export async function translateBatchCore(
     })
     return
   }
+  const startedAt = Date.now()
+  // Hoisted so a fault inside the pipeline still audits the provider it ran
+  // against (validation rejections above never reach an audit record).
+  let attemptedProvider: string | undefined
+  let attemptedModel: string | undefined
   try {
     const resolved = resolveProvider(body, opts)
     if (!resolved.ok) {
@@ -502,6 +688,8 @@ export async function translateBatchCore(
       })
       return
     }
+    attemptedProvider = provider
+    attemptedModel = config.model
     const storage = await translationStorage()
     const inlineMemory = buildInlineMemory(body)
     const result = await translateBatch(
@@ -533,6 +721,16 @@ export async function translateBatchCore(
         ...(body.glossary && body.glossary.length > 0 ? { dictionary: body.glossary } : {}),
       },
     )
+    // Tokens stay null: the batch pipeline does not surface per-call usage
+    // (the units run inside the core layer's bounded worker pool).
+    auditAiCall({
+      ...translateAuditContext(opts),
+      provider: attemptedProvider,
+      ...(attemptedModel ? { model: attemptedModel } : {}),
+      durationMs: Date.now() - startedAt,
+      ok: result.ok,
+      ...(result.ok ? {} : { errorCode: 'unit_failed' }),
+    })
     sendJson(response, 200, result)
   } catch (error) {
     // A structured `InvalidArgumentError` here means the request shape was
@@ -544,6 +742,14 @@ export async function translateBatchCore(
         error: { message: asInvalid.message ?? 'invalid argument', code: 'INVALID_ARGUMENT' },
       })
     } else {
+      auditAiCall({
+        ...translateAuditContext(opts),
+        provider: attemptedProvider,
+        ...(attemptedModel ? { model: attemptedModel } : {}),
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        errorCode: 'translate_error',
+      })
       sendJson(response, 500, {
         error: { message: (error as Error)?.message ?? String(error) },
       })
@@ -610,6 +816,11 @@ export async function handleTranslateStreamHttp(
   let okCount = 0
   let memoryHitCount = 0
   let failedCount = 0
+  const startedAt = Date.now()
+  // Hoisted so a fault inside the pipeline still audits the provider it ran
+  // against (validation rejections below never reach an audit record).
+  let attemptedProvider: string | undefined
+  let attemptedModel: string | undefined
 
   // Everything between `writeHead` above and the `finally` at the bottom runs
   // inside this try. Once the 200 has gone out, the only correct way to fail
@@ -683,8 +894,9 @@ export async function handleTranslateStreamHttp(
       })
       return
     }
+    attemptedProvider = provider
+    attemptedModel = config.model
 
-    const startedAt = Date.now()
     writeSseEvent(response, 'start', {
       type: 'start',
       requestId: effectiveRequestId,
@@ -789,12 +1001,45 @@ export async function handleTranslateStreamHttp(
       elapsedMs: Date.now() - startedAt,
       ...(response_.error ? { errorMessage: response_.error } : {}),
     })
+    // Tokens stay null — the unit pool inside the core layer does not
+    // surface per-call usage.
+    auditAiCall({
+      ...translateAuditContext(opts),
+      provider: attemptedProvider,
+      ...(attemptedModel ? { model: attemptedModel } : {}),
+      durationMs: Date.now() - startedAt,
+      ok: response_.ok,
+      ...(abort.signal.aborted
+        ? { errorCode: 'aborted' }
+        : response_.ok
+          ? {}
+          : { errorCode: 'unit_failed' }),
+    })
   } catch (error) {
     if (!abort.signal.aborted) {
+      auditAiCall({
+        ...translateAuditContext(opts),
+        provider: attemptedProvider,
+        ...(attemptedModel ? { model: attemptedModel } : {}),
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        errorCode: 'translate_error',
+      })
       writeSseEvent(response, 'error', {
         type: 'error',
         requestId: effectiveRequestId,
         message: (error as Error)?.message ?? String(error),
+      })
+    } else {
+      // Client-driven abort mid-stream: no provider fault, tokens partially
+      // consumed — success record with a visible 'aborted' marker.
+      auditAiCall({
+        ...translateAuditContext(opts),
+        provider: attemptedProvider,
+        ...(attemptedModel ? { model: attemptedModel } : {}),
+        durationMs: Date.now() - startedAt,
+        ok: true,
+        errorCode: 'aborted',
       })
     }
   } finally {
@@ -864,4 +1109,100 @@ export async function handleTranslateStreamCancelHttp(
       ? 'unknown'
       : 'completed'
   sendJson(response, 200, { ok: true, status, requestId, aborted: Boolean(session) })
+}
+
+// ----- Checkpoint HTTP surface (A48) ---------------------------------------
+
+interface CheckpointSaveBody {
+  sessionId?: unknown
+  unitId?: unknown
+  result?: unknown
+  units?: unknown
+}
+
+/** Accept both a single unit and a batch, since the core saves one at a time
+ *  but a host that already holds a run's results may post them in one call. */
+function collectCheckpointEntries(body: CheckpointSaveBody): Array<[string, unknown]> {
+  const entries: Array<[string, unknown]> = []
+  if (typeof body.unitId === 'string') entries.push([body.unitId, body.result])
+  if (Array.isArray(body.units)) {
+    for (const item of body.units) {
+      if (!item || typeof item !== 'object') continue
+      const row = item as { unitId?: unknown; result?: unknown }
+      if (typeof row.unitId === 'string') entries.push([row.unitId, row.result])
+    }
+  }
+  return entries
+}
+
+/**
+ * POST /api/ai/translate/checkpoint — persist settled units for a session.
+ *
+ * Body: `{ sessionId, unitId, result }` or `{ sessionId, units: [{ unitId, result }] }`.
+ * The tenant scope comes from the verified JWT, never the body.
+ */
+export async function handleTranslateCheckpointSaveHttp(
+  request: IncomingMessage,
+  response: ServerResponse,
+  opts: TranslateHttpCallerOptions = {},
+): Promise<void> {
+  let body: CheckpointSaveBody
+  try {
+    const raw = await readBody(request)
+    body = (raw ? JSON.parse(raw) : {}) as CheckpointSaveBody
+  } catch {
+    sendJson(response, 400, { error: { message: 'invalid JSON body', code: 'INVALID_ARGUMENT' } })
+    return
+  }
+  const sessionId = normalizeCheckpointSessionId(body.sessionId)
+  if (!sessionId) {
+    sendJson(response, 400, {
+      error: { message: 'valid sessionId required', code: 'INVALID_ARGUMENT' },
+    })
+    return
+  }
+  // Only a resumable result is worth a 200: a body naming units but carrying
+  // no usable result (a bare `unitId`, or a failed unit the core would retry
+  // anyway) is a caller mistake, not a successful no-op.
+  const entries = collectCheckpointEntries(body).filter(([, result]) =>
+    isCheckpointUnitResult(result),
+  )
+  if (entries.length === 0) {
+    sendJson(response, 400, {
+      error: {
+        message: 'a unitId/units[] entry with a resumable result is required',
+        code: 'INVALID_ARGUMENT',
+      },
+    })
+    return
+  }
+  let saved = 0
+  for (const [unitId, result] of entries) {
+    if (saveTranslateCheckpoint(opts.tenantId, sessionId, unitId, result as TranslateBatchUnitResult)) {
+      saved += 1
+    }
+  }
+  sendJson(response, 200, { ok: true, sessionId, saved })
+}
+
+/**
+ * GET /api/ai/translate/checkpoint?sessionId=… — every unit stored for a
+ * session, so the renderer can hydrate its `TranslateCheckpoint` adapter in one
+ * round trip (`load(unitId)` then answers from the local map).
+ */
+export async function handleTranslateCheckpointLoadHttp(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  opts: TranslateHttpCallerOptions = {},
+): Promise<void> {
+  const sessionId = normalizeCheckpointSessionId(url.searchParams.get('sessionId'))
+  if (!sessionId) {
+    sendJson(response, 400, {
+      error: { message: 'valid sessionId required', code: 'INVALID_ARGUMENT' },
+    })
+    return
+  }
+  const units = loadTranslateCheckpoints(opts.tenantId, sessionId)
+  sendJson(response, 200, { ok: true, sessionId, units })
 }

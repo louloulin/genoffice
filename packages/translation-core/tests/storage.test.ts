@@ -65,8 +65,10 @@ describe('translation storage client', () => {
     spaceId = '2002'
     await client.upsertGlossary({ sourceTerm: 'B', targetTerm: '乙' })
 
-    expect(JSON.parse(String(calls[0]!.init?.body)).spaceId).toBe(1001)
-    expect(JSON.parse(String(calls[1]!.init?.body)).spaceId).toBe(2002)
+    // Ids go on the wire as strings: a snowflake exceeds MAX_SAFE_INTEGER and
+    // `Number()` would flatten its last digits.
+    expect(JSON.parse(String(calls[0]!.init?.body)).spaceId).toBe('1001')
+    expect(JSON.parse(String(calls[1]!.init?.body)).spaceId).toBe('2002')
   })
 
   it('sends an explicit null space on write when there is no space (tenant-shared is a choice)', async () => {

@@ -2,11 +2,12 @@ import type { AgentMessage, AgentToolDef } from '../agent-protocol'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
 import { gensparkAttributionHeaders, opencodeSessionHeaders } from '../providers'
-import type { AiChatResponse, AiProviderConfig } from '../types'
+import type { AiChatResponse, AiProviderConfig, AiUsage } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import { toGeminiSchema } from './gemini-schema'
 import {
   jsonBodyInsteadOfSse,
+  parseAiUsage,
   sseErrorText,
   sseLines,
   throwIfCreditsNotice,
@@ -71,17 +72,21 @@ function emitGeminiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
       }
       finishReason?: string
     }>
+    usageMetadata?: unknown
     promptFeedback?: { blockReason?: string }
     error?: { message?: string } | string
   }>
   let emitted = false
   let stopReason: string | undefined
   let abnormalFinish: string | undefined
+  let usage: AiUsage | undefined
   for (const event of events) {
     if (event.error) throw new Error(sseErrorText(event.error, 'Gemini error'))
     if (event.promptFeedback?.blockReason) {
       throw new Error(`Gemini blocked the prompt (${event.promptFeedback.blockReason})`)
     }
+    const eventUsage = parseAiUsage(event.usageMetadata)
+    if (eventUsage) usage = eventUsage
     const finishReason = event.candidates?.[0]?.finishReason
     if (finishReason === 'MAX_TOKENS') stopReason = 'max_tokens'
     else if (finishReason && finishReason !== 'STOP') abnormalFinish = finishReason
@@ -107,6 +112,7 @@ function emitGeminiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
         : `Gemini returned no content: ${httpBodyDetail(bodyText)}`,
     )
   }
+  if (usage) cb.onUsage?.(usage)
   if (stopReason) cb.onStopReason?.(stopReason)
 }
 
@@ -197,6 +203,7 @@ async function geminiTurn(
   let abnormalFinish: string | undefined
   let sawFinish = false
   let emitted = false
+  let usage: AiUsage | undefined
   for await (const line of sseLines(response.body, onBytes)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
@@ -215,6 +222,7 @@ async function geminiTurn(
           }
           finishReason?: string
         }>
+        usageMetadata?: unknown
         promptFeedback?: { blockReason?: string }
         error?: { message?: string } | string
       }
@@ -225,6 +233,9 @@ async function geminiTurn(
     if (event.promptFeedback?.blockReason) {
       throw new Error(`Gemini blocked the prompt (${event.promptFeedback.blockReason})`)
     }
+    // Gemini repeats usageMetadata on every chunk, ending with the complete counts
+    const eventUsage = parseAiUsage(event.usageMetadata)
+    if (eventUsage) usage = eventUsage
     const finishReason = event.candidates?.[0]?.finishReason
     if (finishReason) sawFinish = true
     if (finishReason === 'MAX_TOKENS') stopReason = 'max_tokens'
@@ -254,6 +265,7 @@ async function geminiTurn(
   if (!emitted && !sawFinish) {
     throw new Error('Gemini returned no content (empty stream)')
   }
+  if (usage) cb.onUsage?.(usage)
   if (stopReason) cb.onStopReason?.(stopReason)
 }
 
@@ -294,10 +306,12 @@ export async function chatGemini(
   const bodyText = await response.text()
   let json: {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+    usageMetadata?: unknown
   }
   try {
     json = JSON.parse(bodyText) as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+      usageMetadata?: unknown
     }
   } catch {
     return {
@@ -307,5 +321,6 @@ export async function chatGemini(
   }
   const content = json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('')
   if (!content) return { ok: false, error: 'Gemini returned an empty response' }
-  return { ok: true, content }
+  const usage = parseAiUsage(json.usageMetadata)
+  return { ok: true, content, ...(usage ? { usage } : {}) }
 }

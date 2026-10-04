@@ -2,10 +2,11 @@ import type { AgentMessage, AgentToolCall, AgentToolDef } from '../agent-protoco
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
 import { gensparkAttributionHeaders, opencodeSessionHeaders } from '../providers'
-import type { AiChatResponse, AiProviderConfig } from '../types'
+import type { AiChatResponse, AiProviderConfig, AiUsage } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import {
   jsonBodyInsteadOfSse,
+  parseAiUsage,
   parseToolInput,
   sseErrorText,
   sseLines,
@@ -66,6 +67,7 @@ function emitAnthropicJsonMessage(bodyText: string, cb: StreamCallbacks): void {
       input?: Record<string, unknown>
     }>
     stop_reason?: string
+    usage?: unknown
     error?: { message?: string } | string
   }
   try {
@@ -94,6 +96,8 @@ function emitAnthropicJsonMessage(bodyText: string, cb: StreamCallbacks): void {
   if (msg.stop_reason === 'max_tokens' && lastTool) lastTool.truncated = true
   for (const call of toolCalls) cb.onToolCall(call)
   if (!emitted) throw new Error(`Claude returned no content: ${httpBodyDetail(bodyText)}`)
+  const usage = parseAiUsage(msg.usage)
+  if (usage) cb.onUsage?.(usage)
   if (msg.stop_reason) cb.onStopReason?.(msg.stop_reason)
 }
 
@@ -182,6 +186,7 @@ async function anthropicTurn(
   const completedTools: AgentToolCall[] = []
   let stopReason: string | undefined
   let emitted = false
+  const usage: AiUsage = {}
   for await (const line of sseLines(response.body, onBytes)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
@@ -195,12 +200,23 @@ async function anthropicTurn(
         index?: number
         content_block?: { type?: string; id?: string; name?: string }
         delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string }
+        message?: { usage?: unknown }
+        usage?: unknown
         error?: { message?: string } | string
       }
     } catch {
       continue
     }
-    if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+    // message_start carries usage.input_tokens; message_delta later carries
+    // usage.output_tokens — accumulate across both into one turn total.
+    if (event.type === 'message_start') {
+      const startUsage = parseAiUsage(event.message?.usage)
+      if (startUsage?.promptTokens !== undefined) usage.promptTokens = startUsage.promptTokens
+    } else if (event.type === 'message_delta') {
+      const deltaUsage = parseAiUsage(event.usage)
+      if (deltaUsage?.completionTokens !== undefined) usage.completionTokens = deltaUsage.completionTokens
+      if (event.delta?.stop_reason) stopReason = event.delta.stop_reason
+    } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
       pendingTools.set(event.index ?? 0, {
         id: event.content_block.id ?? crypto.randomUUID(),
         name: event.content_block.name ?? '',
@@ -221,8 +237,6 @@ async function anthropicTurn(
         const { input, error } = parseToolInput(pending.json)
         completedTools.push({ id: pending.id, name: pending.name, input, inputError: error })
       }
-    } else if (event.type === 'message_delta') {
-      if (event.delta?.stop_reason) stopReason = event.delta.stop_reason
     } else if (event.type === 'error' || event.error) {
       // also catches gateway errors delivered in a non-Anthropic shape (no `type` field)
       throw new Error(sseErrorText(event.error, 'Claude stream error'))
@@ -248,6 +262,7 @@ async function anthropicTurn(
   if (!emitted && completedTools.length === 0 && !stopReason) {
     throw new Error('Claude returned no content (empty stream)')
   }
+  if (usage.promptTokens !== undefined || usage.completionTokens !== undefined) cb.onUsage?.(usage)
   if (stopReason) cb.onStopReason?.(stopReason)
 }
 
@@ -288,9 +303,12 @@ export async function chatAnthropic(
   // would make response.json() throw; return ok:false instead of leaking a
   // raw SyntaxError to the caller.
   const bodyText = await response.text()
-  let json: { content?: Array<{ type: string; text?: string }> }
+  let json: { content?: Array<{ type: string; text?: string }>; usage?: unknown }
   try {
-    json = JSON.parse(bodyText) as { content?: Array<{ type: string; text?: string }> }
+    json = JSON.parse(bodyText) as {
+      content?: Array<{ type: string; text?: string }>
+      usage?: unknown
+    }
   } catch {
     return {
       ok: false,
@@ -302,5 +320,6 @@ export async function chatAnthropic(
     .map((c) => c.text ?? '')
     .join('')
   if (!content) return { ok: false, error: 'Claude returned an empty response' }
-  return { ok: true, content }
+  const usage = parseAiUsage(json.usage)
+  return { ok: true, content, ...(usage ? { usage } : {}) }
 }

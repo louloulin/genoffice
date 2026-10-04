@@ -21,6 +21,7 @@ import type {
   SaveMode,
   UiTheme,
 } from './ipc'
+import type { TranslateBatchResponse } from '@genoffice/translation-core/document'
 
 export interface MarkdownApiOverrides {
   consumePending?: () => Promise<string | null>
@@ -64,6 +65,15 @@ export interface MarkdownApiOverrides {
   consumeHeadlessExport?: () => Promise<string | null>
   /** Headless export completion: web build is a no-op. */
   headlessExportDone?: (result: { ok: boolean; error?: string }) => void
+  /**
+   * Streaming batch translation (embedded runs only).
+   *
+   * The base transport has no SSE reader, so the default replays a finished
+   * batch through `onUnit`; the web bridge overrides this to consume the host's
+   * per-unit feed. Same reasoning as the sheets factory: progress that only
+   * moves at batch boundaries is slower, not broken.
+   */
+  aiTranslateBatchStream?: MarkdownApi['aiTranslateBatchStream']
 }
 
 export function createMarkdownApi(
@@ -136,6 +146,22 @@ export function createMarkdownApi(
     webSearch: (query, maxResults) => t.invoke(AI_CHANNELS.webSearch, query, maxResults),
     imageSearch: (query, maxResults) => t.invoke(AI_CHANNELS.imageSearch, query, maxResults),
     fetchImage: (url) => t.invoke(AI_CHANNELS.fetchImage, url),
+    aiTranslateBatch: (request) => t.invoke(AI_CHANNELS.translateBatch, request),
+    aiTranslateBatchStream:
+      overrides.aiTranslateBatchStream ??
+      (async (request, options) => {
+        const batch = (await t.invoke(
+          AI_CHANNELS.translateBatch,
+          request,
+        )) as TranslateBatchResponse
+        // Replay the finished batch through `onUnit` so a caller that only
+        // reads the per-unit stream still sees every unit. Without this the
+        // fallback would look like a run that translated nothing.
+        for (const unit of batch.units ?? []) {
+          if (unit?.unitId) options?.onUnit?.(unit)
+        }
+        return batch
+      }),
     aiGenerateImage: (op) => t.invoke(MARKDOWN_CHANNELS.aiGenerateImage, op),
   }
   return api

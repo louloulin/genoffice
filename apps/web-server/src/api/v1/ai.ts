@@ -12,7 +12,25 @@ import { sendJson, sendError, readBody } from './http-utils'
 import { invokeIpc } from './ipc-bridge'
 import { requireScopeFromHeaders } from './auth'
 import { classifyRemoteUrl } from '@genoffice/electron-utils/safe-remote-url'
+import { auditAiCall } from '../../ai/ai-audit'
 import { translateBatchCore, handleTranslateStreamHttp, handleTranslateStreamCancelHttp, type TranslateBatchHttpRequest } from '../../ai/translate-http'
+
+/**
+ * The event overrides every gated v1 AI route threads onto its IPC event:
+ * the verified subject and, when the JWT carries it, the `tenant` claim.
+ * The claim spreads raw — an absent tenant must stay absent so audit records
+ * mark provenance 'fallback' instead of pinning a literal 'default' tenant
+ * as JWT-sourced.
+ */
+function aiEventOverrides(gate: { payload: { sub?: string; tenant?: string } }): {
+  userId?: string
+  tenantId?: string
+} {
+  return {
+    ...(gate.payload.sub ? { userId: gate.payload.sub } : {}),
+    ...(gate.payload.tenant ? { tenantId: gate.payload.tenant } : {}),
+  }
+}
 
 /**
  * `POST /api/v1/ai/capabilities`
@@ -72,7 +90,7 @@ export async function handleAiChat(ctx: { request: IncomingMessage; response: Se
     sendError(ctx.response, 400, 'expected { messages: [{role, content}] } with at least one user message', 'INVALID_ARGUMENT', 'ai:chat')
     return true
   }
-  const result = await invokeIpc('ai:chat', [ipcBody], { userId: gate.payload.sub })
+  const result = await invokeIpc('ai:chat', [ipcBody], aiEventOverrides(gate))
   sendJson(ctx.response, 200, result)
   return true
 }
@@ -112,7 +130,11 @@ export async function handleAiTranslate(ctx: { request: IncomingMessage; respons
   if (Array.isArray(rawBody.units)) {
     // The gate above verified a JWT — this caller is embed-mode for the
     // translate sanitize layer (network fields stripped/backfilled).
-    await translateBatchCore(rawBody as TranslateBatchHttpRequest, ctx.response, { embedCaller: true })
+    await translateBatchCore(rawBody as TranslateBatchHttpRequest, ctx.response, {
+      embedCaller: true,
+      endpoint: '/api/v1/ai/translate',
+      ...aiEventOverrides(gate),
+    })
     return true
   }
   // The REST shape (sdk1 §11.4 / docs/api/rest-api.md) is
@@ -150,7 +172,7 @@ export async function handleAiTranslate(ctx: { request: IncomingMessage; respons
     targetLang,
     ...(sourceLang ? { sourceLang } : {}),
   }
-  const result = await invokeIpc('ai:translate', [ipcBody])
+  const result = await invokeIpc('ai:translate', [ipcBody], aiEventOverrides(gate))
   sendJson(ctx.response, 200, result)
   return true
 }
@@ -179,7 +201,11 @@ export function handleAiTranslateStream(ctx: { request: IncomingMessage; respons
   // awaiting it here would hold the dispatcher's promise for the whole run.
   // Mirrors the legacy registration in src/index.ts. The gate above verified
   // a JWT — embed-mode for the translate sanitize layer.
-  void handleTranslateStreamHttp(ctx.request, ctx.response, { embedCaller: true })
+  void handleTranslateStreamHttp(ctx.request, ctx.response, {
+    embedCaller: true,
+    endpoint: '/api/v1/ai/translate/stream',
+    ...aiEventOverrides(gate),
+  })
   return true
 }
 
@@ -266,7 +292,27 @@ export async function handleAiImage(ctx: { request: IncomingMessage; response: S
     )
     return true
   }
-  const result = await invokeIpc('ai:fetch-image', [url])
+  // A43: this is a fetch surface, not a model turn — tokens are null. The IPC
+  // handler writes the single `ai.call` record (covering both this HTTP route
+  // and direct renderer IPC calls); it names this route via `auditEndpoint`.
+  // The catch below only covers a thrown IPC dispatch, which the handler
+  // itself never does, so it is a last-resort record rather than a duplicate.
+  const startedAt = Date.now()
+  let result: unknown
+  try {
+    result = await invokeIpc('ai:fetch-image', [url], {
+      ...aiEventOverrides(gate),
+      auditEndpoint: '/api/v1/ai/image',
+    })
+  } catch (error) {
+    auditAiCall({
+      endpoint: '/api/v1/ai/image',
+      ...aiEventOverrides(gate),
+      durationMs: Date.now() - startedAt,
+      ok: false,
+    })
+    throw error
+  }
   sendJson(ctx.response, 200, result)
   return true
 }
@@ -304,7 +350,7 @@ export async function handleAiSkill(ctx: { request: IncomingMessage; response: S
     sendError(ctx.response, 400, 'expected { messages: [{role, content}] } with at least one user message', 'INVALID_ARGUMENT', `ai:skill:${skillName}`)
     return true
   }
-  const result = await invokeIpc('ai:chat', [{ ...ipcBody, skill: skillName }], { userId: gate.payload.sub })
+  const result = await invokeIpc('ai:chat', [{ ...ipcBody, skill: skillName }], aiEventOverrides(gate))
   sendJson(ctx.response, 200, result)
   return true
 }

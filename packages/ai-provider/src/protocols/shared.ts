@@ -1,4 +1,5 @@
 import type { AgentToolCall } from '../agent-protocol'
+import type { AiUsage } from '../types'
 
 // ---- streaming (SSE line splitting shared by all providers) ----
 
@@ -38,11 +39,39 @@ export interface StreamCallbacks {
   onReasoningDelta?: (text: string) => void
   /** normalized stop reason ('max_tokens' when the output was cut off by the token limit) */
   onStopReason?: (reason: string) => void
+  /** provider-reported token usage, emitted when the stream carries it (Anthropic/Gemini always; OpenAI-compatible only if the gateway includes it) */
+  onUsage?: (usage: AiUsage) => void
   /** bytes arrived on the wire (fires per network chunk, including SSE pings; used for keepalive) */
   onActivity?: () => void
   /** Stable renderer transport id for providers with native sessions. */
   sessionId?: string
   signal: AbortSignal
+}
+
+/**
+ * Normalize the three wire shapes a provider may use for token accounting
+ * (OpenAI `usage`, Anthropic `usage.{input,output}_tokens`, Gemini
+ * `usageMetadata.{promptTokenCount,candidatesTokenCount,totalTokenCount}`).
+ * Returns undefined unless at least one recognizable count is present, so
+ * gateways that echo an unrelated `usage` object don't fabricate zeros.
+ */
+export function parseAiUsage(raw: unknown): AiUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const u = raw as Record<string, unknown>
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+  const promptTokens =
+    num(u.prompt_tokens) ?? num(u.input_tokens) ?? num(u.promptTokenCount)
+  const completionTokens =
+    num(u.completion_tokens) ?? num(u.output_tokens) ?? num(u.candidatesTokenCount)
+  const totalTokens = num(u.total_tokens) ?? num(u.totalTokenCount)
+  if (promptTokens === undefined && completionTokens === undefined && totalTokens === undefined) {
+    return undefined
+  }
+  const usage: AiUsage = {}
+  if (promptTokens !== undefined) usage.promptTokens = promptTokens
+  if (completionTokens !== undefined) usage.completionTokens = completionTokens
+  if (totalTokens !== undefined) usage.totalTokens = totalTokens
+  return usage
 }
 
 /**

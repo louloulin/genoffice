@@ -11,7 +11,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { stopServer } from './helpers/server-process'
 import { join } from 'node:path'
@@ -126,9 +126,41 @@ function getSseEvents(pathname: string, body: unknown, maxMs = 30_000): Promise<
   })
 }
 
+/** Audit records persisted by the running server, parsed from the JSONL log. */
+function readAudit(): Array<Record<string, unknown>> {
+  try {
+    return readFileSync(join(TMP_DATA, 'audit-log.jsonl'), 'utf8')
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+  } catch {
+    return []
+  }
+}
+
+async function waitForAudit(
+  predicate: (rec: Record<string, unknown>) => boolean,
+  maxMs = 5_000,
+): Promise<Record<string, unknown> | undefined> {
+  const deadline = Date.now() + maxMs
+  while (Date.now() < deadline) {
+    const hit = readAudit().find(predicate)
+    if (hit) return hit
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return undefined
+}
+
 beforeAll(async () => {
   server = spawn('node', [BUNDLE], {
-    env: { ...process.env, DATA_DIR: TMP_DATA, PORT: String(PORT) },
+    env: {
+      ...process.env,
+      DATA_DIR: TMP_DATA,
+      PORT: String(PORT),
+      // Force persistence on so the A43 assertion can read the record back
+      // from disk even if the CI environment disables the audit log.
+      GENOFFICE_AUDIT_PERSIST: '1',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   // Wait for the banner to appear.
@@ -205,5 +237,21 @@ describe('POST /api/ai/pi-prompt', () => {
     const errorEvent = events.find((e) => e.type === 'error')
     expect(errorEvent, `events: ${JSON.stringify(types)}`).toBeTruthy()
     expect(String(errorEvent?.message ?? '')).toMatch(/API key|login|provider/i)
+  })
+
+  it('writes an ai.call audit record for the prompt route (A43)', async () => {
+    await getSseEvents('/api/ai/pi-prompt', { text: 'say hi' }, 25_000)
+
+    // The record is written in the handler's finally block after the prompt
+    // settles — poll briefly so the assertion does not race the flush.
+    const rec = await waitForAudit(
+      (r) => r.action === 'ai.call' && r.resource === '/api/ai/pi-prompt',
+    )
+    expect(rec, `audit lines: ${JSON.stringify(readAudit())}`).toBeTruthy()
+    // No LLM key on CI, so the agent turn fails — the point is the record
+    // exists and is attributed to this route.
+    expect(rec!.status).toBe('failure')
+    expect(rec!.tenantId).toBe('default')
+    expect(rec!.details).toMatchObject({ tenantSource: 'fallback' })
   })
 })

@@ -16,7 +16,13 @@ import { callLlm } from '../src/llm-client'
 
 import { KnowledgeBase } from '../src/knowledge-base'
 import { TranslationMemory } from '../src/memory'
-import { sharedMemory, translateBatch, translateBatchStream, translateOne } from '../src/provider'
+import {
+  classifyTranslationFailure,
+  sharedMemory,
+  translateBatch,
+  translateBatchStream,
+  translateOne,
+} from '../src/provider'
 
 const mockedCall = vi.mocked(callLlm)
 
@@ -1105,5 +1111,166 @@ describe('translation memory scoping', () => {
     )
     expect(r.units?.[0]?.status).toBe('translated')
     expect(mockedCall).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A44 — machine-readable failure classification
+// ---------------------------------------------------------------------------
+
+describe('classifyTranslationFailure (A44)', () => {
+  // The pipeline's retry decision is a `switch` on this code, so a
+  // misclassification is not cosmetic: calling a permanent failure retryable
+  // burns three provider calls and three backoff sleeps per failing unit, and
+  // calling a transient one permanent silently drops a unit that would have
+  // succeeded on the next attempt.
+  const cases: Array<[string, { error?: string; overloaded?: boolean }, string]> = [
+    ['credit exhaustion is permanent', { error: 'Your credit balance is too low' }, 'credits'],
+    [
+      'a quota notice wins over the bare 429 it arrives with',
+      { error: 'HTTP 429: quota exceeded' },
+      'credits',
+    ],
+    ['an explicit overloaded flag is transient', { error: 'busy', overloaded: true }, 'overloaded'],
+    ['a rate-limit 429 is transient', { error: 'HTTP 429: rate_limit_error' }, 'overloaded'],
+    ['a 503 is transient (overload branch, not server)', { error: 'HTTP 503: engine overloaded' }, 'overloaded'],
+    ['a transport failure is transient', { error: 'Claude fetch failed cause=ECONNRESET' }, 'network'],
+    ['the watchdog timeout is transient', { error: 'AI request timed out: no data received from the network for 30s' }, 'timeout'],
+    ['a plain 5xx is transient', { error: 'HTTP 500: Internal Server Error' }, 'server'],
+    ['a 401 is permanent', { error: 'HTTP 401: Unauthorized' }, 'auth'],
+    ['an echoed content refusal is permanent', { error: 'content_policy_violation: blocked by safety' }, 'content-policy'],
+    ['anything unclassified stays unclassified', { error: 'something odd happened' }, 'unknown'],
+  ]
+
+  for (const [name, input, expected] of cases) {
+    it(name, () => {
+      expect(classifyTranslationFailure(input)).toBe(expected)
+    })
+  }
+
+  it('does not read a missing error as a network failure', () => {
+    expect(classifyTranslationFailure({})).toBe('unknown')
+  })
+})
+
+describe('translateBatch — failure codes on units (A44)', () => {
+  beforeEach(() => {
+    mockedCall.mockReset()
+    sharedMemory.clear()
+  })
+
+  it('carries the classification onto the failing unit and leaves the others alone', async () => {
+    mockedCall.mockImplementation(async (opts) => {
+      if (opts.userPrompt.includes('Bad source')) {
+        return { ok: false, error: 'Your credit balance is too low' }
+      }
+      return { ok: true, content: '好' }
+    })
+
+    const r = await translateBatch(
+      {
+        units: [
+          { unitId: 'g', kind: 'paragraph', sourceText: 'Good source', order: 0 },
+          { unitId: 'b', kind: 'paragraph', sourceText: 'Bad source', order: 1 },
+        ],
+        targetLang: 'zh-CN',
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+
+    expect(r.units?.[0]?.status).toBe('translated')
+    expect(r.units?.[0]?.errorCode).toBeUndefined()
+    expect(r.units?.[1]?.status).toBe('failed')
+    expect(r.units?.[1]?.errorCode).toBe('credits')
+  })
+
+  it('marks a parseable-but-empty 200 as invalid-response', async () => {
+    // The provider answered successfully and the model simply produced no
+    // translation — a retryable-looking `ok:true` that must not be reported as
+    // a translated unit with empty text.
+    mockedCall.mockResolvedValue({ ok: true, content: '   ' })
+
+    const r = await translateBatch(
+      {
+        units: [{ unitId: 'u', kind: 'paragraph', sourceText: 'Hello', order: 0 }],
+        targetLang: 'zh-CN',
+      },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+
+    expect(r.units?.[0]?.status).toBe('failed')
+    expect(r.units?.[0]?.errorCode).toBe('invalid-response')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A50 — bounded concurrency
+// ---------------------------------------------------------------------------
+
+describe('translateBatch — bounded concurrency (A50)', () => {
+  beforeEach(() => {
+    mockedCall.mockReset()
+    sharedMemory.clear()
+  })
+
+  /** Counts how many provider calls are simultaneously in flight. */
+  function instrument() {
+    let inFlight = 0
+    let peak = 0
+    mockedCall.mockImplementation(async () => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      inFlight -= 1
+      return { ok: true, content: '译' }
+    })
+    return () => peak
+  }
+
+  function unitsOf(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      unitId: `u${i}`,
+      kind: 'paragraph' as const,
+      sourceText: `Source ${i}`,
+      order: i,
+    }))
+  }
+
+  it('never exceeds the requested concurrency', async () => {
+    const peak = instrument()
+    const r = await translateBatch(
+      { units: unitsOf(60), targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+      { concurrency: 4 },
+    )
+
+    expect(r.units).toHaveLength(60)
+    // Previously this path was `Promise.all` over every unit — 60 sockets at
+    // once. The bound is the whole point of the change.
+    expect(peak()).toBeLessThanOrEqual(4)
+    // ...and it still runs in parallel rather than degenerating to serial.
+    expect(peak()).toBeGreaterThan(1)
+  })
+
+  it('defaults to a bounded pool below the unit count', async () => {
+    const peak = instrument()
+    await translateBatch(
+      { units: unitsOf(60), targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+    )
+
+    expect(peak()).toBeLessThanOrEqual(25)
+  })
+
+  it('treats a zero or negative concurrency as one', async () => {
+    const peak = instrument()
+    const r = await translateBatch(
+      { units: unitsOf(5), targetLang: 'zh-CN' },
+      { provider: 'anthropic', config: { apiKey: 'k', model: 'm' } },
+      { concurrency: 0 },
+    )
+
+    expect(r.units?.[4]?.status).toBe('translated')
+    expect(peak()).toBe(1)
   })
 })

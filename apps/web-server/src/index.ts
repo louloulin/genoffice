@@ -59,7 +59,10 @@ import { getDefaultProviderRegistry } from '@genoffice/ai-provider'
 import { getDefaultSkillRegistry } from '@genoffice/agent-skills'
 import { classifyWebError, ipcErrorStatus, InvalidArgumentError } from './ai/errors'
 import {
+  flushTranslateCheckpoints,
   handleTranslateBatchHttp,
+  handleTranslateCheckpointLoadHttp,
+  handleTranslateCheckpointSaveHttp,
   handleTranslateStreamHttp,
   handleTranslateStreamCancelHttp,
 } from './ai/translate-http'
@@ -80,6 +83,7 @@ import { registerAnydocHandlers } from './anydoc/index'
 import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
+import { auditAiCall } from './ai/ai-audit'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
 import { jwtPayloadFromRequest, jwtScopeFor, openModeAllowed, resolveAuthority, writeForbidden } from './auth/route-policy'
 // sdk1 §11.111: handleApiV1 + findV1Route are imported together so the
@@ -838,6 +842,10 @@ const server = createServer(async (request, response) => {
           frameId: 0,
           sessionId: session,
           ...(authPayload?.sub ? { userId: authPayload.sub } : {}),
+          // A40: a JWT tenant claim becomes the request's tenant context; its
+          // absence (local renderer / operator token) stays legible to audit
+          // writers as "no tenant identity" rather than a pre-filled default.
+          ...(authPayload?.tenant ? { tenantId: authPayload.tenant } : {}),
           sender: {
             id: -1,
             isDestroyed: () => false,
@@ -1048,6 +1056,14 @@ const server = createServer(async (request, response) => {
           },
           send,
         },
+        // A43: the raw claims spread, not tenantFromPayload — absent claims
+        // must stay absent so the audit record marks provenance 'fallback'
+        // rather than pinning a literal 'default' tenant as JWT-sourced.
+        {
+          endpoint: '/api/ai/stream',
+          ...(gate.jwt?.tenant ? { tenantId: gate.jwt.tenant } : {}),
+          ...(gate.jwt?.sub ? { userId: gate.jwt.sub } : {}),
+        },
       )
     } catch (error) {
       // Two failure windows exist on this endpoint. Before `writeHead` the
@@ -1135,7 +1151,12 @@ const server = createServer(async (request, response) => {
     }
     const gate = gateLegacyJwtScope(request, url, response, 'ai:translate')
     if (gate.blocked) return
-    void handleTranslateBatchHttp(request, response, { embedCaller: gate.jwt !== null })
+    void handleTranslateBatchHttp(request, response, {
+      embedCaller: gate.jwt !== null,
+      endpoint: '/api/ai/translate',
+      ...(gate.jwt?.sub ? { userId: gate.jwt.sub } : {}),
+      ...(gate.jwt?.tenant ? { tenantId: gate.jwt.tenant } : {}),
+    })
     return
   }
 
@@ -1153,7 +1174,39 @@ const server = createServer(async (request, response) => {
     }
     const gate = gateLegacyJwtScope(request, url, response, 'ai:translate')
     if (gate.blocked) return
-    void handleTranslateStreamHttp(request, response, { embedCaller: gate.jwt !== null })
+    void handleTranslateStreamHttp(request, response, {
+      embedCaller: gate.jwt !== null,
+      endpoint: '/api/ai/translate/stream',
+      ...(gate.jwt?.sub ? { userId: gate.jwt.sub } : {}),
+      ...(gate.jwt?.tenant ? { tenantId: gate.jwt.tenant } : {}),
+    })
+    return
+  }
+
+  if (url.pathname === '/api/ai/translate/checkpoint') {
+    const gate = gateLegacyJwtScope(request, url, response, 'ai:translate')
+    if (gate.blocked) return
+    const caller = {
+      embedCaller: gate.jwt !== null,
+      endpoint: '/api/ai/translate/checkpoint',
+      ...(gate.jwt?.tenant ? { tenantId: gate.jwt.tenant } : {}),
+    }
+    if (request.method === 'POST') {
+      void handleTranslateCheckpointSaveHttp(request, response, caller)
+      return
+    }
+    if (request.method === 'GET') {
+      void handleTranslateCheckpointLoadHttp(request, response, url, caller)
+      return
+    }
+    sendJson(response, 405, {
+      error: {
+        code: 'METHOD_NOT_ALLOWED',
+        message: 'GET or POST required',
+        channel: url.pathname,
+        allow: 'GET, POST',
+      },
+    })
     return
   }
 
@@ -1194,7 +1247,7 @@ const server = createServer(async (request, response) => {
       })
       return
     }
-    void handlePiPromptStreamHttp(request, response)
+    void handlePiPromptStreamHttp(request, response, url)
     return
   }
 
@@ -1544,6 +1597,9 @@ function shutdown(code = 0): void {
       /* a failed flush during shutdown must not block the exit path */
     }
     flushFileManagementState()
+    /* Resume checkpoints are debounced too: a translation cancelled moments
+     * before shutdown must still leave its settled units for the next run. */
+    flushTranslateCheckpoints()
   }
   void Promise.allSettled([flushTranslationMemory(), flushState()]).finally(() => {
     server.close(() => process.exit(code))
@@ -1561,6 +1617,7 @@ process.on('SIGINT', () => shutdown())
 async function handlePiPromptStreamHttp(
   request: IncomingMessage,
   response: ServerResponse,
+  url: URL,
 ): Promise<void> {
   const { getPiSession, invalidatePiSession } = (await import('./shell/pi-session')) as {
     getPiSession: () => Promise<{
@@ -1571,6 +1628,14 @@ async function handlePiPromptStreamHttp(
     }>
     invalidatePiSession: () => void
   }
+
+  // A43: this route drives the embedded pi AgentSession — an AI surface that
+  // previously wrote no audit record. One record per request (the session does
+  // not surface per-provider usage, so the token fields stay null); the raw
+  // JWT claims are spread so absent claims mark provenance 'fallback'.
+  const startedAt = Date.now()
+  const jwt = jwtPayloadFromRequest({ headers: request.headers, url })
+  let succeeded = false
 
   // no initializers: the catch below returns before either is read, and each
   // is read only after its assignment in the streaming try block
@@ -1680,6 +1745,7 @@ async function handlePiPromptStreamHttp(
       }
     })
     await officeSession.session.prompt(promptText)
+    succeeded = true
     send({ type: 'complete', requestId: streamId })
   } catch (error) {
     send({
@@ -1694,6 +1760,14 @@ async function handlePiPromptStreamHttp(
       /* ignore */
     }
   } finally {
+    auditAiCall({
+      endpoint: '/api/ai/pi-prompt',
+      ...(jwt?.tenant ? { tenantId: jwt.tenant } : {}),
+      ...(jwt?.sub ? { userId: jwt.sub } : {}),
+      durationMs: Date.now() - startedAt,
+      ok: succeeded,
+      ...(succeeded ? {} : { errorCode: 'pi_error' }),
+    })
     teardown()
     try {
       response.end()

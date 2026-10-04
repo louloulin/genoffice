@@ -28,6 +28,7 @@
     "@genoffice/file-parse": "*",
     "@genoffice/i18n": "*",
     "@genoffice/project-store": "*",
+    "@genoffice/translation-core": "*",
     "@genoffice/ui": "*",
     "@genoffice/web-sdk": "*",
     "@lezer/highlight": "^1.2.3",

@@ -29,6 +29,10 @@ const DEFAULT_TTL_SEC = 3600
 export interface JwtPayload {
   sub: string
   doc?: string
+  /** Tenant/space this token operates in (A40). Resolved into the request
+   *  context by route-policy (`tenantFromPayload`) and stamped on audit
+   *  records; absent → the request falls back to the 'default' tenant. */
+  tenant?: string
   /** RBAC scope list — flat array of action:resource strings.  Mirrors the
    *  OAuth 2.0 `scope` claim; `perm` is kept for backward compatibility with
    *  earlier GenOffice clients and is treated as an alias of `scope`.  Both
@@ -386,7 +390,7 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
   // Accept `ttl` (documented in docs/api/rest-api.md) as well as the
   // legacy `exp` (absolute epoch-seconds). Unknown extra fields are
   // allowed but never trusted.
-  let body: { sub?: unknown; doc?: unknown; perm?: unknown; scope?: unknown; exp?: unknown; ttl?: unknown }
+  let body: { sub?: unknown; doc?: unknown; tenant?: unknown; perm?: unknown; scope?: unknown; exp?: unknown; ttl?: unknown }
   try {
     const raw = await readBody(request)
     body = raw ? JSON.parse(raw) : {}
@@ -415,6 +419,19 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
   if (docArg !== undefined) {
     if (typeof docArg !== 'string' || docArg.trim().length === 0) {
       sendError(response, 400, 'doc must be a non-empty string when provided', 'INVALID_ARGUMENT', 'auth:jwt')
+      return true
+    }
+  }
+
+  // A40: `tenant` follows the same contract as `doc` — a non-empty string
+  // when present, null treated as "not set". It becomes the tenant context
+  // the minted token operates in (route-policy resolves it onto requests
+  // and the audit trail stamps it), so a malformed value must not be signed
+  // in verbatim.
+  const tenantArg = body.tenant ?? undefined
+  if (tenantArg !== undefined) {
+    if (typeof tenantArg !== 'string' || tenantArg.trim().length === 0 || tenantArg.length > 128) {
+      sendError(response, 400, 'tenant must be a non-empty string (≤128 chars) when provided', 'INVALID_ARGUMENT', 'auth:jwt')
       return true
     }
   }
@@ -475,6 +492,7 @@ export async function handleAuthJwt(ctx: { request: IncomingMessage; response: S
   const payload: JwtPayload = {
     sub,
     ...(docArg ? { doc: docArg } : {}),
+    ...(tenantArg ? { tenant: tenantArg } : {}),
     ...(mergedScope.length ? { scope: mergedScope } : {}),
     ...(permArg ? { perm: permArg as string[] } : {}),
     iat: now,
@@ -528,7 +546,7 @@ export async function handleOAuthToken(ctx: { request: IncomingMessage; response
     sendError(response, 503, 'OAuth clients not configured', 'NOT_CONFIGURED', 'auth:oauth')
     return true
   }
-  let clients: Record<string, { secret: string; sub: string; scopes?: string[] }>
+  let clients: Record<string, { secret: string; sub: string; scopes?: string[]; tenant?: string }>
   try {
     clients = JSON.parse(clientsJson)
   } catch {
@@ -546,6 +564,7 @@ export async function handleOAuthToken(ctx: { request: IncomingMessage; response
   const exp = now + DEFAULT_TTL_SEC
   const token = signJwt({
     sub: client.sub,
+    ...(client.tenant ? { tenant: client.tenant } : {}),
     ...(client.scopes ? { perm: client.scopes } : {}),
     iat: now,
     exp,

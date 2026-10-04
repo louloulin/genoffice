@@ -25,6 +25,7 @@ import {
   type AiProviderId,
   type AiSettings,
   type AiStreamChunk,
+  type AiUsage,
   chatForProvider,
   defaultAiSettings,
   isAiNetworkError,
@@ -36,6 +37,15 @@ import {
 import { listCodexModels } from '@genoffice/ai-provider/codex-app-server'
 import { InvalidArgumentError } from './errors'
 import { isEmbedCaller, sanitizeRequestSettings } from './settings-sanitize'
+import { auditAiCall, tenantContextFromEvent } from './ai-audit'
+import {
+  decryptSecret,
+  encryptSecret,
+  getMasterKey,
+  isEncryptedSecret,
+  isRedactedMarker,
+  redactSecret,
+} from '../common/secret-store'
 import { fetchRemoteImage } from '@genoffice/electron-utils/remote-image'
 import { gskApiKey, hasGskAuth, gskLoginInfo } from '@genoffice/ai-search'
 
@@ -276,6 +286,107 @@ function providerLabel(id: string): string {
   return known[id] ?? id
 }
 
+/** Apply `fn` to every apiKey in one provider map (unset keys stay unset). */
+function mapKeyConfigs(map: object | undefined, fn: (apiKey: string) => string): unknown {
+  if (!map) return map
+  const out: Record<string, unknown> = {}
+  for (const [id, cfg] of Object.entries(map as Record<string, { apiKey?: string }>)) {
+    out[id] = cfg?.apiKey ? { ...cfg, apiKey: fn(cfg.apiKey) } : cfg
+  }
+  return out
+}
+
+type MediaProviders = NonNullable<AiSettings['media']>['providers']
+type SearchProviders = NonNullable<AiSettings['search']>['providers']
+
+/**
+ * Apply `fn` to every apiKey in `settings` — the top-level `providers` map
+ * plus the nested `media.providers` and `search.providers` maps, which hold
+ * real user-entered credentials too. A single traversal keeps encryption
+ * (A37), decryption and redaction (A38) from drifting apart across surfaces.
+ */
+function mapAllSecretKeys(settings: AiSettings, fn: (apiKey: string) => string): AiSettings {
+  const next: AiSettings = {
+    ...settings,
+    providers: mapKeyConfigs(settings.providers, fn) as AiSettings['providers'],
+  }
+  if (settings.media) {
+    next.media = {
+      ...settings.media,
+      providers: mapKeyConfigs(settings.media.providers, fn) as MediaProviders,
+    }
+  }
+  if (settings.search) {
+    next.search = {
+      ...settings.search,
+      providers: mapKeyConfigs(settings.search.providers, fn) as SearchProviders,
+    }
+  }
+  return next
+}
+
+/**
+ * Merge a settings container (`media` / `search`) on update, keeping the
+ * previous providers when the incoming payload omits them — a partial update
+ * (e.g. only the media map) must not drop the sibling maps it did not mention.
+ */
+function mergeSecretMaps<M extends { providers: object }>(
+  previous: M | undefined,
+  next: M | undefined,
+): M | undefined {
+  if (!next) return previous
+  if (!previous) return next
+  return { ...previous, ...next, providers: { ...previous.providers, ...next.providers } } as M
+}
+
+/**
+ * Undo a redacted echo (A38): a key containing the `***` marker is not a new
+ * credential — keep the stored one, or saving settings untouched would destroy
+ * every key. Runs across `providers`, `media.providers` and `search.providers`.
+ */
+function restoreRedactedKeys(next: AiSettings, previous: AiSettings): AiSettings {
+  const restore = (map: object | undefined, prev: object | undefined): unknown => {
+    if (!map) return map
+    const prevMap = (prev ?? {}) as Record<string, { apiKey?: string }>
+    const out: Record<string, unknown> = {}
+    for (const [id, cfg] of Object.entries(map as Record<string, { apiKey?: string }>)) {
+      out[id] =
+        cfg?.apiKey && isRedactedMarker(cfg.apiKey)
+          ? { ...cfg, apiKey: prevMap[id]?.apiKey ?? '' }
+          : cfg
+    }
+    return out
+  }
+  const out: AiSettings = {
+    ...next,
+    providers: restore(next.providers, previous.providers) as AiSettings['providers'],
+  }
+  if (next.media) {
+    out.media = {
+      ...next.media,
+      providers: restore(next.media.providers, previous.media?.providers) as MediaProviders,
+    }
+  }
+  if (next.search) {
+    out.search = {
+      ...next.search,
+      providers: restore(next.search.providers, previous.search?.providers) as SearchProviders,
+    }
+  }
+  return out
+}
+
+/**
+ * A copy of `settings` safe to hand to any settings reader (A38): every
+ * apiKey-bearing surface — `providers`, `media.providers`, `search.providers`
+ * — becomes `sk-***abcd`-style redactions (or a bare marker for keys we
+ * cannot even length-display, e.g. encrypted envelopes). Everything else —
+ * models, baseUrls, flags — passes through, so the Settings UI keeps working.
+ */
+function redactedSettings(settings: AiSettings): AiSettings {
+  return mapAllSecretKeys(settings, (apiKey) => redactSecret(apiKey) ?? '')
+}
+
 /**
  * Resolve the config a provider call should actually use.
  *
@@ -304,15 +415,52 @@ function loadSettings(): AiSettings {
     if (existsSync(AI_SETTINGS_FILE)) {
       const raw = readFileSync(AI_SETTINGS_FILE, 'utf8')
       const parsed = JSON.parse(raw) as AiSettings
+      // A37: apiKeys are encrypted at rest (secret-store envelopes) across
+      // every key-bearing surface. Fail closed: ciphertext on disk without a
+      // usable master key is a startup error, never a silent fall-back to
+      // plaintext — an operator must restore GENOFFICE_MASTER_KEY (or re-enter
+      // keys), not get a server that quietly serves unencrypted credentials.
+      const decrypted = mapAllSecretKeys(parsed, (apiKey) =>
+        isEncryptedSecret(apiKey) ? decryptSecret(apiKey) : apiKey,
+      )
       // re-merge on top of defaults so newly added providers appear without a wipe
       const def = defaultAiSettings()
       return {
         ...def,
-        ...parsed,
-        providers: { ...def.providers, ...(parsed.providers || {}) },
+        ...decrypted,
+        providers: { ...def.providers, ...(decrypted.providers || {}) },
+        media: decrypted.media
+          ? {
+              ...def.media,
+              ...decrypted.media,
+              providers: { ...(def.media?.providers ?? {}), ...decrypted.media.providers },
+            }
+          : def.media,
+        search: decrypted.search
+          ? {
+              ...def.search,
+              ...decrypted.search,
+              providers: { ...(def.search?.providers ?? {}), ...decrypted.search.providers },
+            }
+          : def.search,
       }
     }
   } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('master key') ||
+        // Case-insensitive so wording drift ('Secret envelope …',
+        // 'Unrecognized secret envelope format') still fails closed.
+        /envelope/i.test(err.message) ||
+        // GCM auth failure = the file was corrupted or tampered with. Resetting
+        // to defaults here would silently discard the operator's stored keys
+        // and later overwrite them — same fail-closed class as a missing key.
+        err.message.includes('failed authentication'))
+    ) {
+      // A37 fail-closed: do not fall back to defaults (that would silently
+      // discard the encrypted credentials and later overwrite them).
+      throw new Error(`[ai] refusing to start with unreadable ai-settings.json: ${err.message}`)
+    }
     console.warn('[ai] failed to load ai-settings.json, falling back to defaults:', err)
   }
   // Seed from environment so the obvious deploy (set MINIMAX_API_KEY + start)
@@ -344,7 +492,17 @@ function loadSettings(): AiSettings {
 function saveSettings(settings: AiSettings): void {
   try {
     mkdirSync(DATA_DIR, { recursive: true })
-    writeFileSync(AI_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8')
+    // A37: encrypt at the disk boundary when a master key is configured —
+    // the in-memory settings stay plaintext so the AI paths keep working
+    // unchanged. Without GENOFFICE_MASTER_KEY the legacy plaintext file
+    // remains (that deployment mode predates encryption); ciphertext on
+    // disk always requires the key back to read (loadSettings fails closed).
+    const persist: AiSettings = getMasterKey()
+      ? mapAllSecretKeys(settings, (apiKey) =>
+          isEncryptedSecret(apiKey) ? apiKey : encryptSecret(apiKey),
+        )
+      : settings
+    writeFileSync(AI_SETTINGS_FILE, JSON.stringify(persist, null, 2), 'utf8')
   } catch (err) {
     console.warn('[ai] failed to persist ai-settings.json:', err)
   }
@@ -419,6 +577,18 @@ export interface AiStreamSink {
   onAbort?(controller: AbortController): void
 }
 
+/**
+ * When provided, the stream writes one `ai.call` audit record when the
+ * provider attempt ends (success, client abort, or error). Validation
+ * failures (no config / no key / no model) are answered before this fires —
+ * the audit trail records provider attempts, not rejected requests.
+ */
+export interface AiStreamAuditContext {
+  endpoint: string
+  tenantId?: string
+  userId?: string
+}
+
 export async function runProviderStream(
   settings: AiSettings,
   system: string,
@@ -426,6 +596,7 @@ export async function runProviderStream(
   tools: Parameters<typeof streamForProvider>[4],
   maxTokens: number | undefined,
   sink: AiStreamSink,
+  audit?: AiStreamAuditContext,
 ): Promise<void> {
   const provider = settings.provider
   const config = resolveProviderConfig(settings, provider)
@@ -454,6 +625,27 @@ export async function runProviderStream(
   sink.onAbort?.(controller)
 
   let stopReason: string | undefined
+  const startedAt = Date.now()
+  // Merged across onUsage calls: Anthropic reports prompt tokens in
+  // message_start and completion tokens in message_delta, so last-write-wins
+  // would drop half the counts.
+  const usage: AiUsage = {}
+  const report = (ok: boolean, errorCode?: string) => {
+    if (!audit) return
+    auditAiCall({
+      ...audit,
+      provider,
+      ...(config.model ? { model: config.model } : {}),
+      ...(usage.promptTokens !== undefined ? { promptTokens: usage.promptTokens } : {}),
+      ...(usage.completionTokens !== undefined
+        ? { completionTokens: usage.completionTokens }
+        : {}),
+      ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
+      durationMs: Date.now() - startedAt,
+      ok,
+      ...(errorCode ? { errorCode } : {}),
+    })
+  }
   try {
     await streamForProvider(
       provider,
@@ -470,6 +662,13 @@ export async function runProviderStream(
         onStopReason: (reason) => {
           stopReason = reason
         },
+        onUsage: (chunkUsage) => {
+          if (chunkUsage.promptTokens !== undefined) usage.promptTokens = chunkUsage.promptTokens
+          if (chunkUsage.completionTokens !== undefined) {
+            usage.completionTokens = chunkUsage.completionTokens
+          }
+          if (chunkUsage.totalTokens !== undefined) usage.totalTokens = chunkUsage.totalTokens
+        },
         onActivity: () => {
           // wire-level keepalive so the renderer watchdog can tell a live turn
           sink.send({ requestId: '', type: 'ping' })
@@ -477,32 +676,44 @@ export async function runProviderStream(
       },
     )
     sink.send({ requestId: '', type: 'done', ...(stopReason ? { stopReason } : {}) })
+    // A client abort mid-stream ends here without a provider error; tokens
+    // were partially consumed, so the record stays `success` with a visible
+    // 'aborted' marker in details instead of inflating the failure rate.
+    report(true, controller.signal.aborted ? 'aborted' : undefined)
   } catch (err) {
     if (controller.signal.aborted) {
       sink.send({ requestId: '', type: 'done' })
+      report(true, 'aborted')
       return
     }
+    const message = err instanceof Error ? err.message : String(err)
+    const errorCode = err instanceof AiTimeoutError
+      ? ('timeout' as const)
+      : err instanceof AiCreditsError || isAiQuotaExhaustedError(err)
+        ? ('credits' as const)
+        : isAiNetworkError(err)
+          ? ('network' as const)
+          : isAiOverloadedError(err)
+            ? ('overloaded' as const)
+            : undefined
     sink.send({
       requestId: '',
       type: 'error',
-      error: err instanceof Error ? err.message : String(err),
-      ...(err instanceof AiTimeoutError
-        ? { errorCode: 'timeout' as const }
-        : err instanceof AiCreditsError || isAiQuotaExhaustedError(err)
-          ? { errorCode: 'credits' as const }
-          : isAiNetworkError(err)
-            ? { errorCode: 'network' as const }
-            : isAiOverloadedError(err)
-              ? { errorCode: 'overloaded' as const }
-              : {}),
+      error: message,
+      ...(errorCode ? { errorCode } : {}),
     })
+    report(false, errorCode)
   }
 }
 
 // ----- IPC handlers ----------------------------------------------------------
 
 export function registerAiCoreHandlers(): void {
-  registerHandle('ai:get-settings', () => aiSettings, { scope: READ_PREF_SCOPE })
+  // A38: settings read APIs never return raw keys. The renderer Settings UI
+  // shows `sk-***abcd`; real keys stay server-side where the AI proxy needs
+  // them, so an embed renderer (or any reader of this channel) cannot lift
+  // credentials it can use elsewhere.
+  registerHandle('ai:get-settings', () => redactedSettings(aiSettings), { scope: READ_PREF_SCOPE })
   registerHandle('ai:set-settings', (_event: unknown, settings: unknown) => {
     const next = settings as AiSettings
     if (!next || typeof next !== 'object') {
@@ -510,11 +721,20 @@ export function registerAiCoreHandlers(): void {
       // the renderer could not tell that its own payload was the problem.
       throw new InvalidArgumentError('ai:set-settings', 'expected an AiSettings object')
     }
-    aiSettings = {
-      ...aiSettings,
+    const previous = aiSettings
+    // Merge rather than replace so a partial update does not drop the sibling
+    // maps it did not mention; the redacted-echo restore then runs everywhere.
+    const merged: AiSettings = {
+      ...previous,
       ...next,
-      providers: { ...aiSettings.providers, ...(next.providers || {}) },
+      providers: { ...previous.providers, ...(next.providers || {}) },
+      media: mergeSecretMaps(previous.media, next.media),
+      search: mergeSecretMaps(previous.search, next.search),
     }
+    // A38 round-trip: the caller echoes back what ai:get-settings gave it.
+    // A value containing the `***` redaction marker is not a new key — keep
+    // the stored one, or saving settings untouched would destroy every key.
+    aiSettings = restoreRedactedKeys(merged, previous)
     saveSettings(aiSettings)
     return { ok: true }
   }, { scope: 'soft:admin' })
@@ -648,6 +868,8 @@ export function registerAiCoreHandlers(): void {
    * call the Electron side uses — no duplicate logic).
    */
   registerHandle('ai:chat', async (event: unknown, request: unknown) => {
+    const startedAt = Date.now()
+    const tenantCtx = tenantContextFromEvent(event)
     const req = request as AiChatRequest | undefined
     if (!req || typeof req.user !== 'string') {
       throw new InvalidArgumentError('ai:chat', 'expected { settings, system, user }')
@@ -691,6 +913,23 @@ export function registerAiCoreHandlers(): void {
         req.system || '',
         req.user,
       )
+      // A43: one audit record per provider attempt — usage when the protocol
+      // surfaced it, duration and result status always.
+      auditAiCall({
+        endpoint: 'ai:chat',
+        tenantId: tenantCtx.tenantId,
+        ...(typeof (event as { userId?: unknown } | null)?.userId === 'string'
+          ? { userId: (event as { userId: string }).userId }
+          : {}),
+        provider,
+        model: config.model,
+        promptTokens: result.usage?.promptTokens,
+        completionTokens: result.usage?.completionTokens,
+        totalTokens: result.usage?.totalTokens,
+        durationMs: Date.now() - startedAt,
+        ok: result.ok,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      })
       // Quota/credit exhaustion first: retrying cannot help, and a 429 whose
       // body also carries a quota notice must not be reported as a transient
       // capacity blip (that message tells the user to do the one thing that
@@ -711,6 +950,25 @@ export function registerAiCoreHandlers(): void {
       }
       return result as AiChatResponse
     } catch (err) {
+      const failure = err instanceof Error ? err.message : String(err)
+      auditAiCall({
+        endpoint: 'ai:chat',
+        tenantId: tenantCtx.tenantId,
+        ...(typeof (event as { userId?: unknown } | null)?.userId === 'string'
+          ? { userId: (event as { userId: string }).userId }
+          : {}),
+        provider,
+        model: config.model,
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        errorCode: isAiQuotaExhaustedError(err)
+          ? 'credits'
+          : isAiOverloadedError(err)
+            ? 'overloaded'
+            : isAiNetworkError(err)
+              ? 'network'
+              : undefined,
+      })
       if (isAiQuotaExhaustedError(err)) {
         return {
           ok: false,
@@ -752,7 +1010,9 @@ export function registerAiCoreHandlers(): void {
   // request, call the tool, and re-shape the result so existing callers
   // (chat panels, docs/sheets/slides renderers) keep their existing field
   // names without noticing the swap.
-  registerHandle('ai:translate', async (_event: unknown, request: unknown) => {
+  registerHandle('ai:translate', async (event: unknown, request: unknown) => {
+    const startedAt = Date.now()
+    const tenantCtx = tenantContextFromEvent(event)
     const req = (request ?? {}) as {
       instruction?: string
       sourceLang?: string
@@ -802,6 +1062,22 @@ export function registerAiCoreHandlers(): void {
     // memory writes the tool had already made for this call. `scheduleMemoryFlush`
     // is a no-op when nothing is dirty.
     scheduleMemoryFlush()
+    // A43: the translate turn runs inside the pi session (provider/model live
+    // there), so this record carries the active server provider/model and
+    // null token fields; duration + result status are measured here.
+    const activeProvider = aiSettings.provider
+    auditAiCall({
+      endpoint: 'ai:translate',
+      tenantId: tenantCtx.tenantId,
+      ...(typeof (event as { userId?: unknown } | null)?.userId === 'string'
+        ? { userId: (event as { userId: string }).userId }
+        : {}),
+      provider: activeProvider,
+      model: resolveProviderConfig(aiSettings, activeProvider)?.model,
+      durationMs: Date.now() - startedAt,
+      ok: result.ok,
+      ...(result.error ? { errorCode: 'translate_error' } : {}),
+    })
     if (!result.ok) {
       return { ok: false, error: result.error ?? result.summary ?? 'translate_text failed' }
     }
@@ -820,7 +1096,9 @@ export function registerAiCoreHandlers(): void {
   // fan the units out through the live translate_text tool. KB + memory +
   // settings stay single-source-of-truth inside the pi session; the loop
   // just unwraps the batch shape and re-wraps the per-unit results.
-  registerHandle('ai:translate-batch', async (_event: unknown, request: unknown) => {
+  registerHandle('ai:translate-batch', async (event: unknown, request: unknown) => {
+    const startedAt = Date.now()
+    const tenantCtx = tenantContextFromEvent(event)
     const req = (request ?? {}) as {
       units?: Array<{
         unitId?: string
@@ -1058,6 +1336,22 @@ export function registerAiCoreHandlers(): void {
             })),
           )
     scheduleMemoryFlush()
+    // A43: the batch runs N pi translate turns server-side; one aggregate
+    // record per batch (tokens live inside the pi session and are not
+    // surfaced per unit — null here).
+    const activeProvider = aiSettings.provider
+    auditAiCall({
+      endpoint: 'ai:translate-batch',
+      tenantId: tenantCtx.tenantId,
+      ...(typeof (event as { userId?: unknown } | null)?.userId === 'string'
+        ? { userId: (event as { userId: string }).userId }
+        : {}),
+      provider: activeProvider,
+      model: resolveProviderConfig(aiSettings, activeProvider)?.model,
+      durationMs: Date.now() - startedAt,
+      ok: allOk,
+      ...(!allOk ? { errorCode: 'unit_failed' } : {}),
+    })
     return {
       ok: allOk,
       units: settled,
@@ -1815,13 +2109,39 @@ export function registerAiCoreHandlers(): void {
     }
   })
 
-  registerHandle('ai:fetch-image', async (_event: unknown, url: unknown) => {
-    if (typeof url !== 'string' || url.length > 4096) return null
+  registerHandle('ai:fetch-image', async (event: unknown, url: unknown) => {
+    // A43: an image fetch is an AI surface too — the renderer calls this IPC
+    // channel directly, so the record must be written here rather than only in
+    // the HTTP wrapper (which delegates to this handler and tags its route via
+    // `auditEndpoint`). Tokens are null: a fetch is not a model turn.
+    const endpoint = (event as { auditEndpoint?: unknown } | null | undefined)?.auditEndpoint
+    const startedAt = Date.now()
+    const audit = (ok: boolean, errorCode?: string) =>
+      auditAiCall({
+        endpoint: typeof endpoint === 'string' ? endpoint : 'ai:fetch-image',
+        ...tenantContextFromEvent(event),
+        ...(typeof (event as { userId?: unknown } | null)?.userId === 'string'
+          ? { userId: (event as { userId: string }).userId }
+          : {}),
+        durationMs: Date.now() - startedAt,
+        ok,
+        ...(errorCode ? { errorCode } : {}),
+      })
+    if (typeof url !== 'string' || url.length > 4096) {
+      audit(false, 'invalid_argument')
+      return null
+    }
     try {
       const response = await fetchRemoteImage(url)
-      if (!response?.ok || !response.body) return null
+      if (!response?.ok || !response.body) {
+        audit(false, 'fetch_failed')
+        return null
+      }
       const declared = Number(response.headers.get('content-length') ?? 0)
-      if (declared > 20 * 1024 * 1024) return null
+      if (declared > 20 * 1024 * 1024) {
+        audit(false, 'fetch_failed')
+        return null
+      }
       const reader = response.body.getReader()
       const chunks: Buffer[] = []
       let total = 0
@@ -1831,6 +2151,7 @@ export function registerAiCoreHandlers(): void {
         total += part.value.byteLength
         if (total > 20 * 1024 * 1024) {
           await reader.cancel()
+          audit(false, 'fetch_failed')
           return null
         }
         chunks.push(Buffer.from(part.value))
@@ -1841,8 +2162,10 @@ export function registerAiCoreHandlers(): void {
         : contentType.includes('gif')
           ? 'image/gif'
           : 'image/jpeg'
+      audit(true)
       return { base64: Buffer.concat(chunks).toString('base64'), mime }
     } catch {
+      audit(false, 'fetch_failed')
       return null
     }
   })
@@ -1889,6 +2212,7 @@ export function registerAiCoreHandlers(): void {
     }
 
     const session = { abort: new AbortController(), chunks: 0 }
+    const tenantCtx = tenantContextFromEvent(event)
     // `AI_STREAM_SESSIONS` is the only stream registry with a reader (the abort
     // route looks a session up by requestId). The parallel write into the
     // vestigial `AI_STREAMS` map is gone together with its `chunks: string[]`
@@ -1896,15 +2220,31 @@ export function registerAiCoreHandlers(): void {
     AI_STREAM_SESSIONS.set(requestId, session)
 
     try {
-      await runProviderStream(settings, system, messages, tools, req.maxTokens, {
-        onAbort: (c) => {
-          session.abort = c
+      await runProviderStream(
+        settings,
+        system,
+        messages,
+        tools,
+        req.maxTokens,
+        {
+          onAbort: (c) => {
+            session.abort = c
+          },
+          send: (chunk) => {
+            session.chunks++
+            sender!.send?.('ai:stream-chunk', { ...chunk, requestId })
+          },
         },
-        send: (chunk) => {
-          session.chunks++
-          sender!.send?.('ai:stream-chunk', { ...chunk, requestId })
+        // Raw claim spread: an event without tenantId must audit as
+        // provenance 'fallback', not as a literal 'default' tenant.
+        {
+          endpoint: 'ai:stream',
+          ...(tenantCtx.tenantId ? { tenantId: tenantCtx.tenantId } : {}),
+          ...(typeof (event as { userId?: unknown } | null)?.userId === 'string'
+            ? { userId: (event as { userId: string }).userId }
+            : {}),
         },
-      })
+      )
     } finally {
       AI_STREAM_SESSIONS.delete(requestId)
     }

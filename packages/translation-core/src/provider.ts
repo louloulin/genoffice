@@ -22,6 +22,8 @@ import type {
   TranslateBatchUnitResult,
   TranslateRequest,
   TranslateResponse,
+  TranslationErrorCode,
+  TranslationUnit,
 } from './types'
 import { callLlm } from './llm-client' // W9: seam between translation-core and the underlying LLM SDK
 
@@ -260,11 +262,19 @@ export async function translateOne(
   })
 
   if (!result.ok) {
-    return { ok: false, error: describeTranslationFailure(result) }
+    return {
+      ok: false,
+      error: describeTranslationFailure(result),
+      errorCode: classifyTranslationFailure(result),
+    }
   }
   const extracted = extractTranslationText(result.content ?? '')
   if (!extracted) {
-    return { ok: false, error: 'Translation response did not contain final text.' }
+    return {
+      ok: false,
+      error: 'Translation response did not contain final text.',
+      errorCode: 'invalid-response',
+    }
   }
   // Enforce the mandatory terms the model may have left in the source language.
   const translated = applyTerminology(extracted, termPairs)
@@ -374,6 +384,36 @@ function describeTranslationFailure(result: { error?: string; overloaded?: boole
     return 'Could not reach the AI provider — check your network connection and retry.'
   }
   return raw || 'Translation failed'
+}
+
+/**
+ * Classify a provider failure into the retry-relevant {@link TranslationErrorCode}.
+ *
+ * The order mirrors {@link describeTranslationFailure} and is load-bearing: a
+ * 429 that also names a quota problem is a `credits` failure (retrying cannot
+ * help), not a transient burst to ride out, and `isAiQuotaExhaustedError` /
+ * `isAiOverloadedError` are mutually exclusive by construction. `timeout` is
+ * recognised from the watchdog's message ("AI request timed out: …"), `server`
+ * from a provider 5xx, and `auth` / `content-policy` from the body the provider
+ * echoed back.
+ */
+export function classifyTranslationFailure(result: {
+  error?: string
+  overloaded?: boolean
+}): TranslationErrorCode {
+  const raw = typeof result.error === 'string' ? result.error : ''
+  if (isAiQuotaExhaustedError(raw)) return 'credits'
+  if (result.overloaded || isAiOverloadedError(raw)) return 'overloaded'
+  if (isAiNetworkError(raw)) return 'network'
+  if (/timed out|timeout/i.test(raw)) return 'timeout'
+  if (/\bHTTP\s*5\d{2}\b/i.test(raw) || /\b5\d{2}\s+(?:Internal|Bad Gateway|Service Unavailable|Gateway Timeout)/i.test(raw)) {
+    return 'server'
+  }
+  if (/\bHTTP\s*40[13]\b/i.test(raw) || /unauthorized|invalid api key|authentication|permission denied/i.test(raw)) {
+    return 'auth'
+  }
+  if (/content[_\s-]?policy|content filter|safety|refus|blocked by/i.test(raw)) return 'content-policy'
+  return 'unknown'
 }
 
 /**
@@ -511,10 +551,132 @@ function unitIdOf(unit: { unitId?: unknown }): string {
   return typeof unit.unitId === 'string' ? unit.unitId : ''
 }
 
-/** Translate a batch of units in parallel; preserves order and per-unit status. */
+/** Max in-flight provider calls for the non-streaming batch. Mirrors the
+ *  streaming variant's default so both paths bound provider load identically. */
+const DEFAULT_BATCH_CONCURRENCY = 25
+
+export interface TranslateBatchOptions {
+  /**
+   * Max in-flight provider calls at any moment for the non-streaming batch.
+   * Defaults to 25 — the same bound {@link translateBatchStream} uses — so a
+   * 1000-unit document does not open 1000 simultaneous provider requests.
+   * Values below 1 clamp to 1; values above the unit count clamp to the count.
+   */
+  concurrency?: number | undefined
+}
+
+/** Everything about a batch that is constant across its units. */
+interface BatchSettleContext {
+  request: TranslateBatchRequest
+  opts: TranslateOneOptions
+  sourceLang: string
+  targetLang: string
+  preserveFormat: boolean
+  termPairs: TerminologyPair[]
+  batchBucket: string | undefined
+  memory: TranslationMemoryLike | null
+}
+
+/**
+ * Settle one unit — the shared per-unit logic behind {@link translateBatch} and
+ * {@link translateBatchStream}. Keeping it in one place is what guarantees the
+ * streaming and non-streaming paths classify failures, consult the memory and
+ * enforce terms identically; a divergence here is a behaviour split between the
+ * web-server (streaming) and a desktop host (batched).
+ */
+async function settleBatchUnit(
+  ctx: BatchSettleContext,
+  unit: unknown,
+  index: number,
+): Promise<TranslateBatchUnitResult> {
+  const malformed = malformedUnitResult(index, unit)
+  if (malformed) return malformed
+  const usable = unit as TranslationUnit
+  const sourceText = usable.sourceText
+  const matchedTerms = matchTermsInSource(sourceText, ctx.termPairs)
+  const hit = ctx.memory?.lookup(ctx.sourceLang, ctx.targetLang, sourceText, ctx.batchBucket)
+  if (hit) {
+    return {
+      unitId: unitIdOf(usable),
+      sourceText,
+      // See translateOne: a hit must still honour this request's terms.
+      translatedText: applyTerminology(hit.translatedText, ctx.termPairs),
+      status: 'memory-hit',
+      range: usable.range ?? null,
+      ...(matchedTerms.length > 0 ? { matchedTerms } : {}),
+    }
+  }
+  const res = await translateOne(
+    {
+      instruction: sourceText,
+      sourceLang: ctx.sourceLang,
+      targetLang: ctx.targetLang,
+      preserveFormat: ctx.preserveFormat,
+      range: usable.range ?? null,
+      memoryEnabled: ctx.request.memoryEnabled,
+      qualityCheck: ctx.request.qualityCheck,
+      glossaryCategory: ctx.request.glossaryCategory,
+      ...(ctx.request.customerName !== undefined
+        ? { customerName: normalizeCustomerName(ctx.request.customerName) }
+        : {}),
+      // Must reach `translateOne`: it is where `memory.save` runs, and the
+      // batch-level `lookup` above searched `batchBucket` (= `bucketFor`
+      // with `cacheScope`). Omitting it here writes under the
+      // glossaryCategory bucket, so the entry is never found again.
+      ...(ctx.request.cacheScope !== undefined ? { cacheScope: ctx.request.cacheScope } : {}),
+    },
+    ctx.opts,
+  )
+  const status: TranslateBatchUnitResult['status'] = res.ok ? 'translated' : 'failed'
+  // `qualityCheck: false` is a per-request opt-out on the wire contract
+  // (types.ts) and the docs renderer shows the score next to the document,
+  // so a caller that disabled it must not receive a real number back — it
+  // used to be ignored here while the web-server handler honoured it,
+  // which made desktop and web disagree about the same request.
+  const warnings =
+    ctx.request.qualityCheck === false
+      ? []
+      : res.ok
+        ? warningsFor(usable, res.translated)
+        : ['provider-error']
+  const result: TranslateBatchUnitResult = {
+    unitId: unitIdOf(usable),
+    sourceText,
+    status,
+    warnings,
+    range: usable.range ?? null,
+  }
+  if (res.translated !== undefined) result.translatedText = res.translated
+  if (!res.ok && res.error) result.errorMessage = res.error
+  if (!res.ok && res.errorCode) result.errorCode = res.errorCode
+  if (res.matchedTerms && res.matchedTerms.length > 0) result.matchedTerms = res.matchedTerms
+  return result
+}
+
+/** Bounded worker-pool driver: `concurrency` workers pull indices until done. */
+async function driveBounded(
+  total: number,
+  concurrency: number,
+  settleOne: (index: number) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0
+  const workers = Array.from({ length: concurrency }, async (): Promise<void> => {
+    for (let i = nextIndex++; i < total; i = nextIndex++) {
+      await settleOne(i)
+    }
+  })
+  await Promise.all(workers)
+}
+
+/**
+ * Translate a batch of units with bounded concurrency; preserves order and
+ * per-unit status. `options.concurrency` caps the in-flight provider calls
+ * (default 25) — without it a large document opened one request per unit.
+ */
 export async function translateBatch(
   request: TranslateBatchRequest,
   opts: TranslateOneOptions,
+  options: TranslateBatchOptions = {},
 ): Promise<TranslateBatchResponse> {
   if (!Array.isArray(request.units) || request.units.length === 0) {
     return { ok: false, error: 'ai:translate-batch expected a non-empty `units` array' }
@@ -527,72 +689,25 @@ export async function translateBatch(
   const preserveFormat = request.preserveFormat !== false
   if (!targetLang) return { ok: false, error: 'ai:translate-batch expected non-empty `targetLang`' }
 
-  const termPairs = terminologyForBatch(request, opts, sourceLang, targetLang)
-  const batchBucket = bucketFor(request)
-  const memory = memoryFor(request, opts, batchBucket)
+  const total = request.units.length
+  const concurrency = Math.max(1, Math.min(options.concurrency ?? DEFAULT_BATCH_CONCURRENCY, total))
+  const ctx: BatchSettleContext = {
+    request,
+    opts,
+    sourceLang,
+    targetLang,
+    preserveFormat,
+    termPairs: terminologyForBatch(request, opts, sourceLang, targetLang),
+    batchBucket: bucketFor(request),
+    memory: memoryFor(request, opts, bucketFor(request)),
+  }
 
-  const settled = await Promise.all(
-    request.units.map(async (unit, index): Promise<TranslateBatchUnitResult> => {
-      const malformed = malformedUnitResult(index, unit)
-      if (malformed) return malformed
-      const sourceText = unit.sourceText as string
-      const matchedTerms = matchTermsInSource(sourceText, termPairs)
-      const hit = memory?.lookup(sourceLang, targetLang, sourceText, batchBucket)
-      if (hit) {
-        return {
-          unitId: unitIdOf(unit),
-          sourceText,
-          // See translateOne: a hit must still honour this request's terms.
-          translatedText: applyTerminology(hit.translatedText, termPairs),
-          status: 'memory-hit',
-          range: unit.range ?? null,
-          ...(matchedTerms.length > 0 ? { matchedTerms } : {}),
-        }
-      }
-      const res = await translateOne(
-        {
-          instruction: sourceText,
-          sourceLang,
-          targetLang,
-          preserveFormat,
-          range: unit.range ?? null,
-          memoryEnabled: request.memoryEnabled,
-          qualityCheck: request.qualityCheck,
-          glossaryCategory: request.glossaryCategory,
-          ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
-          // Must reach `translateOne`: it is where `memory.save` runs, and the
-          // batch-level `lookup` above searched `batchBucket` (= `bucketFor`
-          // with `cacheScope`). Omitting it here writes under the
-          // glossaryCategory bucket, so the entry is never found again.
-          ...(request.cacheScope !== undefined ? { cacheScope: request.cacheScope } : {}),
-        },
-        opts,
-      )
-      const status: TranslateBatchUnitResult['status'] = res.ok ? 'translated' : 'failed'
-      // `qualityCheck: false` is a per-request opt-out on the wire contract
-      // (types.ts) and the docs renderer shows the score next to the document,
-      // so a caller that disabled it must not receive a real number back — it
-      // used to be ignored here while the web-server handler honoured it,
-      // which made desktop and web disagree about the same request.
-      const qualityEnabled = request.qualityCheck !== false
-      const warnings = qualityEnabled
-        ? res.ok
-          ? warningsFor(unit, res.translated)
-          : ['provider-error']
-        : []
-      const result: TranslateBatchUnitResult = {
-        unitId: unitIdOf(unit),
-        sourceText,
-        status,
-        warnings,
-        range: unit.range ?? null,
-      }
-      if (res.translated !== undefined) result.translatedText = res.translated
-      if (!res.ok && res.error) result.errorMessage = res.error
-      if (res.matchedTerms && res.matchedTerms.length > 0) result.matchedTerms = res.matchedTerms
-      return result
-    }),
-  )
+  // Index-driven (not `.map`) so a sparse `units` array still fills every slot:
+  // `Array.prototype.every` skips holes, which let a malformed batch report ok.
+  const settled: TranslateBatchUnitResult[] = new Array(total)
+  await driveBounded(total, concurrency, async (index) => {
+    settled[index] = await settleBatchUnit(ctx, request.units[index], index)
+  })
 
   const ok = settled.every((u) => u.status === 'translated' || u.status === 'memory-hit')
   const quality = request.qualityCheck === false ? undefined : assessBatchQuality(settled)
@@ -657,111 +772,38 @@ export async function translateBatchStream(
   if (!targetLang) return { ok: false, error: 'ai:translate-batch expected non-empty `targetLang`' }
 
   const total = request.units.length
-  const concurrency = Math.max(1, Math.min(streamOpts.concurrency ?? 25, total))
+  const concurrency = Math.max(1, Math.min(streamOpts.concurrency ?? DEFAULT_BATCH_CONCURRENCY, total))
   const settled: TranslateBatchUnitResult[] = new Array(total)
-  const termPairs = terminologyForBatch(request, opts, sourceLang, targetLang)
-  const batchBucket = bucketFor(request)
-  const memory = memoryFor(request, opts, batchBucket)
-
-  // Build a unit-settler that re-uses the same per-unit logic as translateBatch.
-  const settleOne = async (index: number): Promise<void> => {
-    const unit = request.units[index]
-    // sparse array (noUncheckedIndexedAccess): bail with the same malformed
-    // shape a missing sourceText produces, so `settled[index]` is always set.
-    if (unit === undefined) {
-      const malformed = malformedUnitResult(index, unit)
-      settled[index] = malformed!
-      if (streamOpts.onUnit) await streamOpts.onUnit({ index, total, result: malformed! })
-      return
-    }
-    // A malformed element used to `return` here, which left a hole in
-    // `settled`: sparse `Array.prototype.every` skips holes (so the batch
-    // reported `ok`) and `find` on one threw. Fill the slot explicitly.
-    const malformed = malformedUnitResult(index, unit)
-    if (malformed) {
-      settled[index] = malformed
-      if (streamOpts.onUnit) await streamOpts.onUnit({ index, total, result: malformed })
-      return
-    }
-    const sourceText = unit.sourceText as string
-    const matchedTerms = matchTermsInSource(sourceText, termPairs)
-    const hit = memory?.lookup(sourceLang, targetLang, sourceText, batchBucket)
-    let result: TranslateBatchUnitResult
-    if (hit) {
-      result = {
-        unitId: unitIdOf(unit),
-        sourceText,
-        // See translateOne: a hit must still honour this request's terms.
-        translatedText: applyTerminology(hit.translatedText, termPairs),
-        status: 'memory-hit',
-        range: unit.range ?? null,
-        ...(matchedTerms.length > 0 ? { matchedTerms } : {}),
-      }
-    } else {
-      const res = await translateOne(
-        {
-          instruction: sourceText,
-          sourceLang,
-          targetLang,
-          preserveFormat,
-          range: unit.range ?? null,
-          memoryEnabled: request.memoryEnabled,
-          qualityCheck: request.qualityCheck,
-          glossaryCategory: request.glossaryCategory,
-          ...(request.customerName !== undefined ? { customerName: normalizeCustomerName(request.customerName) } : {}),
-          // See translateBatch — same read/write bucket mismatch.
-          ...(request.cacheScope !== undefined ? { cacheScope: request.cacheScope } : {}),
-        },
-        opts,
-      )
-      const status: TranslateBatchUnitResult['status'] = res.ok ? 'translated' : 'failed'
-      // See translateBatch: `qualityCheck: false` must suppress both the
-      // per-unit warnings and the batch score.
-      const warnings =
-        request.qualityCheck === false
-          ? []
-          : res.ok
-            ? warningsFor(unit, res.translated)
-            : ['provider-error']
-      result = {
-        unitId: unitIdOf(unit),
-        sourceText,
-        status,
-        warnings,
-        range: unit.range ?? null,
-      }
-      if (res.translated !== undefined) result.translatedText = res.translated
-      if (!res.ok && res.error) result.errorMessage = res.error
-      if (res.matchedTerms && res.matchedTerms.length > 0) result.matchedTerms = res.matchedTerms
-    }
-    settled[index] = result
-    if (streamOpts.onUnit) {
-      await streamOpts.onUnit({ index, total, result })
-    }
+  const ctx: BatchSettleContext = {
+    request,
+    opts,
+    sourceLang,
+    targetLang,
+    preserveFormat,
+    termPairs: terminologyForBatch(request, opts, sourceLang, targetLang),
+    batchBucket: bucketFor(request),
+    memory: memoryFor(request, opts, bucketFor(request)),
   }
-
-  // Bounded-concurrency driver: pull the next pending index when a slot frees up.
-  let nextIndex = 0
   const signal = streamOpts.signal
-  const workers = Array.from({ length: concurrency }, async (): Promise<void> => {
-    for (let i = nextIndex++; i < total; i = nextIndex++) {
-      if (signal?.aborted) {
-        // Fill the remaining slots with an aborted-shape failure so the
-        // caller's positional `units[]` stays well-formed. Without this the
-        // downstream SSE handler would emit `complete` with a `totalUnits`
-        // count that does not match the wire events.
-        const aborted = abortedUnitResult(i, request.units[i])
-        settled[i] = aborted
-        if (streamOpts.onUnit) await streamOpts.onUnit({ index: i, total, result: aborted })
-        continue
-      }
-      await settleOne(i)
+
+  // Bounded-concurrency driver over the shared settler. A sparse `units` entry
+  // resolves to the same malformed shape `malformedUnitResult` produces, so
+  // `settled[index]` is always set and `every` never skips a hole.
+  await driveBounded(total, concurrency, async (i) => {
+    if (signal?.aborted) {
+      // Fill the remaining slots with an aborted-shape failure so the
+      // caller's positional `units[]` stays well-formed. Without this the
+      // downstream SSE handler would emit `complete` with a `totalUnits`
+      // count that does not match the wire events.
+      const aborted = abortedUnitResult(i, request.units[i])
+      settled[i] = aborted
+      if (streamOpts.onUnit) await streamOpts.onUnit({ index: i, total, result: aborted })
+      return
     }
-    // explicit return for array-callback-return; the for-loop exit path
-    // already drops out at `i >= total`, so the function resolves void.
-    return
+    const result = await settleBatchUnit(ctx, request.units[i], i)
+    settled[i] = result
+    if (streamOpts.onUnit) await streamOpts.onUnit({ index: i, total, result })
   })
-  await Promise.all(workers)
 
   const ok = settled.every((u) => u.status === 'translated' || u.status === 'memory-hit')
   const quality = request.qualityCheck === false ? undefined : assessBatchQuality(settled)

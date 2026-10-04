@@ -17,6 +17,7 @@ import type {
 import type { AiPanelPrefs } from '@genoffice/ui'
 import type { ProjectApi } from '@genoffice/project-store'
 import type { HeadlessExportTarget } from '@genoffice/electron-utils/headless-export'
+import type { TranslateBatchResponse } from '@genoffice/translation-core/document'
 import { AI_CHANNELS, HTML_CHANNELS } from './ipc'
 import type {
   AttachmentAddResult,
@@ -70,6 +71,15 @@ export interface HtmlApiOverrides {
   presentInNewTab?: (title: string) => Promise<boolean>
   /** Browser has no local path for a dropped File. */
   getPathForFile?: (file: File) => string
+  /**
+   * Streaming batch translation (embedded runs only).
+   *
+   * The base transport has no SSE reader, so the default replays a finished
+   * batch through `onUnit`; the web bridge overrides this to consume the host's
+   * per-unit feed. Same reasoning as the sheets factory: progress that only
+   * moves at batch boundaries is slower, not broken.
+   */
+  aiTranslateBatchStream?: HtmlApi['aiTranslateBatchStream']
 }
 
 export function createHtmlApi(t: IpcTransport, overrides: HtmlApiOverrides = {}): HtmlApi {
@@ -147,6 +157,22 @@ export function createHtmlApi(t: IpcTransport, overrides: HtmlApiOverrides = {})
     webSearch: (query, maxResults) => t.invoke(AI_CHANNELS.webSearch, query, maxResults) as Promise<{ answer?: string; results: Array<{ title: string; url: string; snippet: string }>; method: string; error?: string }>,
     imageSearch: (query, maxResults) => t.invoke(AI_CHANNELS.imageSearch, query, maxResults) as Promise<{ images: Array<{ title?: string; imageUrl: string; width?: number; height?: number }>; method: string; error?: string }>,
     fetchImage: (url) => t.invoke(HTML_CHANNELS.fetchImage, url) as Promise<ImageData | null>,
+    aiTranslateBatch: (request) => t.invoke(AI_CHANNELS.translateBatch, request) as Promise<TranslateBatchResponse>,
+    aiTranslateBatchStream:
+      overrides.aiTranslateBatchStream ??
+      (async (request, options) => {
+        const batch = (await t.invoke(
+          AI_CHANNELS.translateBatch,
+          request,
+        )) as TranslateBatchResponse
+        // Replay the finished batch through `onUnit` so a caller that only
+        // reads the per-unit stream still sees every unit. Without this the
+        // fallback would look like a run that translated nothing.
+        for (const unit of batch.units ?? []) {
+          if (unit?.unitId) options?.onUnit?.(unit)
+        }
+        return batch
+      }),
     aiGenerateImage: (op) => t.invoke(HTML_CHANNELS.aiGenerateImage, op) as Promise<{ url?: string; error?: string }>,
   }
   return api

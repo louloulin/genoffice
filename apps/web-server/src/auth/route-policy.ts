@@ -199,6 +199,19 @@ export function resolveAuthority(request: {
   return { kind: 'locked' }
 }
 
+/**
+ * The tenant context a verified credential operates in (A40 → A41/A42).
+ *
+ * The JWT `tenant` claim is the only tenant source; requests authenticated
+ * any other way (operator WEB_TOKEN, local renderer, open mode) have no
+ * tenant identity and fall back to `'default'` — callers stamp that provenance
+ * on audit records (`tenantSource: 'fallback'`) so a shared 'default' bucket
+ * is never mistaken for a real tenant.
+ */
+export function tenantFromPayload(payload: { tenant?: string } | null | undefined): string {
+  return payload?.tenant ?? 'default'
+}
+
 interface JwtRouteRule {
   methods: readonly string[]
   pattern: RegExp

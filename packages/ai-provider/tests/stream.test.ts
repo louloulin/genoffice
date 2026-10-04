@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentToolCall } from '../src/agent-protocol'
+import type { AiUsage } from '../src/types'
 import { AiCreditsError, sseLines, streamForProvider } from '../src/stream'
 import { jsonBodyInsteadOfSse } from '../src/protocols/shared'
 import { jsonResponse, okResponse, sseStream } from './test-utils'
@@ -13,17 +14,20 @@ function collector() {
   const toolCalls: AgentToolCall[] = []
   const stopReasons: string[] = []
   const reasoning: string[] = []
+  const usage: AiUsage[] = []
   return {
     deltas,
     toolCalls,
     stopReasons,
     reasoning,
+    usage,
     cb: {
       signal: new AbortController().signal,
       onDelta: (text: string) => deltas.push(text),
       onToolCall: (call: AgentToolCall) => toolCalls.push(call),
       onStopReason: (reason: string) => stopReasons.push(reason),
       onReasoningDelta: (text: string) => reasoning.push(text),
+      onUsage: (u: AiUsage) => usage.push(u),
     },
   }
 }
@@ -1273,5 +1277,106 @@ describe('jsonBodyInsteadOfSse', () => {
       headers: { 'content-type': 'text/event-stream' },
     })
     await expect(jsonBodyInsteadOfSse(sse)).resolves.toBeNull()
+  })
+})
+
+describe('streamForProvider: usage extraction', () => {
+  it('anthropic: merges prompt tokens from message_start with completion tokens from message_delta', async () => {
+    const body = sseStream([
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":25}}',
+      'data: {"type":"message_stop"}',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { usage, cb } = collector()
+    await streamForProvider('anthropic', { apiKey: 'k', model: 'claude-sonnet-5' }, 'sys', [], [], 100, cb)
+    // One merged onUsage at stream end: prompt tokens from message_start,
+    // completion tokens from message_delta, in a single report.
+    expect(usage).toEqual([{ promptTokens: 10, completionTokens: 25 }])
+  })
+
+  it('openai-compatible: surfaces the usage-bearing tail chunk', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":"hi"}}]}',
+      'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { deltas, usage, cb } = collector()
+    await streamForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, 'sys', [], [], 100, cb)
+    // The usage-only chunk must not be treated as a content-bearing turn.
+    expect(deltas.join('')).toBe('hi')
+    expect(usage).toEqual([{ promptTokens: 7, completionTokens: 3, totalTokens: 10 }])
+  })
+
+  it('gemini: last usageMetadata wins', async () => {
+    const body = sseStream([
+      'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}',
+      'data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":9,"totalTokenCount":14}}',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { usage, cb } = collector()
+    await streamForProvider('gemini', { apiKey: 'k', model: 'gemini-2.5-flash' }, 'sys', [], [], 100, cb)
+    // One report at stream end; the final usageMetadata wins.
+    expect(usage).toEqual([{ promptTokens: 5, completionTokens: 9, totalTokens: 14 }])
+  })
+
+  it('streams without usage emit no onUsage calls', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":"hi"}},{"delta":{},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { usage, cb } = collector()
+    await streamForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, 'sys', [], [], 100, cb)
+    expect(usage).toEqual([])
+  })
+})
+
+describe('chatForProvider: usage on the response', () => {
+  it('openai-compatible chat parses the usage block', async () => {
+    const payload = {
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
+    const { chatForProvider } = await import('../src/chat')
+    const res = await chatForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, { system: 'sys', user: 'hi' })
+    expect(res.usage).toEqual({ promptTokens: 11, completionTokens: 4, totalTokens: 15 })
+  })
+
+  it('anthropic chat maps input/output tokens', async () => {
+    const payload = {
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 8, output_tokens: 2 },
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
+    const { chatForProvider } = await import('../src/chat')
+    const res = await chatForProvider('anthropic', { apiKey: 'k', model: 'claude-sonnet-5' }, { system: 'sys', user: 'hi' })
+    expect(res.usage).toEqual({ promptTokens: 8, completionTokens: 2 })
+  })
+
+  it('gemini chat parses usageMetadata', async () => {
+    const payload = {
+      candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 6, candidatesTokenCount: 3, totalTokenCount: 9 },
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
+    const { chatForProvider } = await import('../src/chat')
+    const res = await chatForProvider('gemini', { apiKey: 'k', model: 'gemini-2.5-flash' }, { system: 'sys', user: 'hi' })
+    expect(res.usage).toEqual({ promptTokens: 6, completionTokens: 3, totalTokens: 9 })
+  })
+
+  it('omits usage when the payload carries none', async () => {
+    const payload = {
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
+    const { chatForProvider } = await import('../src/chat')
+    const res = await chatForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, { system: 'sys', user: 'hi' })
+    expect(res.usage).toBeUndefined()
   })
 })

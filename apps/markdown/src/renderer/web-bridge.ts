@@ -28,7 +28,12 @@ import {
   isHostDocumentSource,
   resolveEmbedPathPrefix,
 } from '@genoffice/web-sdk/dataflare/integration'
-import { createMarkdownApi, createMarkdownProjectApi } from '../shared/markdown-api-factory'
+import {
+  buildEmbedTranslateBody,
+  createEmbedTranslateBatchAccumulator,
+  parseEmbedTranslateStreamEvent,
+} from '@genoffice/translation-core/embed-body'
+import { createMarkdownApi, createMarkdownProjectApi, type MarkdownApiOverrides } from '../shared/markdown-api-factory'
 import type { SaveMarkdownResult } from '../shared/ipc'
 
 if (!isElectronRuntime()) {
@@ -250,6 +255,12 @@ if (!isElectronRuntime()) {
       win.addEventListener('load', () => win.print())
       return { ok: true, path: '' }
     },
+    // Embedded whole-document translation rides the host's SSE feed so the run
+    // reports per-block progress while it is still going; standalone falls back
+    // to the batch IPC. Parsing/accumulation are shared with the other four
+    // apps via translation-core.
+    aiTranslateBatchStream: (request, options) =>
+      translateBatchThroughHost(dataflare, transport, request, options),
   })
   // 宿主据此点亮「保存为新版本」按钮；只在变脏时报，落盘后的 false 不翻宿主状态。
   const markdownApi = bridgedWindow.markdownApi as { setDirty: (dirty: boolean) => void }
@@ -260,8 +271,113 @@ if (!isElectronRuntime()) {
       postToEmbedParent({ type: 'document-dirty', documentId: dataflare.getContext()?.documentId })
     }
   }
-  dataflare.install({})
+  // 宿主下发的命令（translate / cancel-translation / save …）必须经由 App 处理。
+  // 不给 `onCommand` 时集成层会静默丢弃每一条宿主命令 —— Dataflare 头部的
+  // 「翻译全文」看起来接好了，实际毫无反应，且不报错、零 console error。
+  dataflare.install({
+    onCommand: (command) => {
+      window.dispatchEvent(new CustomEvent('dataflare:office-command', { detail: command }))
+    },
+  })
   bridgedWindow.projectApi = createMarkdownProjectApi(transport)
+}
+
+/**
+ * Whole-document translation transport for the markdown renderer.
+ *
+ * Two paths, one contract:
+ *   · embedded in a Dataflare host → the host proxies
+ *     `/office-engine/api/ai/translate/stream`, which pushes one SSE event per
+ *     settled block, so the progress list fills in live;
+ *   · standalone → the plain `ai:translate-batch` IPC, which returns the whole
+ *     batch at once (progress then only moves at batch boundaries).
+ *
+ * A cancel must actually stop the work: unsubscribing from the SSE feed ends
+ * the upstream request, and resolving here lets the pipeline report `cancelled`
+ * instead of waiting for a feed the user has already walked away from.
+ */
+async function translateBatchThroughHost(
+  dataflare: ReturnType<typeof createDataflareEmbedIntegration>,
+  transport: Parameters<typeof createMarkdownApi>[0],
+  request: Parameters<NonNullable<MarkdownApiOverrides['aiTranslateBatchStream']>>[0],
+  options?: Parameters<NonNullable<MarkdownApiOverrides['aiTranslateBatchStream']>>[1],
+): Promise<Awaited<ReturnType<NonNullable<MarkdownApiOverrides['aiTranslateBatchStream']>>>> {
+  if (!dataflare.isEmbedded()) {
+    const response = (await transport.invoke(
+      'ai:translate-batch',
+      request,
+    )) as Awaited<ReturnType<NonNullable<MarkdownApiOverrides['aiTranslateBatchStream']>>>
+    for (const unit of response.units ?? []) {
+      if (unit?.unitId) options?.onUnit?.(unit)
+    }
+    return response
+  }
+
+  const accumulator = createEmbedTranslateBatchAccumulator()
+  const batchId = `markdown-stream-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const context = dataflare.getContext()
+  const body = JSON.stringify(
+    buildEmbedTranslateBody(
+      {
+        requestId: batchId,
+        documentId: context?.documentId,
+        documentType: 'markdown',
+        scene: request.scene || 'markdown-document',
+        sourceLanguage: request.sourceLang,
+        targetLanguage: request.targetLang,
+        preserveFormatting: request.preserveFormat,
+        memoryEnabled: request.memoryEnabled,
+        qualityCheck: request.qualityCheck,
+        glossaryCategory: request.glossaryCategory,
+        ...(request.customerName !== undefined ? { customerName: request.customerName } : {}),
+      },
+      request.units,
+    ),
+  )
+
+  await new Promise<void>((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      options?.signal?.removeEventListener('abort', onAbort)
+      unsubscribe()
+      resolve()
+    }
+    function onAbort(): void {
+      finish()
+    }
+    const unsubscribe = dataflare.stream('/office-engine/api/ai/translate/stream', body, {
+      onEvent: (event) => {
+        const payload = parseEmbedTranslateStreamEvent(event.data)
+        if (!payload) return
+        const settledUnit = accumulator.push(payload)
+        if (settledUnit) {
+          options?.onUnit?.(settledUnit)
+          // The host renders its own progress from the same run; without this
+          // the parent page shows nothing until the last block lands.
+          postToEmbedParent({
+            type: 'ai-progress',
+            status: 'running',
+            progress: accumulator.result().units.length / Math.max(request.units.length, 1),
+            completedUnits: accumulator.result().units.length,
+            totalUnits: request.units.length,
+          })
+        }
+        if (accumulator.settled) finish()
+      },
+      onClose: finish,
+      onError: (error) => {
+        accumulator.push({ type: 'error', message: error.message })
+        finish()
+      },
+    })
+    if (settled) return
+    options?.signal?.addEventListener('abort', onAbort)
+    if (options?.signal?.aborted) finish()
+  })
+
+  return accumulator.result()
 }
 
 function textToBytes(text: string): ArrayBuffer {

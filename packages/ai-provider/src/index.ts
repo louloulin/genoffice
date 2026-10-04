@@ -19,6 +19,7 @@ export type {
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
+  AiUsage,
   GenSparkAccountStatus,
   LegacyAiSettings,
 } from './types'

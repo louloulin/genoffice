@@ -160,6 +160,13 @@ export interface AiChatRequest {
   user: string
 }
 
+/** token accounting reported by the provider for one model turn (all optional: not every gateway includes usage) */
+export interface AiUsage {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+}
+
 export interface AiChatResponse {
   ok: boolean
   content?: string
@@ -170,6 +177,8 @@ export interface AiChatResponse {
    *  connectivity failure, 'overloaded' capacity/rate limit); lets the
    *  renderer localize the message instead of parsing the raw provider body. */
   errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded'
+  /** provider-reported token usage when the response carries it */
+  usage?: AiUsage
 }
 
 export interface AiStreamRequest {

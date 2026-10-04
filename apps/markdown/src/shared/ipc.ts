@@ -6,6 +6,11 @@ import type {
   AiStreamRequest,
   GenSparkAccountStatus,
 } from '@genoffice/ai-provider'
+import type {
+  TranslateBatchRequest,
+  TranslateBatchResponse,
+  TranslateBatchUnitResult,
+} from '@genoffice/translation-core/document'
 
 export const MARKDOWN_CHANNELS = {
   consumePending: 'markdown:consume-pending',
@@ -82,6 +87,8 @@ export const AI_CHANNELS = {
   webSearch: 'ai:web-search',
   imageSearch: 'ai:image-search',
   fetchImage: 'ai:fetch-image',
+  translate: 'ai:translate',
+  translateBatch: 'ai:translate-batch',
 } as const
 
 export interface WebSearchResult {
@@ -219,6 +226,29 @@ export interface MarkdownApi {
   imageSearch(query: string, maxResults?: number): Promise<ImageSearchResult>
   /** Download an image URL in the main process (CORS-free, scheme/target validated) */
   fetchImage(url: string): Promise<{ base64: string; mime: string } | null>
+  /**
+   * Batch translation for whole-document / selection runs.
+   *
+   * The request/response shapes are translation-core's own (type-only import),
+   * not a hand-rolled copy: a loose `status` is exactly what lets a failed unit
+   * be written back as a translated one.
+   */
+  aiTranslateBatch(request: TranslateBatchRequest): Promise<TranslateBatchResponse>
+  /**
+   * SSE variant of {@link aiTranslateBatch} — `onUnit` fires as each unit
+   * settles instead of once at the end.
+   *
+   * Optional on purpose: the Electron path has no such channel and falls back
+   * to the batch call with the units replayed through `onUnit` at completion.
+   * Callers must therefore treat it as possibly absent, never as the only path.
+   */
+  aiTranslateBatchStream?: (
+    request: TranslateBatchRequest,
+    options?: {
+      onUnit?: (unit: TranslateBatchUnitResult) => void
+      signal?: AbortSignal
+    },
+  ) => Promise<TranslateBatchResponse>
   /** Genspark cloud image generation (markdown-owned channel, gsk login required) */
   aiGenerateImage(op: { prompt: string; aspectRatio?: string }): Promise<{
     url?: string

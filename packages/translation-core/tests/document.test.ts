@@ -7,7 +7,11 @@ import {
   type TranslateProgress,
   type TranslatedUnit,
 } from '../src/document'
-import type { TranslateBatchRequest, TranslationUnit } from '../src/types'
+import type {
+  TranslateBatchRequest,
+  TranslateBatchUnitResult,
+  TranslationUnit,
+} from '../src/types'
 
 function units(count: number, prefix = 'P'): TranslationUnit[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -328,5 +332,234 @@ describe('translateDocument', () => {
     )
     expect(result.status).toBe('failed')
     expect(result.applied).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A8 / A45 / A46 / A47 / A49 — per-unit retry, failure reporting, checkpoint
+// ---------------------------------------------------------------------------
+
+describe('translateDocument — per-unit retry (A8)', () => {
+  it('retries only the transient failure and never re-sends a success', async () => {
+    const seen: string[][] = []
+    let p1Attempts = 0
+    const fn: TranslateBatchFn = async (request) => {
+      seen.push(request.units.map((u) => u.unitId))
+      return {
+        ok: false,
+        units: request.units.map((unit) =>
+          unit.unitId === 'P1' && p1Attempts++ === 0
+            ? {
+                unitId: 'P1',
+                sourceText: unit.sourceText,
+                status: 'failed' as const,
+                errorMessage: 'AI service is busy — please retry shortly.',
+                errorCode: 'overloaded' as const,
+              }
+            : {
+                unitId: unit.unitId,
+                sourceText: unit.sourceText,
+                translatedText: `t-${unit.unitId}`,
+                status: 'translated' as const,
+              },
+        ),
+      }
+    }
+    let sleeps = 0
+    const result = await translateDocument(
+      { units: units(3), targetLang: 'zh-CN', qualityCheck: false },
+      {
+        translateBatch: fn,
+        apply: () => {},
+        retry: { jitter: 0, sleep: async () => void (sleeps += 1) },
+      },
+    )
+
+    // The first pass sends all three; the retry pass carries only P1. Re-sending
+    // P0/P2 would be duplicate provider calls and duplicate billing.
+    expect(seen).toEqual([['P0', 'P1', 'P2'], ['P1']])
+    expect(sleeps).toBe(1)
+    expect(result.status).toBe('completed')
+    expect(result.units.map((u) => u.unitId).sort()).toEqual(['P0', 'P1', 'P2'])
+  })
+
+  it('stops retrying a permanently-failing unit at the budget and reports it', async () => {
+    const passes: number[] = []
+    const fn: TranslateBatchFn = async (request) => {
+      passes.push(request.units.length)
+      return {
+        ok: false,
+        units: request.units.map((unit) => ({
+          unitId: unit.unitId,
+          sourceText: unit.sourceText,
+          status: 'failed' as const,
+          errorMessage: 'gateway timeout',
+          errorCode: 'timeout' as const,
+        })),
+      }
+    }
+    const result = await translateDocument(
+      { units: units(1), targetLang: 'zh-CN', qualityCheck: false },
+      {
+        translateBatch: fn,
+        apply: () => {},
+        retry: { maxRetries: 2, jitter: 0, sleep: async () => {} },
+      },
+    )
+
+    // initial + 2 retries
+    expect(passes).toHaveLength(3)
+    expect(result.status).toBe('failed')
+    expect(result.failures).toEqual([
+      { unitId: 'P0', reason: 'gateway timeout', errorCode: 'timeout', attempts: 3 },
+    ])
+  })
+
+  it('does not retry a permanent failure', async () => {
+    let calls = 0
+    const fn: TranslateBatchFn = async (request) => {
+      calls += 1
+      return {
+        ok: false,
+        units: request.units.map((unit) => ({
+          unitId: unit.unitId,
+          sourceText: unit.sourceText,
+          status: 'failed' as const,
+          errorMessage: 'credit balance is too low',
+          errorCode: 'credits' as const,
+        })),
+      }
+    }
+    const sleeps = vi.fn(async () => {})
+    await translateDocument(
+      { units: units(1), targetLang: 'zh-CN', qualityCheck: false },
+      { translateBatch: fn, apply: () => {}, retry: { sleep: sleeps } },
+    )
+
+    expect(calls).toBe(1)
+    expect(sleeps).not.toHaveBeenCalled()
+  })
+})
+
+describe('translateDocument — partial failure reporting (A45)', () => {
+  it('completes with failures, still applies the good units, and lists the bad one', async () => {
+    const fn: TranslateBatchFn = async (request) => ({
+      ok: false,
+      units: request.units.map((unit) =>
+        unit.unitId === 'P1'
+          ? {
+              unitId: 'P1',
+              sourceText: unit.sourceText,
+              status: 'failed' as const,
+              errorMessage: 'credit balance is too low',
+              errorCode: 'credits' as const,
+            }
+          : {
+              unitId: unit.unitId,
+              sourceText: unit.sourceText,
+              translatedText: `t-${unit.unitId}`,
+              status: 'translated' as const,
+            },
+      ),
+    })
+    const applied = vi.fn()
+    const progress: TranslateProgress[] = []
+    const result = await translateDocument(
+      { units: units(3), targetLang: 'zh-CN', qualityCheck: false },
+      {
+        translateBatch: fn,
+        apply: applied,
+        onProgress: (e) => void progress.push(e),
+      },
+    )
+
+    // Two of three units translated: the document must still be written (the
+    // user asked for a translation, not an all-or-nothing gamble) — but the run
+    // is not a clean `completed`, and the failure is named.
+    expect(result.status).toBe('completed-with-failures')
+    expect(result.applied).toBe(true)
+    expect(applied).toHaveBeenCalledTimes(1)
+    expect(result.units.map((u) => u.unitId)).toEqual(['P0', 'P2'])
+    expect(result.failures).toEqual([
+      { unitId: 'P1', reason: 'credit balance is too low', errorCode: 'credits', attempts: 1 },
+    ])
+    expect(progress.at(-1)!.status).toBe('completed-with-failures')
+  })
+})
+
+describe('translateDocument — checkpoint resume (A46/A47/A49)', () => {
+  it('reuses checkpointed units and never asks the provider for them again', async () => {
+    const { fn, calls } = fakeTransport()
+    const saved = new Map<string, TranslateBatchUnitResult>()
+    const progress: TranslateProgress[] = []
+    const result = await translateDocument(
+      { units: units(3), targetLang: 'zh-CN', qualityCheck: false },
+      {
+        translateBatch: fn,
+        apply: () => {},
+        onProgress: (e) => void progress.push(e),
+        checkpoint: {
+          load: (unitId) =>
+            unitId === 'P0'
+              ? {
+                  unitId: 'P0',
+                  sourceText: 'Source 0',
+                  translatedText: '缓存译文',
+                  status: 'translated',
+                }
+              : null,
+          save: (unitId, r) => void saved.set(unitId, r),
+        },
+      },
+    )
+
+    // P0 came from the checkpoint — the provider only sees the other two.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.units.map((u) => u.unitId)).toEqual(['P1', 'P2'])
+    expect(result.units.map((u) => u.unitId)).toEqual(['P0', 'P1', 'P2'])
+    // The resumed unit is visible to the host before any provider call (after
+    // the initial `started` event).
+    const resumed = progress.find((p) => p.status === 'running')
+    expect(resumed?.completedUnits).toBe(1)
+    // Freshly translated units are persisted for the next resume.
+    expect(saved.has('P1')).toBe(true)
+    expect(saved.has('P2')).toBe(true)
+  })
+
+  it('a cancel mid-run keeps the checkpoint but writes nothing to the document', async () => {
+    const controller = new AbortController()
+    const saved = new Map<string, TranslateBatchUnitResult>()
+    let batch = 0
+    const fn: TranslateBatchFn = async (request) => {
+      batch += 1
+      // The user hits stop right after the first batch lands.
+      if (batch === 1) controller.abort()
+      return {
+        ok: true,
+        units: request.units.map((unit) => ({
+          unitId: unit.unitId,
+          sourceText: unit.sourceText,
+          translatedText: `t-${unit.unitId}`,
+          status: 'translated' as const,
+        })),
+      }
+    }
+    const apply = vi.fn()
+    const result = await translateDocument(
+      { units: units(3), targetLang: 'zh-CN', qualityCheck: false },
+      {
+        translateBatch: fn,
+        apply,
+        signal: controller.signal,
+        maxUnitsPerBatch: 1,
+        checkpoint: { load: () => null, save: (unitId, r) => void saved.set(unitId, r) },
+      },
+    )
+
+    expect(result.status).toBe('cancelled')
+    expect(apply).not.toHaveBeenCalled()
+    // Cancelling is not losing work: the batch that already succeeded is on the
+    // checkpoint and the next run resumes from it.
+    expect([...saved.keys()]).toEqual(['P0'])
   })
 })

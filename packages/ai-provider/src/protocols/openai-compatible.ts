@@ -7,6 +7,7 @@ import type { AiChatResponse, AiProviderConfig } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import {
   jsonBodyInsteadOfSse,
+  parseAiUsage,
   parseToolInput,
   sseErrorText,
   sseLines,
@@ -274,12 +275,18 @@ async function openAiCompatibleTurn(
           }
           finish_reason?: string | null
         }>
+        usage?: unknown
         error?: { message?: string } | string
       }
     } catch {
       continue
     }
     if (event.error) throw new Error(sseErrorText(event.error, 'Model stream error'))
+    // Usage can ride the final chunk with an empty `choices` array (OpenAI's
+    // usage-only tail event) or on the last content chunk, so check it before
+    // the no-choices skip below.
+    const chunkUsage = parseAiUsage(event.usage)
+    if (chunkUsage) cb.onUsage?.(chunkUsage)
     const choice = event.choices?.[0]
     if (!choice) continue
     const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
@@ -394,12 +401,14 @@ export async function chatOpenAiCompatible(
     choices?: Array<{
       message?: { content?: string; reasoning_content?: string; reasoning?: string }
     }>
+    usage?: unknown
   }
   try {
     json = JSON.parse(bodyText) as {
       choices?: Array<{
         message?: { content?: string; reasoning_content?: string; reasoning?: string }
       }>
+      usage?: unknown
     }
   } catch {
     return {
@@ -416,6 +425,7 @@ export async function chatOpenAiCompatible(
   const reasoning =
     json.choices?.[0]?.message?.reasoning_content ?? json.choices?.[0]?.message?.reasoning
   const content = stripThinkTags(raw)
+  const usage = parseAiUsage(json.usage)
   if (!content) {
     if (reasoning) {
       // thinking-only response (no final answer). Surface the reasoning so
@@ -424,5 +434,7 @@ export async function chatOpenAiCompatible(
     }
     return { ok: false, error: 'AI returned an empty response' }
   }
-  return reasoning ? { ok: true, content, reasoning } : { ok: true, content }
+  return reasoning
+    ? { ok: true, content, reasoning, ...(usage ? { usage } : {}) }
+    : { ok: true, content, ...(usage ? { usage } : {}) }
 }

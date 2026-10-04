@@ -23,7 +23,7 @@
  * `lookup()` falls back to a token-overlap + SequenceMatcher fuzzy match when
  * an exact match is missing — the same heuristic as the Python implementation
  * (`token_similarity` + `SequenceMatcher.ratio`). The fuzzy threshold defaults
- * to 0.86 so we only return "very close" matches; the caller still receives
+ * to 0.7 so we only return "very close" matches; the caller still receives
  * the source text and a confidence score so it can decide whether to use the
  * hit.
  */
@@ -84,7 +84,7 @@ export interface PersistentTranslationMemoryOptions {
   fileSystem?: PersistentMemoryFileSystem
   /** In-memory cap before eviction. Defaults to 2048 (same as {@link TranslationMemory}). */
   maxEntries?: number
-  /** Minimum similarity for a fuzzy match to be returned. Defaults to 0.86. */
+  /** Minimum similarity for a fuzzy match to be returned. Defaults to 0.7. */
   fuzzyThreshold?: number
 }
 

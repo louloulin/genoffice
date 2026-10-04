@@ -26,11 +26,15 @@ const senderStub = {
  * embed-vs-local decisions (`settings-sanitize.ts` `isEmbedCaller`) degrade to
  * "local", letting a JWT caller's injected `apiKey`/`baseUrl` through as if it
  * were operator BYOK.
+ *
+ * `tenantId` (A40) rides the same path: handlers that write audit records
+ * read it off the event so a guest JWT's tenant lands on its records instead
+ * of the 'default' bucket.
  */
 export async function invokeIpc(
   channel: string,
   args: unknown[],
-  eventOverrides?: { userId?: string },
+  eventOverrides?: { userId?: string; tenantId?: string; auditEndpoint?: string },
 ): Promise<unknown> {
   const handler = getHandler(channel)
   if (!handler) {
