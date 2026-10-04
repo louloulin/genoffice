@@ -169,6 +169,16 @@ export {
   type TranslateDialogStrings,
   type TranslateLanguageOption,
 } from './TranslateDialog'
+export {
+  TranslationRibbonTab,
+  type TranslationRibbonTabProps,
+  type TranslationTabStrings,
+  type TranslationTabSettings,
+  type TranslationTabStatus,
+  type TranslationTabState,
+  type TranslationLanguageChoice,
+  type TranslationScope,
+} from './TranslationRibbonTab'
 export { ChangeMarker, type ChangeMarkerProps } from './ChangeMarker'
 
 // Extended icon set used by the runtime primitives.

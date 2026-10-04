@@ -508,7 +508,13 @@ if (!isElectronRuntime()) {
           // it every confirmation lands in the tenant-shared table, which every
           // space can read — the "private to this space" promise holds on the
           // glossary side and silently fails here.
-          spaceId: dataflareContext()?.spaceId ? Number(dataflareContext()?.spaceId) : null,
+          //
+          // **字符串原样下发，不要 `Number()`。** 云盘雪花号（≈2.1e18）
+          // 超过 `Number.MAX_SAFE_INTEGER`，`Number("2106454674846117890")`
+          // 得到 2106454674846118000 —— 末位被抹平。宿主桥按会话里的真实 id
+          // 逐字比对，于是「存入翻译记忆」恒被判 space not allowed，而报文里
+          // 那个数字看上去完全正常。后端 `Long?` 能直接吃字符串。
+          spaceId: dataflareContext()?.spaceId ?? null,
           scene: request.scene,
           sourceLanguage: request.sourceLang,
           targetLanguage: request.targetLang,

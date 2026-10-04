@@ -63,6 +63,11 @@ import { useI18n, type StringKey } from '../i18n/locale'
 import { fontFamiliesFor, isEastAsianFontName } from '../font-list'
 import { useSystemFontFamilies } from '../system-fonts'
 import { cssFontFamily } from '../line-metrics'
+import type {
+  TranslationScope,
+  TranslationTabSettings,
+  TranslationTabStatus,
+} from '@genoffice/ui'
 import {
   DesignTab,
   DrawTab,
@@ -71,6 +76,7 @@ import {
   LayoutTab,
   ReferencesTab,
   ReviewTab,
+  TranslateTab,
   ViewTab,
   type InkPenSettings,
   type RevisionDisplayMode,
@@ -259,6 +265,13 @@ interface RibbonProps {
   protectActive: boolean
   onProtectDoc: () => void
   onCompare: () => void
+  /** Standalone Translate tab: live status of the in-flight run (idle when none). */
+  translationStatus?: TranslationTabStatus
+  onTranslateStart?: (scope: TranslationScope, settings: TranslationTabSettings) => void
+  onTranslateCancel?: () => void
+  onOpenTranslationStorage?: () => void
+  /** Hide the storage entry outside the Dataflare space bridge. */
+  showTranslationStorage?: boolean
   /** current document path (View → New Window opens it in another window) */
   filePath: string | null
   viewMode: ViewMode
@@ -321,10 +334,23 @@ const IN_TAB = new URLSearchParams(window.location.search).get('mode') === 'tab'
 
 const TABS = (
   IS_MAC
-    ? ['home', 'insert', 'draw', 'design', 'layout', 'references', 'review', 'view']
-    : ['file', 'home', 'insert', 'draw', 'design', 'layout', 'references', 'review', 'view']
+    ? ['home', 'insert', 'draw', 'design', 'layout', 'references', 'review', 'translate', 'view']
+    : [
+        'file',
+        'home',
+        'insert',
+        'draw',
+        'design',
+        'layout',
+        'references',
+        'review',
+        'translate',
+        'view',
+      ]
 ) as readonly string[]
 const TABLE_TABS = ['tableDesign', 'tableLayout'] as const
+/** Ribbon test fixtures and non-translating hosts fall back to this. */
+const IDLE_TRANSLATION_STATUS: TranslationTabStatus = { state: 'idle', progress: 0 }
 const IMAGE_TABS = ['pictureFormat'] as const
 const SHAPE_TABS = ['shapeFormat'] as const
 type RibbonTab =
@@ -393,6 +419,7 @@ const TAB_LABEL_KEYS: Record<string, StringKey> = {
   layout: 'ribbonTabLayout',
   references: 'ribbonTabReferences',
   review: 'ribbonTabReview',
+  translate: 'ribbonTranslate',
   view: 'ribbonTabView',
   tableDesign: 'ribbonTabTableDesign',
   tableLayout: 'ribbonTabTableLayout',
@@ -704,6 +731,11 @@ function RibbonInner({
   protectActive,
   onProtectDoc,
   onCompare,
+  translationStatus,
+  onTranslateStart,
+  onTranslateCancel,
+  onOpenTranslationStorage,
+  showTranslationStorage,
   filePath,
   viewMode,
   onViewMode,
@@ -3887,6 +3919,15 @@ function RibbonInner({
             protectActive={protectActive}
             onProtectDoc={onProtectDoc}
             onCompare={onCompare}
+          />
+        ) : tab === 'translate' ? (
+          <TranslateTab
+            hasDoc={hasDoc}
+            status={translationStatus ?? IDLE_TRANSLATION_STATUS}
+            showStorage={showTranslationStorage ?? false}
+            onStart={onTranslateStart ?? (() => {})}
+            onCancel={onTranslateCancel ?? (() => {})}
+            onOpenStorage={onOpenTranslationStorage ?? (() => {})}
           />
         ) : (
           <ViewTab

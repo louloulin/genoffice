@@ -1,0 +1,264 @@
+/* Standalone "Translate" ribbon tab (TranslationRibbonTab), shared by the
+ * editor apps. Self-contained so an app can drop it into its ribbon band
+ * without borrowing the app-local ribbon classes. Colours come from
+ * tokens.css, so dark mode follows automatically. */
+
+.go-translate-tab {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--gs-font-sans);
+  color: var(--text);
+}
+
+.go-translate-tab__group {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.go-translate-tab__sep {
+  width: 1px;
+  flex-shrink: 0;
+  margin: 6px 6px;
+  background: var(--border);
+}
+
+.go-translate-tab__caption {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.go-translate-tab__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.go-translate-tab__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.go-translate-tab__label {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.go-translate-tab__select {
+  height: 24px;
+  min-width: 116px;
+  max-width: 168px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-6);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.go-translate-tab__select:disabled {
+  opacity: 0.55;
+}
+
+.go-translate-tab__swap {
+  height: 24px;
+  width: 26px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-6);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.go-translate-tab__swap:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.go-translate-tab__swap:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.go-translate-tab__options {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.go-translate-tab__toggle {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.go-translate-tab__toggle:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.go-translate-tab__toggle.is-on {
+  border-color: var(--color-border-brand);
+  background: var(--bg-hover-accent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.go-translate-tab__toggle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.go-translate-tab__group--actions {
+  justify-content: center;
+}
+
+.go-translate-tab__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.go-translate-tab__action {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-8);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.go-translate-tab__action:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.go-translate-tab__action.is-primary {
+  border-color: var(--color-btn-primary);
+  background: var(--color-btn-primary);
+  color: var(--color-btn-primary-text);
+  font-weight: 600;
+}
+
+.go-translate-tab__action.is-primary:hover:not(:disabled) {
+  background: var(--color-btn-primary-hover);
+}
+
+.go-translate-tab__action.is-danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.go-translate-tab__action.is-ghost {
+  border-style: dashed;
+  color: var(--text-secondary);
+}
+
+.go-translate-tab__action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.go-translate-tab__status {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 2px 8px 2px 10px;
+  margin-left: auto;
+  flex: 0 1 240px;
+  min-width: 150px;
+  border-left: 1px solid var(--border);
+}
+
+.go-translate-tab__status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.go-translate-tab__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.go-translate-tab__dot.is-running,
+.go-translate-tab__dot.is-pending {
+  background: var(--color-brand-secondary);
+}
+
+.go-translate-tab__dot.is-completed {
+  background: var(--success);
+}
+
+.go-translate-tab__dot.is-failed {
+  background: var(--danger);
+}
+
+.go-translate-tab__bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.go-translate-tab__bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: var(--color-brand-secondary);
+  transition: width var(--transition-fast);
+}
+
+.go-translate-tab__bar-fill.is-completed {
+  background: var(--success);
+}
+
+.go-translate-tab__bar-fill.is-failed {
+  background: var(--danger);
+}
+
+.go-translate-tab__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.go-translate-tab__quality {
+  color: var(--success);
+  font-weight: 600;
+}

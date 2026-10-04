@@ -14,7 +14,13 @@ import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor } from '@tiptap/core'
 import { DOMParser as PmDOMParser, type Mark as PmMark, Slice as PmSlice } from '@tiptap/pm/model'
 import { NodeSelection, type Transaction } from '@tiptap/pm/state'
-import { Dropdown, useAutoSavePref } from '@genoffice/ui'
+import {
+  Dropdown,
+  useAutoSavePref,
+  type TranslationScope,
+  type TranslationTabSettings,
+  type TranslationTabStatus,
+} from '@genoffice/ui'
 import { wordRangeAtCaret } from './editor/comments'
 import { markdownPasteHtml } from './editor/markdown-paste'
 import { pasteTextSlice, singleCellPasteText } from './editor/paste-text'
@@ -605,9 +611,52 @@ export function App() {
   const [spellcheck, setSpellcheck] = useState(spellcheckEnabled)
   /** Increments on every open/new document: AiPanel remounts by key to reset the conversation and history (save path changes don't bump it, so the session continues) */
   const [aiPanelKey, setAiPanelKey] = useState(0)
+  /**
+   * Standalone Translate tab status. Mirrors AiPanel's `ai-progress` stream
+   * through an in-window CustomEvent so the ribbon band can show progress,
+   * unit counts and the quality badge regardless of who embedded us.
+   */
+  const [translationStatus, setTranslationStatus] = useState<TranslationTabStatus>({
+    state: 'idle',
+    progress: 0,
+  })
   const [ribbonTabRequest, setRibbonTabRequest] = useState<{ tab: string; revision: number } | null>(
     null,
   )
+  useEffect(() => {
+    const onTranslationStatus = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          status?: string
+          progress?: number
+          completedUnits?: number
+          totalUnits?: number
+          quality?: { overallScore?: number }
+          error?: string
+        }>
+      ).detail
+      const state = (detail?.status ?? 'idle') as TranslationTabStatus['state']
+      setTranslationStatus({
+        state: [
+          'idle',
+          'pending',
+          'running',
+          'completed',
+          'failed',
+          'cancelled',
+        ].includes(state)
+          ? state
+          : 'running',
+        progress: typeof detail?.progress === 'number' ? detail.progress : 0,
+        completedUnits: detail?.completedUnits,
+        totalUnits: detail?.totalUnits,
+        qualityScore: detail?.quality?.overallScore ?? null,
+        message: detail?.error ?? null,
+      })
+    }
+    window.addEventListener('genoffice:translation-status', onTranslationStatus)
+    return () => window.removeEventListener('genoffice:translation-status', onTranslationStatus)
+  }, [])
   const [status, setStatus] = useState('')
   const [zoom, setZoom] = useState(100)
   const scrollContainerRef = useRef<HTMLElement>(null)
@@ -5229,6 +5278,28 @@ export function App() {
       setShowAi(true)
       setAiPreset({ text, revision: Date.now(), autoRun: true })
     },
+    /**
+     * Standalone Translate tab entry point. It deliberately reuses the exact
+     * channel the Dataflare host uses (`dataflare:open-translate`) instead of
+     * growing a second dialog: whoever fires it, AiPanel seeds its dialog and
+     * runs the single shared pipeline.
+     */
+    onTranslateStart: (scope: TranslationScope, settings: TranslationTabSettings) => {
+      setShowAi(true)
+      setTranslationStatus({ state: 'pending', progress: 0 })
+      window.dispatchEvent(
+        new CustomEvent('dataflare:open-translate', {
+          detail: { ...settings, scope },
+        }),
+      )
+    },
+    onTranslateCancel: () => {
+      window.dispatchEvent(new CustomEvent('dataflare:cancel-translation'))
+    },
+    onOpenTranslationStorage: () => {
+      setShowAi(true)
+      window.dispatchEvent(new CustomEvent('genoffice:open-translation-storage'))
+    },
     onHeader: (next: HeaderFooter) => {
       setHeader(next)
       setHeaderDirty(true)
@@ -5492,6 +5563,8 @@ export function App() {
         protectActive={
           isProtected || trackChangesForced || (doc?.encrypted ?? false) || !!writeProtection?.hash
         }
+        translationStatus={translationStatus}
+        showTranslationStorage={Boolean(dataflareTranslationCopySave)}
         filePath={doc?.filePath ?? null}
         viewMode={viewMode}
         readMode={readMode}

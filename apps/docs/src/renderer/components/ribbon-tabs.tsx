@@ -71,6 +71,7 @@ export {
 export { DesignTab } from './ribbon-design-tab'
 export { LayoutTab } from './ribbon-layout-tab'
 export { ReferencesTab } from './ribbon-references-tab'
+export { TranslateTab, DEFAULT_TRANSLATE_SETTINGS, type TranslateTabProps } from './ribbon-translate-tab'
 
 /** icon size for the big icon-over-label ribbon buttons (slides ribbon parity) */
 export const BIG = 28

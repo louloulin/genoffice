@@ -157,9 +157,16 @@ export function createDataflareTranslationStorage(
           targetLang: term.targetLang ?? 'en-US',
           category: term.category ?? 'general',
           ...(term.remark ? { remark: term.remark } : {}),
-          // `null` is the explicit "share with the whole tenant" choice; a
-          // number scopes the term to one space.
-          spaceId: spaceId ? Number(spaceId) : null,
+          // `null` 是「与全租户共享」的显式选择；带上 id 就把词条收进那个空间。
+          //
+          // **id 必须以字符串下发，不能 `Number()`。** 云盘 id 是雪花号
+          // （`2106454674846117890` ≈ 2.1e18），超过 JS 的
+          // `Number.MAX_SAFE_INTEGER`（9.0e15），`Number()` 之后末位被抹平：
+          // 实测 2106454674846117890 变成 2106454674846118000。宿主桥的空间校验
+          // 拿它与会话里的真实 id 逐字比较，于是每一次「加术语 / 存记忆」都被判
+          // 「space not allowed」—— 而 JSON 里它看着就是一个正常的数字，两端日志
+          // 都只有一句 403。后端 `Long?` 反序列化字符串同样成立。
+          spaceId: spaceId ?? null,
         }),
       })
       await readJson<number>(response, '保存术语')
@@ -193,7 +200,8 @@ export function createDataflareTranslationStorage(
           targetLanguage: payload.targetLanguage,
           ...(payload.sourceLanguage ? { sourceLanguage: payload.sourceLanguage } : {}),
           units: payload.units,
-          ...(spaceId ? { spaceId: Number(spaceId) } : {}),
+          // 同 `upsertGlossary`：字符串下发，`Number()` 会丢雪花号的末几位。
+          ...(spaceId ? { spaceId } : {}),
         }),
       })
       const result = await readJson<{ savedCount?: number; skippedCount?: number }>(

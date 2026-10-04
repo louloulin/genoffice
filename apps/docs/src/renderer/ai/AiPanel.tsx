@@ -406,6 +406,23 @@ function SentAttachments({
 /** author name on AI-generated tracked revisions (accept/reject via Review) */
 export const AI_REVISION_AUTHOR = 'AI Assistant'
 
+/**
+ * Path-independent translation channel.
+ *
+ * `postToEmbedParent` only does anything inside the Dataflare iframe, but the
+ * standalone Translate ribbon tab also lives in the desktop shell. This
+ * wrapper forwards the same payload to an in-window CustomEvent so the ribbon
+ * can mirror status (progress bar / quality badge) no matter who embedded us.
+ * Keep every translation progress report going through here, otherwise the
+ * ribbon silently freezes at "idle" while the run is in fact running.
+ */
+function emitProgress(payload: Parameters<typeof postToEmbedParent>[0]): void {
+  postToEmbedParent(payload)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('genoffice:translation-status', { detail: payload }))
+  }
+}
+
 interface AiPanelProps {
   editor: Editor
   blocks: Block[]
@@ -1338,9 +1355,15 @@ export function AiPanel({
     window.addEventListener('dataflare:open-translate', openEmbeddedTranslation)
     const onCancelEmbeddedTranslation = () => cancelTranslation()
     window.addEventListener('dataflare:cancel-translation', onCancelEmbeddedTranslation)
+    // The standalone Translate tab opens the glossary / memory panel through
+    // this channel: it lives inside this component, so the ribbon cannot reach
+    // it directly.
+    const onOpenStorage = () => setStoragePanelOpen(true)
+    window.addEventListener('genoffice:open-translation-storage', onOpenStorage)
     return () => {
       window.removeEventListener('dataflare:open-translate', openEmbeddedTranslation)
       window.removeEventListener('dataflare:cancel-translation', onCancelEmbeddedTranslation)
+      window.removeEventListener('genoffice:open-translation-storage', onOpenStorage)
     }
   }, [])
   const [targetLang, setTargetLang] = useState<string>(() => {
@@ -1574,7 +1597,7 @@ export function AiPanel({
               //
               // 终态改由下面的 `applyTranslate` 在真正写完之后发。
               if (event.status === 'completed') return
-              postToEmbedParent({
+              emitProgress({
                 type: 'ai-progress',
                 status: event.status,
                 progress: event.progress,
@@ -1632,7 +1655,7 @@ export function AiPanel({
       if (translationCancelledRef.current) return null
       setTranslateError(err)
       if (translateScope === 'document')
-        postToEmbedParent({ type: 'ai-progress', status: 'failed', progress: 0 })
+        emitProgress({ type: 'ai-progress', status: 'failed', progress: 0 })
       // re-throw so TranslateDialog catches and shows the real provider error
       throw e
     }
@@ -1655,7 +1678,7 @@ export function AiPanel({
     // already stopped it.
     translationAbortRef.current?.abort()
     setTranslateOpen(false)
-    postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+    emitProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
   }, [])
 
   const retryDocumentUnit = useCallback(
@@ -1873,12 +1896,12 @@ export function AiPanel({
       // 翻译步的 `completed` 已经被有意压掉（那时还没写），所以这里补上。
       // 副本模式由下面的 onSaveTranslatedCopy 分支负责报，不在这里报两次。
       if (applySaveTarget !== 'copy') {
-        postToEmbedParent({ type: 'ai-progress', status: 'completed', progress: 1 })
+        emitProgress({ type: 'ai-progress', status: 'completed', progress: 1 })
       }
       // 另存副本：写的是**另一个**云盘条目，所以这里刻意不动 `doc.filePath`、
       // 不清 dirty —— 详见 file-actions 的翻译副本分支注释。原文仍留在云盘里。
       if (applySaveTarget === 'copy' && translatedFileName && onSaveTranslatedCopy) {
-        postToEmbedParent({
+        emitProgress({
           type: 'ai-progress',
           status: 'running',
           progress: 1,
@@ -1886,7 +1909,7 @@ export function AiPanel({
         const ok = await onSaveTranslatedCopy(translatedFileName)
         // 失败文案由 file-actions 的状态栏 + toast 负责，这里只把结果回给宿主
         // 面板（DriveOfficeView 的进度条）。两处各弹一次会让用户以为出了两次错。
-        postToEmbedParent({
+        emitProgress({
           type: 'ai-progress',
           status: ok ? 'completed' : 'failed',
           progress: 1,
@@ -1915,7 +1938,7 @@ export function AiPanel({
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         setTranslateError(message)
-        postToEmbedParent({ type: 'ai-progress', status: 'failed', progress: 0, error: message })
+        emitProgress({ type: 'ai-progress', status: 'failed', progress: 0, error: message })
         throw err
       }
     },
