@@ -1,5 +1,5 @@
 /**
- * /api/ai/stream SSRF hardening, end to end (A2 + A3).
+ * SSRF hardening, end to end (A2 + A3 + A31) — chat AND translate surfaces.
  *
  * Proves the two sanitize modes against a real booted server with two
  * listeners standing in for upstream endpoints:
@@ -9,11 +9,15 @@
  *     an "evil" apiKey. The upstream call must arrive at the *server
  *     configured* endpoint (the "friendly" listener, seeded through
  *     `DATA_DIR/ai-settings.json`) carrying the *server held* key, and the
- *     evil listener must see zero requests.
+ *     evil listener must see zero requests. Covered across every ingress:
+ *     `/api/ai/stream`, `/api/v1/ai/chat`, `/api/ipc/ai:chat` (cookie),
+ *     `/api/ai/translate`, `/api/ai/translate/stream` (cookie),
+ *     `/api/v1/ai/translate`.
  *   - **Operator (WEB_TOKEN caller)** — loopback BYOK baseUrl override is
- *     still honored (the local Ollama use case), while an override to a
- *     non-allowlisted host (169.254.169.254, the cloud-metadata canary) is
- *     rejected with a structured 400 before any upstream request.
+ *     still honored (the local Ollama use case, on both the stream and the
+ *     translate route), while an override to a non-allowlisted host
+ *     (169.254.169.254, the cloud-metadata canary) is rejected with a
+ *     structured 400 before any upstream request.
  *
  * The evil listener counting ≥1 would mean the sanitize layer failed; the
  * suite fails loudly in that case rather than asserting only on responses.
@@ -183,7 +187,7 @@ describe('embed caller (JWT, JWT-only boot — Dataflarework deployment shape)',
 
   it('routes the upstream call to the server-configured endpoint with the server-held key', async () => {
     const before = friendlyHits.length
-    const { status, sse } = await streamOnce(embedJwt(['files:read']), embedSettings(`http://127.0.0.1:${evil.port}`))
+    const { status, sse } = await streamOnce(embedJwt(['ai:chat']), embedSettings(`http://127.0.0.1:${evil.port}`))
     expect(status).toBe(200)
     expect(sse).toContain('data:')
     // Upstream reached the tenant endpoint — never the injected one — and the
@@ -231,6 +235,73 @@ describe('embed caller (JWT, JWT-only boot — Dataflarework deployment shape)',
     expect(evilHits).toHaveLength(0)
     expect(friendlyHits.at(-1)?.authorization).toBe(`Bearer ${SERVER_KEY}`)
   }, 30_000)
+
+  const translateBody = (evilBaseUrl: string): Record<string, unknown> => ({
+    units: [{ unitId: 'u1', kind: 'paragraph', sourceText: 'hello', order: 0 }],
+    sourceLanguage: 'en',
+    targetLanguage: 'zh',
+    settings: embedSettings(evilBaseUrl),
+  })
+
+  it('sanitizes settings injected through the legacy translate batch route', async () => {
+    // Iteration-3 A2 regression: translate-http.ts used to return
+    // req.settings wholesale (pickSettings) and feed it into translateBatch —
+    // an SSRF hole on the Dataflare bridge's primary path.
+    const before = friendlyHits.length
+    const res = await fetch(`${baseUrl}/api/ai/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${embedJwt(['ai:translate'])}` },
+      body: JSON.stringify(translateBody(`http://127.0.0.1:${evil.port}`)),
+    })
+    expect(res.status).toBe(200)
+    expect(friendlyHits.length).toBeGreaterThan(before)
+    expect(evilHits).toHaveLength(0)
+    expect(friendlyHits.at(-1)?.authorization).toBe(`Bearer ${SERVER_KEY}`)
+    expect(friendlyHits.at(-1)?.path).toContain('/chat/completions')
+  }, 30_000)
+
+  it('sanitizes settings injected through the legacy translate stream route with a cookie-carried JWT', async () => {
+    const before = friendlyHits.length
+    const res = await fetch(`${baseUrl}/api/ai/translate/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: `auth_token=${embedJwt(['ai:translate'])}` },
+      body: JSON.stringify(translateBody(`http://127.0.0.1:${evil.port}`)),
+    })
+    expect(res.status).toBe(200)
+    const sse = await res.text()
+    expect(sse).toContain('event:')
+    expect(friendlyHits.length).toBeGreaterThan(before)
+    expect(evilHits).toHaveLength(0)
+    expect(friendlyHits.at(-1)?.authorization).toBe(`Bearer ${SERVER_KEY}`)
+  }, 30_000)
+
+  it('sanitizes settings injected through the v1 translate units ingress', async () => {
+    const before = friendlyHits.length
+    const res = await fetch(`${baseUrl}/api/v1/ai/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${embedJwt(['ai:translate'])}` },
+      body: JSON.stringify(translateBody(`http://127.0.0.1:${evil.port}`)),
+    })
+    expect(res.status).toBe(200)
+    expect(friendlyHits.length).toBeGreaterThan(before)
+    expect(evilHits).toHaveLength(0)
+    expect(friendlyHits.at(-1)?.authorization).toBe(`Bearer ${SERVER_KEY}`)
+  }, 30_000)
+
+  it('rejects a scope-limited JWT without ai:translate on the legacy translate routes with 403', async () => {
+    // jwt-open boots skip the route table, so these routes enforce their
+    // declared scope at the entry — a files:read-only guest must not reach
+    // provider spend, no matter which transport carried its JWT.
+    for (const path of ['/api/ai/translate', '/api/ai/translate/stream', '/api/ai/stream']) {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${embedJwt(['files:read'])}` },
+        body: JSON.stringify({ units: [] }),
+      })
+      expect(res.status).toBe(403)
+    }
+    expect(evilHits).toHaveLength(0)
+  }, 30_000)
 })
 
 describe('operator caller (WEB_TOKEN-armed boot)', () => {
@@ -253,6 +324,27 @@ describe('operator caller (WEB_TOKEN-armed boot)', () => {
     expect(status).toBe(200)
     expect(friendlyHits.length).toBeGreaterThan(before)
     expect(friendlyHits.at(-1)?.authorization).toBe('Bearer operator-byok-key')
+  }, 30_000)
+
+  it('still honors a loopback BYOK baseUrl override on the translate batch route', async () => {
+    const before = friendlyHits.length
+    const res = await fetch(`${baseUrl}/api/ai/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${OPERATOR_TOKEN}` },
+      body: JSON.stringify({
+        units: [{ unitId: 'u1', kind: 'paragraph', sourceText: 'hello', order: 0 }],
+        sourceLanguage: 'en',
+        targetLanguage: 'zh',
+        settings: {
+          provider: 'openai',
+          providers: { openai: { apiKey: 'operator-byok-key', baseUrl: `http://127.0.0.1:${friendly.port}`, model: 'gpt-4o' } },
+        },
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect(friendlyHits.length).toBeGreaterThan(before)
+    expect(friendlyHits.at(-1)?.authorization).toBe('Bearer operator-byok-key')
+    expect(evilHits).toHaveLength(0)
   }, 30_000)
 
   it('rejects a non-allowlisted baseUrl with a structured 400 before any upstream call', async () => {

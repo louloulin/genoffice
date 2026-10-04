@@ -22,8 +22,13 @@
  * `payload.unit.errorMessage`).
  *
  * Settings: the caller may include an `AiSettings` blob to override the
- * server's persisted settings (mirrors `ai:translate-batch`). Falls back to
- * `aiSettings` from `./chat.js`.
+ * server's persisted settings. Embed callers (verified JWT, any credential
+ * transport) get the network fields (`apiKey`/`baseUrl`) stripped and
+ * backfilled from the persisted server config; local/operator callers keep
+ * BYOK but a `baseUrl` override must hit the loopback/allowlist set or the
+ * request is rejected. See `settings-sanitize.ts` — the translate pipeline
+ * feeds the caller config straight into the provider call, so it is the same
+ * SSRF surface as `ai:chat`/`ai:stream`.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -44,6 +49,7 @@ import {
 } from '@genoffice/translation-core'
 
 import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from '../common/read-body'
+import { sanitizeRequestSettings } from './settings-sanitize'
 import {
   aiSettings as defaultSettings,
   ensureKbLoaded,
@@ -167,18 +173,33 @@ function evictOldestTranslateSession(): void {
   }
 }
 
-function pickSettings(req: TranslateBatchHttpRequest): AiSettings {
-  return req.settings || defaultSettings
+/**
+ * Caller identity for the translate HTTP surface. `embedCaller` must reflect
+ * whether the request presented a verified JWT (through any credential
+ * transport) — see the module header. Callers that omit it are treated as
+ * local/operator, so every HTTP ingress must thread it explicitly.
+ */
+export interface TranslateHttpCallerOptions {
+  embedCaller?: boolean
 }
 
-function resolveProvider(req: TranslateBatchHttpRequest): {
-  provider: AiProviderId
-  config: AiProviderConfig | undefined
-} {
-  const settings = pickSettings(req)
-  const provider = settings.provider
-  const config = settings.providers?.[provider]
-  return { provider, config }
+type ResolvedProvider =
+  | { ok: true; provider: AiProviderId; config: AiProviderConfig }
+  | { ok: false; reason: string }
+
+function resolveProvider(
+  req: TranslateBatchHttpRequest,
+  opts: TranslateHttpCallerOptions,
+): ResolvedProvider {
+  const sanitized = sanitizeRequestSettings({
+    embedCaller: opts.embedCaller === true,
+    requestSettings: req.settings,
+    serverSettings: defaultSettings,
+  })
+  if (!sanitized.ok) return { ok: false, reason: sanitized.reason }
+  const provider = sanitized.settings.provider
+  const config = sanitized.settings.providers?.[provider]
+  return { ok: true, provider, config }
 }
 
 type CoreScope = 'selection' | 'document' | 'paragraph' | 'cell' | 'table'
@@ -388,6 +409,7 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
 export async function handleTranslateBatchHttp(
   request: IncomingMessage,
   response: ServerResponse,
+  opts: TranslateHttpCallerOptions = {},
 ): Promise<void> {
   let body: TranslateBatchHttpRequest
   try {
@@ -399,7 +421,7 @@ export async function handleTranslateBatchHttp(
     sendJson(response, 400, { error: { message: 'invalid JSON body', code: 'INVALID_ARGUMENT' } })
     return
   }
-  return translateBatchCore(body, response)
+  return translateBatchCore(body, response, opts)
 }
 
 /**
@@ -422,6 +444,7 @@ export async function handleTranslateBatchHttp(
 export async function translateBatchCore(
   body: TranslateBatchHttpRequest,
   response: ServerResponse,
+  opts: TranslateHttpCallerOptions = {},
 ): Promise<void> {
   if (body.units !== undefined && !Array.isArray(body.units)) {
     sendJson(response, 400, {
@@ -465,7 +488,14 @@ export async function translateBatchCore(
     return
   }
   try {
-    const { provider, config } = resolveProvider(body)
+    const resolved = resolveProvider(body, opts)
+    if (!resolved.ok) {
+      sendJson(response, 400, {
+        error: { message: `AI settings rejected: ${resolved.reason}`, code: 'INVALID_ARGUMENT' },
+      })
+      return
+    }
+    const { provider, config } = resolved
     if (!config) {
       sendJson(response, 400, {
         error: { message: `AI provider "${provider}" not configured`, code: 'PROVIDER_NOT_CONFIGURED' },
@@ -539,6 +569,7 @@ export async function translateBatchCore(
 export async function handleTranslateStreamHttp(
   request: IncomingMessage,
   response: ServerResponse,
+  opts: TranslateHttpCallerOptions = {},
 ): Promise<void> {
   const requestId = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   // no initializer: the catch below returns, so body is read only after the
@@ -634,7 +665,16 @@ export async function handleTranslateStreamHttp(
       })
       return
     }
-    const { provider, config } = resolveProvider(body)
+    const resolved = resolveProvider(body, opts)
+    if (!resolved.ok) {
+      writeSseEvent(response, 'error', {
+        type: 'error',
+        requestId: effectiveRequestId,
+        message: `AI settings rejected: ${resolved.reason}`,
+      })
+      return
+    }
+    const { provider, config } = resolved
     if (!config) {
       writeSseEvent(response, 'error', {
         type: 'error',

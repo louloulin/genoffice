@@ -89,7 +89,7 @@ import { jwtPayloadFromRequest, jwtScopeFor, openModeAllowed, resolveAuthority, 
 // the catch-all would return 404 NOT_FOUND for paths that exist for
 // other methods, which is an RFC 7231 violation.
 import { findV1Route, handleApiV1 } from './api/v1/index'
-import { hasScope, requireScopeFromHeaders } from './api/v1/auth'
+import { hasScope, requireScopeFromHeaders, type JwtPayload } from './api/v1/auth'
 
 /**
  * True when the request carries an `Authorization: Bearer …` header. Used
@@ -102,6 +102,30 @@ function hasAuthorizationHeader(headers: unknown): boolean {
   const h = headers as { authorization?: unknown } | null | undefined
   const raw = h?.authorization
   return typeof raw === 'string' && raw.trim().toLowerCase().startsWith('bearer ')
+}
+
+/**
+ * jwt-open boots skip the route table on purpose (the dispatchers' own scope
+ * checks are the policy), but the legacy `/api/ai/*` routes predate that
+ * policy and had no per-route check — a scope-limited guest JWT could reach
+ * provider-spend endpoints there. Enforce the route table's declared scope
+ * for verified JWT callers through ANY credential transport; operators
+ * (WEB_TOKEN) and open-mode local callers carry no JWT payload and pass.
+ * Returns `{ blocked: true }` after writing the 403, or the JWT payload
+ * (null for non-JWT callers) so the route can derive embedCaller from it.
+ */
+function gateLegacyJwtScope(
+  request: IncomingMessage,
+  url: URL,
+  response: ServerResponse,
+  scope: string,
+): { blocked: true } | { blocked: false; jwt: JwtPayload | null } {
+  const jwt = jwtPayloadFromRequest({ headers: request.headers, url })
+  if (jwt && !hasScope(jwt, scope)) {
+    writeForbidden(response, `token does not grant scope "${scope}"`)
+    return { blocked: true }
+  }
+  return { blocked: false, jwt }
 }
 import { handleEmbed } from './embed/index'
 import { registerSdkCommandHandlers } from './embed/sdk-commands'
@@ -925,6 +949,9 @@ const server = createServer(async (request, response) => {
       })
       return
     }
+    const gate = gateLegacyJwtScope(request, url, response, 'ai:chat')
+    if (gate.blocked) return
+    const routeJwt = gate.jwt
     let sessionAbort: AbortController | undefined
     // Declare streamId before try so it's always available in finally/catch
     // even if JSON.parse (below) throws before the id is first assigned.
@@ -971,7 +998,7 @@ const server = createServer(async (request, response) => {
       // boot, skip the route table entirely) makes this an embed caller.
       // An Authorization-only check let cookie-JWT callers fall through to
       // operator BYOK policy with injected baseUrl/apiKey intact.
-      const embedCaller = jwtPayloadFromRequest({ headers: request.headers, url }) !== null
+      const embedCaller = routeJwt !== null
       const sanitized = sanitizeRequestSettings({
         embedCaller,
         requestSettings: req.settings as AiSettings | undefined,
@@ -1061,6 +1088,7 @@ const server = createServer(async (request, response) => {
       })
       return
     }
+    if (gateLegacyJwtScope(request, url, response, 'ai:chat').blocked) return
     let requestId: string | undefined
     try {
       const body = await readBody(request)
@@ -1105,7 +1133,9 @@ const server = createServer(async (request, response) => {
       })
       return
     }
-    void handleTranslateBatchHttp(request, response)
+    const gate = gateLegacyJwtScope(request, url, response, 'ai:translate')
+    if (gate.blocked) return
+    void handleTranslateBatchHttp(request, response, { embedCaller: gate.jwt !== null })
     return
   }
 
@@ -1121,7 +1151,9 @@ const server = createServer(async (request, response) => {
       })
       return
     }
-    void handleTranslateStreamHttp(request, response)
+    const gate = gateLegacyJwtScope(request, url, response, 'ai:translate')
+    if (gate.blocked) return
+    void handleTranslateStreamHttp(request, response, { embedCaller: gate.jwt !== null })
     return
   }
 
@@ -1137,6 +1169,7 @@ const server = createServer(async (request, response) => {
       })
       return
     }
+    if (gateLegacyJwtScope(request, url, response, 'ai:translate').blocked) return
     void handleTranslateStreamCancelHttp(request, response)
     return
   }

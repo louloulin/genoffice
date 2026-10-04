@@ -109,7 +109,9 @@ export async function handleAiTranslate(ctx: { request: IncomingMessage; respons
   // `translateBatchCore` takes the already-parsed body: `readBody` above has
   // consumed the stream, and a second read would silently return nothing.
   if (Array.isArray(rawBody.units)) {
-    await translateBatchCore(rawBody as TranslateBatchHttpRequest, ctx.response)
+    // The gate above verified a JWT — this caller is embed-mode for the
+    // translate sanitize layer (network fields stripped/backfilled).
+    await translateBatchCore(rawBody as TranslateBatchHttpRequest, ctx.response, { embedCaller: true })
     return true
   }
   // The REST shape (sdk1 §11.4 / docs/api/rest-api.md) is
@@ -174,8 +176,9 @@ export function handleAiTranslateStream(ctx: { request: IncomingMessage; respons
   }
   // Not awaited: an SSE handler stays open until the stream terminates, and
   // awaiting it here would hold the dispatcher's promise for the whole run.
-  // Mirrors the legacy registration in src/index.ts.
-  void handleTranslateStreamHttp(ctx.request, ctx.response)
+  // Mirrors the legacy registration in src/index.ts. The gate above verified
+  // a JWT — embed-mode for the translate sanitize layer.
+  void handleTranslateStreamHttp(ctx.request, ctx.response, { embedCaller: true })
   return true
 }
 
