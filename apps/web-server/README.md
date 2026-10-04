@@ -37,6 +37,7 @@ development.
 | `PORT` | `18081` | HTTP port. |
 | `WEB_TOKEN` | (unset) | When set, every `/api/*` request must carry `Authorization: Bearer <token>` (or `X-GenOffice-Token: <token>`). Health, channel discovery, and HTML preview stay open. When unset, gate-protected routes answer **401** — see the auth posture below. |
 | `GENOFFICE_ALLOW_OPEN` | (unset) | Local-dev escape hatch: set to `1` or `true` to restore the historical no-auth open posture on a loopback bind. Any other value fails closed. |
+| `GENOFFICE_BASEURL_ALLOWLIST` | (unset) | Comma-separated hostnames where a **local/operator** caller's `baseUrl` override may point (loopback is always allowed). Embed/JWT callers cannot override `baseUrl`/`apiKey` at all — their settings are stripped and backfilled from the persisted tenant config. See `src/ai/settings-sanitize.ts`. |
 | `DATA_DIR` | `/tmp/genoffice-data` | Persistent state: `projects.json`, `docs-recent.json`, `docs-starred.json`, `ai-settings.json`, `translation-kb.json`, KB/TM, upload `files/`. |
 | `WEB_TEMP_ROOT` | `$TMPDIR/genoffice-web-temp` | Disposable per-upload directories; swept every boot, age > 24 h. |
 | `WEB_STATIC_ROOT` | `<repo>/apps` | Override where the server looks for the renderer `out/` directories. |

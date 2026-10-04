@@ -71,7 +71,7 @@ export async function handleAiChat(ctx: { request: IncomingMessage; response: Se
     sendError(ctx.response, 400, 'expected { messages: [{role, content}] } with at least one user message', 'INVALID_ARGUMENT', 'ai:chat')
     return true
   }
-  const result = await invokeIpc('ai:chat', [ipcBody])
+  const result = await invokeIpc('ai:chat', [ipcBody], { userId: gate.payload.sub })
   sendJson(ctx.response, 200, result)
   return true
 }
@@ -282,7 +282,7 @@ export async function handleAiSkill(ctx: { request: IncomingMessage; response: S
     sendError(ctx.response, 400, 'expected { messages: [{role, content}] } with at least one user message', 'INVALID_ARGUMENT', `ai:skill:${skillName}`)
     return true
   }
-  const result = await invokeIpc('ai:chat', [{ ...ipcBody, skill: skillName }])
+  const result = await invokeIpc('ai:chat', [{ ...ipcBody, skill: skillName }], { userId: gate.payload.sub })
   sendJson(ctx.response, 200, result)
   return true
 }

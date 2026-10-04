@@ -19,7 +19,19 @@ const senderStub = {
   },
 }
 
-export async function invokeIpc(channel: string, args: unknown[]): Promise<unknown> {
+/**
+ * `eventOverrides` lets a v1 handler carry what the HTTP `/api/ipc` dispatcher
+ * threads on its own synthesized event — above all `userId`, the verified JWT
+ * subject. Without it, every REST-invoked handler sees a userId-less event and
+ * embed-vs-local decisions (`settings-sanitize.ts` `isEmbedCaller`) degrade to
+ * "local", letting a JWT caller's injected `apiKey`/`baseUrl` through as if it
+ * were operator BYOK.
+ */
+export async function invokeIpc(
+  channel: string,
+  args: unknown[],
+  eventOverrides?: { userId?: string },
+): Promise<unknown> {
   const handler = getHandler(channel)
   if (!handler) {
     throw new Error(`No IPC handler for '${channel}'`)
@@ -28,6 +40,7 @@ export async function invokeIpc(channel: string, args: unknown[]): Promise<unkno
     processId: 0,
     frameId: 0,
     sender: senderStub,
+    ...eventOverrides,
   }
   return await handler(event, ...args)
 }

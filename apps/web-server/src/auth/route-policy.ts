@@ -109,6 +109,24 @@ function firstValidJwt(candidates: string[]): JwtPayload | null {
 }
 
 /**
+ * The verifying JWT this request carries, through **any** credential
+ * transport (Bearer header / `X-GenOffice-Token` / `auth_token` cookie /
+ * `?token=`), or null.
+ *
+ * Callers deciding *who the caller is* (embed vs operator vs local renderer)
+ * must use this — not a raw Authorization-header slice — because the gate
+ * admits a JWT through all four transports. A caller whose JWT arrived via
+ * cookie would otherwise be misread as "local" and keep injected network
+ * overrides (the SSRF sanitize decision in `settings-sanitize.ts`).
+ */
+export function jwtPayloadFromRequest(request: {
+  headers: IncomingMessage['headers']
+  url?: { searchParams?: { get(name: string): string | null } }
+}): JwtPayload | null {
+  return firstValidJwt(credentialCandidates(request))
+}
+
+/**
  * Collect the raw credential strings a request could be carrying, in the same
  * four transports `readToken` (`./index`) honours: `Authorization: Bearer`,
  * the `X-GenOffice-Token` header (EventSource strips `Authorization`

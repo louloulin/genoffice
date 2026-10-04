@@ -81,7 +81,7 @@ import { registerWebHandlers } from './web/index'
 import { registerVersionHistoryHandlers } from './common/version-history'
 import { startAuditRotateWorker } from './common/audit-log'
 import { isAuthorised, isPublicApiPath, writeUnauthorized } from './auth/index'
-import { jwtScopeFor, openModeAllowed, resolveAuthority, writeForbidden } from './auth/route-policy'
+import { jwtPayloadFromRequest, jwtScopeFor, openModeAllowed, resolveAuthority, writeForbidden } from './auth/route-policy'
 // sdk1 §11.111: handleApiV1 + findV1Route are imported together so the
 // v1 dispatcher catch-all can return 405 METHOD_NOT_ALLOWED with the
 // correct Allow list when a pathname matches a known v1 route but the
@@ -89,7 +89,7 @@ import { jwtScopeFor, openModeAllowed, resolveAuthority, writeForbidden } from '
 // the catch-all would return 404 NOT_FOUND for paths that exist for
 // other methods, which is an RFC 7231 violation.
 import { findV1Route, handleApiV1 } from './api/v1/index'
-import { hasScope, requireScopeFromHeaders, verifyJwtWithRevocation } from './api/v1/auth'
+import { hasScope, requireScopeFromHeaders } from './api/v1/auth'
 
 /**
  * True when the request carries an `Authorization: Bearer …` header. Used
@@ -802,11 +802,13 @@ const server = createServer(async (request, response) => {
         // mode), userId is undefined and audit:log falls back to its
         // caller-supplied arg or 'system'. §11.92 wires this so audit
         // records stop carrying 'system' for every authenticated caller.
-        const authPayload = hasAuthorizationHeader(request.headers)
-          ? verifyJwtWithRevocation(
-              ((request.headers as { authorization?: string }).authorization ?? '').slice('Bearer '.length),
-            )
-          : null
+        // The gate above admits a JWT through all four credential transports
+        // (Bearer / X-GenOffice-Token / auth_token cookie / ?token=), so the
+        // subject resolution must read the same set — an Authorization-only
+        // slice here would drop the userId for cookie/?token= JWT callers and
+        // downstream embed-vs-local decisions (settings-sanitize) would
+        // misread them as local operators.
+        const authPayload = jwtPayloadFromRequest({ headers: request.headers, url })
         const event = {
           processId: 0,
           frameId: 0,
@@ -964,11 +966,12 @@ const server = createServer(async (request, response) => {
         aiSettings?: AiSettings
       } | null
       const serverSettings = chatMod?.aiSettings ?? aiSettingsFallback
-      const bearer = ((request.headers as { authorization?: string }).authorization ?? '').slice(
-        'Bearer '.length,
-      )
-      const embedCaller =
-        hasAuthorizationHeader(request.headers) && verifyJwtWithRevocation(bearer) !== null
+      // Embed detection must mirror the gate: a verifying JWT through ANY
+      // transport (cookie/?token= callers pass the gate and, on a jwt-open
+      // boot, skip the route table entirely) makes this an embed caller.
+      // An Authorization-only check let cookie-JWT callers fall through to
+      // operator BYOK policy with injected baseUrl/apiKey intact.
+      const embedCaller = jwtPayloadFromRequest({ headers: request.headers, url }) !== null
       const sanitized = sanitizeRequestSettings({
         embedCaller,
         requestSettings: req.settings as AiSettings | undefined,
