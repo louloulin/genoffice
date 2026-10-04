@@ -35,7 +35,8 @@ import {
 } from '@genoffice/translation-core/embed-body'
 import type { TranslateBatchRequest, TranslateBatchResponse, TranslateBatchUnitResult } from '@genoffice/translation-core'
 import { createDataflareTranslationStorage } from '@genoffice/translation-core/storage'
-import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import { isEmbeddedInHost } from '@genoffice/web-sdk/dataflare/guest'
+import { emitTranslateProgress } from './ai/translate-progress'
 import {
   isHostDocumentSource,
   resolveEmbedPathPrefix,
@@ -448,7 +449,7 @@ async function translateDeckThroughHost(
           options?.onUnit?.(settledUnit)
           // The host renders its own progress from the same run; without this
           // the parent page shows nothing until the last frame lands.
-          postToEmbedParent({
+          emitTranslateProgress({
             type: 'ai-progress',
             status: 'running',
             progress: accumulator.result().units.length / Math.max(request.units.length, 1),

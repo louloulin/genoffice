@@ -6,6 +6,7 @@ import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mj
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { AiPanel, GensparkMark } from './ai/AiPanel'
+import { TranslateTab } from './components-ribbon-translate-tab'
 import {
   TranslatePdfDialog,
   type TranslatePdfDialogHandle,
@@ -16,7 +17,13 @@ import type {
   TranslateBatchResponse,
   TranslateBatchUnitResult,
 } from '@genoffice/translation-core/document'
-import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import {
+  IDLE_TRANSLATION_STATUS,
+  useTranslationTabStatus,
+  type TranslationScope,
+  type TranslationTabSettings,
+} from '@genoffice/ui'
+import { emitTranslateProgress } from './translate-progress'
 import { AiAskPopover, type AskAnchorRect } from './AiAskPopover'
 import { loadSavedAnnots } from './annotation-catalog'
 import {
@@ -279,6 +286,7 @@ const RIBBON_TABS = [
   { id: 'annotate', labelKey: 'ribbonTabAnnotate' },
   { id: 'edit', labelKey: 'ribbonTabEdit' },
   { id: 'page', labelKey: 'ribbonTabPage' },
+  { id: 'translate', labelKey: 'ribbonTranslate' },
   { id: 'view', labelKey: 'ribbonTabView' },
 ] as const
 type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm'
@@ -1986,16 +1994,51 @@ export default function App() {
           qualityCheck: command.qualityCheck !== false,
           ...(glossaryCategory ? { glossaryCategory } : {}),
         })
-        postToEmbedParent({ type: 'ai-progress', status: 'started', progress: 0 })
+        emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
         return
       }
       if (command.type === 'cancel-translation') {
         translatePdfDialogRef.current?.close()
-        postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+        emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
       }
     }
     window.addEventListener('dataflare:office-command', onHostCommand)
     return () => window.removeEventListener('dataflare:office-command', onHostCommand)
+  }, [])
+
+  /** Standalone Translate tab: mirrors the PDF run's progress into the ribbon band. */
+  const translationStatus = useTranslationTabStatus()
+
+  /**
+   * Open the PDF-translation dialog from the ribbon tab.
+   *
+   * Same dialog the host command opens, so the tab is an entry point and not a
+   * second pipeline.
+   */
+  const onTranslateStart = useCallback(
+    (scope: TranslationScope, settings: TranslationTabSettings) => {
+      translatePdfDialogRef.current?.open({
+        scope,
+        sourceLanguage: settings.sourceLanguage,
+        targetLanguage: settings.targetLanguage,
+        bilingual: settings.bilingual,
+        preserveFormatting: settings.preserveFormatting,
+        memoryEnabled: settings.memoryEnabled,
+        qualityCheck: settings.qualityCheck,
+      })
+      emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
+    },
+    [],
+  )
+
+  const onTranslateCancel = useCallback(() => {
+    translatePdfDialogRef.current?.close()
+    emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+  }, [])
+
+  const onOpenTranslationStorage = useCallback(() => {
+    setAiCollapsed(false)
+    window.dispatchEvent(new CustomEvent('genoffice:open-translation-storage'))
   }, [])
 
   // Auto-OCR for scanned pages (issue #119): once the base index shows pages with
@@ -6766,6 +6809,18 @@ export default function App() {
                 </div>
               </div>
             </>
+          )}
+          {ribbonTab === 'translate' && (
+            <TranslateTab
+              hasDoc={!!doc && !readOnly}
+              status={translationStatus ?? IDLE_TRANSLATION_STATUS}
+              showStorage={
+                typeof window !== 'undefined' && Boolean(window.pdfApi?.translationStorage)
+              }
+              onStart={onTranslateStart}
+              onCancel={onTranslateCancel}
+              onOpenStorage={onOpenTranslationStorage}
+            />
           )}
           {ribbonTab === 'view' && (
             <>

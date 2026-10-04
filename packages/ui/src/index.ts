@@ -181,6 +181,17 @@ export {
 } from './TranslationRibbonTab'
 export { ChangeMarker, type ChangeMarkerProps } from './ChangeMarker'
 
+// Standalone Translate tab: the in-window status channel + its narrowing.
+export {
+  TRANSLATION_STATUS_EVENT,
+  IDLE_TRANSLATION_STATUS,
+  publishTranslationStatus,
+  useTranslationTabStatus,
+  translationTabStateOf,
+  toTranslationTabStatus,
+  type TranslationProgressDetail,
+} from './translation-status'
+
 // Extended icon set used by the runtime primitives.
 export {
   IconAttachment,

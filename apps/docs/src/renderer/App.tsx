@@ -19,7 +19,7 @@ import {
   useAutoSavePref,
   type TranslationScope,
   type TranslationTabSettings,
-  type TranslationTabStatus,
+  useTranslationTabStatus,
 } from '@genoffice/ui'
 import { wordRangeAtCaret } from './editor/comments'
 import { markdownPasteHtml } from './editor/markdown-paste'
@@ -612,51 +612,20 @@ export function App() {
   /** Increments on every open/new document: AiPanel remounts by key to reset the conversation and history (save path changes don't bump it, so the session continues) */
   const [aiPanelKey, setAiPanelKey] = useState(0)
   /**
-   * Standalone Translate tab status. Mirrors AiPanel's `ai-progress` stream
-   * through an in-window CustomEvent so the ribbon band can show progress,
-   * unit counts and the quality badge regardless of who embedded us.
+   * Standalone Translate tab status. The run lives in AiPanel; the shared
+   * useTranslationTabStatus hook mirrors its ai-progress stream, so the ribbon
+   * band shows progress, unit counts and the quality badge no matter who
+   * embedded us. One implementation serving all four editors.
    */
-  const [translationStatus, setTranslationStatus] = useState<TranslationTabStatus>({
-    state: 'idle',
-    progress: 0,
-  })
+  const translationStatus = useTranslationTabStatus()
+  /**
+   * Ribbon tab request channel (Word's "Page Setup" deep-link from the File
+   * menu into the Layout tab). Kept next to the translate status because both
+   * are ribbon-band inputs.
+   */
   const [ribbonTabRequest, setRibbonTabRequest] = useState<{ tab: string; revision: number } | null>(
     null,
   )
-  useEffect(() => {
-    const onTranslationStatus = (event: Event) => {
-      const detail = (
-        event as CustomEvent<{
-          status?: string
-          progress?: number
-          completedUnits?: number
-          totalUnits?: number
-          quality?: { overallScore?: number }
-          error?: string
-        }>
-      ).detail
-      const state = (detail?.status ?? 'idle') as TranslationTabStatus['state']
-      setTranslationStatus({
-        state: [
-          'idle',
-          'pending',
-          'running',
-          'completed',
-          'failed',
-          'cancelled',
-        ].includes(state)
-          ? state
-          : 'running',
-        progress: typeof detail?.progress === 'number' ? detail.progress : 0,
-        completedUnits: detail?.completedUnits,
-        totalUnits: detail?.totalUnits,
-        qualityScore: detail?.quality?.overallScore ?? null,
-        message: detail?.error ?? null,
-      })
-    }
-    window.addEventListener('genoffice:translation-status', onTranslationStatus)
-    return () => window.removeEventListener('genoffice:translation-status', onTranslationStatus)
-  }, [])
   const [status, setStatus] = useState('')
   const [zoom, setZoom] = useState(100)
   const scrollContainerRef = useRef<HTMLElement>(null)
@@ -5286,7 +5255,13 @@ export function App() {
      */
     onTranslateStart: (scope: TranslationScope, settings: TranslationTabSettings) => {
       setShowAi(true)
-      setTranslationStatus({ state: 'pending', progress: 0 })
+      // The band flips to "pending" here; the run itself publishes its own
+      // ai-progress stream, so there is no second status source to drift.
+      window.dispatchEvent(
+        new CustomEvent('genoffice:translation-status', {
+          detail: { type: 'ai-progress', status: 'started', progress: 0 },
+        }),
+      )
       window.dispatchEvent(
         new CustomEvent('dataflare:open-translate', {
           detail: { ...settings, scope },

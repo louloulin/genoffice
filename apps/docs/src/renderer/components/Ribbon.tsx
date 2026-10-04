@@ -40,6 +40,7 @@ import {
   isSymbolFontFamily,
   useDismissablePopover,
   useRibbonCollapse,
+  IDLE_TRANSLATION_STATUS,
 } from '@genoffice/ui'
 import { HIGHLIGHT_CSS } from '../editor/extensions'
 import { applyCase, type CaseMode } from '../editor/case-transform'
@@ -349,8 +350,6 @@ const TABS = (
       ]
 ) as readonly string[]
 const TABLE_TABS = ['tableDesign', 'tableLayout'] as const
-/** Ribbon test fixtures and non-translating hosts fall back to this. */
-const IDLE_TRANSLATION_STATUS: TranslationTabStatus = { state: 'idle', progress: 0 }
 const IMAGE_TABS = ['pictureFormat'] as const
 const SHAPE_TABS = ['shapeFormat'] as const
 type RibbonTab =

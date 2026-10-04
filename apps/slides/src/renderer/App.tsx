@@ -95,7 +95,12 @@ import { t, useI18n } from './i18n/locale'
 import { AiPanel } from './ai/AiPanel'
 import { TranslateDeckDialog, type TranslateDeckDialogHandle } from './ai/TranslateDeckDialog'
 import type { DeckTranslateBatchFn, DeckTranslateWrite, SlideLike } from './ai/document-translate'
-import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import {
+  useTranslationTabStatus,
+  type TranslationScope,
+  type TranslationTabSettings,
+} from '@genoffice/ui'
+import { emitTranslateProgress } from './ai/translate-progress'
 import { ChartDataDialog } from './components/ChartDataDialog'
 import type { BrushFormat } from './format-brush'
 import { isTextUndoTarget, shouldRouteUndoToDeck } from './undo-routing'
@@ -1617,16 +1622,49 @@ export function App() {
           qualityCheck: command.qualityCheck !== false,
           ...(glossaryCategory ? { glossaryCategory } : {}),
         })
-        postToEmbedParent({ type: 'ai-progress', status: 'started', progress: 0 })
+        emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
         return
       }
       if (command.type === 'cancel-translation') {
         translateDeckDialogRef.current?.close()
-        postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+        emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
       }
     }
     window.addEventListener('dataflare:office-command', onHostCommand)
     return () => window.removeEventListener('dataflare:office-command', onHostCommand)
+  }, [])
+
+  /** Standalone Translate tab: mirrors the deck run's progress into the ribbon band. */
+  const translationStatus = useTranslationTabStatus()
+
+  /**
+   * Open the deck-translation dialog from the ribbon tab.
+   *
+   * Same entry point the host command uses, so the tab cannot grow a second
+   * pipeline: the settings the user picked in the band are handed straight to
+   * the dialog, which then runs the shared extraction → review → write-back.
+   */
+  const onTranslateStart = useCallback((scope: TranslationScope, settings: TranslationTabSettings) => {
+    translateDeckDialogRef.current?.open({
+      scope,
+      sourceLanguage: settings.sourceLanguage,
+      targetLanguage: settings.targetLanguage,
+      bilingual: settings.bilingual,
+      preserveFormatting: settings.preserveFormatting,
+      memoryEnabled: settings.memoryEnabled,
+      qualityCheck: settings.qualityCheck,
+    })
+    emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
+  }, [])
+
+  const onTranslateCancel = useCallback(() => {
+    translateDeckDialogRef.current?.close()
+    emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+  }, [])
+
+  const onOpenTranslationStorage = useCallback(() => {
+    setShowAi(true)
+    window.dispatchEvent(new CustomEvent('genoffice:open-translation-storage'))
   }, [])
 
   const applyDeck = useCallback((all: RenderSlide[], goTo?: number) => {
@@ -3083,6 +3121,13 @@ export function App() {
         editing={!!editing || !!editingCell}
         autoSave={autoSave}
         onAutoSaveChange={setAutoSave}
+        translationStatus={translationStatus}
+        onTranslateStart={onTranslateStart}
+        onTranslateCancel={onTranslateCancel}
+        onOpenTranslationStorage={onOpenTranslationStorage}
+        showTranslationStorage={
+          typeof window !== 'undefined' && Boolean(window.slidesApi?.translationStorage)
+        }
         onOpen={() => void openDialog()}
         onSave={() => void save()}
         onUndo={() => void undo()}

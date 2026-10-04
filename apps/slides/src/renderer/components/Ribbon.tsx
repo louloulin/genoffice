@@ -21,6 +21,7 @@ import {
   THEME_COLORS,
   THEME_COLOR_SHADES,
   STANDARD_COLORS,
+  IDLE_TRANSLATION_STATUS,
 } from '@genoffice/ui'
 import { getRecentColors, pushRecentColor } from '../recent-colors'
 import { ICON_COLORS } from '../insert-presets'
@@ -122,6 +123,7 @@ export type { FormatCmd, SlidesViewMode } from './ribbon-shared'
 import type { FormatCmd } from './ribbon-shared'
 import { RibbonHomeTab } from './RibbonHomeTab'
 import { RibbonInsertTab } from './RibbonInsertTab'
+import { TranslateTab } from './ribbon-translate-tab'
 import { ShapeGalleryContent } from './ShapeGalleryPopover'
 import { autoContextTabForElement, contextTabForElement, type ContextTab } from './context-tabs'
 
@@ -139,11 +141,12 @@ type MainTab =
   | 'animations'
   | 'slideShow'
   | 'review'
+  | 'translate'
   | 'view'
 
 // Mac has no "File" tab (file operations go through the native menu), Windows does
 const TABS: readonly MainTab[] = IS_MAC
-  ? ['home', 'insert', 'draw', 'design', 'transitions', 'animations', 'slideShow', 'review', 'view']
+  ? ['home', 'insert', 'draw', 'design', 'transitions', 'animations', 'slideShow', 'review', 'translate', 'view']
   : [
       'file',
       'home',
@@ -154,6 +157,7 @@ const TABS: readonly MainTab[] = IS_MAC
       'animations',
       'slideShow',
       'review',
+      'translate',
       'view',
     ]
 
@@ -167,6 +171,7 @@ const TAB_LABEL: Record<MainTab | ContextTab, StringKey> = {
   animations: 'ribbonTabAnimations',
   slideShow: 'ribbonTabSlideShow',
   review: 'ribbonTabReview',
+  translate: 'ribbonTranslate',
   view: 'ribbonTabView',
   tableDesign: 'ribbonTabTableDesign',
   chartDesign: 'ribbonTabChartDesign',
@@ -1191,6 +1196,11 @@ export function Ribbon({
   onToggleComments,
   onNewComment,
   commentCount,
+  translationStatus,
+  onTranslateStart,
+  onTranslateCancel,
+  onOpenTranslationStorage,
+  showTranslationStorage,
   onInsertIcon,
   onInsertChart,
   onInsertSmartArt,
@@ -2545,6 +2555,15 @@ export function Ribbon({
               </button>
             </Group>
           </>
+        ) : tab === 'translate' ? (
+          <TranslateTab
+            hasDoc={hasDoc}
+            status={translationStatus ?? IDLE_TRANSLATION_STATUS}
+            showStorage={showTranslationStorage ?? false}
+            onStart={onTranslateStart ?? (() => {})}
+            onCancel={onTranslateCancel ?? (() => {})}
+            onOpenStorage={onOpenTranslationStorage ?? (() => {})}
+          />
         ) : tab === 'view' ? (
           <>
             <Group label={t('ribbonGroupPresentationViews')}>

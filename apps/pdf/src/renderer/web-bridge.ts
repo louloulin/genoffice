@@ -32,7 +32,9 @@ import type {
   TranslateBatchResponse,
   TranslateBatchUnitResult,
 } from '@genoffice/translation-core/document'
-import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import { isEmbeddedInHost } from '@genoffice/web-sdk/dataflare/guest'
+import { emitTranslateProgress } from './translate-progress'
+import { createDataflareTranslationStorage } from '@genoffice/translation-core/storage'
 import type { IpcTransport } from '@genoffice/ipc-bridge/client'
 import { createPdfApi, createPdfProjectApi } from '../shared/pdf-api-factory'
 import type { PdfApi, SavePdfRequest, SavePdfResult } from '../shared/ipc'
@@ -112,7 +114,7 @@ async function translatePdfThroughHost(
           options?.onUnit?.(settledUnit)
           // The host renders its own progress from the same run; without this
           // the parent page shows nothing until the last paragraph lands.
-          postToEmbedParent({
+          emitTranslateProgress({
             type: 'ai-progress',
             status: 'running',
             progress: accumulator.result().units.length / Math.max(request.units.length, 1),
@@ -212,6 +214,29 @@ if (!isElectronRuntime()) {
   bridgedWindow.pdfApi = createPdfApi(transport, {
     aiTranslateBatchStream: (request, options) =>
       translatePdfThroughHost(dataflareRef, transport, request, options),
+    /**
+     * Space-scoped glossary / translation memory.
+     *
+     * The embedded test is `isEmbeddedInHost()` and **not** `dataflare.getContext()`:
+     * this object literal is built before `dataflare.install()` runs, so asking
+     * for the context here answers `null` on every load and pins the client to
+     * `null` forever — which the panel then renders as "unavailable" for every
+     * drive document. The space id is still read per call, so the panel follows
+     * the user across spaces.
+     */
+    // SAFETY: the bridge is only reachable after `dataflareRef` is assigned
+    // below, and the client reads it per call; the local alias keeps the
+    // null-check out of the hot path.
+    translationStorage: isEmbeddedInHost()
+      ? createDataflareTranslationStorage({
+          request: (path, init) => {
+            const integration = dataflareRef
+            if (!integration) return Promise.reject(new Error('Dataflare host bridge is not ready'))
+            return integration.request(path, init)
+          },
+          getSpaceId: () => dataflareRef?.getContext()?.spaceId ?? null,
+        })
+      : null,
     consumePending: async () => {
       if (hashOpen) {
         const granted: unknown = await transport.invoke('pdf:open-path', hashOpen)

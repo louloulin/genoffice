@@ -18,10 +18,14 @@ export interface PdfApiOverrides {
   uploadFile?: (projectId?: string) => Promise<{ id: string; path: string; name: string } | null>
   /** Embedded SSE transport: the Dataflare host streams per-unit progress. */
   aiTranslateBatchStream?: PdfApi['aiTranslateBatchStream']
+  /** Embedded only: space-scoped glossary / translation memory. */
+  translationStorage?: PdfApi['translationStorage']
 }
 
 export function createPdfApi(t: IpcTransport, overrides: PdfApiOverrides = {}): PdfApi {
   return {
+    // Desktop leaves this undefined; the web embed bridge supplies a client.
+    translationStorage: overrides.translationStorage ?? null,
     consumePending: overrides.consumePending ?? (() => t.invoke(PDF_CHANNELS.consumePending)),
     async uploadFile(projectId?: string) {
       if (overrides.uploadFile) return await overrides.uploadFile(projectId)

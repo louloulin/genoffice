@@ -9,6 +9,7 @@
     "./document": "./src/document.ts",
     "./embed-body": "./src/embed-body.ts",
     "./storage": "./src/storage.ts",
+    "./languages": "./src/languages.ts",
     "./translated-file-name": "./src/translated-file-name.ts"
   },
   "scripts": {

@@ -249,3 +249,24 @@ export function isAlreadyInLanguage(text: string, targetLang: string | undefined
   }
   return scriptShare(text, target) >= MIN_TARGET_SCRIPT_SHARE
 }
+
+/**
+ * Target languages for the *document* translation pipelines (docs, sheets,
+ * slides, pdf), as `@genoffice/ui`'s `TranslateLanguageOption`.
+ *
+ * The four apps each carried their own 12-entry literal — same codes, same
+ * labels, four copies, and only docs also talked to `LANGUAGES` for the
+ * ribbon. Any list that had drifted (a missing `th-TH`, a retyped label) would
+ * have failed silently: the dialog would simply not offer the language, which
+ * reads as "the product does not support Thai" rather than as a bug. One
+ * export, one place to add the next language.
+ *
+ * `auto` is excluded on purpose: it is a *source* language only, and
+ * `TranslateDialog` renders it separately in the source select.
+ */
+export function targetLanguageChoices(): Array<{ value: string; label: string }> {
+  return LANGUAGES.filter((lang) => lang.value !== 'auto').map((lang) => ({
+    value: lang.value,
+    label: lang.label,
+  }))
+}

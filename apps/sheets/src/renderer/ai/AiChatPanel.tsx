@@ -619,6 +619,13 @@ export function AiChatPanel({
   // 术语库 / 翻译记忆面板。数据在云盘空间里（`translationStorage`），不在本地，
   // 所以这个开关只管开合，不持有任何数据。
   const [storagePanelOpen, setStoragePanelOpen] = React.useState(false)
+  // The ribbon's Translate tab lives outside this component, so it opens the
+  // glossary / memory panel through a window event (same channel docs uses).
+  React.useEffect(() => {
+    const onOpenStorage = () => setStoragePanelOpen(true)
+    window.addEventListener('genoffice:open-translation-storage', onOpenStorage)
+    return () => window.removeEventListener('genoffice:open-translation-storage', onOpenStorage)
+  }, [])
   const translationStorageStrings = useMemo(
     () => ({
       title: t('aiGlossaryPanelTitle'),

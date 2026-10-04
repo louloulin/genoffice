@@ -7,7 +7,10 @@
  * Dataflare host already uses, so there is exactly one translate pipeline.
  */
 import { useMemo, useState } from 'react'
-import { LANGUAGES } from '@genoffice/translation-core'
+// Subpath import, not the bare entry: `translation-core`'s index re-exports
+// modules that pull in Node built-ins (fs / child_process), which a renderer
+// bundle cannot resolve.
+import { LANGUAGES } from '@genoffice/translation-core/languages'
 import {
   TranslationRibbonTab,
   type TranslationLanguageChoice,
@@ -59,7 +62,9 @@ export function TranslateTab({
       swap: t('aiTranslateSwapLanguages'),
       languageGroup: t('ribbonGroupLanguage'),
       optionsGroup: t('ribbonAiCreditNote'),
-      actionGroup: t('ribbonTranslateTip'),
+      // No caption under the action group: the two buttons are self-describing
+      // and English ribbon metrics keep the band short.
+      actionGroup: '',
       scopeDocument: t('aiChipTranslate'),
       scopeSelection: t('aiTranslateDialogTitle'),
       bilingual: t('aiTranslateBilingual'),

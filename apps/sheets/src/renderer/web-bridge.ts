@@ -31,7 +31,8 @@ import {
   parseEmbedTranslateStreamEvent,
 } from '@genoffice/translation-core/embed-body'
 import { createDataflareTranslationStorage } from '@genoffice/translation-core/storage'
-import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import { isEmbeddedInHost } from '@genoffice/web-sdk/dataflare/guest'
+import { emitTranslateProgress } from './translate-progress'
 import { createSheetsApi, createSheetsProjectApi, type SheetsApiOverrides } from '../shared/sheets-api-factory'
 import { createHostDocumentSync } from './dataflare-host-sync'
 import { saveWorkbookOverHttp } from './web-save'
@@ -366,7 +367,7 @@ async function translateBatchThroughHost(
           options?.onUnit?.(settledUnit)
           // The host renders its own progress from the same run; without this
           // the parent page shows nothing until the last cell lands.
-          postToEmbedParent({
+          emitTranslateProgress({
             type: 'ai-progress',
             status: 'running',
             progress: accumulator.result().units.length / Math.max(request.units.length, 1),

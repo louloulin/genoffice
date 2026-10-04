@@ -27,7 +27,11 @@ import {
 } from '@genoffice/ui'
 import type { ChatRunStatus, ChatToolCallRecord } from '@genoffice/chat-runtime/types'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
-import { Markdown } from '@genoffice/ui'
+import {
+  Markdown,
+  TranslationStoragePanel,
+  type TranslationStoragePanelStrings,
+} from '@genoffice/ui'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -172,6 +176,37 @@ export function AiPanel({
   const [sharedRunStatus, setSharedRunStatus] = useState<ChatRunStatus>('idle')
   /** Last error from a finished run; consumed by <AiErrorRecovery>. */
   const [lastError, setLastError] = useState<string | null>(null)
+  // Glossary / translation memory panel. The data lives in the drive space
+  // (`translationStorage`), not here, so this state only owns the open/close
+  // switch and the panel fetches for itself.
+  const [storagePanelOpen, setStoragePanelOpen] = useState(false)
+  // The ribbon's Translate tab lives outside this component, so it opens the
+  // panel through a window event (same channel docs / slides / sheets use).
+  useEffect(() => {
+    const onOpenStorage = () => setStoragePanelOpen(true)
+    window.addEventListener('genoffice:open-translation-storage', onOpenStorage)
+    return () => window.removeEventListener('genoffice:open-translation-storage', onOpenStorage)
+  }, [])
+  const translationStorageStrings: TranslationStoragePanelStrings = useMemo(
+    () => ({
+      title: t('aiGlossaryPanelTitle'),
+      glossaryTab: t('aiGlossaryTab'),
+      memoryTab: t('aiMemoryTab'),
+      sourceTerm: t('aiGlossarySource'),
+      targetTerm: t('aiGlossaryTarget'),
+      add: t('aiGlossaryAdd'),
+      remove: t('aiGlossaryRemove'),
+      close: t('cancel'),
+      emptyGlossary: t('aiGlossaryEmpty'),
+      emptyMemory: t('aiMemoryEmpty'),
+      scopeShared: t('aiScopeShared'),
+      scopeSpace: t('aiScopeSpace'),
+      loading: t('aiThinking'),
+      retry: t('aiGlossaryRetry'),
+      unavailable: t('aiStorageUnavailable'),
+    }),
+    [t],
+  )
   /** Composer working mode (Ask/Craft/Plan) — drives the per-turn suffix. */
   const [mode, setMode] = useState<ChatMode>(DEFAULT_CHAT_MODE)
   /** Active skill picked from the `/` palette — drives the per-turn skill directive. */
@@ -861,6 +896,13 @@ export function AiPanel({
           </button>
         </div>
       </header>
+
+      <TranslationStoragePanel
+        open={storagePanelOpen}
+        onClose={() => setStoragePanelOpen(false)}
+        client={window.pdfApi?.translationStorage ?? null}
+        strings={translationStorageStrings}
+      />
 
       <div className="ai-chat" ref={chatRef} onScroll={onChatScroll}>
         {/* Shared ChatRuntime components (M4). Additive layer; inline tool chips keep rendering. */}

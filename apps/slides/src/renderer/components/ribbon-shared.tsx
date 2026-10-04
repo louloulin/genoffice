@@ -20,6 +20,11 @@ import type { WordArtPreset } from '@genoffice/ui'
 import type { ChartPresetDef, IconDef, SmartArtDef } from '../insert-presets'
 import type { SlideThemePreset } from '../themes'
 import type { ChartStyleInfo } from '@genoffice/pptx-render'
+import type {
+  TranslationScope,
+  TranslationTabSettings,
+  TranslationTabStatus,
+} from '@genoffice/ui'
 import { useI18n, type StringKey } from '../i18n/locale'
 
 export type InsertDropKey =
@@ -510,6 +515,14 @@ export interface Props {
   onNewComment: () => void
   /** Current page's comment count (button badge) */
   commentCount: number
+  // ── Standalone Translate tab ─────────────────────────────────────────────
+  /** Status of the in-flight deck translation (idle when none). */
+  translationStatus?: TranslationTabStatus
+  onTranslateStart?: (scope: TranslationScope, settings: TranslationTabSettings) => void
+  onTranslateCancel?: () => void
+  onOpenTranslationStorage?: () => void
+  /** Hide the storage entry outside the Dataflare space bridge. */
+  showTranslationStorage?: boolean
   // ── Insert tab extensions ────────────────────────────────────────────────
   /** Insert an icon (rasterized to a PNG image) */
   onInsertIcon: (def: IconDef, color: string) => void

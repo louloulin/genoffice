@@ -3,12 +3,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { platformShortcuts } from '@genoffice/i18n'
 import {
   Dropdown,
+  IDLE_TRANSLATION_STATUS,
   RibbonCollapseButton,
   SHAPE_GALLERY_GROUPS,
   ShapePreview,
   useDismissablePopover,
   useRibbonCollapse,
+  type TranslationScope,
+  type TranslationTabSettings,
+  type TranslationTabStatus,
 } from '@genoffice/ui'
+import { TranslateTab } from './ribbon-translate-tab'
 
 import {
   BorderAllIcon,
@@ -63,7 +68,16 @@ import type { HeaderFooterParts } from './edit-journal'
 
 // No File tab: file commands live in the macOS
 // application menu (File → Open/Save/Save As) and the toolbar icons.
-const ribbonTabs = ['Home', 'Insert', 'Page Layout', 'Formulas', 'Data', 'Review', 'View'] as const
+const ribbonTabs = [
+  'Home',
+  'Insert',
+  'Page Layout',
+  'Formulas',
+  'Data',
+  'Review',
+  'Translate',
+  'View',
+] as const
 
 /// 'Chart Design' is contextual: it exists only while a chart is selected,
 /// and appears without stealing the active tab.
@@ -78,6 +92,7 @@ const TAB_LABEL: Record<RibbonTab, StringKey> = {
   Formulas: 'appTabFormulas',
   Data: 'appTabData',
   Review: 'appTabReview',
+  Translate: 'appTranslate',
   View: 'appTabView',
   'Chart Design': 'appTabChartDesign',
 }
@@ -270,6 +285,16 @@ interface ExcelShellProps {
   /** Web-only: pick a file in the browser and land it in FILES_DIR via
    * `web:save-file`. Falls back to no-op on Electron. */
   readonly onUploadFile: () => Promise<void>
+  // ── Standalone Translate tab ─────────────────────────────────────────────
+  /** Status of the in-flight translation (idle when none). */
+  readonly translationStatus?: TranslationTabStatus | undefined
+  readonly onTranslateStart?:
+    | ((scope: TranslationScope, settings: TranslationTabSettings) => void)
+    | undefined
+  readonly onTranslateCancel?: (() => void) | undefined
+  readonly onOpenTranslationStorage?: (() => void) | undefined
+  /** Hide the storage entry outside the Dataflare space bridge. */
+  readonly showTranslationStorage?: boolean | undefined
   readonly onGetActiveCell: () => string
   /// Value of the selection's top-left cell, read when Format Cells opens
   /// (number-format preview).
@@ -347,6 +372,11 @@ export function ExcelShell({
   onRefreshPivot,
   onIsSelectionInPivot,
   onUploadFile,
+  translationStatus,
+  onTranslateStart,
+  onTranslateCancel,
+  onOpenTranslationStorage,
+  showTranslationStorage,
   onGetActiveCell,
   onGetAnchorValue,
   activeCellA1,
@@ -393,6 +423,14 @@ export function ExcelShell({
   const [activeTab, setActiveTab] = useState<RibbonTab>('Home')
   const collapse = useRibbonCollapse('ai-sheets-ribbon-collapsed')
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
+  // The Translate ribbon tab needs the glossary / memory panel, which lives
+  // inside the copilot; expanding here keeps the tab from having to know the
+  // shell's state.
+  useEffect(() => {
+    const onOpenStorage = () => setIsCopilotOpen(true)
+    window.addEventListener('genoffice:open-translation-storage', onOpenStorage)
+    return () => window.removeEventListener('genoffice:open-translation-storage', onOpenStorage)
+  }, [])
   const [isCopilotOpen, setIsCopilotOpen] = useState(
     () => localStorage.getItem('ai-sheets-show-ai') !== '0',
   )
@@ -603,6 +641,11 @@ export function ExcelShell({
 
         <Ribbon
           activeTab={activeTab}
+          translationStatus={translationStatus}
+          onTranslateStart={onTranslateStart}
+          onTranslateCancel={onTranslateCancel}
+          onOpenTranslationStorage={onOpenTranslationStorage}
+          showTranslationStorage={showTranslationStorage}
           selectionFormat={selectionFormat}
           sheetHasContent={sheetHasContent}
           sheetProtected={onGetSheetProtection()}
@@ -1279,6 +1322,11 @@ function Ribbon({
   onRefreshPivot,
   onIsSelectionInPivot,
   onUploadFile,
+  translationStatus,
+  onTranslateStart,
+  onTranslateCancel,
+  onOpenTranslationStorage,
+  showTranslationStorage,
 }: {
   readonly activeTab: RibbonTab
   readonly selectionFormat: SelectionFormat | null
@@ -1305,6 +1353,13 @@ function Ribbon({
   /** Web-only: pick a file in the browser and land it in FILES_DIR via
    * `web:save-file`. No-op on Electron (caller can noop the override). */
   readonly onUploadFile: () => Promise<void>
+  readonly translationStatus?: TranslationTabStatus | undefined
+  readonly onTranslateStart?:
+    | ((scope: TranslationScope, settings: TranslationTabSettings) => void)
+    | undefined
+  readonly onTranslateCancel?: (() => void) | undefined
+  readonly onOpenTranslationStorage?: (() => void) | undefined
+  readonly showTranslationStorage?: boolean | undefined
 }): React.JSX.Element {
   const { t } = useI18n()
   const [fontColor, setFontColor] = useState('#C00000')
@@ -2330,6 +2385,21 @@ function Ribbon({
             onClick={() => onCommand('subtotal-open')}
           />
         </RibbonGroup>
+      </div>
+    )
+  }
+
+  if (activeTab === 'Translate') {
+    return (
+      <div className="ribbon" data-ribbon-body="">
+        <TranslateTab
+          hasDoc={sheetHasContent}
+          status={translationStatus ?? IDLE_TRANSLATION_STATUS}
+          showStorage={showTranslationStorage ?? false}
+          onStart={onTranslateStart ?? (() => {})}
+          onCancel={onTranslateCancel ?? (() => {})}
+          onOpenStorage={onOpenTranslationStorage ?? (() => {})}
+        />
       </div>
     )
   }

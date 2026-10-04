@@ -21,7 +21,7 @@ import {
   type TranslateLanguageOption,
 } from '@genoffice/ui'
 import type { TranslateProgress } from '@genoffice/translation-core/document'
-import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
+import { emitTranslateProgress } from '../translate-progress'
 
 import { t } from '../i18n/locale'
 import {
@@ -120,7 +120,7 @@ export function TranslateSheetDialog(
   const onProgress = useCallback((event: TranslateProgress) => {
     // `exactOptionalPropertyTypes` is on: an absent count must be *absent*,
     // not present-and-undefined, or the host renders "undefined/undefined".
-    postToEmbedParent({
+    emitTranslateProgress({
       type: 'ai-progress',
       status: event.status,
       progress: event.progress,

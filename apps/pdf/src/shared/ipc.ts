@@ -6,6 +6,7 @@ import type {
   TranslateBatchResponse,
   TranslateBatchUnitResult,
 } from '@genoffice/translation-core/document'
+import type { TranslationStorageClient } from '@genoffice/translation-core/storage'
 
 export type { AiSettings }
 
@@ -875,6 +876,16 @@ export interface PdfApi {
    * the finished batch through `onUnit` — progress then moves at batch
    * boundaries rather than per paragraph, but the review list is never empty.
    */
+  /**
+   * Space-scoped glossary / translation-memory client, or `null` when the
+   * editor runs standalone. The storage panel renders that `null` as an
+   * explanation rather than an error: terms live in the drive space, not in
+   * the app.
+   *
+   * Optional because it is only ever populated by the web embed bridge; the
+   * Electron preload leaves it undefined and every reader falls back to null.
+   */
+  translationStorage?: TranslationStorageClient | null
   aiTranslateBatchStream?: (
     request: TranslateBatchRequest,
     options?: {

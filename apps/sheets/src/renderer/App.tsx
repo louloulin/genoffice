@@ -56,7 +56,14 @@ import { isNumericIdentifierText } from './cell-warning'
 import { consumePendingUndoCarry, undoStackDepth } from './undo-carry'
 import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { useAutoSavePref, type AiScopeQuoteData } from '@genoffice/ui'
+import {
+  useAutoSavePref,
+  useTranslationTabStatus,
+  type AiScopeQuoteData,
+  type TranslationScope,
+  type TranslationTabSettings,
+} from '@genoffice/ui'
+import { emitTranslateProgress } from './translate-progress'
 
 import {
   CellValueType,
@@ -387,7 +394,6 @@ import {
   type SheetTranslateBatchFn,
   type SheetTranslateWorksheet,
 } from './ai/document-translate'
-import { postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { withSheetMetaDefaults } from './workbook-normalize'
 import { SymbolDialog } from './SymbolDialog'
 import {
@@ -4251,16 +4257,52 @@ export function App(): React.JSX.Element {
           qualityCheck: command.qualityCheck !== false,
           ...(glossaryCategory ? { glossaryCategory } : {}),
         })
-        postToEmbedParent({ type: 'ai-progress', status: 'started', progress: 0 })
+        emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
         return
       }
       if (command.type === 'cancel-translation') {
         translateSheetDialogRef.current?.close()
-        postToEmbedParent({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+        emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
       }
     }
     window.addEventListener('dataflare:office-command', onHostCommand)
     return () => window.removeEventListener('dataflare:office-command', onHostCommand)
+  }, [])
+
+  /** Standalone Translate tab: mirrors the sheet run's progress into the ribbon band. */
+  const translationStatus = useTranslationTabStatus()
+
+  /**
+   * Open the sheet-translation dialog from the ribbon tab.
+   *
+   * Same dialog the host command opens, so the tab adds an entry point rather
+   * than a second pipeline.
+   */
+  const onTranslateStart = useCallback(
+    (scope: TranslationScope, settings: TranslationTabSettings) => {
+      translateSheetDialogRef.current?.open({
+        scope,
+        sourceLanguage: settings.sourceLanguage,
+        targetLanguage: settings.targetLanguage,
+        bilingual: settings.bilingual,
+        preserveFormatting: settings.preserveFormatting,
+        memoryEnabled: settings.memoryEnabled,
+        qualityCheck: settings.qualityCheck,
+      })
+      emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
+    },
+    [],
+  )
+
+  const onTranslateCancel = useCallback(() => {
+    translateSheetDialogRef.current?.close()
+    emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+  }, [])
+
+  const onOpenTranslationStorage = useCallback(() => {
+    // ExcelShell owns the copilot panel's open state, so it listens for this
+    // event and expands itself; the panel inside then opens the storage view.
+    window.dispatchEvent(new CustomEvent('genoffice:open-translation-storage'))
   }, [])
 
   return (
@@ -4338,6 +4380,13 @@ export function App(): React.JSX.Element {
       <ExcelShell
         prompt={prompt}
         preview={preview}
+        translationStatus={translationStatus}
+        onTranslateStart={onTranslateStart}
+        onTranslateCancel={onTranslateCancel}
+        onOpenTranslationStorage={onOpenTranslationStorage}
+        showTranslationStorage={
+          typeof window !== 'undefined' && Boolean(window.desktopApi?.translationStorage)
+        }
         sheetHasContent={sheetHasContent}
         pageLayout={activePageLayout}
         calcManual={calcManual}
