@@ -16,7 +16,7 @@ import { parseDocx, saveDocx, type TextboxDisplay } from '@genoffice/docx-engine
 import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
 import { Ribbon } from '../src/renderer/components/Ribbon'
 import { computeFormatState } from '../src/renderer/components/ribbon-format-state'
-import { insertShapeAt } from '../src/renderer/components/ribbon-tabs'
+import { insertShapeAt } from '../src/renderer/components/shape-insert'
 import { blocksToPmDoc, pmDocToSavePlan, type PmNode } from '../src/renderer/editor/convert'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 import { setActiveSubEditor } from '../src/renderer/editor/active-editor'

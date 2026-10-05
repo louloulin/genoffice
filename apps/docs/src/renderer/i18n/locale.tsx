@@ -1,12 +1,17 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useReducer, useState } from 'react'
 import type { ReactNode } from 'react'
-import { createI18n, htmlLang, type Lang, type Params } from '@genoffice/i18n'
-import { strings } from './strings'
+import { format, htmlLang, platformShortcuts, type Lang, type Params } from '@genoffice/i18n'
+import { cachedStrings, loadStrings, zhStrings, type LangStrings, type StringKey } from './strings'
 
-const translate = createI18n(strings)
+export type { StringKey }
 
-export type StringKey = keyof typeof strings.zh
+// Synchronous dictionary holder: starts as zh (the only locale bundled with
+// the app) and is swapped once a locale chunk resolves. Non-React modules and
+// React components read through the same holder, so one swap re-arms both;
+// LocaleProvider bumps a re-render after the swap.
 export type TFunc = (key: StringKey, params?: Params) => string
+const translate: TFunc = (key, params) =>
+  platformShortcuts(format(current[key] ?? zhStrings[key], params))
 
 // mirror for non-React modules (pagination, editor extensions, AI tools …);
 // set before first render and on every language switch
@@ -14,9 +19,20 @@ let moduleLang: Lang = 'zh'
 export const getLang = (): Lang => moduleLang
 export const setModuleLang = (lang: Lang): void => {
   moduleLang = lang
+  // zh ships in the bundle; other locales are dynamic chunks — swap the dict
+  // only when already loaded (boot guess), otherwise when the chunk resolves
+  const cached = cachedStrings(lang)
+  if (cached) current = cached
+}
+/** test/module setup: swap both the lang tag and the dictionary, awaiting the locale chunk */
+export const setModuleLangAsync = async (lang: Lang): Promise<void> => {
+  moduleLang = lang
+  current = await loadStrings(lang)
 }
 /** module-level translator — components should prefer useI18n().t so they re-render on switch */
-export const t: TFunc = (key, params) => translate(moduleLang, key, params)
+export const t: TFunc = (key, params) => translate(key, params)
+
+let current: LangStrings = zhStrings
 
 const AI_LANG_DIRECTIVES: Record<Lang, string> = {
   zh: '\n\n用与用户消息相同的语言回复；无法判断用户消息的语言时，用简体中文回复。',
@@ -74,27 +90,42 @@ const LocaleContext = createContext<Lang>('zh')
 
 export function LocaleProvider({ initial, children }: { initial: Lang; children: ReactNode }) {
   const [lang, setLang] = useState<Lang>(initial)
+  // dictionaries can swap while `lang` stays the same (boot into a stored
+  // non-zh locale renders zh fallback first); bump re-renders on the swap
+  const [, bumpDicts] = useReducer((x: number) => x + 1, 0)
   useEffect(() => {
-    const unlisten = window.desktop.onLanguageChanged((next) => {
-      setModuleLang(next)
-      document.documentElement.lang = htmlLang(next)
-      setLang(next)
-    })
+    let seq = 0
+    // Dictionary load and UI-language apply are one atomic step: the switch
+    // becomes visible only after the locale chunk resolved. A failed load
+    // (offline) keeps the previous dictionary and language; the shell's
+    // switch path re-fires this on the next attempt.
+    const apply = (next: Lang): void => {
+      const mySeq = ++seq
+      void loadStrings(next)
+        .then((dicts) => {
+          if (mySeq !== seq) return
+          current = dicts
+          setModuleLang(next)
+          document.documentElement.lang = htmlLang(next)
+          setLang(next)
+          bumpDicts()
+        })
+        .catch(() => {})
+    }
+    apply(initial)
+    const unlisten = window.desktop.onLanguageChanged(apply)
     // Boot-time calibration: the renderer mounts from a synchronous guess
     // (localStorage) without awaiting the getLanguage IPC; when the real
     // value lands and differs, main.tsx fires this event to apply it.
     const calibrate = (event: Event): void => {
-      const next = (event as CustomEvent<Lang>).detail
-      setModuleLang(next)
-      document.documentElement.lang = htmlLang(next)
-      setLang(next)
+      apply((event as CustomEvent<Lang>).detail)
     }
     window.addEventListener('genoffice-language-calibrate', calibrate)
     return () => {
       unlisten()
       window.removeEventListener('genoffice-language-calibrate', calibrate)
     }
-  }, [])
+  }, [initial])
   return <LocaleContext.Provider value={lang}>{children}</LocaleContext.Provider>
 }
 
@@ -109,7 +140,7 @@ export function useI18n(): I18n {
   const lang = useContext(LocaleContext)
   return {
     lang,
-    t: (key, params) => translate(lang, key, params),
+    t: (key, params) => translate(key, params),
     dateLocale: DATE_LOCALES[lang],
   }
 }

@@ -5,9 +5,10 @@
  * ReviewContext built fresh per call so state never goes stale.
  */
 import type { Editor } from '@tiptap/core'
-import { nextNoteId, parseDocx, type CommentInfo, type NoteInfo } from '@genoffice/docx-engine'
+import { nextNoteId, type CommentInfo, type NoteInfo } from '@genoffice/docx-engine'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocState } from './doc-state'
+import { parseDocxWorker } from './parse-docx-worker'
 import {
   addCommentToSelection,
   addReplyToCommentRange,
@@ -257,7 +258,7 @@ export async function compareWithFile(ctx: ReviewContext): Promise<void> {
     return
   }
   try {
-    const otherParsed = await parseDocx(new Uint8Array(other.data))
+    const otherParsed = await parseDocxWorker(new Uint8Array(other.data))
     const entries = compareParagraphs(
       blockTexts(ctx.doc.parsed.blocks),
       blockTexts(otherParsed.blocks),

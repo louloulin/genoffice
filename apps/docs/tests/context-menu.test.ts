@@ -1,11 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react'
 import { Editor } from '@tiptap/core'
 import { TextSelection } from '@tiptap/pm/state'
 import { editorExtensions } from '../src/renderer/editor/extensions'
-import { LocaleProvider, setModuleLang } from '../src/renderer/i18n/locale'
+import { LocaleProvider, setModuleLangAsync } from '../src/renderer/i18n/locale'
 import {
   EditorContextMenu,
   FontDialog,
@@ -75,7 +75,9 @@ function menuProps(editor: Editor, overrides: Record<string, unknown> = {}) {
 // LocaleProvider subscribes to the shell's language switch on mount
 Object.assign(window, { desktop: { onLanguageChanged: () => () => undefined } })
 
-setModuleLang('en')
+beforeAll(async () => {
+  await setModuleLangAsync('en')
+})
 
 describe('EditorContextMenu', () => {
   it('disables selection-dependent items when nothing is selected', () => {

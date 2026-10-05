@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { Editor } from '@tiptap/core'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 import { executeOps } from '../src/renderer/ai/ops'
-import { setModuleLang } from '../src/renderer/i18n/locale'
+import { setModuleLangAsync } from '../src/renderer/i18n/locale'
 
 interface JsonNode {
   type: string
@@ -104,7 +104,9 @@ function textStyleOf(
   return mark ? { ...mark.attrs } : null
 }
 
-setModuleLang('en')
+beforeAll(async () => {
+  await setModuleLangAsync('en')
+})
 
 describe('setFont', () => {
   it('sets color on all headings via nodeType, keeping bold and size (fields mask)', () => {

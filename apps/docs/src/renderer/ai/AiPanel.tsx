@@ -147,6 +147,7 @@ import {
 } from './doc-writer'
 import { EditQueueCard } from './EditQueueCard'
 import { createElectronTransport } from './transport'
+import { AI_REVISION_AUTHOR } from './revision-author'
 import {
   buildQueueInstruction,
   buildQueueSummary,
@@ -428,9 +429,6 @@ function SentAttachments({
     </div>
   )
 }
-
-/** author name on AI-generated tracked revisions (accept/reject via Review) */
-export const AI_REVISION_AUTHOR = 'AI Assistant'
 
 /**
  * Path-independent translation channel.

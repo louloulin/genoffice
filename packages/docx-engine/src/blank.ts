@@ -1,4 +1,5 @@
 import JSZip from 'jszip'
+import { BLANK_BULLET_NUM_ID, BLANK_ORDERED_NUM_ID } from './types'
 
 /**
  * Blank document template for "new document" and AI from-scratch generation.
@@ -18,11 +19,6 @@ const DOC_NS =
   'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
   'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" ' +
   'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
-
-/** numId of the template's bullet list definition */
-export const BLANK_BULLET_NUM_ID = '1'
-/** numId of the template's ordered (decimal) list definition */
-export const BLANK_ORDERED_NUM_ID = '2'
 
 /** TOC entry styles referenced by generateTocFieldXml (indent grows per level) */
 function tocStyle(level: number): string {

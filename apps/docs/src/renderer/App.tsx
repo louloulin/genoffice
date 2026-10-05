@@ -1,6 +1,8 @@
 import { DOC_CSS_COMMITTED_EVENT } from './editor/cjk-punct-shrink'
 import { justifyShrinkPluginKey } from './editor/justify-shrink'
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -22,7 +24,7 @@ import {
   useTranslationTabStatus,
 } from '@genoffice/ui'
 import { wordRangeAtCaret } from './editor/comments'
-import { markdownPasteHtml } from './editor/markdown-paste'
+import { looksLikeMarkdown } from './editor/markdown-detect'
 import { pasteTextSlice, singleCellPasteText } from './editor/paste-text'
 import {
   imageFilesFromDataTransfer,
@@ -73,7 +75,7 @@ import { AI_PROVIDERS } from '../shared/ipc'
 import type { DataflareEmbedCommand, DataflareOfficeContext } from '@genoffice/web-sdk/dataflare/guest'
 import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { ZoteroDocumentController } from './zotero/controller'
-import { AiPanel, AI_REVISION_AUTHOR } from './ai/AiPanel'
+import { AI_REVISION_AUTHOR } from './ai/revision-author'
 import type { AiCommentsAccess, AiHeaderFooterAccess } from './ai/tools'
 import { applyHfText, hfEditText } from './editor/hf-text'
 import { textColorValue } from './editor/text-color'
@@ -87,8 +89,6 @@ import { EquationModal } from './components/EquationModal'
 import { HeaderFooterArea } from './components/HeaderFooterArea'
 import { PageFootnotes, PageEndnotes } from './components/PageNoteAreas'
 import { noteMarkText, type NoteKind } from './note-format'
-import { PaginationPreview } from './components/PaginationPreview'
-import { PrintDialog } from './components/PrintDialog'
 import {
   appendEndnotesBlock,
   appendFloatSpillBlock,
@@ -287,7 +287,6 @@ import {
   type PendingPdfExport,
 } from './file-actions'
 import { registerNativeAdapter } from '@genoffice/ipc-bridge/text-buffer-adapter'
-import { runHeadlessDocumentExport } from './headless-export'
 import {
   allocateListNumId as allocateListNumIdImpl,
   continueNumbering as continueNumberingImpl,
@@ -313,6 +312,26 @@ import {
   type NotePrompt,
   type ReviewContext,
 } from './review-actions'
+
+// Heavy panels stay out of the boot chunk: the AI panel pulls the agent/chat
+// stack, print/pagination pull layout tooling — none is needed to paint page one.
+const AiPanel = lazy(() => import('./ai/AiPanel').then((m) => ({ default: m.AiPanel })))
+
+/** Persisted AI-sidebar state; on the web/embed first run default to collapsed
+ *  so the AiPanel chunk stays out of the boot transfer (desktop defaults open). */
+function readStoredShowAi(): boolean {
+  const stored = localStorage.getItem('aidocs.showAi')
+  if (stored !== null) return stored !== '0'
+  const proc = (window as unknown as { process?: { contextIsolated?: boolean } }).process
+  return !!proc && proc.contextIsolated === true
+}
+
+const PaginationPreview = lazy(() =>
+  import('./components/PaginationPreview').then((m) => ({ default: m.PaginationPreview })),
+)
+const PrintDialog = lazy(() =>
+  import('./components/PrintDialog').then((m) => ({ default: m.PrintDialog })),
+)
 
 const IS_MAC = navigator.platform.toLowerCase().includes('mac')
 
@@ -605,7 +624,12 @@ export function App() {
   } | null>(null)
   const [_recent, setRecent] = useState<string[]>([])
   const [settings, setSettings] = useState<AiSettings>(DEFAULT_SETTINGS)
-  const [showAi, setShowAi] = useState(() => localStorage.getItem('aidocs.showAi') !== '0')
+  const [showAi, setShowAi] = useState(readStoredShowAi)
+  /** AiPanel lazy-mounts on first expand and stays mounted after (collapse must
+   *  not drop state or in-flight runs). A web/embed boot with the panel
+   *  collapsed must not fetch the AiPanel chunk at all (Spec §5: AI stack is
+   *  on-demand; desktop keeps its open-by-default behaviour). */
+  const [aiMounted, setAiMounted] = useState(readStoredShowAi)
   const [hostContext, setHostContext] = useState<DataflareOfficeContext | null>(null)
   const [hostReadonly, setHostReadonly] = useState(false)
   const [spellcheck, setSpellcheck] = useState(spellcheckEnabled)
@@ -1162,9 +1186,18 @@ export function App() {
         // text/plain-only Markdown (code blocks, terminals, .md files, LLM
         // output): convert and insert as formatted content instead of literal
         // "## Heading" / "**bold**" characters
-        if (!html && text) {
-          const markdownHtml = markdownPasteHtml(text)
-          if (markdownHtml !== null) {
+        if (!html && text && looksLikeMarkdown(text)) {
+          // marked (the Markdown→HTML converter) is paste-only — load it on
+          // first Markdown-looking paste instead of at boot. Taking the paste
+          // over here means the rare marked failure degrades to a literal
+          // insertText rather than the default paste pipeline.
+          void (async () => {
+            const { markdownPasteHtml } = await import('./editor/markdown-paste')
+            const markdownHtml = markdownPasteHtml(text)
+            if (markdownHtml === null) {
+              view.dispatch(view.state.tr.insertText(text))
+              return
+            }
             try {
               // cleanPastedHtml unwraps <li><p>…</p></li> from loose lists —
               // docListItem only allows inline content and would shatter them.
@@ -1185,18 +1218,20 @@ export function App() {
                   view.dispatch(
                     view.state.tr.replaceWith($from.before(1), $from.after(1), parsed.content),
                   )
-                  return true
+                  return
                 }
               } else {
                 view.dispatch(
                   view.state.tr.replaceSelection(parser.parseSlice(dom.body)).scrollIntoView(),
                 )
-                return true
+                return
               }
+              view.dispatch(view.state.tr.insertText(text))
             } catch {
-              /* fall back to default literal paste on parse failure */
+              view.dispatch(view.state.tr.insertText(text))
             }
-          }
+          })()
+          return true
         }
         return false
       },
@@ -1228,6 +1263,12 @@ export function App() {
 
   useEffect(() => {
     localStorage.setItem('aidocs.showAi', showAi ? '1' : '0')
+  }, [showAi])
+
+  // Lazy-mount the AI panel the first time it expands; it stays mounted from
+  // then on so collapsing keeps conversation state and in-flight runs alive.
+  useEffect(() => {
+    if (showAi) setAiMounted(true)
   }, [showAi])
 
   const spellcheckWasOn = useRef(spellcheck)
@@ -2456,6 +2497,8 @@ export function App() {
     void (async () => {
       const target = await window.desktop.consumeHeadlessExport()
       if (!target) return
+      // CLI-only path: the headless exporter never loads in normal sessions
+      const { runHeadlessDocumentExport } = await import('./headless-export')
       const report = await runHeadlessDocumentExport(
         target.outPath,
         // A failed open falls back to an untitled blank document (filePath
@@ -5549,9 +5592,10 @@ export function App() {
       />
 
       <div className="app-main">
-        {doc && (
+        {doc && aiMounted && (
           <div className={`ai-dock${showAi ? '' : ' collapsed'}`}>
             {/* always mounted: collapse must not drop state or in-flight runs */}
+            <Suspense fallback={null}>
             <AiPanel
               key={aiPanelKey}
               editor={editor}
@@ -5576,6 +5620,7 @@ export function App() {
               hfAccess={aiHfAccess}
               onSaveTranslatedCopy={dataflareTranslationCopySave}
             />
+            </Suspense>
           </div>
         )}
         <div className="app-content">
@@ -5959,6 +6004,7 @@ export function App() {
       )}
 
       {doc && showPagePreview && section && (
+        <Suspense fallback={null}>
         <PaginationPreview
           section={section}
           canvasTop={canvasTop}
@@ -6012,9 +6058,14 @@ export function App() {
           onClose={() => setShowPagePreview(false)}
           suppressEscape={showPrintDialog}
         />
+        </Suspense>
       )}
 
-      {doc && showPrintDialog && <PrintDialog onClose={closePrintDialog} setStatus={setStatus} />}
+      {doc && showPrintDialog && (
+        <Suspense fallback={null}>
+          <PrintDialog onClose={closePrintDialog} setStatus={setStatus} />
+        </Suspense>
+      )}
 
       {stats && <WordCountDialog stats={stats} onClose={() => setStats(null)} />}
 

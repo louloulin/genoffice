@@ -278,3 +278,73 @@ export function buildThemeXml(fonts: ThemeFonts, colors: ThemeColors): string {
     '</a:themeElements></a:theme>'
   )
 }
+
+// ─── hex color math (shade/tint/luminance) ──────────────────────────────────
+// Shared by the chart part generator and the renderer's protected-content
+// shading; kept here (jszip-free) so a barrel import of `lumHex` does not
+// pull the chart/zip chain into the boot chunk.
+
+const hexRgb = (hex: string): [number, number, number] => [
+  parseInt(hex.slice(0, 2), 16),
+  parseInt(hex.slice(2, 4), 16),
+  parseInt(hex.slice(4, 6), 16),
+]
+
+const rgbHex = (r: number, g: number, b: number): string =>
+  [r, g, b]
+    .map((c) =>
+      Math.max(0, Math.min(255, Math.round(c)))
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')
+    .toUpperCase()
+
+/** a:shade — scale toward black */
+export function shadeHex(hex: string, factor: number): string {
+  const [r, g, b] = hexRgb(hex)
+  return rgbHex(r * factor, g * factor, b * factor)
+}
+
+/** a:tint — scale toward white */
+export function tintHex(hex: string, factor: number): string {
+  const [r, g, b] = hexRgb(hex)
+  const t = (c: number) => c * factor + 255 * (1 - factor)
+  return rgbHex(t(r), t(g), t(b))
+}
+
+/** a:lumMod/a:lumOff — HSL luminance L' = L*mod + off */
+export function lumHex(hex: string, mod: number, off: number): string {
+  const [r, g, b] = hexRgb(hex).map((c) => c / 255)
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  let h = 0
+  const l0 = (max + min) / 2
+  const d = max - min
+  let s = 0
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l0 - 1))
+    if (max === r) h = ((g - b) / d) % 6
+    else if (max === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h *= 60
+    if (h < 0) h += 360
+  }
+  const l = Math.max(0, Math.min(1, l0 * mod + off))
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = l - c / 2
+  const seg =
+    h < 60
+      ? [c, x, 0]
+      : h < 120
+        ? [x, c, 0]
+        : h < 180
+          ? [0, c, x]
+          : h < 240
+            ? [0, x, c]
+            : h < 300
+              ? [x, 0, c]
+              : [c, 0, x]
+  return rgbHex((seg[0] + m) * 255, (seg[1] + m) * 255, (seg[2] + m) * 255)
+}

@@ -43,11 +43,8 @@ import {
   insertBlankPageAt,
   insertImageViaDialog,
   insertPageBreakAt,
-  insertShapeAt,
   insertTableAt,
-  insertTextboxAt,
   insertTopLevelBlockAtSelection,
-  insertWordArtAt,
   pickAndUploadFile,
   MAX_TABLE_COLS,
   MAX_TABLE_ROWS,
@@ -925,7 +922,7 @@ export function InsertTab({
                             // Word parity: arm crosshair draw mode (click = default 1in
                             // square, drag = custom size, Shift = square, Esc = cancel)
                             startShapeDrawMode(editor, s.prst, (opts) =>
-                              insertShapeAt(editor, s.prst, opts),
+                              import('./shape-insert').then((m) => m.insertShapeAt(editor, s.prst, opts)),
                             )
                             setDropdown(() => null)
                           }}
@@ -952,7 +949,7 @@ export function InsertTab({
             className="rb-big"
             disabled={!hasDoc}
             data-tip={t('ribbonTextBoxTip')}
-            onClick={() => insertTextboxAt(editor)}
+            onClick={() => void import('./shape-insert').then((m) => m.insertTextboxAt(editor))}
           >
             <span className="rb-big-icon">
               <IconTextBox size={BIG} />
@@ -988,7 +985,7 @@ export function InsertTab({
                       fontStyle: p.italic ? 'italic' : undefined,
                     }}
                     onClick={() => {
-                      insertWordArtAt(editor, p)
+                      void import('./shape-insert').then((m) => m.insertWordArtAt(editor, p))
                       setDropdown(() => null)
                     }}
                   >

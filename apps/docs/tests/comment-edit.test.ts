@@ -1,10 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Editor } from '@tiptap/core'
 import type { CommentInfo } from '@genoffice/docx-engine'
 import { editorExtensions } from '../src/renderer/editor/extensions'
-import { LocaleProvider, setModuleLang } from '../src/renderer/i18n/locale'
+import { LocaleProvider, setModuleLangAsync } from '../src/renderer/i18n/locale'
 import { CommentsPanel } from '../src/renderer/components/CommentsPanel'
 import { editComment, type ReviewContext } from '../src/renderer/review-actions'
 
@@ -42,7 +42,9 @@ function makeCtx(comments: CommentInfo[]): {
 // LocaleProvider subscribes to the shell's language switch on mount
 Object.assign(window, { desktop: { onLanguageChanged: () => () => undefined } })
 
-setModuleLang('en')
+beforeAll(async () => {
+  await setModuleLangAsync('en')
+})
 
 describe('editComment', () => {
   const comments = (): CommentInfo[] => [

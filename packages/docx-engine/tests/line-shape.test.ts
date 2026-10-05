@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildLineParagraphXml, patchTextboxSizes } from '../src/generate'
+import { patchTextboxSizes } from '../src/generate'
+import { buildLineParagraphXml } from '../src/fragments'
 import { parseDocx } from '../src/parse'
 import { buildDocx } from './helpers/build-docx'
 

@@ -24,12 +24,9 @@ export {
   buildWordArtParagraphXml,
   type AnchoredTextboxOptions,
   type TextboxContentParagraph,
-  generateCaptionXml,
-  generateIndexFieldXml,
   generateParagraphXml,
   generateTableModelXml,
   generateTableXml,
-  generateTocFieldXml,
   mergePPrFormat,
   setPPrChange,
   stripPPrChange,
@@ -43,8 +40,6 @@ export {
   patchShapeStyles,
   type ShapeStylePatch,
   patchDrawingExtent,
-  buildLineParagraphXml,
-  LINE_KINDS,
   type TextboxSizePatch,
   type CellParaPatch,
   type CellTextsPatch,
@@ -54,15 +49,22 @@ export {
   type TextboxParaPatch,
   type TextboxParasPatchSet,
   type TableGenOptions,
-  type TocEntry,
 } from './generate'
+export {
+  buildLineParagraphXml,
+  generateCaptionXml,
+  generateIndexFieldXml,
+  generateTocFieldXml,
+  LINE_KINDS,
+  type TocEntry,
+} from './fragments'
+
 export {
   buildChartPartXml,
   buildChartWorkbookXlsxBase64,
   patchChartWorkbookXlsxBase64,
   parseChartPartXml,
   patchChartPartXml,
-  lumHex,
   CHART_WORKBOOK_REL_TYPE,
   type ChartPatch,
   type ChartSeriesPatch,
@@ -77,8 +79,6 @@ export {
 } from './math'
 export { scanBody, type BodyElement, type BodyScan } from './scan'
 export {
-  BLANK_BULLET_NUM_ID,
-  BLANK_ORDERED_NUM_ID,
   buildBlankDocx,
   type BlankDocxOptions,
   type CustomNumberingLevel,
@@ -105,7 +105,7 @@ export {
 } from './ink'
 export { bibliographyLine, citationText, parseSourcesXml } from './sources'
 export { parseZoteroDocumentDataXml, patchZoteroDocumentDataXml } from './zotero-doc-props'
-export { readThemeColors, readThemeFonts } from './theme'
+export { readThemeColors, readThemeFonts, lumHex, shadeHex, tintHex } from './theme'
 export { hashProtectionPassword, verifyProtectionPassword } from './protection'
 export {
   decodeSymbolChar,
