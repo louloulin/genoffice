@@ -39,7 +39,14 @@ const HAVE_TYPEDOC = existsSync(join(repoRoot, 'node_modules', 'typedoc')) &&
   existsSync(join(repoRoot, 'node_modules', 'typedoc-plugin-markdown'))
 
 const LOWER_BOUND = 200
-const UPPER_BOUND = 400
+// The original reading of this bound was "above 400, typedoc started
+// duplicating output". That never happened: the only repeated basenames are
+// typedoc's per-module `README.md` index pages plus a symbol that two modules
+// genuinely re-export (`isJtiRevoked` under both auth/ and files/). The count
+// simply grew with the public surface — webhooks store/DLQ, the AI handler
+// family and the JWT helpers — past a line that was picked as a round number
+// before any of that existed. 402 as of the embed-open-performance branch.
+const UPPER_BOUND = 440
 
 describe('typedoc output count regression guard', () => {
   it.skipIf(!HAVE_TYPEDOC)(
@@ -87,7 +94,7 @@ describe('typedoc output count regression guard', () => {
     // test asserting 200-400" can find the answer in a file rather than
     // in git history.
     expect(LOWER_BOUND).toBe(200)
-    expect(UPPER_BOUND).toBe(400)
+    expect(UPPER_BOUND).toBe(440)
   })
 
   // Cleanup hook: remove the temp directory if it was created.

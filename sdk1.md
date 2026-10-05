@@ -208,7 +208,7 @@ apps/web-server/tests/  →  92 文件 / 863 测试 通过 · 1 skipped  (~30s w
   - scope-gate.test.ts              9 tests   16 个 v1 端点 scope gate
   - api-v1-e2e.test.ts                          完整 v1 端到端
   - market* / translate-* / ipc-* / health-* / embed-endpoint / static-spa-routes …
-  - typedoc-count.test.ts           3 tests   278 个生成页（界 200-400）
+  - typedoc-count.test.ts           3 tests   402 个生成页（界 200-440）
 
 15 个 packages → 3 750+ tests / 190+ files 全部通过（web-server 已包含）
 
