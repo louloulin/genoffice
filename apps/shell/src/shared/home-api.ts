@@ -889,8 +889,8 @@ export interface TimelineEntryItem {
 export interface ProjectHomeApi {
   /** list all projects (with file count + last-active time) */
   listProjects(): Promise<ProjectSummaryEntry[]>
-  /** list existing files currently belonging to a project */
-  listFiles(projectId: string): Promise<string[]>
+  /** list existing files currently belonging to the project, mapped to RecentEntry (FileInfo→RecentEntry happens here, not in the renderer) */
+  listFiles(projectId: string): Promise<RecentEntry[]>
   /** create a project */
   createProject(name: string): Promise<ProjectSummaryEntry>
   /** rename a project */

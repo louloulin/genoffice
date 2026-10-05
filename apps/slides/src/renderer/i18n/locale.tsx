@@ -74,15 +74,27 @@ const LocaleContext = createContext<Lang>('zh')
 
 export function LocaleProvider({ initial, children }: { initial: Lang; children: ReactNode }) {
   const [lang, setLang] = useState<Lang>(initial)
-  useEffect(
-    () =>
-      window.slidesApi.onLanguageChanged((next) => {
-        setModuleLang(next)
-        document.documentElement.lang = htmlLang(next)
-        setLang(next)
-      }),
-    [],
-  )
+  useEffect(() => {
+    const unlisten = window.slidesApi.onLanguageChanged((next) => {
+      setModuleLang(next)
+      document.documentElement.lang = htmlLang(next)
+      setLang(next)
+    })
+    // Boot-time calibration: the renderer mounts from a synchronous guess
+    // (localStorage) without awaiting the getLanguage IPC; when the real
+    // value lands and differs, main.tsx fires this event to apply it.
+    const calibrate = (event: Event): void => {
+      const next = (event as CustomEvent<Lang>).detail
+      setModuleLang(next)
+      document.documentElement.lang = htmlLang(next)
+      setLang(next)
+    }
+    window.addEventListener('genoffice-language-calibrate', calibrate)
+    return () => {
+      unlisten()
+      window.removeEventListener('genoffice-language-calibrate', calibrate)
+    }
+  }, [])
   return <LocaleContext.Provider value={lang}>{children}</LocaleContext.Provider>
 }
 

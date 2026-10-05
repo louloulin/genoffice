@@ -324,6 +324,24 @@ export function hardenRendererCsp(content: string): string {
     .join(';')
 }
 
+/** Editor chrome the skeleton sketches: title bar, ribbon row, page with placeholder text lines. */
+const EMBED_SKELETON_HTML = `<div class="go-skel" aria-hidden="true"><div class="go-skel-titlebar"><span class="go-skel-dot"></span><span class="go-skel-dot"></span><span class="go-skel-dot"></span></div><div class="go-skel-ribbon"><span class="go-skel-chip"></span><span class="go-skel-chip"></span><span class="go-skel-chip"></span><span class="go-skel-chip"></span><span class="go-skel-chip"></span></div><div class="go-skel-canvas"><div class="go-skel-page"><div class="go-skel-line" style="width:52%"></div><div class="go-skel-line"></div><div class="go-skel-line"></div><div class="go-skel-line" style="width:88%"></div><div class="go-skel-line"></div><div class="go-skel-line" style="width:64%"></div><div class="go-skel-line"></div><div class="go-skel-line" style="width:78%"></div><div class="go-skel-line"></div><div class="go-skel-line" style="width:36%"></div></div></div></div>`
+
+// Inline style so the skeleton paints before any stylesheet fetch completes;
+// colors reference the app's semantic tokens (resolved by the bundled CSS,
+// which loads without JS). No raw chrome colors here per the theming rules.
+const EMBED_SKELETON_CSS = `
+.go-skel{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--chrome-bg);overflow:hidden}
+.go-skel-titlebar{height:36px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--surface);border-bottom:1px solid var(--border);box-sizing:border-box}
+.go-skel-dot{width:10px;height:10px;border-radius:50%;background:var(--border-strong)}
+.go-skel-ribbon{height:68px;flex:none;display:flex;align-items:center;gap:10px;padding:0 18px;background:var(--surface);border-bottom:1px solid var(--border);box-sizing:border-box}
+.go-skel-chip{height:28px;width:64px;border-radius:6px;background:var(--hover)}
+.go-skel-canvas{flex:1;display:flex;justify-content:center;padding:24px 16px;background:var(--canvas)}
+.go-skel-page{width:min(720px,100%);height:100%;max-height:960px;background:var(--surface);border:1px solid var(--border);border-radius:2px;padding:64px 56px;box-sizing:border-box}
+.go-skel-line{height:12px;border-radius:6px;background:var(--hover);margin-bottom:14px}
+@media (prefers-reduced-motion: no-preference){.go-skel-line{animation:go-skel-pulse 1.6s ease-in-out infinite}@keyframes go-skel-pulse{0%,100%{opacity:1}50%{opacity:.45}}}
+`
+
 /**
  * Build the embed HTML by reading the editor app's `index.html` and injecting
  * the bridge script + token meta tag right before `</head>`. We avoid
@@ -375,6 +393,20 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   // element after `<head>` opens.
   const baseTag = '<base href="./">'
   html = html.replace(/<head>/i, (_m) => `<head>\n${baseTag}`)
+  // Editor-outline skeleton: static HTML + inline CSS that paints before the
+  // renderer bundle executes and keeps rendering with JavaScript disabled.
+  // Colors come from the app stylesheet's semantic tokens (plain CSS — loads
+  // without JS), so the skeleton follows light/dark like any other chrome.
+  // The markup lives inside <div id="root">, which React clears on first
+  // mount — no cleanup code. Guarded replace: a renderer index.html without
+  // the exact empty root marker simply ships without a skeleton.
+  html = html.replace('<div id="root"></div>', `<div id="root">${EMBED_SKELETON_HTML}</div>`)
+  // A dark embed request paints dark from the very first frame; the app's
+  // applyTheme() rewrites or removes the attribute after boot.
+  if (q.theme === 'dark' && !/<html[^>]*\sdata-theme=/i.test(html)) {
+    html = html.replace(/<html(?=[\s>])/i, '<html data-theme="dark"')
+  }
+  const skeletonTag = `\n<style>${EMBED_SKELETON_CSS}</style>`
   const safeToken = q.token.replace(/"/g, '&quot;').replace(/</g, '&lt;')
   const tokenTag = `\n<meta name="genoffice-token" content="${safeToken}">`
   // Mirror the optional handshake nonce so the renderer bridge can echo it
@@ -405,7 +437,7 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
   // mount; a root-relative `/embed/static/bridge.js` would ask the *host* for
   // that path, which the host does not forward.
   const bridgeTag = `\n<script src="${EMBED_BRIDGE_SCRIPT_REF}"></script>`
-  const injection = tokenTag + nonceTag + configTag + sessionTag + bridgeTag
+  const injection = skeletonTag + tokenTag + nonceTag + configTag + sessionTag + bridgeTag
   // Case-insensitive match against `</head>` so a renderer with a `<HEAD>`
   // tag (rare but possible after build minification) still gets the bridge
   // injected. Without the `/i` flag a strict HTML renderer with an uppercase

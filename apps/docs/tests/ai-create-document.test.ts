@@ -117,28 +117,28 @@ describe('create_document tool', () => {
 })
 
 describe('aiDocContentNodes (boot-time fill of the new docx tab)', () => {
-  it('parses restricted HTML into blocks with the aiChanged highlight stripped', () => {
-    const nodes = aiDocContentNodes('<h1>Title</h1><p>Body</p>')
+  it('parses restricted HTML into blocks with the aiChanged highlight stripped', async () => {
+    const nodes = await aiDocContentNodes('<h1>Title</h1><p>Body</p>')
     expect(nodes.map((n) => n.type)).toEqual(['docHeading', 'docParagraph'])
     for (const node of nodes) expect(node.attrs?.aiChanged).toBe(false)
   })
 
-  it('falls back to plain-text paragraphs when the fragment throws (pdf chat cannot pre-parse)', () => {
-    const nodes = aiDocContentNodes('<p>Before</p><formula>\\frac{</formula>')
+  it('falls back to plain-text paragraphs when the fragment throws (pdf chat cannot pre-parse)', async () => {
+    const nodes = await aiDocContentNodes('<p>Before</p><formula>\\frac{</formula>')
     expect(nodes.length).toBeGreaterThan(0)
     expect(nodes.every((n) => n.type === 'docParagraph')).toBe(true)
     const text = JSON.stringify(nodes)
     expect(text).toContain('Before')
   })
 
-  it('keeps adjacent minified blocks separate in the plain-text salvage', () => {
-    const nodes = aiDocContentNodes('<p>One</p><p>Two</p><formula>\\frac{</formula>')
+  it('keeps adjacent minified blocks separate in the plain-text salvage', async () => {
+    const nodes = await aiDocContentNodes('<p>One</p><p>Two</p><formula>\\frac{</formula>')
     const texts = nodes.map((n) => JSON.stringify(n))
     expect(texts.some((t) => t.includes('One') && !t.includes('Two'))).toBe(true)
     expect(texts.some((t) => t.includes('Two') && !t.includes('One'))).toBe(true)
   })
 
-  it('returns nothing for markup with no text at all', () => {
-    expect(aiDocContentNodes('<p></p>')).toEqual([])
+  it('returns nothing for markup with no text at all', async () => {
+    expect(await aiDocContentNodes('<p></p>')).toEqual([])
   })
 })

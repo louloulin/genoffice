@@ -95,7 +95,9 @@ const activeCancel = () => cancelStore()[CANCEL_KEY]
 export function startShapeDrawMode(
   editor: Editor,
   prst: string,
-  insert: (opts: { widthEmu: number; heightEmu: number; atPos?: number }) => number | null,
+  insert: (
+    opts: { widthEmu: number; heightEmu: number; atPos?: number },
+  ) => number | null | Promise<number | null>,
 ): void {
   activeCancel()?.()
   const view = editor.view
@@ -169,7 +171,9 @@ export function startShapeDrawMode(
       const $p = view.state.doc.resolve(found.pos)
       atPos = $p.depth > 0 ? $p.after(1) : found.pos
     }
-    const insertedAt = insert({ widthEmu, heightEmu, atPos })
+    // The insert module (shape-insert) loads on demand from the ribbon; the
+    // nudge continues once the position is known either way.
+    void Promise.resolve(insert({ widthEmu, heightEmu, atPos })).then((insertedAt) => {
     if (insertedAt == null) return
     // Two frames so the page layout settles, then nudge the floating shape onto
     // the drawn spot — identical posOffset semantics to dragging the move handle.
@@ -197,6 +201,7 @@ export function startShapeDrawMode(
         )
       }),
     )
+    })
   }
 
   const onMouseDown = (e: MouseEvent) => {

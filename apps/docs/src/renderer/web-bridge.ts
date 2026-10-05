@@ -23,7 +23,12 @@ import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
 import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
 import { createDesktopApi, createProjectApi } from '../shared/desktop-api-factory'
-import type { DesktopApi } from '../shared/ipc'
+import type { DesktopApi, OpenDocxResult } from '../shared/ipc'
+import {
+  markEmbedOpenInFlight,
+  notifyEmbedOpenSettled,
+  publishEmbedOpen,
+} from './embed-open-queue'
 import { parseDataflareTranslateResponse } from '../shared/dataflare-translate-response'
 // `buildEmbedTranslateBody` / `narrowUnitStatus` moved to the shared core so the
 // sheets / slides / pdf embed bridges can reach the same host endpoint. An
@@ -36,9 +41,23 @@ import { createDataflareTranslationStorage } from '@genoffice/translation-core/s
 import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import {
   createDataflareEmbedIntegration,
+  isHostDocumentSource,
   resolveEmbedPathPrefix,
   type DataflareEmbedCommand,
 } from '@genoffice/web-sdk/dataflare/integration'
+import { notifyEmbedDocumentApplied } from '@genoffice/web-sdk/dataflare/guest'
+
+// Assigned inside the web-only bridge setup below (where the Dataflare
+// context lives); false in the Electron runtime where there is no host.
+// App's boot uses this to decide whether to wait for the embed open
+// instead of racing it with the boot blank (embed-open-queue.ts).
+export let embedDocumentExpected: () => boolean = () => false
+
+// The host's staged progress is only as honest as its last stage: it needs to
+// know the document is *applied*, which happens in App's loadFile, long after
+// the SDK's openBytes returned. Re-exported here so App does not have to reach
+// into the SDK entry to say so.
+export { notifyEmbedDocumentApplied }
 
 if (!isElectronRuntime()) {
   // Mount the floating "返回主页" pill once the renderer has wired its
@@ -135,28 +154,58 @@ if (!isElectronRuntime()) {
     app: 'docs',
     transport,
     openBytes: async (bytes, name) => {
-      const path = await files.writeTempFile(name, bytes)
-      return await transport.invoke('docs:open-path', path)
+      // The guest already holds the bytes — the host just handed them over.
+      // Building the OpenFileResult locally (hash included) skips the old
+      // write-temp-file + docs:open-path round trip, which re-uploaded the
+      // bytes as JSON+base64 and had the server re-read and re-hash them on
+      // every open (~4× the document size on the wire for zero information).
+      // An OLE compound signature means an ECMA-376 password-encrypted docx:
+      // detection and decrypt live server-side (needsPassword + open-decrypt),
+      // so exactly that case keeps the old round trip.
+      // The in-flight mark lets App's boot wait for this open instead of
+      // racing it with the boot blank (see embed-open-queue.ts).
+      markEmbedOpenInFlight()
+      try {
+        if (isOleCompoundFile(bytes)) {
+          const path = await files.writeTempFile(name, bytes)
+          return await transport.invoke('docs:open-path', path)
+        }
+        return {
+          path: name,
+          name,
+          data: bytes,
+          hash: await sha256Hex(bytes),
+          encrypted: false,
+        }
+      } catch (err) {
+        notifyEmbedOpenSettled()
+        throw err
+      }
     },
     saveLocal: (path, data, auto) => transport.invoke('docs:save', path, data, auto),
-    onDocumentOpened: (result) => {
+    onDocumentOpened: (rawResult) => {
       // `docs:open-path` only *returns* the document; only the renderer's
       // `loadFile` applies it to the editor, and that lives in the App component.
       // Nothing awaits this function, so dropping the result here left the boot
       // blank document on screen — the host believed the knowledge document was
       // open, every dirty event and save then applied to the blank one, and the
-      // first save wrote it back over the original. Hand it over.
-      //
-      // 派发是一次性的 CustomEvent，而 App 侧监听器挂在 editor 实例创建之后
-      // （见 App.tsx 的 open-document effect）：冷启动或 CPU 忙时 dispatch 可能
-      // 早于监听器挂载，事件直接丢失 —— 编辑器永远停在空白启动页，宿主却以为
-      // 文档已打开（2026-10-05 走查 docx 2/2 复现该签名）。所以先把结果留在
-      // window 上，App 侧挂载后补消费；正常送达时监听器会清掉它。
-      ;(window as unknown as Record<string, unknown>).__genofficePendingOpenDocument = result
-      window.dispatchEvent(new CustomEvent('dataflare:open-document', { detail: result }))
+      // first save wrote it back over the original. Hand it over — and park it
+      // in the queue first: the dispatch can outrun App's listener (see
+      // embed-open-queue.ts), and an event with no listener is a lost document.
+      // The queue supersedes the earlier `__genofficePendingOpenDocument`
+      // window handoff: same race, but with boot coordination on the App side.
+      publishEmbedOpen(rawResult as OpenDocxResult)
+      window.dispatchEvent(new CustomEvent('dataflare:open-document', { detail: rawResult }))
     },
   })
   const dataflareContext = () => dataflare.getContext()
+  // True when the host context promises a document the guest must fetch and
+  // apply (knowledge/drive source with a documentId) — mirrors the SDK's own
+  // isHostDocument branch in saveDocument.
+  embedDocumentExpected = () => {
+    const context = dataflareContext()
+    return isHostDocumentSource(context?.documentSource) && !!context?.documentId
+  }
   const requestDataflare = (path: string, init?: RequestInit) => dataflare.request(path, init)
   // SAFETY: the global `window` is typed as lib.dom's Window, which has no
   // `desktop` / `projectApi` / `dataflareOfficeBridge` fields. We are
@@ -698,4 +747,24 @@ function bytesToBase64(bytes: ArrayBuffer): string {
     binary += String.fromCharCode(...view.subarray(i, i + CHUNK))
   }
   return btoa(binary)
+}
+
+/** OLE compound file magic — an ECMA-376 *encrypted* docx (not a zip). */
+const OLE_SIGNATURE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]
+
+function isOleCompoundFile(bytes: ArrayBuffer): boolean {
+  if (bytes.byteLength < OLE_SIGNATURE.length) return false
+  const view = new Uint8Array(bytes, 0, OLE_SIGNATURE.length)
+  return OLE_SIGNATURE.every((b, i) => view[i] === b)
+}
+
+async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', bytes)
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+  } catch {
+    // Non-secure contexts have no crypto.subtle. The hash has no functional
+    // readers in the embed flow (saves route by documentId), so '' is safe.
+    return ''
+  }
 }

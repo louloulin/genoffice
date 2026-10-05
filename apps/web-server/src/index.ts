@@ -47,6 +47,7 @@ import {
   loadCollabStore,
 } from './common/index'
 import { buildChannelsView } from './common/channels-view'
+import { serveStaticFile } from './common/static-serve'
 import { fileIndexStore } from './common/file-index-store'
 import { flushFileManagementState } from './common/document-stores'
 import { WEB_SERVER_VERSION } from './common/version'
@@ -1413,16 +1414,16 @@ const server = createServer(async (request, response) => {
       })
       return
     }
-    const ext = extname(sdkFile)
-    response.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      // Allow third-party origins to fetch the SDK. The bundle has no
-      // secrets — its job is to be loaded by any host page — and the actual
-      // auth happens on /api/* after the iframe boots.
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=300',
+    // Allow third-party origins to fetch the SDK. The bundle has no
+    // secrets — its job is to be loaded by any host page — and the actual
+    // auth happens on /api/* after the iframe boots.
+    await serveStaticFile({
+      request,
+      response,
+      filePath: sdkFile,
+      contentType: MIME_TYPES[extname(sdkFile)] || 'application/octet-stream',
+      extraHeaders: { 'Access-Control-Allow-Origin': '*' },
     })
-    createReadStream(sdkFile).pipe(response)
     return
   }
 
@@ -1525,13 +1526,22 @@ const server = createServer(async (request, response) => {
       const cookie = authCookieHeader(webToken)
       response.writeHead(200, {
         'Content-Type': MIME_TYPES[ext] || 'text/html; charset=utf-8',
+        // Token-injected HTML is a live-credential page: never cacheable.
+        'Cache-Control': 'no-cache',
         ...(cookie ? { 'Set-Cookie': cookie } : {}),
       })
       response.end(html.replace(/<\/head>/i, (_match) => `${tag}</head>`))
       return
     }
-    response.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' })
-    createReadStream(filePath).pipe(response)
+    await serveStaticFile({
+      request,
+      response,
+      filePath,
+      contentType: MIME_TYPES[ext] || 'application/octet-stream',
+      // Token-less HTML (unauthorised browser) is the SPA entry — revalidate,
+      // never reuse. Everything else takes the hashed-name heuristic.
+      ...(isHtml ? { cacheControl: 'no-cache' } : {}),
+    })
     return
   }
 
@@ -1563,13 +1573,25 @@ const server = createServer(async (request, response) => {
       const cookie = authCookieHeader(webToken)
       response.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
+        // Token-injected HTML is a live-credential page: never cacheable.
+        'Cache-Control': 'no-cache',
         ...(cookie ? { 'Set-Cookie': cookie } : {}),
       })
       response.end(html.replace(/<\/head>/i, (_match) => `${tag}</head>`))
       return
     }
-    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-    createReadStream(indexPath).pipe(response)
+    // SPA fallback (deep links, extension-less routes). Route through
+    // serveStaticFile so this HTML gets the same validators as every other
+    // renderer asset: a deep-link navigation revalidates via ETag→304 instead
+    // of re-downloading the shell. no-cache keeps the shell always fresh while
+    // the validator keeps the revalidate cheap.
+    await serveStaticFile({
+      request,
+      response,
+      filePath: indexPath,
+      contentType: 'text/html; charset=utf-8',
+      cacheControl: 'no-cache',
+    })
     return
   }
 

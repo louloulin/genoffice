@@ -823,6 +823,11 @@ export const TOTAL_PAGES_MARK = '\uE000'
 /** Placeholder for PAGE fields in headers/footers; a private-use character so literal '#' text in the part can never be mistaken for the field position */
 export const PAGE_MARK = '\uE001'
 
+/** numId of the blank-document template's bullet list definition */
+export const BLANK_BULLET_NUM_ID = '1'
+/** numId of the blank-document template's ordered (decimal) list definition */
+export const BLANK_ORDERED_NUM_ID = '2'
+
 /** display-only image in a header/footer part (logos etc.; saving preserves the part's bytes) */
 export interface HfImage {
   dataUrl: string

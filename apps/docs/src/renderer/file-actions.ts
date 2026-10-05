@@ -14,17 +14,9 @@ import {
   applySectionStartType,
   BLANK_BULLET_NUM_ID,
   BLANK_ORDERED_NUM_ID,
-  buildBlankDocx,
-  findChartWorkbookPath,
-  parseChartPartXml,
-  parseDocx,
-  patchChartPartXml,
-  patchChartWorkbookXlsxBase64,
-  readDocxPartBase64,
   readPageColor,
   readSections,
   readSectionSettings,
-  saveDocx,
   type Block,
   type CommentInfo,
   type DocProtection,
@@ -41,6 +33,12 @@ import {
 } from '@genoffice/docx-engine'
 import type { Dispatch, SetStateAction } from 'react'
 import type { AiDocContent, OpenDocxResult } from '../shared/ipc'
+import { parseDocxWorker } from './parse-docx-worker'
+
+// Save/blank/chart IO goes through the docx package dynamically: its zip +
+// regenerate chain (jszip, pako, patch/generate/parse) is only needed on the
+// first save / new document / chart edit, never to paint the first page.
+const docxPkg = () => import('@genoffice/docx-engine')
 import {
   hfVariantsFromParsed,
   openedFileStartsDirty,
@@ -70,8 +68,10 @@ import {
   type InkTool,
 } from './editor/ink'
 import { t, getLang } from './i18n/locale'
-import { isBlankDocument, parseHtmlFragment, replaceBlockRange } from './ai/protocol'
-import { carryDocSeen } from './ai/tools'
+// AI protocol/tools pull the agent stack (ops → generate) that only the AI
+// panel needs at edit time — load them on demand, keep only the tiny baseline
+// leaf static (the streaming tail must stay synchronous).
+import { carryDocSeen } from './ai/doc-baseline'
 import { isDocDirty, resetCrossDocEditState } from './doc-dirty'
 import { createSaveSerializer } from './save-until-persisted'
 import { checkMissingFonts, collectDocFonts } from './font-check'
@@ -81,7 +81,6 @@ import { defaultEastAsiaFontFor } from './font-list'
 import { hasPrintableHeaderFooter } from './pagination'
 import { clearPrintZoom, setPrintZoom } from './print-zoom'
 import { showToast } from './components/toast-bus'
-import { buildStandaloneHtml } from './html-export'
 
 /** An export waiting for the pagination preview to mount; resolve settles the caller's exportPdf promise. */
 export type PendingPdfExport = { outPath?: string; resolve: (ok: boolean) => void }
@@ -345,7 +344,7 @@ export async function loadFile(
   }
   const generation = ++openGeneration
   try {
-    const parsed = await parseDocx(new Uint8Array(result.data))
+    const parsed = await parseDocxWorker(new Uint8Array(result.data))
     if (generation !== openGeneration) return 'superseded'
     // before setContent: blockAttrs/marks bake fontTable-driven factors and chains into the DOM
     const adopted = await adoptEmbeddedFonts(parsed.embeddedFonts)
@@ -466,8 +465,9 @@ export async function newFile(ctx: FileActionContext): Promise<boolean | undefin
   if (!ctx.editor) return
   const generation = ++openGeneration
   try {
+    const { buildBlankDocx } = await docxPkg()
     const bytes = await buildBlankDocx({ eastAsiaFont: defaultEastAsiaFontFor(getLang()) })
-    const parsed = await parseDocx(bytes)
+    const parsed = await parseDocxWorker(bytes)
     if (generation !== openGeneration) return
     const adopted = await adoptEmbeddedFonts(parsed.embeddedFonts)
     if (!adopted || generation !== openGeneration) return
@@ -592,6 +592,8 @@ export async function buildDocBytes(ctx: FileActionContext): Promise<Uint8Array 
   // chart data edits patch the chart's own zip part, not the body XML
   const partXml: Record<string, string> = {}
   const partBinary: Record<string, string> = {}
+  const { findChartWorkbookPath, patchChartPartXml, parseChartPartXml, readDocxPartBase64, patchChartWorkbookXlsxBase64 } =
+    await docxPkg()
   for (const { partPath, patch } of plan.chartPatches) {
     const originalPart = doc.parsed.extras.chartParts[partPath]
     if (originalPart) {
@@ -655,6 +657,7 @@ export async function buildDocBytes(ctx: FileActionContext): Promise<Uint8Array 
     const [lastBlockIndex, kind] = key.split(':')
     return { lastBlockIndex: Number(lastBlockIndex), kind: kind as 'header' | 'footer', hf }
   })
+  const { saveDocx } = await docxPkg()
   const bytes = await saveDocx(doc.parsed, saveBlocks, {
     section: ctx.sectionDirty && ctx.section ? ctx.section : undefined,
     sectionStartType: ctx.trailingStartType ?? undefined,
@@ -716,6 +719,7 @@ export async function writeRecoveryCopy(ctx: FileActionContext): Promise<void> {
   const { doc, editor } = ctx
   if (!doc || !editor || ctx.saveInFlightRef.current || !isDocDirty(ctx)) return
   if (!doc.filePath) {
+    const { isBlankDocument } = await import('./ai/protocol')
     if (isBlankDocument(editor)) return
     if (editor.view.composing) return
     const active = document.activeElement as HTMLElement | null
@@ -821,8 +825,9 @@ function stripAiChanged(node: PmNode): PmNode {
  * here), so unparseable HTML falls back to plain-text paragraphs instead of
  * silently dropping the content.
  */
-export function aiDocContentNodes(html: string): PmNode[] {
+export async function aiDocContentNodes(html: string): Promise<PmNode[]> {
   const numIds = { bullet: BLANK_BULLET_NUM_ID, ordered: BLANK_ORDERED_NUM_ID }
+  const { parseHtmlFragment } = await import('./ai/protocol')
   try {
     const nodes = parseHtmlFragment(html, numIds)
     if (nodes.length > 0) return nodes.map(stripAiChanged)
@@ -856,8 +861,9 @@ export async function applyAiDocContent(
 ): Promise<void> {
   const { editor, doc } = ctx
   if (!editor || !doc) return
-  const nodes = aiDocContentNodes(content.html)
+  const nodes = await aiDocContentNodes(content.html)
   if (nodes.length > 0) {
+    const { replaceBlockRange } = await import('./ai/protocol')
     replaceBlockRange(editor, 0, editor.state.doc.childCount - 1, nodes)
     // the document is born with this content: undo must not reach back to empty
     resetEditorHistory(editor)
@@ -966,7 +972,7 @@ async function saveOnce(
       passwordIntentPending = result.passwordIntentPending === true
     }
     // parse before the identity check: a document opened during this await must not be rewritten
-    const reparsed = await parseDocx(bytes)
+    const reparsed = await parseDocxWorker(bytes)
     if (editor.state.doc !== docSnapshot || passwordIntentPending) {
       // The user kept editing, opened another document or chose another
       // password after the main process captured this save. Keep the live state
@@ -1339,6 +1345,8 @@ export async function exportHtml(ctx: FileActionContext, outPath?: string): Prom
   const textWidthPx = Number.parseFloat(
     getComputedStyle(root).getPropertyValue('--section-content-w'),
   )
+  // Export-only dependency: not part of the boot graph
+  const { buildStandaloneHtml } = await import('./html-export')
   const html = buildStandaloneHtml(root, {
     title: doc.fileName.replace(/\.docx$/i, ''),
     lang: getLang(),

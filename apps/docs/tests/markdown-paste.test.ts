@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeMarkdown, markdownPasteHtml } from '../src/renderer/editor/markdown-paste'
+import { markdownPasteHtml } from '../src/renderer/editor/markdown-paste'
+import { looksLikeMarkdown } from '../src/renderer/editor/markdown-detect'
 
 describe('looksLikeMarkdown', () => {
   it('recognizes unambiguous constructs on their own', () => {

@@ -1,6 +1,6 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { htmlLang, type Lang } from '@genoffice/i18n'
+import { htmlLang, LANGS, type Lang } from '@genoffice/i18n'
 import { App } from './App'
 import { AudienceView } from './components/AudienceView'
 import { LocaleProvider, setModuleLang } from './i18n/locale'
@@ -42,31 +42,61 @@ function applyTheme(theme: UiTheme): void {
   else document.documentElement.setAttribute('data-theme', theme)
 }
 
-async function bootstrap(): Promise<void> {
-  let lang: Lang = 'zh'
-  let theme: UiTheme = 'system'
+// Boot must not await IPC: the language/theme round-trips used to delay
+// createRoot by their full latency on every open. Initial values come from
+// localStorage (written on every calibration and switch below); the real IPC
+// values land afterwards and calibrate if they differ.
+const LANG_KEY = 'genoffice.lang'
+const THEME_KEY = 'genoffice.theme'
+
+function persistBootValue(key: string, value: string): void {
   try {
-    // per-promise catch: standalone runs have no app:get-theme handler, and
-    // that rejection must not drop a resolved language
-    ;[lang, theme] = await Promise.all([
-      window.slidesApi.getLanguage().catch(() => 'zh' as const),
-      window.slidesApi.getTheme().catch(() => 'system' as const),
-    ])
+    localStorage.setItem(key, value)
   } catch {
-    /* dev renderer without the preload bridge */
+    /* storage unavailable (private mode) — guess again next boot */
   }
+}
+
+function syncLang(): Lang {
+  try {
+    const stored = localStorage.getItem(LANG_KEY)
+    if (stored && (LANGS as readonly string[]).includes(stored)) return stored as Lang
+  } catch {
+    /* ignore */
+  }
+  return 'zh'
+}
+
+function syncTheme(): UiTheme {
+  try {
+    const stored = localStorage.getItem(THEME_KEY)
+    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored
+  } catch {
+    /* ignore */
+  }
+  return 'system'
+}
+
+function bootstrap(): void {
+  const lang = syncLang()
+  const theme = syncTheme()
   setModuleLang(lang)
   document.documentElement.lang = htmlLang(lang)
   // the audience show window renders slide content only — it never themes
+  if (mode !== 'audience') applyTheme(theme)
+  // runtime switches mirror into the boot cache; applyTheme stays the single
+  // theme applier (LocaleProvider handles its own language updates)
+  window.slidesApi?.onThemeChanged((next) => {
+    persistBootValue(THEME_KEY, next)
+    applyTheme(next)
+  })
+  window.slidesApi?.onLanguageChanged((next) => persistBootValue(LANG_KEY, next))
+  // every startup IPC fires concurrently here — none of them gates createRoot
   if (mode !== 'audience') {
-    applyTheme(theme)
-    window.slidesApi?.onThemeChanged(applyTheme)
-    void window.slidesApi
-      ?.getAiPanelPrefs?.()
-      .then(applyAiPanelPrefs)
-      .catch(() => {})
+    void window.slidesApi?.getAiPanelPrefs?.().then(applyAiPanelPrefs).catch(() => {})
     window.slidesApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
   }
+  void calibrate(lang, theme)
   createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <LocaleProvider initial={lang}>
@@ -76,4 +106,22 @@ async function bootstrap(): Promise<void> {
   )
 }
 
-void bootstrap()
+async function calibrate(bootLang: Lang, bootTheme: UiTheme): Promise<void> {
+  // per-promise catch: standalone runs have no app:get-theme handler, and
+  // that rejection must not drop a resolved language
+  const [lang, theme] = await Promise.all([
+    window.slidesApi?.getLanguage().catch(() => bootLang) ?? Promise.resolve(bootLang),
+    window.slidesApi?.getTheme().catch(() => bootTheme) ?? Promise.resolve(bootTheme),
+  ])
+  persistBootValue(LANG_KEY, lang)
+  // the audience show window renders slide content only — it never themes
+  if (mode !== 'audience') {
+    persistBootValue(THEME_KEY, theme)
+    if (theme !== bootTheme) applyTheme(theme)
+  }
+  if (lang !== bootLang) {
+    window.dispatchEvent(new CustomEvent<Lang>('genoffice-language-calibrate', { detail: lang }))
+  }
+}
+
+bootstrap()

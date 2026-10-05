@@ -140,6 +140,26 @@ export function postToEmbedParent(payload: GenOfficeEmbedEvent): void {
   postEnvelope(window.parent, envelope, origin)
 }
 
+/** Guest clock, 0-based at this module's evaluation. */
+const bootT = typeof performance !== 'undefined' ? performance.now() : 0
+
+function nowT(): number {
+  return typeof performance !== 'undefined' ? performance.now() : 0
+}
+
+/**
+ * Tell the host the opened document is in the editor.
+ *
+ * The SDK cannot observe this itself: `openBytes` returns the file result
+ * and the parse happens in the app's `loadFile`, afterwards. So the guest app
+ * calls this once its content is actually applied — which is the only moment
+ * the host may stop showing progress and reveal the editor. Emitting it from
+ * the SDK at download time would have the host reveal a blank page.
+ */
+export function notifyEmbedDocumentApplied(): void {
+  postToEmbedParent({ type: 'load-progress', phase: 'document', pct: 1, t: nowT() })
+}
+
 // ── Outbound: request → parent (one-shot, with timeout) ────────────────────
 
 /**
@@ -272,6 +292,13 @@ export function installDataflareEmbedBridge(
   const announce = () => {
     if (announced) return
     announced = true
+    // Progress first, then ready: a host driving its reveal off `ready` and a
+    // host driving it off the staged progress must not disagree about which
+    // came first. `bootT` is stamped at module evaluation, so the host can
+    // show "editor resources" as work already spent rather than work about
+    // to start.
+    postToEmbedParent({ type: 'load-progress', phase: 'resources', t: bootT })
+    postToEmbedParent({ type: 'load-progress', phase: 'handshake', t: nowT() })
     postToEmbedParent({
       type: 'ready',
       capabilities: [

@@ -392,7 +392,7 @@ if (!isElectronRuntime()) {
    * placeholder must be a same-origin page the editor can boot into. */
     const reserveTab = (): {
     win: Window
-    open: (path: string) => void
+    open: (path: string, displayTitle?: string) => void
     cancel: () => void
   } | null => {
     /* Chrome tears down a popup that sits on an idle editor page after the

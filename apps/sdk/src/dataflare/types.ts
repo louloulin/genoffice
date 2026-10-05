@@ -89,22 +89,51 @@ export type DataflareEmbedCommand =
 // ── Event (editor → host) ──────────────────────────────────────────────────
 
 /**
- * `started → running → (completed | failed | cancelled)`.
+ * `started → running → (completed | completed-with-failures | failed | cancelled)`.
  *
  * `cancelled` is a first-class terminal state: a user pressing stop is a
  * normal outcome, and folding it into `failed` is what makes a healthy
  * cancellation look like a fault in the host's error reporting.
+ * `completed-with-failures` mirrors the `@genoffice/translation-core`
+ * terminal state for runs that finished with per-unit failures — hosts that
+ * fold it into `failed` turn a mostly-successful run into a scary error.
  */
 export type DataflareAiProgressStatus =
   | 'started'
   | 'running'
   | 'completed'
+  | 'completed-with-failures'
   | 'failed'
   | 'cancelled'
 
 
 export type GenOfficeEmbedEvent =
   | { type: 'ready'; capabilities: string[] }
+  | {
+      /**
+       * Staged progress for one embed open, mint → resources → handshake →
+       * document. A host has nothing to show between `mint` and the editor
+       * actually painting: the iframe's own load, the bridge handshake and
+       * the document download+parse are all guest-side and each takes
+       * hundreds of ms to seconds, so without these the only honest thing a
+       * host can display is an undifferentiated spinner.
+       *
+       * Phases are ordered and monotonic, but a host must not require them:
+       * an older guest emits none, and the spec's fallback is the existing
+       * skeleton with its existing copy.
+       */
+      type: 'load-progress'
+      phase: 'resources' | 'handshake' | 'document'
+      /** 0..1 within the `document` phase. Absent for phase markers. */
+      pct?: number
+      /**
+       * Guest `performance.now()` at emit. A host cannot share a clock with
+       * an iframe it did not boot, so this is the only timestamp both sides
+       * can compare; the host adds its own mint timestamp for the pre-iframe
+       * part of the timeline.
+       */
+      t?: number
+    }
   | { type: 'document-dirty'; documentId?: string }
   | { type: 'document-saved'; documentId?: string; revision?: string }
   | {

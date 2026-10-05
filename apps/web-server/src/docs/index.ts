@@ -25,6 +25,7 @@ import {
 
 const PASTE_QUOTA_FILE = join(DATA_DIR, '.quotas', 'paste.json')
 import { assertMagicMatchesExtension } from '../common/magic'
+import { log } from '../common/logger'
 import { atomicWriteFile } from '../common/atomic'
 import { recordRecentDoc } from '../common/document-stores'
 import { notifyFileSaved } from '../common/webhooks-store'
@@ -73,6 +74,89 @@ async function readDocxBytes(channel: string, filePath: string): Promise<Buffer>
     return readFileSync(filePath)
   }
   throw new InvalidArgumentError(channel, 'docx path is outside the web storage area')
+}
+
+/**
+ * (size, mtime) fingerprint of a document, or null when neither the storage
+ * backend nor a local stat can report one. A null fingerprint is never
+ * cached against — an unguessed stamp would hand a later read a hash for
+ * bytes it never saw.
+ */
+async function storageStamp(filePath: string): Promise<string | null> {
+  const key = storageKeyFromPath(filePath)
+  if (key) {
+    try {
+      const head = await getStorageBackend().head(key)
+      if (head.exists && head.modifiedAt) return `${head.size}:${head.modifiedAt}`
+    } catch {
+      /* fall through to the local stat */
+    }
+  }
+  // Legacy absolute path under managed storage (no storage key): stat it.
+  try {
+    if (!isManagedDocPath(filePath)) return null
+    const st = statSync(filePath)
+    return `${st.size}:${st.mtime.toISOString()}`
+  } catch {
+    return null
+  }
+}
+
+const sha256Cache = new Map<string, { stamp: string; hash: string }>()
+const SHA256_CACHE_LIMIT = 256
+
+/**
+ * Read a docx and fingerprint it, so `docxHashFor` can skip the full sha256
+ * when the same bytes were hashed for an earlier open.
+ *
+ * The stamp is taken twice — before and after the read — and only kept when
+ * the two agree. Taking one would let a write landing between read and stamp
+ * file the *newer* version's stamp against the *older* bytes we hashed, and
+ * the next read of that file would then get a hash that describes neither
+ * what it read nor what it returned.
+ */
+async function readDocxStamped(
+  channel: string,
+  filePath: string,
+): Promise<{ bytes: Buffer; stamp: string | null }> {
+  const before = await storageStamp(filePath)
+  const bytes = await readDocxBytes(channel, filePath)
+  const after = await storageStamp(filePath)
+  return { bytes, stamp: before !== null && before === after ? before : null }
+}
+
+/**
+ * sha256 of `bytes`, served from {@link sha256Cache} when the fingerprint
+ * still matches. Every open used to rehash the whole payload; on a 20MB
+ * document that is hundreds of milliseconds of CPU on the request path for a
+ * value the file itself has not changed. Fingerprint equality is what makes
+ * the shortcut safe: same size plus same mtime means the bytes are the ones
+ * the cached hash was computed from, and any write through the storage
+ * backends bumps mtime (they all replace the object rather than patch it).
+ */
+function docxHashFor(filePath: string, stamp: string | null, bytes: Buffer): string {
+  // Key by the canonical path so a `storage://` URI and the absolute path it
+  // decodes to share one entry — they are the same file, and the renderer
+  // may use either spelling across an open → save → reopen cycle.
+  const key = canonicalDocxPath(filePath)
+  if (stamp !== null) {
+    const hit = sha256Cache.get(key)
+    if (hit && hit.stamp === stamp) {
+      log.debug('docs', 'sha256 cache hit', { path: key, stamp, bytes: bytes.byteLength })
+      return hit.hash
+    }
+  }
+  const hash = createHash('sha256').update(bytes).digest('hex')
+  if (stamp !== null) {
+    // Insertion-ordered Map: the first key is the least recently stored.
+    if (sha256Cache.size >= SHA256_CACHE_LIMIT) {
+      const oldest = sha256Cache.keys().next().value
+      if (oldest !== undefined) sha256Cache.delete(oldest)
+    }
+    sha256Cache.set(key, { stamp, hash })
+  }
+  log.debug('docs', 'sha256 computed', { path: key, stamp, bytes: bytes.byteLength })
+  return hash
 }
 
 /**
@@ -206,7 +290,7 @@ export function registerDocsHandlers(): void {
     if (typeof filePath !== 'string') {
       throw new InvalidArgumentError('docs:open-path', 'path must be a string')
     }
-    const original = await readDocxBytes('docs:open-path', filePath)
+    const { bytes: original, stamp } = await readDocxStamped('docs:open-path', filePath)
     // Use the FILES_DIR-resident canonical path only for the magic-byte
     // extension check (it needs `.docx` to match against the bytes); the
     // recents row key and the renderer's `path` are the original `filePath`
@@ -233,7 +317,7 @@ export function registerDocsHandlers(): void {
     // trace from JSZip.
     assertMagicMatchesExtension('docs:open-path', canonical, original)
 
-    const hash = createHash('sha256').update(original).digest('hex')
+    const hash = docxHashFor(filePath, stamp, original)
     const id = `doc-${Date.now()}`
     // Prefer the display name already recorded by the upload flow (e.g.
     // "Real Test.docx") so an open from a recents row keeps the user's name
@@ -260,8 +344,9 @@ export function registerDocsHandlers(): void {
   registerHandle('docs:read-path', async (_event: unknown, filePath: unknown) => {
     if (typeof filePath !== 'string') return null
     let original: Buffer
+    let stamp: string | null
     try {
-      original = await readDocxBytes('docs:read-path', filePath)
+      ;({ bytes: original, stamp } = await readDocxStamped('docs:read-path', filePath))
     } catch {
       // Mirrors the previous "outside managed storage ⇒ null" semantics so
       // callers probing for an unuploaded path get the same answer they did
@@ -278,7 +363,7 @@ export function registerDocsHandlers(): void {
     return {
       name: displayName,
       data: toArrayBuffer(original),
-      hash: createHash('sha256').update(original).digest('hex'),
+      hash: docxHashFor(filePath, stamp, original),
       encrypted: false,
     }
   })

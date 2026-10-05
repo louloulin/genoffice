@@ -12,7 +12,8 @@ import {
   shortcutKeys,
   type ShortcutDef,
 } from '../src/renderer/shortcuts'
-import { strings } from '../src/renderer/i18n/strings'
+import { LANGS } from '@genoffice/i18n'
+import { loadStrings } from '../src/renderer/i18n/strings'
 
 // alternates are listed as "A / B"; the separator has to keep ⌘/ itself intact
 const chords = (def: ShortcutDef, isMac: boolean) => shortcutKeys(def, isMac).split(' / ')
@@ -40,8 +41,9 @@ describe('shortcut registry', () => {
     }
   })
 
-  it('labels every row in every language', () => {
-    for (const [lang, dict] of Object.entries(strings)) {
+  it('labels every row in every language', async () => {
+    for (const lang of LANGS) {
+      const dict = await loadStrings(lang)
       for (const entry of [...SHORTCUTS, ...SHORTCUT_GROUPS]) {
         const value = (dict as Record<string, string>)[entry.labelKey]
         expect(value, `${entry.labelKey} missing in ${lang}`).toBeTruthy()

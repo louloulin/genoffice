@@ -4,6 +4,7 @@ import {
   streamForProvider,
   getDefaultProviderRegistry,
   resetDefaultProviderRegistry,
+  type AiProviderId,
   type AiProviderPlugin,
   type AiStreamRequest,
   type AiChatRequest,
@@ -32,7 +33,7 @@ afterEach(() => {
 describe('plugin-first routing in chat/stream helpers', () => {
   it('chatForProvider uses the registered plugin when one matches', async () => {
     getDefaultProviderRegistry().register(fakePlugin)
-    const result = await chatForProvider('fake-plugin', { apiKey: 'k', model: 'fake-v1' }, 'sys', 'hi')
+    const result = await chatForProvider('fake-plugin' as AiProviderId, { apiKey: 'k', model: 'fake-v1' }, 'sys', 'hi')
     expect(result).toEqual({ ok: true, content: 'plugin chat ok' })
   })
 
@@ -47,7 +48,7 @@ describe('plugin-first routing in chat/stream helpers', () => {
     getDefaultProviderRegistry().register(fakePlugin)
     const deltas: string[] = []
     await streamForProvider(
-      'fake-plugin',
+      'fake-plugin' as AiProviderId,
       { apiKey: 'k', model: 'fake-v1' },
       'sys',
       [{ role: 'user', text: 'hi' }],
@@ -78,7 +79,7 @@ describe('plugin-first routing in chat/stream helpers', () => {
     getDefaultProviderRegistry().register(errorPlugin)
     await expect(
       streamForProvider(
-        'fake-err',
+        'fake-err' as AiProviderId,
         { apiKey: 'k', model: 'fake-v1' },
         'sys',
         [{ role: 'user', text: 'hi' }],
@@ -105,7 +106,7 @@ describe('plugin-first routing in chat/stream helpers', () => {
     getDefaultProviderRegistry().register(toolPlugin)
     const calls: unknown[] = []
     await streamForProvider(
-      'fake-tool',
+      'fake-tool' as AiProviderId,
       { apiKey: 'k', model: 'fake-v1' },
       'sys',
       [{ role: 'user', text: 'hi' }],

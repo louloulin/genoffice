@@ -489,22 +489,8 @@ function selectionRange(
 const FRAGMENT_MARK_TYPES = new Set(['bold', 'italic', 'underline', 'strike', 'link'])
 const REVISION_MARK_TYPES = new Set(['ins', 'del'])
 
-/** Doc as last seen by the AI pipeline (context build / read / own write); a differing doc means the user edited in between. */
-const docBaseline = new WeakMap<Editor, ProseMirrorNode>()
-
-export function markDocSeen(editor: Editor): void {
-  docBaseline.set(editor, editor.state.doc)
-}
-
-/** A streamed load tail is not a user edit: appending at the end keeps every block index the model saw valid. */
-export function carryDocSeen(editor: Editor, before: ProseMirrorNode): void {
-  if (docBaseline.get(editor) === before) docBaseline.set(editor, editor.state.doc)
-}
-
-function editedExternally(editor: Editor): boolean {
-  const seen = docBaseline.get(editor)
-  return seen !== undefined && seen !== editor.state.doc
-}
+export { carryDocSeen, editedExternally, markDocSeen } from './doc-baseline'
+import { editedExternally, markDocSeen } from './doc-baseline'
 
 /** tools addressing the document by block index: refused after an external edit until the model re-reads */
 const INDEX_WRITE_SUMMARIES: Record<string, () => string> = {

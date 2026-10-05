@@ -191,13 +191,14 @@
  * bundled Carlito (metric-compatible with Calibri, shared via
  * @genoffice/ui/fonts) guarantees Excel-matching widths before the
  * Helvetica/Arial approximations. Canvas fillText never triggers @font-face
- * downloads, so main.tsx loads these explicitly. */
+ * downloads, so main.tsx loads these explicitly — which also means font-display
+ * governs nothing here and `swap` costs no metric stability. */
 @font-face {
   font-family: Aptos;
   src:
     local('Aptos'), local('Calibri'), local('Carlito'),
-    url('@genoffice/ui/fonts/Carlito-Regular.ttf'), local('Helvetica Neue'), local('Arial');
-  font-display: block;
+    url('@genoffice/ui/fonts/Carlito-Regular.woff2'), local('Helvetica Neue'), local('Arial');
+  font-display: swap;
 }
 
 @font-face {
@@ -205,8 +206,8 @@
   font-weight: bold;
   src:
     local('Aptos Bold'), local('Calibri Bold'), local('Carlito Bold'),
-    url('@genoffice/ui/fonts/Carlito-Bold.ttf'), local('Helvetica Neue Bold'), local('Arial Bold');
-  font-display: block;
+    url('@genoffice/ui/fonts/Carlito-Bold.woff2'), local('Helvetica Neue Bold'), local('Arial Bold');
+  font-display: swap;
 }
 
 @font-face {
@@ -214,9 +215,9 @@
   font-style: italic;
   src:
     local('Aptos Italic'), local('Calibri Italic'), local('Carlito Italic'),
-    url('@genoffice/ui/fonts/Carlito-Italic.ttf'), local('Helvetica Neue Italic'),
+    url('@genoffice/ui/fonts/Carlito-Italic.woff2'), local('Helvetica Neue Italic'),
     local('Arial Italic');
-  font-display: block;
+  font-display: swap;
 }
 
 @font-face {
@@ -225,9 +226,9 @@
   font-style: italic;
   src:
     local('Aptos Bold Italic'), local('Calibri Bold Italic'), local('Carlito Bold Italic'),
-    url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
+    url('@genoffice/ui/fonts/Carlito-BoldItalic.woff2'), local('Helvetica Neue Bold Italic'),
     local('Arial Bold Italic');
-  font-display: block;
+  font-display: swap;
 }
 
 /* 'Aptos Narrow' lives in CELL_FONT_ALIASES (cell-font-fallback.ts): a CSS
@@ -236,56 +237,56 @@
 
 @font-face {
   font-family: Carlito;
-  src: local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.ttf');
-  font-display: block;
+  src: local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.woff2');
+  font-display: swap;
 }
 
 @font-face {
   font-family: Carlito;
   font-weight: bold;
-  src: local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.ttf');
-  font-display: block;
+  src: local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.woff2');
+  font-display: swap;
 }
 
 @font-face {
   font-family: Carlito;
   font-style: italic;
-  src: local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.ttf');
-  font-display: block;
+  src: local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.woff2');
+  font-display: swap;
 }
 
 @font-face {
   font-family: Carlito;
   font-weight: bold;
   font-style: italic;
-  src: local('Carlito Bold Italic'), url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf');
-  font-display: block;
+  src: local('Carlito Bold Italic'), url('@genoffice/ui/fonts/Carlito-BoldItalic.woff2');
+  font-display: swap;
 }
 
 @font-face {
   font-family: Calibri;
   src:
-    local('Calibri'), local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.ttf'),
+    local('Calibri'), local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.woff2'),
     local('Helvetica Neue'), local('Arial');
-  font-display: block;
+  font-display: swap;
 }
 
 @font-face {
   font-family: Calibri;
   font-weight: bold;
   src:
-    local('Calibri Bold'), local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.ttf'),
+    local('Calibri Bold'), local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.woff2'),
     local('Helvetica Neue Bold'), local('Arial Bold');
-  font-display: block;
+  font-display: swap;
 }
 
 @font-face {
   font-family: Calibri;
   font-style: italic;
   src:
-    local('Calibri Italic'), local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.ttf'),
+    local('Calibri Italic'), local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.woff2'),
     local('Helvetica Neue Italic'), local('Arial Italic');
-  font-display: block;
+  font-display: swap;
 }
 
 @font-face {
@@ -294,9 +295,9 @@
   font-style: italic;
   src:
     local('Calibri Bold Italic'), local('Carlito Bold Italic'),
-    url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
+    url('@genoffice/ui/fonts/Carlito-BoldItalic.woff2'), local('Helvetica Neue Bold Italic'),
     local('Arial Bold Italic');
-  font-display: block;
+  font-display: swap;
 }
 
 /* Hangul-named cell-font aliases ('맑은 고딕', '돋움') live in

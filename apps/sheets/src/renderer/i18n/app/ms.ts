@@ -1342,5 +1342,5 @@ export const ms = {
   appGoTo: 'Pergi Ke',
   appGroupFile: 'Fail',
   appUploadFile: 'Muat Naik Fail',
-  appUploadFileDetail: 'Simpan ke pelayan web',
+  appUploadFileDetail: 'Simpan ke pelayan Web',
 } satisfies Record<keyof typeof zh, string>

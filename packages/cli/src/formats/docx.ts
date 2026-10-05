@@ -54,7 +54,10 @@ async function docsModules() {
     import('../../../../apps/docs/src/renderer/editor/hf-text'),
     import('../../../../apps/docs/src/renderer/editor/revisions'),
   ])
-  locale.setModuleLang('en')
+  // Per-locale dictionaries load as dynamic chunks now: the sync setter only
+  // swaps a cached dict, so without the await every tool output (and the
+  // "No matching blocks" guard below) would render in zh.
+  await locale.setModuleLangAsync('en')
   return { Editor, extensions, convert, protocol, ops, tools, comments, hfText, revisions }
 }
 

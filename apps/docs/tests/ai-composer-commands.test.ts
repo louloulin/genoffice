@@ -7,7 +7,7 @@
  * distinguishable from picking a prompt.
  */
 import { describe, expect, it } from 'vitest'
-import { setModuleLang, t as translate } from '../src/renderer/i18n/locale'
+import { setModuleLangAsync, t as translate } from '../src/renderer/i18n/locale'
 import {
   DOCS_QUICK_ACTIONS,
   buildDocsComposerCommands,
@@ -99,8 +99,8 @@ describe('skillIdOfCommand', () => {
 })
 
 describe('localised copy', () => {
-  it('resolves every key the table asks for, in zh and in en', () => {
-    setModuleLang('zh')
+  it('resolves every key the table asks for, in zh and in en', async () => {
+    await setModuleLangAsync('zh')
     const zh = build()
     expect(zh.every((c) => !/^ai[A-Z]/.test(c.label) && !/^ai[A-Z]/.test(c.description ?? ''))).toBe(
       true,
@@ -108,7 +108,7 @@ describe('localised copy', () => {
     expect(zh.find((c) => c.id === 'skill.docx')?.label).toBe('文档编辑')
     expect(zh.find((c) => c.id === 'tpl.brief')?.insert).toContain('验收标准')
 
-    setModuleLang('en')
+    await setModuleLangAsync('en')
     const en = build()
     expect(en.every((c) => !/^ai[A-Z]/.test(c.label) && !/^ai[A-Z]/.test(c.description ?? ''))).toBe(
       true,
@@ -116,16 +116,16 @@ describe('localised copy', () => {
     expect(en.find((c) => c.id === 'skill.docx')?.label).toBe('Document editing')
     expect(en.find((c) => c.id === 'tpl.brief')?.insert).toContain('Acceptance')
 
-    setModuleLang('zh')
+    await setModuleLangAsync('zh')
   })
 
-  it('renders the three working modes in the active language', () => {
-    setModuleLang('zh')
+  it('renders the three working modes in the active language', async () => {
+    await setModuleLangAsync('zh')
     expect(translate('aiModeAsk')).toBe('问一问')
     expect(translate('aiModePlanHint')).toContain('确认')
-    setModuleLang('en')
+    await setModuleLangAsync('en')
     expect(translate('aiModeAsk')).toBe('Ask')
     expect(translate('aiModeCraftHint')).toContain('default')
-    setModuleLang('zh')
+    await setModuleLangAsync('zh')
   })
 })

@@ -3538,6 +3538,8 @@ const TAB_MENU_ICON: Record<TabKind, keyof MenuIconSet> = {
   pdf: 'pdf',
   markdown: 'md',
   html: 'html',
+  /* no dedicated native asset for in-app browser tabs; the html glyph reads as "web page" */
+  web: 'html',
 }
 
 // tab views see neither DOM events nor a focus change when the user clicks the
