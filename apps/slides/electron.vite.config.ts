@@ -8,6 +8,9 @@ const here = dirname(fileURLToPath(import.meta.url))
 // Pin resolution to this repo's workspace sources (matches tsconfig paths;
 // avoids bundling stale implementations when node_modules links point elsewhere)
 const workspaceAlias = {
+  // Worktree-safe: node_modules/@genoffice/ui symlinks to the main checkout, so
+  // the woff2 font twins committed here are invisible without this prefix.
+  '@genoffice/ui/fonts': resolve(here, '../../packages/ui/src/fonts'),
   // Subpath before the bare name: string aliases are prefix replacements
   '@genoffice/pptx-engine/table-grid': resolve(
     here,

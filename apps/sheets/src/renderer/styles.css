@@ -196,7 +196,7 @@
   font-family: Aptos;
   src:
     local('Aptos'), local('Calibri'), local('Carlito'),
-    url('@genoffice/ui/fonts/Carlito-Regular.ttf'), local('Helvetica Neue'), local('Arial');
+    url('@genoffice/ui/fonts/Carlito-Regular.woff2'), local('Helvetica Neue'), local('Arial');
   font-display: block;
 }
 
@@ -205,7 +205,7 @@
   font-weight: bold;
   src:
     local('Aptos Bold'), local('Calibri Bold'), local('Carlito Bold'),
-    url('@genoffice/ui/fonts/Carlito-Bold.ttf'), local('Helvetica Neue Bold'), local('Arial Bold');
+    url('@genoffice/ui/fonts/Carlito-Bold.woff2'), local('Helvetica Neue Bold'), local('Arial Bold');
   font-display: block;
 }
 
@@ -214,7 +214,7 @@
   font-style: italic;
   src:
     local('Aptos Italic'), local('Calibri Italic'), local('Carlito Italic'),
-    url('@genoffice/ui/fonts/Carlito-Italic.ttf'), local('Helvetica Neue Italic'),
+    url('@genoffice/ui/fonts/Carlito-Italic.woff2'), local('Helvetica Neue Italic'),
     local('Arial Italic');
   font-display: block;
 }
@@ -225,7 +225,7 @@
   font-style: italic;
   src:
     local('Aptos Bold Italic'), local('Calibri Bold Italic'), local('Carlito Bold Italic'),
-    url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
+    url('@genoffice/ui/fonts/Carlito-BoldItalic.woff2'), local('Helvetica Neue Bold Italic'),
     local('Arial Bold Italic');
   font-display: block;
 }
@@ -236,21 +236,21 @@
 
 @font-face {
   font-family: Carlito;
-  src: local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.ttf');
+  src: local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.woff2');
   font-display: block;
 }
 
 @font-face {
   font-family: Carlito;
   font-weight: bold;
-  src: local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.ttf');
+  src: local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.woff2');
   font-display: block;
 }
 
 @font-face {
   font-family: Carlito;
   font-style: italic;
-  src: local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.ttf');
+  src: local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.woff2');
   font-display: block;
 }
 
@@ -258,14 +258,14 @@
   font-family: Carlito;
   font-weight: bold;
   font-style: italic;
-  src: local('Carlito Bold Italic'), url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf');
+  src: local('Carlito Bold Italic'), url('@genoffice/ui/fonts/Carlito-BoldItalic.woff2');
   font-display: block;
 }
 
 @font-face {
   font-family: Calibri;
   src:
-    local('Calibri'), local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.ttf'),
+    local('Calibri'), local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.woff2'),
     local('Helvetica Neue'), local('Arial');
   font-display: block;
 }
@@ -274,7 +274,7 @@
   font-family: Calibri;
   font-weight: bold;
   src:
-    local('Calibri Bold'), local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.ttf'),
+    local('Calibri Bold'), local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.woff2'),
     local('Helvetica Neue Bold'), local('Arial Bold');
   font-display: block;
 }
@@ -283,7 +283,7 @@
   font-family: Calibri;
   font-style: italic;
   src:
-    local('Calibri Italic'), local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.ttf'),
+    local('Calibri Italic'), local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.woff2'),
     local('Helvetica Neue Italic'), local('Arial Italic');
   font-display: block;
 }
@@ -294,7 +294,7 @@
   font-style: italic;
   src:
     local('Calibri Bold Italic'), local('Carlito Bold Italic'),
-    url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
+    url('@genoffice/ui/fonts/Carlito-BoldItalic.woff2'), local('Helvetica Neue Bold Italic'),
     local('Arial Bold Italic');
   font-display: block;
 }

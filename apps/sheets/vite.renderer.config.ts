@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
@@ -5,6 +6,9 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   root: 'src/renderer',
   plugins: [react()],
+  // Worktree-safe: node_modules/@genoffice/ui symlinks to the main checkout, so
+  // the woff2 font twins committed here are invisible without this prefix.
+  resolve: { alias: { '@genoffice/ui/fonts': resolve(__dirname, '../../packages/ui/src/fonts') } },
   server: {
     // web version: same-origin proxy to the HTTP IPC bridge inside the running
     // Electron main process (keeps the page CSP's connect-src 'self' intact)

@@ -393,7 +393,7 @@ describe('CELL_FONT_ALIASES', () => {
       const urls = [...alias!.regular, ...alias!.bold!].filter((s) => s.startsWith('url('))
       expect(urls, family).toHaveLength(2)
       for (const url of urls) {
-        expect(url, family).toMatch(/Carlito-(Regular|Bold)[^)]*\.ttf\)$/)
+        expect(url, family).toMatch(/Carlito-(Regular|Bold)[^)]*\.woff2\)$/)
         expect(url, family).not.toContain('./fonts/')
       }
     }

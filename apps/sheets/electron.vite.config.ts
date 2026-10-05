@@ -3,6 +3,10 @@ import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
 // Resolve workspace packages from this checkout's sources (worktree-safe).
+// Worktree-safe: node_modules/@genoffice/ui symlinks to the main checkout, so
+// the woff2 font twins committed here are invisible without this prefix.
+const fontsDir = resolve(__dirname, '../../packages/ui/src/fonts')
+
 const ipcBridgeAlias = {
   // subpath before the bare name: string aliases are prefix replacements
   '@genoffice/ipc-bridge/client': resolve(__dirname, '../../packages/ipc-bridge/src/client.ts'),
@@ -45,6 +49,7 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
+    resolve: { alias: { '@genoffice/ui/fonts': fontsDir } },
     server: {
       port: Number(process.env.SHEETS_DEV_PORT) || 5174,
       strictPort: Boolean(process.env.SHEETS_DEV_PORT),
