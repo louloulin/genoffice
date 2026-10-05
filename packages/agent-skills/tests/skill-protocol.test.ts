@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   createSkillRegistry,
+  getDefaultSkillRegistry,
+  resetDefaultSkillRegistry,
   SkillError,
   type SkillDefinition,
   type ProgressEvent,
@@ -119,7 +121,6 @@ describe('ProgressEvent', () => {
   })
 })
 
-import { getDefaultSkillRegistry, resetDefaultSkillRegistry, createSkillRegistry } from '../src/skill-protocol'
 
 describe('getDefaultSkillRegistry', () => {
   beforeEach(() => resetDefaultSkillRegistry())

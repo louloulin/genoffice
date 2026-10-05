@@ -396,7 +396,7 @@ describe('makeLiveModelHandlers — downloadAs', () => {
 
   it('rejects an adapter that reports success with no target', async () => {
     const h = makeLiveModelHandlers({
-      downloadAs: () => ({ size: 42 }) as unknown as { blobUrl: string },
+      downloadAs: () => ({ size: 42 }) as unknown as { blobUrl: string; size: number },
     })
     await expect(h.downloadAs!({ format: 'pdf' })).rejects.toThrow(/neither blobUrl nor path/)
   })

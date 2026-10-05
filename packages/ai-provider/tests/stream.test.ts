@@ -1349,7 +1349,7 @@ describe('chatForProvider: usage on the response', () => {
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
     const { chatForProvider } = await import('../src/chat')
-    const res = await chatForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, { system: 'sys', user: 'hi' })
+    const res = await chatForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, 'sys', 'hi')
     expect(res.usage).toEqual({ promptTokens: 11, completionTokens: 4, totalTokens: 15 })
   })
 
@@ -1361,7 +1361,7 @@ describe('chatForProvider: usage on the response', () => {
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
     const { chatForProvider } = await import('../src/chat')
-    const res = await chatForProvider('anthropic', { apiKey: 'k', model: 'claude-sonnet-5' }, { system: 'sys', user: 'hi' })
+    const res = await chatForProvider('anthropic', { apiKey: 'k', model: 'claude-sonnet-5' }, 'sys', 'hi')
     expect(res.usage).toEqual({ promptTokens: 8, completionTokens: 2 })
   })
 
@@ -1372,7 +1372,7 @@ describe('chatForProvider: usage on the response', () => {
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
     const { chatForProvider } = await import('../src/chat')
-    const res = await chatForProvider('gemini', { apiKey: 'k', model: 'gemini-2.5-flash' }, { system: 'sys', user: 'hi' })
+    const res = await chatForProvider('gemini', { apiKey: 'k', model: 'gemini-2.5-flash' }, 'sys', 'hi')
     expect(res.usage).toEqual({ promptTokens: 6, completionTokens: 3, totalTokens: 9 })
   })
 
@@ -1382,7 +1382,7 @@ describe('chatForProvider: usage on the response', () => {
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })))
     const { chatForProvider } = await import('../src/chat')
-    const res = await chatForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, { system: 'sys', user: 'hi' })
+    const res = await chatForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, 'sys', 'hi')
     expect(res.usage).toBeUndefined()
   })
 })

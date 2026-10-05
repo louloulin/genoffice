@@ -231,7 +231,7 @@ describe('Trash (storage backend mode)', () => {
     await backend.put('survives.bin', new TextEncoder().encode('x'))
     await trash.delete('survives.bin')
     /* Fresh instance, same root + same backend. */
-    const second = new Trash(root, backend)
+    const second = new Trash(root, backend as any)
     expect(await second.list()).toHaveLength(1)
   })
 })
