@@ -120,6 +120,23 @@ describe('static transport: compression, validators, cache-control', () => {
     expect(gz.headers.get('etag')).not.toBe(raw.headers.get('etag'))
   })
 
+  it('compresses the first-screen CSS, not just JS', async () => {
+    // The compressible-type pattern is end-anchored, so a bare `text\/`
+    // alternative matches nothing real and every text/* asset shipped raw. The
+    // JS-only assertions above all passed while the docs stylesheet — 366KB of
+    // first screen — went out uncompressed on every open.
+    const { readdirSync } = await import('node:fs')
+    const css = readdirSync(join(docsRenderer, 'assets')).find((f) => f.endsWith('.css'))
+    expect(css, 'docs build must emit a stylesheet').toBeTruthy()
+    const raw = statSync(join(docsRenderer, 'assets', css!)).size
+    expect(raw, 'stylesheet is big enough for the test to be meaningful').toBeGreaterThan(1024)
+    const res = await fetch(`${base}/docs/assets/${css}`, { headers: { 'Accept-Encoding': 'gzip' } })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/css')
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(Number(res.headers.get('content-length'))).toBeLessThanOrEqual(Math.floor(raw * 0.3))
+  })
+
   it('does not double-compress already-compressed formats', async () => {
     const { readdirSync } = await import('node:fs')
     const woff2 = readdirSync(join(docsRenderer, 'assets')).find((f) => f.endsWith('.woff2'))

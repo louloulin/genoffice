@@ -40,8 +40,15 @@ const CACHE_MAX_BYTES = 64 * 1024 * 1024
 
 /** MIME types worth compressing. Everything else (woff2, png, mp4, zip,
  *  docx… PDF) is already a compressed binary format — re-compressing burns
- *  CPU for ~0% gain and delays first byte. */
-const COMPRESSIBLE_TYPE = /^(?:text\/|application\/(?:javascript|json|xml|manifest\+json|xhtml\+xml)|image\/svg\+xml|font\/(?:ttf|otf|woff))$/
+ *  CPU for ~0% gain and delays first byte.
+ *
+ *  Every branch must consume the WHOLE type: the pattern is end-anchored, so a
+ *  bare `text\/` alternative matches the literal string "text/" and nothing
+ *  else — every real subtype (text/css, text/html, text/plain) fell through
+ *  uncompressed. CSS is 366KB on the docs first screen, so that silently cost
+ *  a third of a megabyte per open. */
+const COMPRESSIBLE_TYPE =
+  /^(?:text\/[a-z0-9.+-]+|application\/(?:javascript|json|xml|manifest\+json|xhtml\+xml)|image\/svg\+xml|font\/(?:ttf|otf|woff))$/
 
 /** Vite content-hashed asset basenames: `index-DE4hpCm2.js`,
  *  `NotoSansCJKsc-Regular-subset-DhHdCp9T.woff2`. Only these may be immutable;

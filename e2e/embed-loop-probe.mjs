@@ -42,7 +42,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createServer, request as httpRequest } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -67,6 +67,7 @@ const note = (ok, what, detail) => {
 // Filled during the run; printed in the final report (A24/A20 outputs).
 let probeTiming = null
 let probeTransfer = null
+let probeFirstScreen = null
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -876,6 +877,51 @@ try {
     editorVisibleGuestMs: editorGuestMs,
     loadProgressEvents,
   }
+  // ── A16/A49 first-screen network panel ────────────────────────────────────
+  // A49 asks for the on-demand claim to be *network-panel provable*. Read the
+  // guest's own resource timing and diff it against the chunks that actually
+  // exist in the shipped build: a chunk the first screen never requested is a
+  // chunk the browser did not load, and a named on-demand chunk appearing in
+  // the requested set is exactly the failure A49 forbids.
+  const guestFrame = page.frames().find((f) => f !== page.mainFrame())
+  if (guestFrame) {
+    const net = await guestFrame.evaluate(() =>
+      performance.getEntriesByType('resource').map((e) => ({
+        name: e.name.split('/').pop() ?? e.name,
+        enc: e.encodedBodySize,
+        raw: e.decodedBodySize,
+        start: Math.round(e.startTime),
+      })),
+    )
+    const assetsDir = join(repoRoot, 'apps', 'docs', 'out', 'renderer', 'assets')
+    const shipped = existsSync(assetsDir) ? readdirSync(assetsDir).filter((f) => f.endsWith('.js')) : []
+    const requested = new Set(net.map((e) => e.name))
+    const js = net.filter((e) => e.name.endsWith('.js'))
+    const css = net.filter((e) => e.name.endsWith('.css'))
+    const sum = (list, key) => list.reduce((s, e) => s + e[key], 0)
+    // A49 names the on-demand feature areas: AiPanel, the agent runtime, the
+    // translation chain, the export chains. The parse worker is deliberately
+    // NOT in this set — parsing the document is what makes it editable, so its
+    // chunk is part of the first screen by definition; flagging it would turn
+    // a correct build into a false red.
+    const ON_DEMAND = /aipanel|agent|translat|export/i
+    probeFirstScreen = {
+      shippedJsChunks: shipped.length,
+      requestedJsChunks: js.length,
+      jsRaw: sum(js, 'raw'),
+      jsEncoded: sum(js, 'enc'),
+      cssRaw: sum(css, 'raw'),
+      cssEncoded: sum(css, 'enc'),
+      onDemandLoadedOnFirstScreen: js.map((e) => e.name).filter((n) => ON_DEMAND.test(n)),
+      notLoaded: shipped.filter((f) => !requested.has(f)),
+      requested: js.map((e) => `${e.name} ${e.raw}/${e.enc}@${e.start}`),
+    }
+    note(
+      probeFirstScreen.onDemandLoadedOnFirstScreen.length === 0,
+      'A49 首屏未加载按需 chunk(AiPanel/agent/翻译/导出/worker/locale)',
+      probeFirstScreen.onDemandLoadedOnFirstScreen,
+    )
+  }
   const docCarryChannels = ['web:write-temp-file', 'docs:open-path', 'docs:open', 'docs:read-path']
   const docCarryIpc = ipcTraffic.filter((e) => docCarryChannels.includes(e.channel))
   const docCarryWire =
@@ -928,6 +974,16 @@ if (probeTransfer) {
   console.log(`  IPC 文档承载通道: ${JSON.stringify(probeTransfer.docCarryIpc)} (wire 合计 ${probeTransfer.docCarryWire} B)`)
   console.log(`  传输总量/体积 = ${probeTransfer.transferTotal}/${probeTransfer.docBytes} = ${probeTransfer.ratio}×`)
   console.log(`  IPC 其他流量合计: req ${probeTransfer.ipcTotalReq} B / res ${probeTransfer.ipcTotalRes} B`)
+}
+if (probeFirstScreen) {
+  const f = probeFirstScreen
+  console.log(`\n── A16/A49 首屏网络面板 (guest resource timing) ──`)
+  console.log(`  构建产物 JS chunk: ${f.shippedJsChunks} 个,首屏请求 ${f.requestedJsChunks} 个`)
+  console.log(`  首屏 JS: raw ${f.jsRaw} B / 线上传输 ${f.jsEncoded} B`)
+  console.log(`  首屏 CSS: raw ${f.cssRaw} B / 线上传输 ${f.cssEncoded} B`)
+  console.log(`  首屏请求明细: ${JSON.stringify(f.requested)}`)
+  console.log(`  首屏未请求 chunk (${f.notLoaded.length}): ${JSON.stringify(f.notLoaded)}`)
+  console.log(`  按需 chunk 混入首屏: ${JSON.stringify(f.onDemandLoadedOnFirstScreen)}`)
 }
 console.log(`\n${failed.length === 0 ? label : `${failed.length} FAILURE(S)`}`)
 process.exit(failed.length === 0 ? 0 : 1)
