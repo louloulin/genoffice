@@ -1580,8 +1580,18 @@ const server = createServer(async (request, response) => {
       response.end(html.replace(/<\/head>/i, (_match) => `${tag}</head>`))
       return
     }
-    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' })
-    createReadStream(indexPath).pipe(response)
+    // SPA fallback (deep links, extension-less routes). Route through
+    // serveStaticFile so this HTML gets the same validators as every other
+    // renderer asset: a deep-link navigation revalidates via ETag→304 instead
+    // of re-downloading the shell. no-cache keeps the shell always fresh while
+    // the validator keeps the revalidate cheap.
+    await serveStaticFile({
+      request,
+      response,
+      filePath: indexPath,
+      contentType: 'text/html; charset=utf-8',
+      cacheControl: 'no-cache',
+    })
     return
   }
 

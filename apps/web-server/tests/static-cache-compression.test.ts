@@ -142,4 +142,20 @@ describe('static transport: compression, validators, cache-control', () => {
     expect(res.headers.get('etag')).toBeTruthy()
     expect(res.headers.get('vary')).toContain('Accept-Encoding')
   })
+
+  it('gives the SPA fallback HTML an ETag so deep links revalidate instead of re-downloading', async () => {
+    // An extension-less deep link (client-side route) falls through to the
+    // shell index.html. That path used to stream the file raw: no validator,
+    // so every deep-link navigation re-downloaded the whole shell.
+    const first = await fetch(`${base}/docs/some/client/route`)
+    expect(first.status).toBe(200)
+    expect(first.headers.get('content-type')).toContain('text/html')
+    // the shell must stay revalidated, never cached
+    expect(first.headers.get('cache-control')).toBe('no-cache')
+    const etag = first.headers.get('etag')
+    expect(etag, 'SPA fallback HTML must carry a validator').toBeTruthy()
+    const second = await fetch(`${base}/docs/some/client/route`, { headers: { 'If-None-Match': etag! } })
+    expect(second.status).toBe(304)
+    expect((await second.arrayBuffer()).byteLength).toBe(0)
+  })
 })
