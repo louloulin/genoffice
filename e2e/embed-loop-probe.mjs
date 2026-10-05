@@ -918,7 +918,7 @@ try {
     }
     note(
       probeFirstScreen.onDemandLoadedOnFirstScreen.length === 0,
-      'A49 首屏未加载按需 chunk(AiPanel/agent/翻译/导出/worker/locale)',
+      'A49 首屏未加载按需 chunk(AiPanel/agent/翻译/导出)',
       probeFirstScreen.onDemandLoadedOnFirstScreen,
     )
   }
