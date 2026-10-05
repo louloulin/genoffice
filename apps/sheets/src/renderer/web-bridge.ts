@@ -16,7 +16,6 @@ import {
   uploadFileToServer,
 } from '@genoffice/ipc-bridge/web-native'
 import { installTabGuest } from '@genoffice/ipc-bridge/web-tabs'
-import { defaultSdkCommandHandlers, installSdkCommandSink } from '@genoffice/ipc-bridge/sdk-command-sink'
 import { installTextBufferSink } from '@genoffice/ipc-bridge/text-buffer-adapter'
 import { createSidebarRuntime } from '@genoffice/ipc-bridge/sidebar-runtime'
 import {
@@ -27,7 +26,6 @@ import {
 import {
   buildEmbedTranslateBody,
   createEmbedTranslateBatchAccumulator,
-  narrowUnitStatus,
   parseEmbedTranslateStreamEvent,
 } from '@genoffice/translation-core/embed-body'
 import { createDataflareTranslationStorage } from '@genoffice/translation-core/storage'
