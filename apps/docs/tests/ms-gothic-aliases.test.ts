@@ -43,7 +43,7 @@ describe('MS Gothic GO', () => {
   const latin = all.find((f) => claims(f.ranges, 0x61))!
 
   it('serves Latin from the bundled mono scaled to a 0.5em advance', () => {
-    expect(latin.src).toContain('LiberationMono-Regular.ttf')
+    expect(latin.src).toContain('LiberationMono-Regular.woff2')
     expect(latin.ranges).toContain('U+0020-007E')
     for (const ch of ['a', 'W', '0', ' ']) {
       expect(advanceEmTtf('LiberationMono-Regular.ttf', ch) * (latin.sizeAdjust / 100)).toBeCloseTo(
@@ -110,7 +110,7 @@ describe.each(['MS PGothic', 'MS UI Gothic'])('%s GO + JA GO', (family) => {
   it('renders Latin from the bundled Liberation Sans at Word-fitted widths', () => {
     const letters = at(0x61)[0]
     const space = at(0x20)[0]
-    expect(letters.src).toContain('LiberationSans-Regular.ttf')
+    expect(letters.src).toContain('LiberationSans-Regular.woff2')
     expect(letters.sizeAdjust).toBeCloseTo(91.37, 2)
     expect(space.sizeAdjust).toBeCloseTo(109.67, 2)
     expect(advanceEmTtf('LiberationSans-Regular.ttf', ' ') * (space.sizeAdjust / 100)).toBeCloseTo(
@@ -128,9 +128,18 @@ it('MS UI Gothic kana run narrower than MS PGothic kana', () => {
 /** advance the face yields for a codepoint served from a bundled file */
 function fullwidthAdvance(face: Face, cp: number): number {
   const file = /url\('\.\/([^']+)'\)/.exec(face.src)![1]
-  const em = file.endsWith('.woff2')
-    ? advanceEm(readWoff2(join(FONTS, file)), cp)
-    : advanceEmTtf(file, String.fromCodePoint(cp))
+  let em: number
+  if (file.endsWith('.woff2')) {
+    try {
+      em = advanceEm(readWoff2(join(FONTS, file)), cp)
+    } catch {
+      // readWoff2 handles CFF-based subsets only; TrueType fonts (Liberation)
+      // carry a transformed glyf table — measure their TTF twins instead.
+      em = advanceEmTtf(file.replace(/\.woff2$/, '.ttf'), String.fromCodePoint(cp))
+    }
+  } else {
+    em = advanceEmTtf(file, String.fromCodePoint(cp))
+  }
   return em * (face.sizeAdjust / 100)
 }
 

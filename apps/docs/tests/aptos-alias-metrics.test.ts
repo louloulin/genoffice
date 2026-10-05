@@ -33,7 +33,7 @@ function facesOf(family: string, weight: string): Face[] {
               return [parseInt(a, 16), parseInt(b ?? a, 16)] as [number, number]
             })
           : null,
-        file: /Carlito-(\w+)\.ttf/.exec(f)![1],
+        file: /Carlito-(\w+)\.woff2/.exec(f)![1],
       }
     })
 }

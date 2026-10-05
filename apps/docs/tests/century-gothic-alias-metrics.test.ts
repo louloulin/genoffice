@@ -33,7 +33,7 @@ function facesOf(weight: string, style: string): Face[] {
               return [parseInt(a, 16), parseInt(b ?? a, 16)] as [number, number]
             })
           : null,
-        file: /LiberationSans-(\w+)\.ttf/.exec(f)![1],
+        file: /LiberationSans-(\w+)\.woff2/.exec(f)![1],
       }
     })
 }
