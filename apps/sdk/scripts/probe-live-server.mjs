@@ -137,12 +137,16 @@ const env = {
   // by the in-tree e2e suites for the same reason.
   GENOFFICE_TRANSLATION_KB: join(dataDir, 'translation-kb.json'),
 }
-// WEB_TOKEN is stripped so the /api/ipc/* collab surface behaves as it does
-// for the web renderer (the v1 groups authenticate with a real JWT instead —
-// see GENOFFICE_JWT_SECRET below).
+// WEB_TOKEN is stripped to exercise the credential-free collab surface this
+// file spawns a throwaway 127.0.0.1 server with a temp DATA_DIR for — the
+// exact "local development" deployment GENOFFICE_ALLOW_OPEN exists for. Since
+// the fail-closed auth posture (route-policy.ts: locked when WEB_TOKEN is
+// unset) a bare strip alone answers 401 on every /api/ipc/* call and the
+// collab section could never pass.
 delete env.WEB_TOKEN
 delete env.PROBE_BEARER
 delete env.PROBE_BASE
+env.GENOFFICE_ALLOW_OPEN = '1'
 
 let server = null
 let cleaned = false
