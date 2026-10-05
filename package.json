@@ -22,6 +22,7 @@
     "format": "node tools/format-changed.mjs --write",
     "format:check": "node tools/format-changed.mjs --check",
     "check:theme-colors": "node tools/check-theme-colors.mjs",
+    "check:web-fonts": "node tools/check-web-fonts.mjs",
     "check:english-comments": "node tools/check-english-comments.mjs",
     "check:skill-version": "node tools/check-skill-version.mjs",
     "check:app-translation": "node scripts/check-app-translation-parity.mjs --require=whole-document --require=host-command",

@@ -44,6 +44,10 @@ jobs:
       # 处理器内部抛错，异常从 FRange.setValue 逃出调用方循环，同批次后续写入全部
       # 丢失（实测 6 个单元格只落 1 个译文且提示成功）。编译与单测都看不出来。
       - run: npm run check:sheets-model-defaults
+      # 字体必须以 woff2 交付给浏览器：TTF 直接进入 stylesheet 后体积翻倍，
+      # 首屏每个字体都是一次可避免的下载。编译与单测都看不出来（本仓只检
+      # docs 产物，sheets/slides 的 stylesheet 回流完全无声），只能靠门禁。
+      - run: npm run check:web-fonts
 
   typecheck:
     name: Typecheck
@@ -113,6 +117,11 @@ jobs:
       # entry to the build without committing the regenerated manifest would
       # otherwise be a silent 404 for exactly the new entry.
       - run: npm run manifest:check -w @genoffice/web-sdk
+      # The lint job runs check:web-fonts without any build, so only its source
+      # layer fires there. This job is where the SDK bundle the embed host loads
+      # is actually produced, so it is the one place the artifact layer has
+      # something to inspect.
+      - run: npm run check:web-fonts
       - uses: actions/upload-artifact@v4
         with:
           name: web-server-bundle

@@ -18,10 +18,18 @@
  * name. Other families are deliberately untouched here (markdown's KaTeX Math
  * set, CJK/Noto), so this gate does not become a repo-wide font audit.
  *
- * Fails if a renderer output grows a TTF from that group, or if an exempt path
- * stops existing (so the exemption list cannot silently outlive its reason).
+ * Two layers, because CI never builds the renderers:
+ *   1. source — renderer CSS/TS must not reference a governed TTF/OTF. Runs
+ *      everywhere, and is what actually stops a `.ttf` from creeping back into
+ *      a stylesheet between releases.
+ *   2. artifacts — built renderer output must contain no governed TTF. Skipped
+ *      per-root when that root was never built, so a lint-only checkout still
+ *      gets the source guarantee instead of a vacuous pass.
+ *
+ * Either layer fails the run. An exempt path that stops existing also fails, so
+ * the exemption list cannot silently outlive its reason.
  */
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -52,8 +60,27 @@ const RENDERER_EXEMPT_PREFIXES = ['apps/pdf/out/renderer/pdfjs/standard_fonts/']
 /** The font group this change governs; other families are out of scope. */
 const GOVERNED = /^(Liberation|Carlito|Caladea)[-.]/i
 
+/** Source trees whose files the bundler turns into web-served assets. */
+const SOURCE_ROOTS = ['apps', 'packages']
+
+/** Renderer-facing source extensions worth scanning. */
+const SOURCE_EXT = /\.(css|scss|ts|tsx)$/
+
+/**
+ * Source files allowed to name a governed TTF: main-process/worker/test code
+ * that hands the bytes to a font parser rather than to the browser.
+ */
+const SOURCE_EXEMPT = new Map([
+  ['apps/slides/src/main/fonts.ts', 'opentype.js metrics'],
+  ['apps/slides/tests/embedded-fonts.test.ts', 'builds a raw sfnt fixture for opentype.js'],
+])
+
+/** `@font-face`/import references to a governed TTF, in url() or import form. */
+const GOVERNED_REF = new RegExp(`fonts/(${GOVERNED.source.slice(1, -1)}[-\\w]*)\\.(ttf|otf)`, 'i')
+
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules' || entry === 'out' || entry === 'dist') continue
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) walk(full, out)
     else out.push(full)
@@ -61,6 +88,26 @@ function walk(dir, out = []) {
   return out
 }
 
+function scanSource() {
+  const hits = []
+  for (const root of SOURCE_ROOTS) {
+    const abs = join(repoRoot, root)
+    if (!existsSync(abs)) continue
+    for (const file of walk(abs)) {
+      if (!SOURCE_EXT.test(file)) continue
+      const rel = relative(repoRoot, file).split(sep).join('/')
+      if (SOURCE_EXEMPT.has(rel)) continue
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (GOVERNED_REF.test(line)) hits.push(`${rel}:${i + 1}`)
+        })
+    }
+  }
+  return hits
+}
+
+const sourceHits = scanSource()
 const offenders = []
 const missingRoots = []
 for (const root of RENDERER_ROOTS) {
@@ -79,16 +126,24 @@ for (const root of RENDERER_ROOTS) {
   }
 }
 
-const staleExemptions = REQUIRED_EXEMPTIONS.filter((e) => !existsSync(join(repoRoot, e.path))).map((e) => e.path)
+const staleExemptions = [
+  ...REQUIRED_EXEMPTIONS.filter((e) => !existsSync(join(repoRoot, e.path))).map((e) => e.path),
+  ...[...SOURCE_EXEMPT.keys()].filter((p) => !existsSync(join(repoRoot, p))),
+]
 
-if (offenders.length > 0 || staleExemptions.length > 0) {
+if (sourceHits.length > 0 || offenders.length > 0 || staleExemptions.length > 0) {
+  if (sourceHits.length > 0) {
+    console.error('Renderer source references a Liberation/Carlito/Caladea TTF:')
+    for (const h of sourceHits) console.error(`  ${h}`)
+    console.error('\nPoint it at the woff2 twin, or move the reader into parser-input code.')
+  }
   if (offenders.length > 0) {
     console.error('Web-served Liberation/Carlito/Caladea TTF found in renderer output:')
     for (const f of offenders) console.error(`  ${f}`)
-    console.error('\nConvert the source reference to a woff2 twin, or move the file to a parser-input path.')
+    console.error('\nRebuild the affected app, or convert the source reference to a woff2 twin.')
   }
   if (staleExemptions.length > 0) {
-    console.error('\nExempted parser-input fonts are gone — drop the stale exemptions:')
+    console.error('\nExempted parser-input paths are gone — drop the stale exemptions:')
     for (const f of staleExemptions) console.error(`  ${f}`)
   }
   process.exit(1)
@@ -98,6 +153,7 @@ if (missingRoots.length > 0) {
   console.warn(`Skipped ${missingRoots.length} unbuilt renderer root(s): ${missingRoots.join(', ')}`)
 }
 console.log(
-  `No web-served Liberation/Carlito/Caladea TTF in ${RENDERER_ROOTS.length - missingRoots.length} renderer output(s). ` +
-    `Parser-input exemptions intact: ${REQUIRED_EXEMPTIONS.length}.`,
+  `Source: no governed TTF reference. Artifacts: none in ` +
+    `${RENDERER_ROOTS.length - missingRoots.length} built renderer output(s). ` +
+    `Parser-input exemptions intact: ${REQUIRED_EXEMPTIONS.length + SOURCE_EXEMPT.size}.`,
 )
