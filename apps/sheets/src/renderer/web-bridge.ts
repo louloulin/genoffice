@@ -34,6 +34,7 @@ import { createDataflareTranslationStorage } from '@genoffice/translation-core/s
 import { isEmbeddedInHost } from '@genoffice/web-sdk/dataflare/guest'
 import { emitTranslateProgress } from './translate-progress'
 import { createSheetsApi, createSheetsProjectApi, type SheetsApiOverrides } from '../shared/sheets-api-factory'
+import type { WorkbookExportCsvResult } from '../shared/desktop-api'
 import { createHostDocumentSync } from './dataflare-host-sync'
 import { saveWorkbookOverHttp } from './web-save'
 
@@ -205,8 +206,8 @@ if (!isElectronRuntime()) {
       hasFormulas: boolean
       activeSheetName?: string
       targetPath?: string
-    }) => {
-      return await transport.invoke('workbook:export-csv', request)
+    }): Promise<WorkbookExportCsvResult> => {
+      return (await transport.invoke('workbook:export-csv', request)) as WorkbookExportCsvResult
     },
     pickAttachments: async () => {
       const picked = await pickFileBytes(undefined, true)

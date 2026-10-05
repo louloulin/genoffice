@@ -89,6 +89,8 @@ export interface SheetsApiOverrides {
    *  Absent (desktop build) leaves the API's `null`, which the panel renders
    *  as an explanation rather than an error. */
   translationStorage?: DesktopApi['translationStorage']
+  /** Web embed only: forward the desktop exportCsv contract to web-server `workbook:export-csv`. */
+  exportCsv?: DesktopApi['exportCsv']
   /** Web embed only: push a saved workbook back to the Dataflare host. */
   syncHostDocument?: DesktopApi['syncHostDocument']
   hasPendingHostSync?: DesktopApi['hasPendingHostSync']

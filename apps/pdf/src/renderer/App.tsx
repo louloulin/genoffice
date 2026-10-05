@@ -2015,6 +2015,15 @@ export default function App() {
       if (command.type === 'cancel-translation') {
         translatePdfDialogRef.current?.close()
         emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })
+        return
+      }
+      if (command.type === 'save') {
+        // Host「保存为新版本」按钮（dirty 时点亮）。与 ⌘S 同一条 `save` 管线：
+        // pdf:save 写回字节后由 web-bridge 推给宿主（dataflare.saveDocument）。
+        // 翻译 Apply 只是排入待编辑（dirty 由待编辑列表推导），自动保存关着 ——
+        // 没有这条命令，译文只活在 iframe 里。
+        void hostSaveRef.current(false)
+        return
       }
     }
     window.addEventListener('dataflare:office-command', onHostCommand)
@@ -3575,6 +3584,12 @@ export default function App() {
       edits still listed — and write them onto the file a second time. */
   const queuedSavesRef = useRef<{ autosave: boolean; resolve: (ok: boolean) => void }[]>([])
 
+  /** Host「保存为新版本」按钮 → the same `save` closure ⌘S and the SDK's
+   * `editor.command('save')` already use. The `dataflare:office-command`
+   * listener is registered long before `save` is defined, so it reads through
+   * this ref instead of a stale closure. */
+  const hostSaveRef = useRef<(autosave?: boolean) => Promise<boolean>>(async () => false)
+
   const save = (autosave = false): Promise<boolean> => {
     // A save is already writing: queue behind it instead of reporting failure — the
     // close prompt's "Save" and ⌘S regularly collide with the blur-triggered autosave
@@ -3682,6 +3697,12 @@ export default function App() {
     saveInFlightRef.current = tracked
     return tracked
   }
+
+  // Point the host-command ref at the committed closure (no deps: every commit,
+  // like the queued-save drain below, so a host save always sees post-render state).
+  useEffect(() => {
+    hostSaveRef.current = save
+  })
 
   // Drain queued saves. This effect runs after every commit, so by the time it fires
   // the in-flight save's reload has rendered and `save` reads post-reload state: the

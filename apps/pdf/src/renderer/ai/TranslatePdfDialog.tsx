@@ -23,6 +23,7 @@ import { TranslateDialog, type TranslateLanguageOption } from '@genoffice/ui'
 import type {
   TranslateBatchFn,
   TranslateProgress,
+  TranslateProgressStatus,
   TranslatedUnit,
 } from '@genoffice/translation-core/document'
 import { emitTranslateProgress } from '../translate-progress'
@@ -35,6 +36,22 @@ import {
   type PdfTextBlock,
   type PdfTranslationPlan,
 } from './document-translate'
+
+/**
+ * Narrow the pipeline's progress vocabulary to the host's (markdown/html/docs
+ * parity). `completed-with-failures` is the pipeline's partial-success terminal
+ * state and the host's `ai-progress` cannot render it: reporting it as
+ * `completed` would tell the host the pages translated cleanly when part of
+ * them was left in the source language, so it is reported as `failed` — the
+ * honest direction to be wrong in.
+ */
+function hostProgressStatus(
+  status: TranslateProgressStatus,
+): 'started' | 'running' | 'completed' | 'failed' | 'cancelled' {
+  if (status === 'started' || status === 'running' || status === 'completed') return status
+  if (status === 'cancelled') return 'cancelled'
+  return 'failed'
+}
 
 const TRANSLATE_LANGS: readonly TranslateLanguageOption[] = [
   { value: 'zh-CN', label: '简体中文' },
@@ -164,7 +181,7 @@ export function TranslatePdfDialog(
     // not present-and-undefined, or the host renders "undefined/undefined".
     emitTranslateProgress({
       type: 'ai-progress',
-      status: event.status,
+      status: hostProgressStatus(event.status),
       progress: event.progress,
       ...(event.completedUnits !== undefined ? { completedUnits: event.completedUnits } : {}),
       ...(event.totalUnits !== undefined ? { totalUnits: event.totalUnits } : {}),

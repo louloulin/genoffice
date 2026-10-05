@@ -119,7 +119,7 @@ describe('ProgressEvent', () => {
   })
 })
 
-import { getDefaultSkillRegistry, resetDefaultSkillRegistry, createSkillRegistry } from '../src/skill-protocol'
+import { getDefaultSkillRegistry, resetDefaultSkillRegistry } from '../src/skill-protocol'
 
 describe('getDefaultSkillRegistry', () => {
   beforeEach(() => resetDefaultSkillRegistry())

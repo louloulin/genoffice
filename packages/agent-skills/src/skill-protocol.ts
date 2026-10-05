@@ -192,7 +192,9 @@ export class SkillError extends Error {
   constructor(code: SkillErrorCode, message: string, details?: Record<string, unknown>) {
     super(message)
     this.code = code
-    this.details = details
+    // exactOptionalPropertyTypes: an absent details must be *absent*, not
+    // present-and-undefined on the instance.
+    if (details !== undefined) this.details = details
     this.name = 'SkillError'
   }
 }

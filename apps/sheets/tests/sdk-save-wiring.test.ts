@@ -57,7 +57,7 @@ describe('sheets SDK save wiring contract (sdk1 §11.67)', () => {
     it('returns the SDK contract shape on success', async () => {
       // Mirror App.tsx's `save` body: resolve on a clean save, surface
       // { ok: true; savedPath?; savedAt? } so the bridge forwards verbatim.
-      const handleSaveRef = { current: vi.fn(async () => undefined) }
+      const handleSaveRef = { current: vi.fn(async (_mode?: string, _quiet?: boolean) => undefined) }
       const workbookFile = { path: '/work/q3.xlsx', name: 'q3.xlsx' }
 
       const adapter = {
