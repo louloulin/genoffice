@@ -85,6 +85,10 @@ function bootstrap(): void {
     applyTheme(next)
   })
   window.desktop?.onLanguageChanged((next) => persistBootValue(LANG_KEY, next))
+  // every startup IPC fires concurrently here — none of them is chained
+  // behind another (prefs used to wait for the language/theme round-trips)
+  window.desktop?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
+  void window.desktop?.getAiPanelPrefs?.().then(applyAiPanelPrefs).catch(() => {})
   void calibrate(lang, theme)
 }
 
@@ -101,11 +105,6 @@ async function calibrate(bootLang: Lang, bootTheme: UiTheme): Promise<void> {
   if (lang !== bootLang) {
     window.dispatchEvent(new CustomEvent<Lang>('genoffice-language-calibrate', { detail: lang }))
   }
-  void window.desktop
-    ?.getAiPanelPrefs?.()
-    .then(applyAiPanelPrefs)
-    .catch(() => {})
-  window.desktop?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
 }
 
 bootstrap()
