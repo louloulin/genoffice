@@ -1,18 +1,19 @@
 /**
  * Single source of truth for the web-server version string.
  *
- * Before §11.23 the value was hardcoded in five separate files:
- *   - apps/web-server/src/index.ts (boot banner + IPC status)
- *   - apps/web-server/src/shell/app-info.ts (app:get-version handler)
- *   - apps/web-server/src/shell/skills.ts (skill default version)
- *   - apps/web-server/src/embed/index.ts (EMBED_BRIDGE ready payload)
+ * The value is mirrored from `apps/web-server/package.json#version` — that file
+ * is what the release tooling bumps (`scripts/bump-version.mjs`), and
+ * `tests/version-sot.test.ts` fails the build if the two ever disagree.
  *
- * Hardcoded literals drift over time — when this server eventually
- * ships 0.9.0 we shouldn't have to grep five files. The source string
- * lives here and every consumer imports it.
+ * Why a mirrored constant rather than importing package.json at runtime: this
+ * module is bundled into the embed bridge and consumed by the desktop shell,
+ * and pulling a JSON file into those bundles makes the artifact depend on
+ * where it was built from. A string constant keeps the bundle self-contained;
+ * the test is what keeps it honest.
  *
- * The string is kept simple on purpose: major.minor.patch, no prerelease
- * tags, no git SHA. Downstream consumers (e.g. `/api/v1/health`) can
- * add metadata without affecting this contract.
+ * Format is CalVer (YYYY.MM.DD[.N]) — see the root `VERSION` file. It used to
+ * be strict semver; it is no longer, and the tag scheme drifted so far from the
+ * hardcoded literal (`v0.8.1360` vs `'0.8.0'`) that the constant had stopped
+ * meaning anything at all.
  */
-export const WEB_SERVER_VERSION = '0.8.0'
+export const WEB_SERVER_VERSION = '2026.10.05.1'

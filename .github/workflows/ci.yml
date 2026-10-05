@@ -13,6 +13,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version-wiring:
+    # 版本号链路：VERSION → 两个 package.json → version.ts 常量 → /health。
+    #
+    # 不装依赖、不跑测试，秒级。断任何一段的失败形态都是静默的 —— 不报错、
+    # 构建照过，只是对外报告了一个和实际发布无关的号。而这个号正是 Dataflare Work
+    # 设置页「系统信息」卡片显示给人看的：它是排查线上问题时对外部署的第一句话。
+    name: Version wiring
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@1d27c9d2b801d2c8c384b2cf4e0cd6f97f25990e5 # v6.4.0
+        with:
+          node-version: 22.12
+      - run: node scripts/verify-version-wiring.mjs
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

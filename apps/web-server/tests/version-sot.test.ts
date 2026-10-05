@@ -38,13 +38,25 @@ describe('web-server version single source of truth (sdk1.md §11.23)', () => {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as PkgJson
     const { WEB_SERVER_VERSION } = await import('../src/common/version')
     expect(WEB_SERVER_VERSION).toBe(pkg.version)
-    // Belt-and-suspenders: pin the literal shape so a future
-    // semver-prefixed release (e.g. '0.8.0-beta.1') can't silently
-    // slip past us.
-    expect(WEB_SERVER_VERSION).toMatch(/^\d+\.\d+\.\d+(-[\w.-]+)?$/)
+    // Pin the literal shape so a malformed release can't slip past.
+    // The format is CalVer (YYYY.MM.DD or YYYY.MM.DD.N), NOT semver — the
+    // release cadence follows "did this batch of work ship", not an API
+    // compatibility promise, so there is no major/minor to judge. This
+    // assertion was `^\d+\.\d+\.\d+(-[\w.-]+)?$`, which rejected the
+    // four-segment CalVer form.
+    expect(WEB_SERVER_VERSION).toMatch(/^\d{4}\.\d{2}\.\d{2}(\.\d+)?$/)
   })
 
-  it('no consumer hardcodes "0.8.0" — must import WEB_SERVER_VERSION', () => {
+  it('no consumer hardcodes the version — must import WEB_SERVER_VERSION', async () => {
+    // The literal to hunt for is read from package.json rather than written
+    // here. When this test hardcoded '0.8.0' and the version moved to
+    // CalVer, the guard silently became vacuous: it searched for a string no
+    // file contained anymore, and passed without ever looking at anything.
+    const pkg = JSON.parse(
+      readFileSync(join(REPO_ROOT, 'apps', 'web-server', 'package.json'), 'utf-8')
+    ) as PkgJson
+    const currentVersion = pkg.version
+
     // Allowed literal sites:
     //   - apps/web-server/package.json (the source of truth)
     //   - apps/web-server/src/common/version.ts (the wrapper constant)
@@ -69,8 +81,9 @@ describe('web-server version single source of truth (sdk1.md §11.23)', () => {
       'apps/web-server/src/embed/index.ts',
     ]
 
-    // Regex: any quoted literal that looks like '0.8.0' or "0.8.0".
-    const HARDCODE = /['"]0\.8\.0['"]/
+    // Regex: any quoted literal equal to the current version, e.g. '0.8.0'.
+    const escaped = currentVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const HARDCODE = new RegExp(`['"]${escaped}['"]`)
 
     const offenders: string[] = []
     for (const rel of CANDIDATES) {

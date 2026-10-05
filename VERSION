@@ -1,0 +1,17 @@
+# GenOffice 发布版本
+#
+# 格式 CalVer：YYYY.MM.DD[.N]
+#   YYYY.MM.DD   当天第一次发布
+#   YYYY.MM.DD.N 同一天的第 N 次发布（N 从 2 起）
+#
+# 权威坐标。运行时对外报告的版本号由它一路流到：
+#   VERSION → apps/web-server/package.json → src/common/version.ts 的 WEB_SERVER_VERSION
+#          → GET /health 的 version 字段 → Dataflare Work 设置页「系统信息」卡片
+#
+# Dataflare Work 后端**不存**这份号，运行时实问 /health 取（见 GenOfficeVersionService.kt）。
+# 存副本必然漂移：加这个文件之前，version.ts 写死 0.8.0 而 git tag 早已 v0.8.1360，
+# 两者差三个数量级，代码里的号已经没有参考价值。
+#
+# 改动请走 scripts/bump-version.mjs，不要手改 —— 门禁
+# apps/web-server/tests/version-sot.test.ts 会校验它与 package.json 一致。
+2026.10.05.1

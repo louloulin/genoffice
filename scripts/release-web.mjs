@@ -6,6 +6,7 @@
  */
 
 import { execSync } from 'child_process'
+import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -40,9 +41,25 @@ function run(cmd, options = {}) {
   }
 }
 
+/** 读仓库根 VERSION 的第一条非注释行。发布用的版本号只有这一个来源。 */
+function readVersionFile() {
+  const text = readFileSync(join(ROOT, 'VERSION'), 'utf-8')
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t && !t.startsWith('#')) return t
+  }
+  throw new Error('VERSION 文件里没有版本号')
+}
+
 async function main() {
-  const version = process.argv[2] || '0.8.0'
-  const channel = process.argv[3] || 'feature/collaboration'
+  // 版本号来自仓库根的 VERSION，不收命令行参数。
+  //
+  // 原来是 `process.argv[2] || '0.8.0'`：打 tag 的人手填一个号，而代码里的
+  // version.ts 要另一个人记得改 —— 两者之间没有任何东西会失败，于是漂到了
+  // `v0.8.1360` vs `'0.8.0'`。改成单一权威坐标后，忘记改代码的失败形态
+  // 变成「version.ts 与 VERSION 不一致」，被 tests/version-sot.test.ts 挡住。
+  const version = readVersionFile()
+  const channel = process.argv[2] || 'feature/collaboration'
   
   log(colors.green, `=== GenOffice Web Server Release v${version} ===`)
   log(colors.yellow, `Channel: ${channel}`)

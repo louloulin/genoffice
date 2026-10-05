@@ -304,10 +304,20 @@ if (!isElectronRuntime()) {
   const pdfApi = bridgedWindow.pdfApi as PdfApi
   const saveToDisk = pdfApi.save
   pdfApi.save = async (request: SavePdfRequest): Promise<SavePdfResult> => {
-    const result = await saveToDisk(request)
+    let result: SavePdfResult
+    try {
+      result = await saveToDisk(request)
+    } catch (err) {
+      // `SavePdfResult` is the whole contract every caller understands: App
+      // renders `!result.ok` as a toast. A transport/server throw instead
+      // rejects the promise, which no caller catches — the save fails
+      // silently and the host never learns the revision did not move.
+      // Fold it back into the contract shape.
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
     const context = dataflare.getContext()
     const isHostSave =
-      result.ok &&
+      result?.ok === true &&
       !request.targetPath &&
       request.path === hostDocumentPath &&
       isHostDocumentSource(context?.documentSource)

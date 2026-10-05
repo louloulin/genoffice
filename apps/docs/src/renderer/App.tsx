@@ -1834,9 +1834,21 @@ export function App() {
         // otherwise the tab shows "Opening…" forever with only a status-bar
         // line explaining why (github.com/genspark-ai/genoffice issue #102).
         // 'password': the prompt is up; its cancel path lands on blank instead.
-        const outcome = pending ? await loadFile(pending) : 'canceled'
+        //
+        // 嵌入打开链的 dispatch 抢在事件监听器挂载前（editor 冷启动）时，
+        // web-bridge 把结果留在 __genofficePendingOpenDocument。补消费必须在
+        // boot 序列里做、且在 newFile() 之前：放平行 effect 会先载入再被
+        // boot 的 newFile() 抹回空白。
+        const bridged = window as unknown as Record<string, unknown>
+        const lateOpen = bridged.__genofficePendingOpenDocument as OpenDocxResult | undefined
+        if (lateOpen) delete bridged.__genofficePendingOpenDocument
+        const outcome = pending
+          ? await loadFile(pending)
+          : lateOpen
+            ? await loadFile(lateOpen)
+            : 'canceled'
         if (outcome === 'canceled') await newFile()
-        if (aiContent && !pending) {
+        if (aiContent && !pending && !lateOpen) {
           // fileCtxRef refreshes per render: wait until newFile's setDoc landed
           for (let i = 0; i < 100 && !fileCtxRef.current.doc; i++) {
             await new Promise((resolve) => setTimeout(resolve, 20))
@@ -1878,11 +1890,23 @@ export function App() {
   // every dirty event and save applied to the blank one. Gated on `editor`, and
   // the fetch it delivers is at least one network round trip, so the listener
   // is always attached first.
+  //
+  // 「监听器总是先挂上」这个假设在冷启动/高负载下不成立（editor 创建是 CPU 密集
+  // 的，而 openBytes 只隔两次本地 IPC）：dispatch 抢在挂载前就把一次性事件丢掉，
+  // 编辑器从此停在空白启动页，而宿主以为文档已打开 —— 后续脏写/保存全部落在
+  // 空白文档上（G8 同形事故，2026-10-05 走查 docx 2/2 命中该签名）。web-bridge
+  // 派发前会把结果留在 `__genofficePendingOpenDocument`，丢失场景由**boot 序列**
+  // 的 canceled 分支补消费（见上方 boot effect）—— 不能放在平行的 effect 里：
+  // boot 的 newFile() 会把并行补载的内容抹掉。
   useEffect(() => {
     if (!isEmbeddedInHost() || !editor) return
     const onOpenDocument = (event: Event) => {
       const result = (event as CustomEvent<OpenDocxResult>).detail
-      if (result) void loadFile(result)
+      if (result) {
+        // 正常送达也清掉 pending，维持「window 上有 pending ⇔ 事件曾丢失」。
+        delete (window as unknown as Record<string, unknown>).__genofficePendingOpenDocument
+        void loadFile(result)
+      }
     }
     window.addEventListener('dataflare:open-document', onOpenDocument)
     return () => window.removeEventListener('dataflare:open-document', onOpenDocument)

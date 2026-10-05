@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { FILES_DIR, isManagedPath, PATH_OUTSIDE_STORAGE, registerHandle } from '../common/index'
 import { InvalidArgumentError, NotFoundError } from '../ai/errors'
+import { log } from '../common/logger'
 import { getStorageBackend, storageKeyFromPath } from '../common/state'
 import { StorageNotFoundError } from '@genoffice/file-management'
 import { atomicWriteFile } from '../common/atomic'
@@ -300,6 +301,19 @@ export function registerPdfHandlers(): void {
         ...(skippedImageEdits.length > 0 ? { skippedImageEdits } : {}),
       }
     } catch (err) {
+      // The renderer only ever sees `err.message`, so anything that is not an
+      // InvalidArgumentError/NotFoundError used to reach the user as a bare
+      // sentence ("The \"path\" argument must be of type string…") with no
+      // server-side record at all — the log said nothing, which made a
+      // save-time Node fault indistinguishable from a user-facing string bug.
+      // Log the stack here; the message alone still goes back to the caller.
+      log.error('pdf', 'pdf:save failed', {
+        err,
+        path: value.path,
+        targetPath: value.targetPath ?? null,
+        source,
+        target,
+      })
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   })

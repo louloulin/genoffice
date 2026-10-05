@@ -146,6 +146,13 @@ if (!isElectronRuntime()) {
       // blank document on screen — the host believed the knowledge document was
       // open, every dirty event and save then applied to the blank one, and the
       // first save wrote it back over the original. Hand it over.
+      //
+      // 派发是一次性的 CustomEvent，而 App 侧监听器挂在 editor 实例创建之后
+      // （见 App.tsx 的 open-document effect）：冷启动或 CPU 忙时 dispatch 可能
+      // 早于监听器挂载，事件直接丢失 —— 编辑器永远停在空白启动页，宿主却以为
+      // 文档已打开（2026-10-05 走查 docx 2/2 复现该签名）。所以先把结果留在
+      // window 上，App 侧挂载后补消费；正常送达时监听器会清掉它。
+      ;(window as unknown as Record<string, unknown>).__genofficePendingOpenDocument = result
       window.dispatchEvent(new CustomEvent('dataflare:open-document', { detail: result }))
     },
   })
