@@ -4275,6 +4275,14 @@ export function App(): React.JSX.Element {
         emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
         return
       }
+      if (command.type === 'save') {
+        // Host「保存为新版本」按钮（dirty 时点亮）。与 AutoSave tick 同一条
+        // `handleSave('save', quiet)` 管线：写临时文件后由 HostDocumentSync 把
+        // 字节推回宿主（dataflare.saveDocument）。此前 sheets 只能靠 ⌘S——
+        // 嵌入态用户看不见保存入口，翻译 Apply 之后译文只存在于内存里。
+        void handleSaveRef.current('save', true)
+        return
+      }
       if (command.type === 'cancel-translation') {
         translateSheetDialogRef.current?.close()
         emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })

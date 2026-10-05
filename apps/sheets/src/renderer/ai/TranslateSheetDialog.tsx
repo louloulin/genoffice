@@ -86,6 +86,9 @@ export function TranslateSheetDialog(
 ): React.JSX.Element {
   const { getSheet, onApply, translateBatch, defaultTargetLang = 'zh-CN' } = props
   const [open, setOpen] = useState(false)
+  // Languages delivered by a host `translate` command. Cleared on every open()
+  // without a request so a manual open falls back to the UI-language default.
+  const [initialLangs, setInitialLangs] = useState<{ source?: string; target?: string }>({})
   const [bilingual, setBilingual] = useState(false)
   const [rows, setRows] = useState<PreviewRow[]>([])
   const [quality, setQuality] = useState<{ overallScore?: number; warnings?: string[] } | undefined>()
@@ -107,6 +110,10 @@ export function TranslateSheetDialog(
         setQuality(undefined)
         setError(null)
         setBilingual(request?.bilingual === true)
+        setInitialLangs({
+          ...(request?.sourceLanguage ? { source: request.sourceLanguage } : {}),
+          ...(request?.targetLanguage ? { target: request.targetLanguage } : {}),
+        })
         setOpen(true)
       },
       close() {
@@ -234,6 +241,8 @@ export function TranslateSheetDialog(
       sourceText=""
       hasTranslatableContent={getSheet() !== null}
       defaultTargetLang={defaultTargetLang}
+      initialSourceLang={initialLangs.source}
+      initialTargetLang={initialLangs.target}
       languages={[...TRANSLATE_LANGS]}
       strings={strings}
       previewItems={rows}

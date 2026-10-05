@@ -1641,6 +1641,14 @@ export function App() {
         emitTranslateProgress({ type: 'ai-progress', status: 'started', progress: 0 })
         return
       }
+      if (command.type === 'save') {
+        // Host「保存为新版本」按钮（dirty 时点亮）。与 ⌘S 同一条
+        // `fileActions.save` 管线（web-bridge 侧落 `slides:save` →
+        // dataflare.saveDocument 推回宿主）。此前 slides 只能靠 ⌘S——嵌入态
+        // 用户看不见保存入口，翻译 Apply 之后译文只存在于内存里。
+        void saveRef.current(true)
+        return
+      }
       if (command.type === 'cancel-translation') {
         translateDeckDialogRef.current?.close()
         emitTranslateProgress({ type: 'ai-progress', status: 'cancelled', progress: 0 })

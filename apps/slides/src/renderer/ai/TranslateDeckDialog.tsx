@@ -110,6 +110,9 @@ export function TranslateDeckDialog(
 ): React.JSX.Element {
   const { getSlides, onApply, translateBatch, defaultTargetLang = 'zh-CN' } = props
   const [open, setOpen] = useState(false)
+  // Languages delivered by a host `translate` command. Cleared on every open()
+  // without a request so a manual open falls back to the UI-language pair.
+  const [initialLangs, setInitialLangs] = useState<{ source?: string; target?: string }>({})
   const [bilingual, setBilingual] = useState(false)
   const [rows, setRows] = useState<PreviewRow[]>([])
   const [quality, setQuality] = useState<
@@ -135,6 +138,10 @@ export function TranslateDeckDialog(
         setQuality(undefined)
         setError(null)
         setBilingual(request?.bilingual === true)
+        setInitialLangs({
+          ...(request?.sourceLanguage ? { source: request.sourceLanguage } : {}),
+          ...(request?.targetLanguage ? { target: request.targetLanguage } : {}),
+        })
         setOpen(true)
       },
       close() {
@@ -266,6 +273,8 @@ export function TranslateDeckDialog(
       sourceText=""
       hasTranslatableContent={(getSlides() ?? []).length > 0}
       defaultTargetLang={defaultTargetLang}
+      initialSourceLang={initialLangs.source}
+      initialTargetLang={initialLangs.target}
       languages={[...TRANSLATE_LANGS]}
       strings={strings}
       previewItems={rows}

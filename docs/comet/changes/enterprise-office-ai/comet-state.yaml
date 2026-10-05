@@ -3,7 +3,7 @@ name: enterprise-office-ai
 language: zh-CN
 phase: build
 status: active
-state_version: 47
+state_version: 51
 brief: brief.md
 spec_changes:
   - capability: enterprise-office-ai
@@ -17,29 +17,13 @@ workspace:
 loop:
   stage: repairing
   goal_cycle: 4
-  iteration: 6
+  iteration: 7
   attempt: 0
   retry_epoch: 0
   failed_iteration_count: 4
-  no_progress_count: 3
+  no_progress_count: 0
   execution_failure_count: 0
-  previous_unresolved_ids:
-    - A19
-    - A21
-    - A23
-    - A24
-    - A25
-    - A64
-    - A65
-    - A67
-    - A68
-    - A69
-    - A70
-    - A71
-    - A72
-    - A73
-    - A74
-    - A75
+  previous_unresolved_ids: []
   next_action: submit-builder-candidate
 acceptance:
   - id: A1
@@ -1221,6 +1205,32 @@ history:
         交付下一批(A19/A64/A65 组件收敛 + 批次 5:A21/A23/A24/A25/A67/A68/A69/A70/A71/A72)。
       truncated: false
     completed_at: 2026-10-04T13:48:12.036Z
+  - goal_cycle: 4
+    iteration: 6
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "Iteration-6 batch 5 verifies: markdown/html panels now consume the shared
+        @genoffice/ui chat-runtime components with EditQueueCard converged to a
+        single source, and the re-claimed enterprise items (OIDC Dex container
+        e2e, OTLP span-chain e2e, S3/RustFS container roundtrip, decision docs)
+        were all independently re-run green on current HEAD. The embed loop
+        probe returned LOOP OK 11/11 and both Runtime-owned Playwright checks
+        passed (ai-panel-console 6/6 zero console errors; markdown/html
+        edit-queue regression pair). All 77 acceptance items pass; the only
+        caveats are the registered pre-existing debts listed in risks."
+      truncated: false
+    completed_at: 2026-10-04T19:49:50.021Z
+  - goal_cycle: 4
+    iteration: 6
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Observed implementation write before .claude/launch.json
+      truncated: false
+    completed_at: 2026-10-04T22:25:05.190Z
 history_overflow:
   dropped_entries: 0
   first_dropped_at: null

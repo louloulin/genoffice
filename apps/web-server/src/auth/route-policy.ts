@@ -327,6 +327,20 @@ export const JWT_IPC_CHANNELS: ReadonlySet<string> = new Set([
   // The AI panel loads the current project's chat history on mount; the
   // embedded editor's AI surface is blank without it.
   'project:loadChat',
+  // Sheets/pdf/slides embed mirrors of the docs channels above. Their open
+  // flows land bytes via `web:write-temp-file` then open through their own
+  // app channel, and their Apply→save writes through the save channel — the
+  // docs triple (`docs:open-path`/`docs:save`/`docs:save-new`) was listed but
+  // the other three editors' equivalents were not, so on WEB_TOKEN-armed boots
+  // the embedded spreadsheet/pdf/deck rendered an empty grid/page and Apply
+  // failed, with only a silent 403 to show for it (`sheets:consume-new-blank`
+  // is invoked unconditionally at the end of the sheets open sequence).
+  'workbook:open-path',
+  'workbook:save',
+  'sheets:consume-new-blank',
+  'pdf:open-path',
+  'slides:open-path',
+  'slides:save',
 ])
 
 /**

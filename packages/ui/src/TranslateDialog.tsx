@@ -93,6 +93,18 @@ export interface TranslateDialogProps {
   hasTranslatableContent?: boolean
   defaultSourceLang?: string | undefined
   defaultTargetLang: string
+  /**
+   * Languages delivered by a host `translate` command (deep link
+   * `?translate=document&sourceLang=…&targetLang=…` or a batch entry). They
+   * win over the defaults whenever the dialog (re)opens; absent on a manual
+   * open, so the dialog falls back to `defaultSourceLang` / `defaultTargetLang`.
+   *
+   * 没有 initial* 的时候重置永远落回 default*：此前 sheets / pdf / slides 的
+   * `open(request)` 把命令里的语言丢掉，深链指明「译成 en-US」、弹窗却按 UI
+   * 语言重置成 zh-CN —— 用户不重选就直接跑，整篇译文落错语言且无任何提示。
+   */
+  initialSourceLang?: string | undefined
+  initialTargetLang?: string | undefined
   /** Full target-language list the host wants to expose (e.g. 12 common). */
   languages: TranslateLanguageOption[]
   strings: TranslateDialogStrings
@@ -167,7 +179,7 @@ function nextPlanId(): string {
 }
 
 export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element | null {
-  const { open, sourceText, sourceRange, defaultSourceLang, defaultTargetLang, languages, strings, previewItems, previewQuality, onTranslate, onApply, onCancel, app, onRetryUnit, onSaveMemory, bilingual, onBilingualChange, saveTarget, onSaveTargetChange, translatedFileName, hasTranslatableContent } = props
+  const { open, sourceText, sourceRange, defaultSourceLang, defaultTargetLang, initialSourceLang, initialTargetLang, languages, strings, previewItems, previewQuality, onTranslate, onApply, onCancel, app, onRetryUnit, onSaveMemory, bilingual, onBilingualChange, saveTarget, onSaveTargetChange, translatedFileName, hasTranslatableContent } = props
   const [sourceLang, setSourceLang] = useState<string>(defaultSourceLang ?? 'auto')
   const [targetLang, setTargetLang] = useState<string>(defaultTargetLang)
   const [preserveFormat, setPreserveFormat] = useState<boolean>(true)
@@ -181,8 +193,8 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
 
   useEffect(() => {
     if (open) {
-      setSourceLang(defaultSourceLang ?? 'auto')
-      setTargetLang(defaultTargetLang)
+      setSourceLang(initialSourceLang ?? defaultSourceLang ?? 'auto')
+      setTargetLang(initialTargetLang ?? defaultTargetLang)
       setPreserveFormat(true)
       setTranslated(null)
       setBusy(false)
@@ -191,7 +203,7 @@ export function TranslateDialog(props: TranslateDialogProps): React.JSX.Element 
       setSelectedPreviewIds(new Set())
       previewSelectionInitialized.current = false
     }
-  }, [open, defaultSourceLang, defaultTargetLang])
+  }, [open, defaultSourceLang, defaultTargetLang, initialSourceLang, initialTargetLang])
 
   useEffect(() => {
     if (!open || previewSelectionInitialized.current || !previewItems?.length) return
