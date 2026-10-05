@@ -73,7 +73,7 @@ import {
 import type { AiDocContent, AiSettings, OpenDocxResult } from '../shared/ipc'
 import { AI_PROVIDERS } from '../shared/ipc'
 import { consumeEmbedOpen, notifyEmbedOpenSettled, waitForEmbedOpenSettled } from './embed-open-queue'
-import { embedDocumentExpected } from './web-bridge'
+import { embedDocumentExpected, notifyEmbedDocumentApplied } from './web-bridge'
 import type { DataflareEmbedCommand, DataflareOfficeContext } from '@genoffice/web-sdk/dataflare/guest'
 import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { ZoteroDocumentController } from './zotero/controller'
@@ -1936,7 +1936,11 @@ export function App() {
   const applyEmbedOpen = useCallback(
     async (result: OpenDocxResult) => {
       try {
-        await loadFile(result)
+        const outcome = await loadFile(result)
+        // Only 'ok' means the content is in the editor. A superseded or failed
+        // open leaves the host's progress bar running over a document the
+        // user cannot see, which is worse than no bar.
+        if (outcome === 'ok') notifyEmbedDocumentApplied()
       } finally {
         notifyEmbedOpenSettled()
       }

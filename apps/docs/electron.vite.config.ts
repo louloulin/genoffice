@@ -45,6 +45,15 @@ const localAlias = {
   '@genoffice/ipc-bridge/text-buffer-adapter': resolve(__dirname, '../../packages/ipc-bridge/src/text-buffer-adapter.ts'),
   '@genoffice/ipc-bridge/sidebar-runtime': resolve(__dirname, '../../packages/ipc-bridge/src/sidebar-runtime.ts'),
   '@genoffice/ipc-bridge': resolve(__dirname, '../../packages/ipc-bridge/src/index.ts'),
+  // Pin the embed guest's SDK entry: the renderer uses two subpaths, and a
+  // worktree's node_modules symlinks to the main checkout, so leaving them
+  // bare would bundle that checkout's stale dist — the staged progress events
+  // (A22/A56) would then be missing from the guest this build produces.
+  '@genoffice/web-sdk/dataflare/guest': resolve(__dirname, '../sdk/src/dataflare/guest.ts'),
+  '@genoffice/web-sdk/dataflare/integration': resolve(
+    __dirname,
+    '../sdk/src/dataflare/integration.ts',
+  ),
 }
 
 // Web dual-protocol: the browser talks to the Electron main process over

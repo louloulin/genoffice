@@ -49,6 +49,9 @@ import {
   requestDataflareParent,
   requestDataflareStreamParent,
 } from './guest'
+
+/** Guest clock for progress stamps — the iframe's, since the host has none. */
+const guestNow = (): number => (typeof performance !== 'undefined' ? performance.now() : 0)
 import type {
   DataflareEmbedCommand,
   DataflareGlobalState,
@@ -525,12 +528,17 @@ export function createDataflareEmbedIntegration(
     const id = (documentId ?? context?.documentId)?.trim()
     if (!id) return
     try {
+      // 0 = request sent, 0.5 = bytes in hand. The remaining half of the
+      // phase (parse + apply) is the app's, reported back through
+      // `notifyEmbedDocumentApplied`.
+      emitEvent({ type: 'load-progress', phase: 'document', pct: 0, t: guestNow() })
       const response = await request(hostPaths(context?.documentSource, id).download)
       if (!response.ok) {
         throw new Error(`Dataflare document download failed (${response.status})`)
       }
       revision = readRevisionHeader(response.headers)
       const bytes = await response.arrayBuffer()
+      emitEvent({ type: 'load-progress', phase: 'document', pct: 0.5, t: guestNow() })
       const { extension } = resolveHostDocumentFile(context?.documentType)
       // Prefer the host's real name; the session-id fallback only applies when
       // the host predates the `documentName` context field.
@@ -582,6 +590,8 @@ export function createDataflareEmbedIntegration(
 }
 
 // ── Types re-exported so an app needs one sub-path import for the factory ──
+
+export { notifyEmbedDocumentApplied } from './guest'
 
 export type {
   DataflareEmbedCommand,

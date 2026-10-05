@@ -45,12 +45,19 @@ import {
   resolveEmbedPathPrefix,
   type DataflareEmbedCommand,
 } from '@genoffice/web-sdk/dataflare/integration'
+import { notifyEmbedDocumentApplied } from '@genoffice/web-sdk/dataflare/guest'
 
 // Assigned inside the web-only bridge setup below (where the Dataflare
 // context lives); false in the Electron runtime where there is no host.
 // App's boot uses this to decide whether to wait for the embed open
 // instead of racing it with the boot blank (embed-open-queue.ts).
 export let embedDocumentExpected: () => boolean = () => false
+
+// The host's staged progress is only as honest as its last stage: it needs to
+// know the document is *applied*, which happens in App's loadFile, long after
+// the SDK's openBytes returned. Re-exported here so App does not have to reach
+// into the SDK entry to say so.
+export { notifyEmbedDocumentApplied }
 
 if (!isElectronRuntime()) {
   // Mount the floating "返回主页" pill once the renderer has wired its

@@ -16,7 +16,12 @@
       "@genoffice/electron-utils": ["../../packages/electron-utils/src/index.ts"],
       "@genoffice/ai-provider": ["../../packages/ai-provider/src/index.ts"],
       "@genoffice/i18n": ["../../packages/i18n/src/index.ts"],
-      "@genoffice/ui": ["../../packages/ui/src/index.ts"]
+      "@genoffice/ui": ["../../packages/ui/src/index.ts"],
+      // The embed guest's staged progress (A22/A56) is SDK source; without
+      // these two subpaths the typecheck gate runs against the main
+      // checkout's dist and would not see the change at all.
+      "@genoffice/web-sdk/dataflare/guest": ["../sdk/src/dataflare/guest.ts"],
+      "@genoffice/web-sdk/dataflare/integration": ["../sdk/src/dataflare/integration.ts"]
     }
   },
   "include": ["src", "tests", "electron.vite.config.ts", "vitest.config.ts"]

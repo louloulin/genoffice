@@ -109,6 +109,31 @@ export type DataflareAiProgressStatus =
 
 export type GenOfficeEmbedEvent =
   | { type: 'ready'; capabilities: string[] }
+  | {
+      /**
+       * Staged progress for one embed open, mint → resources → handshake →
+       * document. A host has nothing to show between `mint` and the editor
+       * actually painting: the iframe's own load, the bridge handshake and
+       * the document download+parse are all guest-side and each takes
+       * hundreds of ms to seconds, so without these the only honest thing a
+       * host can display is an undifferentiated spinner.
+       *
+       * Phases are ordered and monotonic, but a host must not require them:
+       * an older guest emits none, and the spec's fallback is the existing
+       * skeleton with its existing copy.
+       */
+      type: 'load-progress'
+      phase: 'resources' | 'handshake' | 'document'
+      /** 0..1 within the `document` phase. Absent for phase markers. */
+      pct?: number
+      /**
+       * Guest `performance.now()` at emit. A host cannot share a clock with
+       * an iframe it did not boot, so this is the only timestamp both sides
+       * can compare; the host adds its own mint timestamp for the pre-iframe
+       * part of the timeline.
+       */
+      t?: number
+    }
   | { type: 'document-dirty'; documentId?: string }
   | { type: 'document-saved'; documentId?: string; revision?: string }
   | {
