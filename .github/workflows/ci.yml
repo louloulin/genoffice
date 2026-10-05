@@ -118,9 +118,11 @@ jobs:
       # otherwise be a silent 404 for exactly the new entry.
       - run: npm run manifest:check -w @genoffice/web-sdk
       # The lint job runs check:web-fonts without any build, so only its source
-      # layer fires there. This job is where the SDK bundle the embed host loads
-      # is actually produced, so it is the one place the artifact layer has
-      # something to inspect.
+      # layer fires there — and that is the layer that actually holds: it stops
+      # a `.ttf` from re-entering a stylesheet at all. This second run covers the
+      # artifact layer over the one renderer root CI does produce. The per-app
+      # renderer roots stay uncovered here because no job builds them; they are
+      # covered by the source layer plus a local `build:renderers` run.
       - run: npm run check:web-fonts
       - uses: actions/upload-artifact@v4
         with:

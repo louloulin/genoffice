@@ -27,7 +27,9 @@
  *      gets the source guarantee instead of a vacuous pass.
  *
  * Either layer fails the run. An exempt path that stops existing also fails, so
- * the exemption list cannot silently outlive its reason.
+ * the exemption list cannot silently outlive its reason — but only once the app
+ * it lives in has actually been built, since all three sit under gitignored
+ * `out/`.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
@@ -47,11 +49,29 @@ const RENDERER_ROOTS = [
   'apps/sdk/dist',
 ]
 
-/** Parser-input TTFs that must keep existing, with the reason they cannot be woff2. */
+/**
+ * Parser-input TTFs that must keep existing, with the reason they cannot be
+ * woff2. `requiredWhen` is the build output the exemption is asserted against:
+ * all three live under gitignored `out/`, so on a checkout that never built the
+ * app the file is legitimately absent. Asserting them unconditionally made this
+ * gate exit 1 on every fresh CI run — a gate that is always red gets removed.
+ */
 const REQUIRED_EXEMPTIONS = [
-  { path: 'apps/slides/out/main/chunks/Carlito-Regular-Cbe9FLjp.ttf', why: 'opentype.js metrics' },
-  { path: 'apps/shell/out/main/chunks/Carlito-Regular-Cbe9FLjp.ttf', why: 'opentype.js metrics' },
-  { path: 'apps/pdf/out/renderer/pdfjs/standard_fonts/LiberationSans-Regular.ttf', why: 'pdf.js FontLoader' },
+  {
+    path: 'apps/slides/out/main/chunks/Carlito-Regular-Cbe9FLjp.ttf',
+    requiredWhen: 'apps/slides/out',
+    why: 'opentype.js metrics',
+  },
+  {
+    path: 'apps/shell/out/main/chunks/Carlito-Regular-Cbe9FLjp.ttf',
+    requiredWhen: 'apps/shell/out',
+    why: 'opentype.js metrics',
+  },
+  {
+    path: 'apps/pdf/out/renderer/pdfjs/standard_fonts/LiberationSans-Regular.ttf',
+    requiredWhen: 'apps/pdf/out',
+    why: 'pdf.js FontLoader',
+  },
 ]
 
 /** Subpaths inside a renderer root that are parser assets, not web fonts. */
@@ -127,7 +147,9 @@ for (const root of RENDERER_ROOTS) {
 }
 
 const staleExemptions = [
-  ...REQUIRED_EXEMPTIONS.filter((e) => !existsSync(join(repoRoot, e.path))).map((e) => e.path),
+  ...REQUIRED_EXEMPTIONS.filter(
+    (e) => existsSync(join(repoRoot, e.requiredWhen)) && !existsSync(join(repoRoot, e.path)),
+  ).map((e) => e.path),
   ...[...SOURCE_EXEMPT.keys()].filter((p) => !existsSync(join(repoRoot, p))),
 ]
 
@@ -152,8 +174,10 @@ if (sourceHits.length > 0 || offenders.length > 0 || staleExemptions.length > 0)
 if (missingRoots.length > 0) {
   console.warn(`Skipped ${missingRoots.length} unbuilt renderer root(s): ${missingRoots.join(', ')}`)
 }
+const assertedExemptions = REQUIRED_EXEMPTIONS.filter((e) => existsSync(join(repoRoot, e.requiredWhen)))
 console.log(
   `Source: no governed TTF reference. Artifacts: none in ` +
     `${RENDERER_ROOTS.length - missingRoots.length} built renderer output(s). ` +
-    `Parser-input exemptions intact: ${REQUIRED_EXEMPTIONS.length + SOURCE_EXEMPT.size}.`,
+    `Parser-input exemptions: ${assertedExemptions.length}/${REQUIRED_EXEMPTIONS.length} asserted ` +
+    `(${SOURCE_EXEMPT.size} source), the rest under unbuilt app output.`,
 )
