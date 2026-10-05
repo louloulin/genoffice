@@ -1340,4 +1340,7 @@ export const ms = {
   appFindTitle: 'Cari & Pilih ⌘F',
   appReplace: 'Ganti',
   appGoTo: 'Pergi Ke',
+  appGroupFile: 'Fail',
+  appUploadFile: 'Muat Naik Fail',
+  appUploadFileDetail: 'Simpan ke pelayan Web',
 } satisfies Record<keyof typeof zh, string>

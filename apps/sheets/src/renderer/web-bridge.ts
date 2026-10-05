@@ -199,13 +199,7 @@ if (!isElectronRuntime()) {
      * web build has no native dialog (this method requires `targetPath`
      * to be set — a missing targetPath surfaces as `{ canceled: true }`,
      * which the renderer falls back to its own UX for). */
-    exportCsv: async (request: {
-      fileName: string
-      content: string
-      hasFormulas: boolean
-      activeSheetName?: string
-      targetPath?: string
-    }) => {
+    exportCsv: async (request) => {
       return await transport.invoke('workbook:export-csv', request)
     },
     pickAttachments: async () => {

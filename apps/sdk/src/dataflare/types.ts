@@ -89,16 +89,20 @@ export type DataflareEmbedCommand =
 // ── Event (editor → host) ──────────────────────────────────────────────────
 
 /**
- * `started → running → (completed | failed | cancelled)`.
+ * `started → running → (completed | completed-with-failures | failed | cancelled)`.
  *
  * `cancelled` is a first-class terminal state: a user pressing stop is a
  * normal outcome, and folding it into `failed` is what makes a healthy
  * cancellation look like a fault in the host's error reporting.
+ * `completed-with-failures` mirrors the `@genoffice/translation-core`
+ * terminal state for runs that finished with per-unit failures — hosts that
+ * fold it into `failed` turn a mostly-successful run into a scary error.
  */
 export type DataflareAiProgressStatus =
   | 'started'
   | 'running'
   | 'completed'
+  | 'completed-with-failures'
   | 'failed'
   | 'cancelled'
 

@@ -27,6 +27,7 @@ import type {
   UiTheme,
   WorkbookCellStyle,
   WorkbookConditionalRule,
+  WorkbookExportCsvRequest,
   WorkbookFile,
   WorkbookFormulaCellsRequest,
   WorkbookFormulaCellsResult,
@@ -83,6 +84,9 @@ export interface SheetsApiOverrides {
    * and its raw result still goes through the same response validation.
    */
   saveWorkbook?: (request: WorkbookSaveRequest) => Promise<unknown>
+  /** Web embed only: CSV export through the host's workbook:export-csv
+   *  handler. The raw result still goes through the same response validation. */
+  exportCsv?: (request: WorkbookExportCsvRequest) => Promise<unknown>
   /** Web embed only: per-unit streaming batch translate through the host SSE. */
   aiTranslateBatchStream?: DesktopApi['aiTranslateBatchStream']
   /** Web embed only: space-scoped glossary / translation-memory client.
