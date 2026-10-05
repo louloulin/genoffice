@@ -72,6 +72,8 @@ import {
 } from '@genoffice/docx-engine'
 import type { AiDocContent, AiSettings, OpenDocxResult } from '../shared/ipc'
 import { AI_PROVIDERS } from '../shared/ipc'
+import { consumeEmbedOpen, notifyEmbedOpenSettled, waitForEmbedOpenSettled } from './embed-open-queue'
+import { embedDocumentExpected } from './web-bridge'
 import type { DataflareEmbedCommand, DataflareOfficeContext } from '@genoffice/web-sdk/dataflare/guest'
 import { isEmbeddedInHost, postToEmbedParent } from '@genoffice/web-sdk/dataflare/guest'
 import { ZoteroDocumentController } from './zotero/controller'
@@ -1876,7 +1878,16 @@ export function App() {
         // line explaining why (github.com/genspark-ai/genoffice issue #102).
         // 'password': the prompt is up; its cancel path lands on blank instead.
         const outcome = pending ? await loadFile(pending) : 'canceled'
-        if (outcome === 'canceled') await newFile()
+        if (outcome === 'canceled') {
+          // Embed: the host document open can still be in flight — the fast
+          // local path parses inside this boot window, and a blank here would
+          // bump openGeneration and kill it as "superseded". Wait for it to
+          // settle; blank only when no open ever lands (15s covers a slow
+          // host; non-document contexts resolve immediately).
+          const embedOpenLanded =
+            isEmbeddedInHost() && embedDocumentExpected() && (await waitForEmbedOpenSettled(15_000))
+          if (!embedOpenLanded) await newFile()
+        }
         if (aiContent && !pending) {
           // fileCtxRef refreshes per render: wait until newFile's setDoc landed
           for (let i = 0; i < 100 && !fileCtxRef.current.doc; i++) {
@@ -1916,18 +1927,36 @@ export function App() {
   // and the Dataflare HTTP client live there) but cannot apply it: `loadFile`
   // owns the editor and lives here. Without this hop the editor kept the boot
   // blank document while the host believed the knowledge document was open, so
-  // every dirty event and save applied to the blank one. Gated on `editor`, and
-  // the fetch it delivers is at least one network round trip, so the listener
-  // is always attached first.
+  // every dirty event and save applied to the blank one. Gated on `editor`.
+  // The event alone raced the listener: the openBytes round trip is a local
+  // call that can resolve before this effect commits, so web-bridge also parks
+  // the result in embed-open-queue and we re-apply whatever is left here.
+  // Every embed-sourced application funnels through applyEmbedOpen so the
+  // settle signal fires exactly once per open (boot waits on it).
+  const applyEmbedOpen = useCallback(
+    async (result: OpenDocxResult) => {
+      try {
+        await loadFile(result)
+      } finally {
+        notifyEmbedOpenSettled()
+      }
+    },
+    [loadFile],
+  )
   useEffect(() => {
     if (!isEmbeddedInHost() || !editor) return
     const onOpenDocument = (event: Event) => {
+      // The event is the queued open; clear the slot so a later editor
+      // re-init can't re-apply the same document.
+      consumeEmbedOpen()
       const result = (event as CustomEvent<OpenDocxResult>).detail
-      if (result) void loadFile(result)
+      if (result) void applyEmbedOpen(result)
     }
     window.addEventListener('dataflare:open-document', onOpenDocument)
+    const queued = consumeEmbedOpen()
+    if (queued) void applyEmbedOpen(queued)
     return () => window.removeEventListener('dataflare:open-document', onOpenDocument)
-  }, [editor, loadFile])
+  }, [editor, applyEmbedOpen])
 
   /** decrypt-and-open retry loop for the password prompt (wrong password stays in the dialog) */
   const submitDocPwd = async () => {
