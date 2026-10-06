@@ -95,6 +95,17 @@ RUN mkdir -p /out/apps && \
     cp apps/shell/build/icon.png /out/apps/shell/build/icon.png && \
     cp -R apps/web-server/dist /out/dist
 
+# ── Stage 1b: xlsx sidecar ──
+# /sheets 的 xlsx 解析/保存走 Rust 子进程 xlsx-sidecar：缺它时 workbook:open-path
+# 返回 422「xlsx-sidecar binary not found」，编辑器里是空表。musl 静态二进制在
+# glibc（bookworm）运行时里也能直接跑，所以阶段用 alpine 不影响运行时基底。
+FROM rust:1-alpine AS xlsx-sidecar
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY apps/sheets/native/xlsx-engine/Cargo.toml apps/sheets/native/xlsx-engine/Cargo.lock ./
+COPY apps/sheets/native/xlsx-engine/src ./src
+RUN cargo build --release --locked
+
 # ── Stage 2: runtime ──
 FROM node:22.12-bookworm-slim AS runtime
 
@@ -111,6 +122,9 @@ COPY --from=builder /out/dist/static/ ./dist/static/
 # `apps/shell/build/icon.png` is served as /favicon.ico, which is why the shell
 # app's build assets travel with the renderer bundles.
 COPY --from=builder /out/apps/ ./apps/
+# sheets 的原生 sidecar；sidecar.ts 无 XLSX_SIDECAR_PATH 时按源码树深度推导会落空，
+# 所以和 WEB_STATIC_ROOT 一样在下面钉死。
+COPY --from=xlsx-sidecar /src/target/release/xlsx-sidecar ./bin/xlsx-sidecar
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
@@ -133,7 +147,8 @@ ENV PORT=8080 \
     FILES_DIR=/data/files \
     NODE_ENV=production \
     WEB_STATIC_ROOT=/app/apps \
-    WEB_SDK_BUNDLE_DIR=/app/dist/static/sdk
+    WEB_SDK_BUNDLE_DIR=/app/dist/static/sdk \
+    XLSX_SIDECAR_PATH=/app/bin/xlsx-sidecar
 
 EXPOSE 8080
 
