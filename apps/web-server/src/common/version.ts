@@ -16,4 +16,4 @@
  * hardcoded literal (`v0.8.1360` vs `'0.8.0'`) that the constant had stopped
  * meaning anything at all.
  */
-export const WEB_SERVER_VERSION = '2026.10.05.1'
+export const WEB_SERVER_VERSION = '2026.10.06'

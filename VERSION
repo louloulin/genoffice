@@ -14,4 +14,4 @@
 #
 # 改动请走 scripts/bump-version.mjs，不要手改 —— 门禁
 # apps/web-server/tests/version-sot.test.ts 会校验它与 package.json 一致。
-2026.10.05.1
+2026.10.06
