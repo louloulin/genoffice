@@ -12,6 +12,8 @@ export type OfficeErrorCode =
   | 'OFFICE_NEEDS_SIDECAR'
   /** the caller passed bytes, options or ops that cannot be handled */
   | 'OFFICE_BAD_INPUT'
+  /** a referenced file/workspace path does not exist */
+  | 'OFFICE_NOT_FOUND'
   /** an underlying engine threw; `cause` carries the original error */
   | 'OFFICE_INTERNAL'
 

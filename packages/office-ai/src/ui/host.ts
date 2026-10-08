@@ -13,10 +13,23 @@ import { extname, join, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { OfficeError } from '../errors'
+import type { AiSettings } from '@genoffice/ai-provider'
+import { resolveAiHostSettings, type AiHostSettings } from './ai-settings'
+import { handleAiStream } from './ai-stream'
 import { createRegistry, type Registry } from './registry'
 import { SseHub } from './sse-hub'
 import { createAssetsResolver, type AssetsResolver, type UiApp } from './assets'
+import { createWorkspace, type PathAccess, type Workspace } from './workspace'
+import { createEmbedState, handleEmbed, registerSdkCommandHandlers, resolveFrameAncestors, type EmbedState } from './embed'
 import { registerAppChannels } from './handlers/app-channels'
+import { createDocsState, registerDocsHandlers, type DocsHandlerState } from './handlers/docs'
+import { createSheetsState, registerSheetsHandlers, type SheetsHandlerState } from './handlers/sheets'
+import {
+  createSlidesState,
+  registerSlidesHandlers,
+  type SlidesState,
+} from './handlers/slides'
+import { registerPdfHandlers } from './handlers/pdf'
 import { MAX_HTTP_BODY_BYTES, readBodyWithCap } from './read-body'
 import { serveStaticFile } from './static-serve'
 import { decodeTransportValue, encodeTransportValue } from './codec'
@@ -28,10 +41,25 @@ export interface UiHostContext {
   registry: Registry
   sse: SseHub
   assets: AssetsResolver
+  workspace: Workspace
+  docs: DocsHandlerState
+  sheets: SheetsHandlerState
+  slides: SlidesState
+  /** SDK comments / version index / usage totals for the embed bridge. */
+  embed: EmbedState
+  /**
+   * Authoritative provider config for `POST /api/ai/stream`. Resolved from the
+   * `ai` option; a host started without one still gets the full provider
+   * catalog so the renderer's settings UI is coherent, but every call is
+   * refused with a readable reason instead of reaching a provider.
+   */
+  ai: AiSettings
   /** When set, /api/** must carry it (Bearer header or ?token=). */
   token: string | null
   apps: readonly UiApp[]
   basePath: string
+  /** Validated `frame-ancestors` value sent with every `/embed/:docId` page. */
+  frameAncestors: string
 }
 
 export interface CreateHostContextOptions {
@@ -39,19 +67,55 @@ export interface CreateHostContextOptions {
   token?: string
   apps?: readonly UiApp[]
   basePath?: string
+  /** Workspace root for staged documents/temp files; default a fresh temp dir. */
+  workspaceDir?: string
+  /** Renderer-supplied path policy: 'workspace' (default) or 'any'. */
+  pathAccess?: PathAccess
+  /**
+   * `frame-ancestors` for `/embed/:docId`, e.g. `'http://127.0.0.1:3000'`.
+   *
+   * The wrapper page exists to be framed, so when the consumer's page is on a
+   * different origin — every `startUiHost()` deployment, since the host binds
+   * its own loopback port — the default `'self'` refuses the frame and the
+   * iframe stays empty with no client-side error. Name the embedding origin(s)
+   * here. Falls back to `EMBED_FRAME_ANCESTORS` when unset.
+   */
+  frameAncestors?: string
+  /**
+   * Provider credentials for the renderer's AI panel.
+   *
+   * Required for AI to work at all: the renderer's web transport sends no
+   * provider selection (see ai-settings.ts), so this is the only config the
+   * host has. Without it `/api/ai/stream` answers every request with an
+   * `error` frame naming what is missing — never a 404.
+   */
+  ai?: AiHostSettings
 }
 
 export function createHostContext(options: CreateHostContextOptions = {}): UiHostContext {
   const basePath = normalizeBasePath(options.basePath ?? '/')
+  const workspace = createWorkspace({ dir: options.workspaceDir, pathAccess: options.pathAccess })
   const context: UiHostContext = {
     registry: createRegistry(),
     sse: new SseHub(),
     assets: createAssetsResolver(options.assetsDir),
+    workspace,
+    docs: createDocsState(),
+    sheets: createSheetsState(),
+    slides: createSlidesState(),
+    embed: createEmbedState(),
+    ai: resolveAiHostSettings(options.ai),
     token: options.token ?? null,
     apps: options.apps ?? ['docs', 'sheets', 'slides', 'pdf'],
     basePath,
+    frameAncestors: resolveFrameAncestors(options.frameAncestors),
   }
-  registerAppChannels(context.registry)
+  registerAppChannels(context.registry, context.ai)
+  context.docs = registerDocsHandlers(context.registry, workspace, context.docs)
+  context.sheets = registerSheetsHandlers(context.registry, workspace, context.sheets)
+  context.slides = registerSlidesHandlers(context.registry, workspace, context.slides)
+  registerPdfHandlers(context.registry, workspace)
+  registerSdkCommandHandlers(context.registry, workspace, context.embed)
   return context
 }
 
@@ -68,9 +132,8 @@ export async function handleUiRequest(
   response: ServerResponse,
   ctx: UiHostContext,
 ): Promise<HostRequestResult> {
-  const url = new URL(request.url ?? '/', 'http://loopback.invalid')
+  let url = new URL(request.url ?? '/', 'http://loopback.invalid')
   let path = url.pathname
-
   if (ctx.basePath !== '/') {
     if (path === ctx.basePath) {
       path = '/'
@@ -88,6 +151,18 @@ export async function handleUiRequest(
     return { handled: true }
   }
 
+  // `/embed/**` is answered before the app-page route below, which would
+  // otherwise read `/embed/<docId>` as a request for an app named `embed`.
+  // The embed router matches on the *base-stripped* pathname, so it gets a URL
+  // rebuilt from `path` — in attach mode the raw pathname still carries the
+  // prefix that was stripped above.
+  if (path !== url.pathname) {
+    url = new URL(path + url.search, 'http://loopback.invalid')
+  }
+  if (handleEmbed(request, response, ctx, url)) {
+    return { handled: true }
+  }
+
   if (!path.startsWith('/api/')) {
     await serveAppStatic(request, response, ctx, url, path)
     return { handled: true }
@@ -97,6 +172,13 @@ export async function handleUiRequest(
   // isolation; an explicit token additionally gates every API request.
   if (ctx.token && !isAuthorized(url, request.headers, ctx.token)) {
     sendJson(response, 401, { error: { code: 'UNAUTHENTICATED', message: 'missing or invalid token' } })
+    return { handled: true }
+  }
+
+  // The agent loop's SSE route. Placed inside the `/api/` branch so it inherits
+  // basePath stripping (the renderer's transport prefixes it) and the token
+  // gate, and so an unprefixed mode-B mount 404s it exactly like web-server.
+  if (handleAiStream(request, response, ctx, url)) {
     return { handled: true }
   }
 
@@ -227,20 +309,30 @@ function serveAppStatic(
   let filePath = resolveRendererFile(appDir, relativePath)
   if (filePath && !existsSync(filePath)) filePath = null
 
-  // Sub-page modules arrive as /<other-route>/assets/index-*.js — retry every
-  // app with the route segment stripped so they get their real MIME type
-  // instead of the SPA HTML (web-server parity).
+  // Two URL shapes miss the app that owns the file:
+  //   · /<other-route>/assets/index-*.js — a sub-page module of a route the
+  //     requested app does not own; retry every app with the route segment
+  //     stripped so they get their real MIME type instead of the SPA HTML
+  //     (web-server parity);
+  //   · /assets/index-*.js — every renderer's index.html references its bundle
+  //     relatively, and from /<app> the browser resolves that to the site root,
+  //     so the URL no longer says which app it came from. Content-hashed names
+  //     make "first app that has this file" the right answer.
+  // Neither fallback may hand back SPA HTML for a real asset: the browser
+  // refuses a module served as text/html.
   if (!filePath) {
     const stripped = relativePath.replace(/^[^/]+\//, '')
-    if (stripped && stripped !== relativePath) {
+    const candidates = stripped && stripped !== relativePath ? [stripped, relativePath] : [relativePath]
+    for (const candidateRelative of candidates) {
       for (const candidateApp of ctx.apps) {
         const candidateDir = ctx.assets.resolveAppDir(candidateApp)
-        const candidate = candidateDir ? resolveRendererFile(candidateDir, stripped) : null
+        const candidate = candidateDir ? resolveRendererFile(candidateDir, candidateRelative) : null
         if (candidate && existsSync(candidate) && statSync(candidate).isFile()) {
           filePath = candidate
           break
         }
       }
+      if (filePath) break
     }
   }
 
@@ -306,12 +398,29 @@ function resolveRendererFile(appDir: string, relativePath: string): string | nul
 
 // ----- binding modes ---------------------------------------------------------
 
+export interface StagedDocument {
+  /** Absolute path the workspace staged the bytes at (also the value passed to `?open=`). */
+  path: string
+  /** Display name the renderer shows. */
+  name: string
+  /** Page URL that opens this document in the sandboxed renderer. */
+  url: string
+}
+
 export interface UiHostHandle {
   /** http://127.0.0.1:<port>/ — renderer pages are at /docs, /sheets, … */
   url: string
   port: number
   token: string | null
   context: UiHostContext
+  /**
+   * Stage bytes into the host workspace and return the renderer page URL that
+   * opens them (`/docs?open=<path>`). The docs renderer's `consume-pending-open`
+   * reads the `open` query param, so no host-side "pending" state is needed.
+   */
+  open(app: UiApp, bytes: Uint8Array, options?: { name?: string }): StagedDocument
+  /** Read a workspace path back as bytes (e.g. a document the renderer just saved). */
+  readFile(filePath: string): Uint8Array
   close(): Promise<void>
 }
 
@@ -339,15 +448,33 @@ export async function startUiHost(options: StartUiHostOptions = {}): Promise<UiH
   })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('loopback host failed to bind a TCP port')
+  const url = `http://${host}:${address.port}`
   return {
-    url: `http://${host}:${address.port}`,
+    url,
     port: address.port,
     token: context.token,
     context,
+    open(app, bytes, options = {}) {
+      const name = options.name ?? `${app}-document`
+      const path = context.workspace.stageBytes(name, bytes)
+      return {
+        path,
+        name,
+        url: `${url}/${app}?open=${encodeURIComponent(path)}`,
+      }
+    },
+    readFile(filePath) {
+      const resolved = context.workspace.resolvePath(filePath)
+      if (!resolved) throw new OfficeError('OFFICE_BAD_INPUT', `path is outside the office-ai workspace: ${filePath}`)
+      return context.workspace.readBytes(resolved)
+    },
     close: () =>
       new Promise<void>((resolvePromise) => {
         context.sse.close()
-        server.close(() => resolvePromise())
+        server.close(() => {
+          context.workspace.dispose()
+          resolvePromise()
+        })
       }),
   }
 }

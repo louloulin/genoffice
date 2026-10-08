@@ -6,6 +6,8 @@
  * time and surfaces as an unhandled rejection.
  */
 import type { Registry } from '../registry'
+import type { AiSettings } from '@genoffice/ai-provider'
+import { redactAiSettings, resolveAiHostSettings } from '../ai-settings'
 import { OfficeError } from '../../errors'
 
 type AutoSaveDefault = { on: boolean; updatedAt: number }
@@ -38,54 +40,17 @@ const STUB_CHANNELS: Record<string, (args: unknown[]) => unknown> = {
   'ai:fetch-image': () => null,
   'ai:gsk-login': () => notConfigured('ai:gsk-login'),
   'ai:gsk-status': () => ({ signedIn: false }),
-  'ai:get-settings': () => ({
-    // Signed-out genspark default: the renderer treats it as "AI not
-    // configured" without crashing on missing provider configs.
-    provider: 'genspark',
-    providers: {},
-    gskToolsEnabled: false,
-  }),
   'ai:image-search': () => [],
   'ai:save-translation-memory': () => ({ ok: false }),
   'ai:set-settings': () => ({ ok: true }),
   'ai:translate': () => notConfigured('ai:translate'),
   'ai:translate-batch': () => notConfigured('ai:translate-batch'),
   'ai:web-search': () => [],
-  'docs:ai-generate-image': () => ({ ok: false, error: 'ai-not-configured' }),
-  'docs:consume-ai-doc-content': () => null,
-  'docs:consume-new-blank': () => null,
-  'docs:consume-pending-open': () => null,
-  'docs:copy-image-to-clipboard': () => ({ ok: false, error: 'clipboard-unavailable' }),
-  'docs:create-document': () => ({ ok: false, error: 'unsupported' }),
-  'docs:discard-password-intents': () => ({ ok: true }),
-  'docs:export-pdf': () => ({ ok: false, error: 'unsupported' }),
-  'docs:font-metrics': (args) => ({
-    family: (args[0] as string) || 'sans-serif',
-    ascent: 0.8,
-    descent: 0.2,
-    lineGap: 0.1,
-    unitsPerEm: 1000,
-  }),
-  'docs:open': () => ({ ok: false, error: 'unsupported' }),
-  'docs:open-decrypt': () => ({ ok: false, error: 'unsupported' }),
-  'docs:open-path': () => ({ ok: false, error: 'unsupported' }),
-  'docs:password-intent-revision': () => 0,
-  'docs:pick-image': () => ({ canceled: true, dataUrl: null }),
-  'docs:print': () => ({ ok: false, error: 'unsupported' }),
+  // docs.ts, sheets.ts, slides.ts and pdf.ts register the format channels;
+  // only genuinely-unsupported leftovers stay here.
   'docs:print-pdf-buffer': () => ({ ok: false, error: 'unsupported' }),
-  'docs:recent': () => [],
-  'docs:respell-kick': () => ({ ok: true, supported: false }),
-  'docs:save': () => ({ ok: false, error: 'unsupported' }),
-  'docs:save-as': () => ({ ok: false, error: 'unsupported' }),
-  'docs:save-merged-pdf': () => ({ ok: false, error: 'unsupported' }),
-  'docs:save-new': () => ({ ok: false, error: 'unsupported' }),
-  'docs:set-password': () => ({ ok: false, error: 'unsupported' }),
-  'docs:view-menu-state': () => ({ ok: true }),
-  'docs:write-recovery': () => ({ ok: false, error: 'unsupported' }),
   'files:add': () => [],
-  'files:add-pasted-image': () => null,
   'files:pick': () => ({ canceled: true, paths: [] }),
-  'files:read': () => ({ ok: false, error: 'unsupported' }),
   'files:read-image': () => null,
   'project:appendChat': () => ({ ok: false, error: 'unsupported' }),
   'project:create': () => null,
@@ -102,7 +67,17 @@ const STUB_CHANNELS: Record<string, (args: unknown[]) => unknown> = {
   'win:new': () => ({ id: 'win-0', url: '/' }),
 }
 
-export function registerAppChannels(registry: Registry, state: AppChannelState = { ...DEFAULT_STATE }): AppChannelState {
+export function registerAppChannels(
+  registry: Registry,
+  /** Already resolved by the host from its `ai` option; unconfigured by default. */
+  ai: AiSettings = resolveAiHostSettings(undefined),
+  state: AppChannelState = { ...DEFAULT_STATE },
+): AppChannelState {
+  // provider/model are truthful so the panel can label the active model; every
+  // apiKey is blanked — this channel reaches the browser, and the real key
+  // stays host-side where `/api/ai/stream` uses it.
+  registry.registerHandle('ai:get-settings', () => redactAiSettings(ai))
+
   registry.registerHandle('app:get-language', () => state.language)
   registry.registerHandle('app:get-theme', () => state.theme)
   registry.registerHandle('app:get-version', () => '0.1.0')

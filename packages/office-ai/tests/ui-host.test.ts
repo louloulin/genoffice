@@ -105,7 +105,8 @@ describe('startUiHost', () => {
   it('pushes handler-sent events to the SSE stream of the invoking session', async () => {
     const h = await bootHost()
     h.context.registry.registerHandle('test:push', (event) => {
-      event.sender.send('test:event', { hello: 'world' })
+      const sender = (event as { sender: { send: (ch: string, ...args: unknown[]) => void } }).sender
+      sender.send('test:event', { hello: 'world' })
       return 'done'
     })
     const stream = await fetch(`${h.url}/api/ipc/events?session=sse-test`)
@@ -187,7 +188,9 @@ describe('attachUi', () => {
     const passthrough = await fetch(`${base}/anything-else`)
     expect(await passthrough.json()).toEqual({ from: 'host-app' })
 
-    await new Promise<void>((resolve) => server.close(resolve))
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
     attached.detach()
     server.closeAllConnections?.()
   })

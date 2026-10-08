@@ -16,6 +16,7 @@ export function ipcErrorStatus(code: string | undefined): number {
     case 'CLIENT_ABORTED':
       return 400
     case 'NOT_FOUND':
+    case 'OFFICE_NOT_FOUND':
       return 404
     case 'OFFICE_UNSUPPORTED':
     case 'OFFICE_NEEDS_APP':

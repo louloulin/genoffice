@@ -173,6 +173,22 @@ ${hostNames.map((name) => `export const ${name} = mod.${name}`).join('\n')}
 `,
 )
 
+// The browser half of the UI tier. Deliberately *not* part of either CJS
+// bundle: it touches `document`, and pulling it into a platform:'node' build
+// would put a DOM reference in a package whose whole point is running headless.
+// Bundled as ESM (no CJS façade needed — there are no CJS-only deps here, and a
+// browser consumer importing it is always an ESM one).
+await build({
+  entryPoints: [join(here, 'src/ui-browser/index.ts')],
+  outfile: join(here, 'dist/ui/index.js'),
+  bundle: true,
+  platform: 'browser',
+  target: ['es2022'],
+  format: 'esm',
+  logLevel: 'info',
+  define: { __GENOFFICE_VERSION__: JSON.stringify(version) },
+})
+
 // pdfium.wasm powers the PDF reader, converter and rasterizer. Ship it beside
 // the entry point (dist/wasm/) so src/resources.ts finds it without a checkout.
 const wasm = resolveWasm()
