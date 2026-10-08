@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GenOffice as a Library — 进程内 Office 引擎交互示例</title>
+<style>
+  :root {
+    --ink: #1a1d22;      /* 自定义属性定义行允许直接写色值 */
+    --dim: #616a77;
+    --line: #e2e5ea;
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --accent: #2b5fd9;
+    --ok: #0f7b3f;
+    --okbg: #e8f6ee;
+    --err: #a3231f;
+    --errbg: #fdecea;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.6 -apple-system, "PingFang SC", sans-serif; }
+  header { background: var(--card); border-bottom: 1px solid var(--line); padding: 14px 28px; }
+  header h1 { font-size: 18px; margin: 0 0 3px; }
+  header p { margin: 0; color: var(--dim); font-size: 12.5px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 24px 60px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--card); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input, select, textarea { font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--card); }
+  textarea { width: 100%; min-height: 72px; font-family: var(--mono); font-size: 12.5px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; }
+  .muted { color: var(--dim); font-size: 12.5px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .pages { display: flex; gap: 14px; flex-wrap: wrap; }
+  .pages img { max-height: 620px; border: 1px solid var(--line); border-radius: 6px; }
+  .term { background: var(--ink); color: #d7dee8; border-radius: 8px; padding: 12px 14px; font: 12px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow: auto; }
+  .pill { display: inline-block; font: 11px/1.6 var(--mono); border-radius: 20px; padding: 2px 10px; background: var(--okbg); color: var(--ok); }
+  .pill.err { background: var(--errbg); color: var(--err); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  a.dl { font-size: 12.5px; }
+  .hide { display: none; }
+  #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 18px; text-align: center; color: var(--dim); }
+  #drop.over { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>GenOffice 作为库 — 进程内 Office 引擎交互示例</h1>
+  <p>本页所有能力由 <code>@genoffice/office-ai</code> 在 Node 进程内直接提供：读取 / 编辑 / 转换 / PDF 渲染 / 14 个 Agent 工具。无 Electron、无 SaaS、无模型调用。样例文件均为仓库真实文件。</p>
+</header>
+<main>
+  <div class="card">
+    <h2>① 打开一个真实文档</h2>
+    <div class="row" id="samples"></div>
+    <div id="drop" style="margin-top:12px">把 docx / xlsx / pdf / pptx / md / csv 拖到这里，或
+      <label><input type="file" id="file" style="display:none">选择文件</label>
+    </div>
+    <p class="muted" id="openState">尚未打开文档。</p>
+  </div>
+
+  <div class="card hide" id="viewCard">
+    <h2>② 文档视图（readDocument，进程内）</h2>
+    <div id="view"></div>
+  </div>
+
+  <div class="card hide" id="pdfCard">
+    <h2>③ PDF 渲染（pdfium wasm，进程内光栅化）</h2>
+    <div class="row">
+      <button class="primary" id="renderBtn">渲染全部页面</button>
+      <span class="muted">渲染 144dpi；其他格式渲染需要 GenOffice 应用（OFFICE_NEEDS_APP）。</span>
+    </div>
+    <div class="pages" id="pages" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card hide" id="editCard">
+    <h2>④ 真实编辑（保存后可下载，重新打开验证）</h2>
+    <div id="editDocx" class="hide">
+      <p class="muted">Word：向文档追加段落（工具 insert_content，受限 HTML）。</p>
+      <div class="row">
+        <input id="docxHtml" style="flex:1" value='<p>由 @genoffice/office-ai 进程内追加的段落。</p>'>
+        <button class="primary" id="docxAdd">追加段落</button>
+      </div>
+    </div>
+    <div id="editXlsx" class="hide">
+      <p class="muted">Excel：写单元格（工具 set_cells，A1 地址；值以 <code>=</code> 开头存为公式）。</p>
+      <div class="row">
+        <input id="cellAddr" style="width:110px" placeholder="A1" value="A1">
+        <input id="cellVal" style="flex:1" placeholder="值" value="由 office-ai 写入">
+        <button class="primary" id="cellSet">写入</button>
+      </div>
+    </div>
+    <p class="muted" id="editState" style="margin-top:10px"></p>
+    <div class="row" style="margin-top:8px">
+      <a id="saveLink" class="dl hide"><button>下载当前文档</button></a>
+    </div>
+  </div>
+
+  <div class="card hide" id="convCard">
+    <h2>⑤ 格式转换（进程内路由）</h2>
+    <div class="row">
+      <select id="convTo"></select>
+      <button class="primary" id="convBtn">转换</button>
+      <span class="muted">*→pdf 等需要应用渲染器，会返回 OFFICE_NEEDS_APP。</span>
+    </div>
+    <div id="convResult" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>⑥ Agent 工具面（officeTools — aiwork 挂给专家的同一套）</h2>
+    <div class="row">
+      <select id="toolName" style="max-width:260px"></select>
+      <input id="toolArgs" style="flex:1; font-family:var(--mono); font-size:12px" placeholder='JSON 参数，例如 {"op":"sum","range":"B2:B3"}'>
+      <button class="primary" id="toolRun">执行</button>
+    </div>
+    <p class="muted">需要先打开文档；错误以 isError 结果返回（不抛异常），与 agent 循环一致。</p>
+    <div class="term hide" id="toolOut" style="margin-top:10px"></div>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id)
+let doc = null // 当前打开文档的精简视图
+
+async function api(path, opts) {
+  const res = await fetch(path, opts)
+  const data = await res.json().catch(() => null)
+  if (!res.ok || data?.error) throw new Error(`${data?.error?.code ?? res.status}: ${data?.error?.message ?? res.statusText}`)
+  return data
+}
+
+async function openBytes(bytes, name) {
+  const view = await api('/api/open', { method: 'POST', body: bytes, headers: { 'x-filename': encodeURIComponent(name) } })
+  show(view)
+}
+
+function show(view) {
+  doc = view
+  $('openState').innerHTML = `<span class="pill">已打开</span> ${view.name} · kind=${view.kind}`
+  const v = $('view')
+  if (view.kind === 'docx') {
+    v.innerHTML = `<p class="muted">块数 ${view.blocks.length}${view.truncated ? `（截断，共 ${view.blocks.length + view.truncated}）` : ''} · 批注 ${view.comments} · 修订 ${view.revisions}</p>
+      <table><tr><th>#</th><th>类型</th><th>级别</th><th>文本</th></tr>${view.blocks.map((b) =>
+        `<tr><td>${b.index}</td><td>${b.type}</td><td>${b.level ?? ''}</td><td>${(b.text ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c])}</td></tr>`).join('')}</table>`
+  } else if (view.kind === 'sheet') {
+    const cells = Object.entries(view.grid ?? {})
+    v.innerHTML = `<p class="muted">工作表 [${view.workbook.sheetNames.join(', ')}] · 活动表 ${view.workbook.activeSheet} · 单元格 ${view.workbook.totalCells}</p>
+      <table><tr><th>地址</th><th>内容</th></tr>${cells.slice(0, 400).map(([a, c]) => `<tr><td><code>${a}</code></td><td>${String(c).replace(/[&<>]/g, (x) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[x])}</td></tr>`).join('')}</table>`
+  } else if (view.kind === 'pdf') {
+    v.innerHTML = `<p class="muted">页数 ${view.pdf.pages} · 加密 ${view.pdf.encrypted} · producer ${view.pdf.producer ?? ''}</p><div class="term">${view.pdf.text || '（无文本层）'}</div>`
+  } else if (view.kind === 'deck') {
+    v.innerHTML = view.deck.pages.map((p) =>
+      `<p class="muted">第 ${p.index + 1} 页 · ${p.elements.length} 个元素</p><div class="term">${p.elements.map((e) => `${e.type}${e.text ? ': ' + e.text : ''}`).join('\n')}</div>`).join('')
+  } else {
+    v.innerHTML = `<div class="term">${view.text}</div>`
+  }
+  $('viewCard').classList.remove('hide')
+  $('pdfCard').classList.toggle('hide', view.kind !== 'pdf')
+  $('pages').innerHTML = ''
+  const isDocx = view.kind === 'docx'
+  const isSheet = view.kind === 'sheet'
+  $('editCard').classList.remove('hide')
+  $('editDocx').classList.toggle('hide', !isDocx)
+  $('editXlsx').classList.toggle('hide', !isSheet)
+  $('editState').textContent = ''
+  $('convCard').classList.remove('hide')
+  $('convTo').innerHTML = (view.targets.length ? view.targets : []).map((t) => `<option>${t}</option>`).join('') || '<option value="">（无进程内路由）</option>'
+  $('convResult').innerHTML = ''
+  updateSave()
+}
+
+function updateSave() {
+  const a = $('saveLink')
+  a.classList.toggle('hide', !doc)
+  a.href = `/api/save?name=${encodeURIComponent(doc.name)}`
+}
+
+function fileUrl(f) {
+  const href = `data:${f.mimeType};base64,${f.base64}`
+  return f.mimeType.startsWith('image/')
+    ? `<img src="${href}" style="max-width:100%;border:1px solid var(--line);border-radius:6px">`
+    : `<a class="dl" href="${href}" download="${f.name}">下载 ${f.name}（${Math.round(f.base64.length * 3 / 4 / 1024)} KB）</a>`
+}
+
+async function runTool(name, args) {
+  const out = await api('/api/tool', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, args }) })
+  const files = (out.files ?? []).map(fileUrl).join('<br>')
+  const box = $('toolOut')
+  box.classList.remove('hide')
+  box.textContent = `$ ${name} ${JSON.stringify(args ?? {})}\n\n${out.text}${out.data ? '\n\n' + JSON.stringify(out.data, null, 1) : ''}`
+  return { out, files }
+}
+
+// ── 样例与上传 ──
+fetch('/api/samples').then((r) => r.json()).then((list) => {
+  $('samples').innerHTML = ''
+  for (const s of list) {
+    const b = document.createElement('button')
+    b.textContent = s.label
+    b.onclick = async () => { try { show(await api(`/api/open/sample?key=${s.key}`, { method: 'POST' })) } catch (e) { $('openState').textContent = `打开失败: ${e.message}` } }
+    $('samples').append(b)
+  }
+})
+const drop = $('drop')
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over') }
+drop.ondragleave = () => drop.classList.remove('over')
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) readFile(f) }
+$('file').onchange = (e) => { const f = e.target.files[0]; if (f) readFile(f) }
+function readFile(f) { openBytes(f, f.name).catch((e) => { $('openState').textContent = `打开失败: ${e.message}` }) }
+
+// ── PDF 渲染 ──
+$('renderBtn').onclick = async () => {
+  $('renderBtn').disabled = true
+  try {
+    const { files } = await runTool('render_pages', { scale: 2 })
+    $('pages').innerHTML = files
+  } catch (e) { $('pages').innerHTML = `<p class="muted">渲染失败: ${e.message}</p>` }
+  $('renderBtn').disabled = false
+}
+
+// ── 编辑 ──
+$('docxAdd').onclick = async () => {
+  try {
+    const { out } = await runTool('insert_content', { html: $('docxHtml').value })
+    const saved = new Uint8Array(await (await fetch(`/api/save?name=${encodeURIComponent(doc.name)}`)).arrayBuffer())
+    show(await api('/api/open', { method: 'POST', body: saved, headers: { 'x-filename': encodeURIComponent(doc.name) } }))
+    $('editState').innerHTML = `<span class="pill">已编辑</span> ${out.text.slice(0, 160)}`
+  } catch (e) { $('editState').innerHTML = `<span class="pill err">${e.message}</span>` }
+}
+$('cellSet').onclick = async () => {
+  const v = $('cellVal').value
+  try {
+    const { out } = await runTool('set_cells', { cells: [{ address: $('cellAddr').value.trim().toUpperCase(), value: v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : v) }] })
+    const saved = new Uint8Array(await (await fetch(`/api/save?name=${encodeURIComponent(doc.name)}`)).arrayBuffer())
+    show(await api('/api/open', { method: 'POST', body: saved, headers: { 'x-filename': encodeURIComponent(doc.name) } }))
+    $('editState').innerHTML = `<span class="pill">已编辑</span> ${out.text.slice(0, 160)}`
+  } catch (e) { $('editState').innerHTML = `<span class="pill err">${e.message}</span>` }
+}
+
+// ── 转换 ──
+$('convBtn').onclick = async () => {
+  const to = $('convTo').value
+  if (!to) return
+  try {
+    const { files, out } = await runTool('convert_document', { to })
+    const f = files?.[0]
+    $('convResult').innerHTML = (out.text.startsWith('convert') || out.text.includes('needs') ? `<p class="muted">${out.text}</p>` : '') + (f ?? '')
+  } catch (e) { $('convResult').innerHTML = `<p class="muted">转换失败: ${e.message}</p>` }
+}
+
+// ── 工具面 ──
+$('toolName').onchange = () => { $('toolOut').classList.add('hide') }
+$('toolRun').onclick = async () => {
+  let args = {}
+  const raw = $('toolArgs').value.trim()
+  if (raw) { try { args = JSON.parse(raw) } catch { $('toolOut').classList.remove('hide'); $('toolOut').textContent = '参数不是合法 JSON'; return } }
+  try {
+    const { out, files } = await runTool($('toolName').value, args)
+    if (files) $('toolOut').innerHTML = $('toolOut').innerHTML.replace(/\n$/, '') + '<br>' + files
+  } catch (e) { $('toolOut').classList.remove('hide'); $('toolOut').textContent = e.message }
+}
+
+window.addEventListener('load', async () => {
+  const names = await fetch('/api/tools').then((r) => r.json())
+  $('toolName').innerHTML = names.map((t) => `<option>${t.name}</option>`).join('')
+})
+</script>
+</body>
+</html>

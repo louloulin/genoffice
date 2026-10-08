@@ -536,6 +536,23 @@ export function registerSheetsHandlers(): void {
     if (req.mode === 'save-as' && (!requestedTarget.startsWith(FILES_DIR))) {
       return { ok: false, error: 'save-as target must be inside FILES_DIR' }
     }
+    // A `storage://` target is a backend URI, not a filesystem path — the
+    // sidecar only writes real files, so it must never be handed one (handing
+    // it over made the sidecar write a literal `./storage:/local/...` file
+    // relative to the server CWD while the response still reported ok, so the
+    // edit was lost and the canonical file stayed stale). Stage the current
+    // bytes into FILES_DIR, patch there, then mirror the result back through
+    // the backend — the same staging discipline `workbook:open-path` uses.
+    const targetStorageKey = storageKeyFromPath(requestedTarget)
+    let sideTarget = requestedTarget
+    if (targetStorageKey) {
+      const u8 = await getStorageBackend().get(targetStorageKey)
+      const dot = targetStorageKey.lastIndexOf('.')
+      const stem = dot > 0 ? targetStorageKey.slice(0, dot) : targetStorageKey
+      const ext = dot > 0 ? targetStorageKey.slice(dot) : ''
+      sideTarget = join(FILES_DIR, `${basename(stem)}.save-${Date.now()}${ext}`)
+      atomicWriteFile(sideTarget, Buffer.from(u8))
+    }
     if (requestedTarget !== session.targetPath) {
       updateTarget(session.sessionId, requestedTarget)
     }
@@ -544,8 +561,11 @@ export function registerSheetsHandlers(): void {
     // (unusual but legal in tests) still has a path that points at real
     // bytes. The save pipeline below only needs `session.sourcePath`,
     // which is the staged path; promotion keeps the canonical path warm
-    // so the next open matches.
-    promoteSnapshot(session.sessionId, requestedTarget)
+    // so the next open matches. Storage-URI targets are mirrored through
+    // the backend below instead — a URI is not a filesystem path to copy into.
+    if (!targetStorageKey) {
+      promoteSnapshot(session.sessionId, requestedTarget)
+    }
 
     const sourcePath = session.sourcePath
     if (!sourcePath) {
@@ -564,7 +584,7 @@ export function registerSheetsHandlers(): void {
       // does an atomic promote (tmp + rename) into requestedTarget; capture
       // must run first.
       try {
-        const prev = readFileSync(requestedTarget)
+        const prev = readFileSync(sideTarget)
         captureBeforeSave(basename(requestedTarget), prev)
       } catch { /* new file, nothing to snapshot */ }
       // The renderer addresses sheets by id; the gateway patches parts by
@@ -573,9 +593,19 @@ export function registerSheetsHandlers(): void {
       const result = await saveWorkbookViaSidecar({
         client: sheetsSidecar,
         sourcePath,
-        targetPath: requestedTarget,
+        targetPath: sideTarget,
         ...toGatewaySaveFields(withSaveDefaults(req), session.sheetNames),
       })
+      // A storage-URI target was patched in a staged file: push the patched
+      // bytes back through the backend so the canonical object — and every
+      // later `workbook:open-path` on that URI — serves the saved state.
+      if (targetStorageKey) {
+        await getStorageBackend().put(
+          targetStorageKey,
+          new Uint8Array(readFileSync(sideTarget)),
+          { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+        )
+      }
       // Mirror to recents so the home grid reflects `modified: true` and
       // the entry survives a restart. Without this the save succeeded on
       // disk but the home tile stayed clean and the user assumed nothing

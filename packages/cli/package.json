@@ -7,7 +7,9 @@
   "description": "genoffice: the GenOffice command line (create, convert, read, edit and render documents) built on the same engines as the app; runs headless on the app's bundled Node runtime",
   "exports": {
     ".": "./src/index.ts",
-    "./install": "./src/install.ts"
+    "./install": "./src/install.ts",
+    "./formats/*": "./src/formats/*.ts",
+    "./fs": "./src/fs.ts"
   },
   "bin": {
     "genoffice": "./bin/genoffice"

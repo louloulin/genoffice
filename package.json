@@ -57,6 +57,7 @@
     "dist:win": "npm run notices && npm run build:all && npm run dist:win -w @genoffice/shell",
     "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @genoffice/shell",
     "build:sdk": "npm run build -w @genoffice/web-sdk",
+    "build:office-ai": "npm run build -w @genoffice/office-ai",
     "build:renderers": "node tools/build-web-renderers.mjs",
     "dev:web": "npm run build:sdk && npm run build:renderers && npm run dev -w @genoffice/web-server",
     "build:web": "npm run build:sdk && npm run build:renderers && npm run bundle -w @genoffice/web-server",

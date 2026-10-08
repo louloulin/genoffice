@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationMap": false,
+    "outDir": "dist/types-all",
+    // tsc emits declarations for every .ts source in the program. This program
+    // transitively reaches sibling packages and app renderers (workspace
+    // packages export their src/*.ts directly), so rootDir must cover the
+    // whole repo — otherwise those out-of-rootDir files are emitted *in place*
+    // next to their sources, scattering ~500 stray .d.ts across packages/*/src
+    // and apps/*/src. With the repo root as rootDir the closure mirror lands
+    // under dist/types-all instead; build.mjs then keeps only this package's
+    // subtree at dist/types. noCheck stays on: the pulled-in renderer sources
+    // only serve the erasure above and are not type-clean under this config.
+    "rootDir": "../..",
+    "noCheck": true
+  },
+  "include": [
+    "src"
+  ]
+}

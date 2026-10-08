@@ -78,6 +78,10 @@ async function loadJsdom(): Promise<typeof import('jsdom')> {
       return (await import(pathToFileURL(entry).href)) as typeof import('jsdom')
     } catch {}
   }
+  // a bundled library resolves jsdom from the consumer's node_modules
+  try {
+    return (await import(/* @vite-ignore */ 'jsdom')) as typeof import('jsdom')
+  } catch {}
   throw new CliError(EXIT.conversion, 'jsdom not found (needed for Word and Markdown documents)', {
     hint: 'run from a checkout with node_modules installed',
   })

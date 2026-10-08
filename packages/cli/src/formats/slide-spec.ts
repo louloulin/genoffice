@@ -399,27 +399,38 @@ export interface RasterizedPage {
   height: number
 }
 
-/** Every page of a PDF as PNG at `scale` × 72 dpi (2 = 144 dpi). */
+/**
+ * Every page of a PDF as PNG at `scale` × 72 dpi (2 = 144 dpi).
+ *
+ * `password` opens an encrypted document; without it pdfium reports
+ * `password-required` and the page comes back unrendered.
+ */
 export async function rasterizePdf(
   bytes: Uint8Array,
   scale: number,
   only?: number,
   range: { flag: string; oneBased: boolean } = { flag: 'slide', oneBased: false },
+  password?: string,
 ): Promise<RasterizedPage[]> {
   const m = await loadPdfium()
-  return extract.withPdfDocument(m, bytes, (doc) => {
-    const count = m._FPDF_GetPageCount(doc)
-    if (only !== undefined && (only < 0 || only >= count)) {
-      const [lo, hi] = range.oneBased ? [1, count] : [0, count - 1]
-      throw new CliError(EXIT.usage, `--${range.flag} out of range (${lo}-${hi})`)
-    }
-    const out: RasterizedPage[] = []
-    for (let i = 0; i < count; i++) {
-      if (only !== undefined && i !== only) continue
-      const r = extract.renderPageByIndexPng(m, doc, i, scale)
-      if (!r) throw new CliError(EXIT.conversion, `could not render page ${i + 1}`)
-      out.push({ index: i, png: r.data, width: r.pixelWidth, height: r.pixelHeight })
-    }
-    return out
-  })
+  return extract.withPdfDocument(
+    m,
+    bytes,
+    (doc) => {
+      const count = m._FPDF_GetPageCount(doc)
+      if (only !== undefined && (only < 0 || only >= count)) {
+        const [lo, hi] = range.oneBased ? [1, count] : [0, count - 1]
+        throw new CliError(EXIT.usage, `--${range.flag} out of range (${lo}-${hi})`)
+      }
+      const out: RasterizedPage[] = []
+      for (let i = 0; i < count; i++) {
+        if (only !== undefined && i !== only) continue
+        const r = extract.renderPageByIndexPng(m, doc, i, scale)
+        if (!r) throw new CliError(EXIT.conversion, `could not render page ${i + 1}`)
+        out.push({ index: i, png: r.data, width: r.pixelWidth, height: r.pixelHeight })
+      }
+      return out
+    },
+    password,
+  )
 }

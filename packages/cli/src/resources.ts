@@ -48,6 +48,9 @@ export function pdfiumWasmPath(): string {
   if (process.env.GENOFFICE_PDFIUM_WASM) return process.env.GENOFFICE_PDFIUM_WASM
   const packaged = packagedResourcesDir()
   if (packaged) return join(packaged, 'wasm', 'pdfium.wasm')
+  // a bundled library ships the wasm next to its own entry point
+  const beside = join(scriptDir(), 'wasm', 'pdfium.wasm')
+  if (existsSync(beside)) return beside
   const root = repoRoot()
   if (root) {
     try {

@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // the docs/markdown editor modules genoffice reuses are typed against the DOM
+    // even though they run under a jsdom shim headless
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    // resolve sibling source packages by path (worktree-safe, mirrors packages/cli)
+    "paths": {
+      "@genoffice/cli": ["../cli/src/index.ts"],
+      "@genoffice/cli/formats/*": ["../cli/src/formats/*.ts"],
+      "@genoffice/cli/fs": ["../cli/src/fs.ts"],
+      "@genoffice/file-parse": ["../file-parse/src/index.ts"],
+      "@genoffice/docx-engine": ["../docx-engine/src/index.ts"],
+      "@genoffice/pptx-engine": ["../pptx-engine/src/index.ts"],
+      "@genoffice/pdf2docx": ["../pdf2docx/src/index.ts"],
+      "@genoffice/pptx-ops": ["../pptx-ops/src/index.ts"],
+      "@genoffice/pptx-render": ["../pptx-render/src/index.ts"],
+      "@genoffice/xlsx-gateway/*": ["../xlsx-gateway/src/*"],
+      "@genoffice/font-metrics": ["../font-metrics/src/index.ts"],
+      "@genoffice/ai-provider": ["../ai-provider/src/index.ts"],
+      "@genoffice/ai-search": ["../ai-search/src/index.ts"],
+      "@genoffice/i18n": ["../i18n/src/index.ts"],
+      "@genoffice/ui": ["../ui/src/index.ts"]
+    }
+  },
+  "include": [
+    "src",
+    "tests",
+    "../cli/src/jsdom.d.ts",
+    "../pdf2docx/src/bidi-js.d.ts",
+    "../pptx-ops/src/raw.d.ts",
+    "../../apps/docs/src/renderer/env.d.ts",
+    "../../apps/markdown/src/renderer/env.d.ts"
+  ]
+}
