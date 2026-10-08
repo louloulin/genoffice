@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import JSZip from 'jszip'
 
 import type {
+  CellScalar,
   CellState,
   ChangePlan,
   WorkbookSnapshot,
@@ -2768,37 +2769,56 @@ function parseWorksheetCells(
     const address = readXmlAttribute(attributes, 'r')
     if (!address || !/^[A-Z]{1,3}[1-9][0-9]{0,6}$/.test(address)) continue
     const body = match[2] ?? ''
-    const formula = /<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/.exec(body)?.[1]
-    if (formula !== undefined) {
-      cells[address] = { value: null, formula: `=${decodeXmlText(formula)}` }
-      continue
-    }
+    const formula = readCellFormula(body)
     const type = readXmlAttribute(attributes, 't')
     if (type === 'inlineStr') {
       const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
         .map((textMatch) => decodeCellText(textMatch[1] ?? ''))
         .join('')
-      cells[address] = { value: text }
+      cells[address] = formula === undefined ? { value: text } : { value: text, formula }
       continue
     }
     const rawValue = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/.exec(body)?.[1]
-    if (rawValue === undefined) {
-      cells[address] = { value: null }
-    } else if (type === 's') {
-      const index = Number(rawValue)
-      cells[address] = { value: sharedStrings[index] ?? '' }
-    } else if (type === 'b') {
-      cells[address] = { value: rawValue === '1' }
-    } else if (type === 'str') {
-      cells[address] = { value: decodeCellText(rawValue) }
-    } else {
-      const numericValue = Number(rawValue)
-      cells[address] = {
-        value: Number.isFinite(numericValue) ? numericValue : decodeXmlText(rawValue),
+    // A formula cell keeps its cached `<v>` too. Excel writes one, and it is
+    // the only value a shared/array follower has; dropping it (the previous
+    // `{ value: null }`) blanked formula cells for value-only consumers like
+    // the CSV export and the CLI.
+    let value: CellScalar = null
+    if (rawValue !== undefined) {
+      if (type === 's') {
+        value = sharedStrings[Number(rawValue)] ?? ''
+      } else if (type === 'b') {
+        value = rawValue === '1'
+      } else if (type === 'str') {
+        value = decodeCellText(rawValue)
+      } else {
+        const numericValue = Number(rawValue)
+        value = Number.isFinite(numericValue) ? numericValue : decodeXmlText(rawValue)
       }
     }
+    cells[address] = formula === undefined ? { value } : { value, formula }
   }
   return cells
+}
+
+/**
+ * A cell's formula, `=`-prefixed, or `undefined` when the cell carries none.
+ *
+ * The pattern is attribute-agnostic and covers both element shapes: a
+ * value-carrying `<f t="shared" ref="A1:A3" si="0">SUM(B1:C1)</f>` and the
+ * self-closing placeholders `<f t="shared" si="0"/>` (a shared follower) and
+ * `<f t="array" ref="A1:A3"/>`. An element with no text — the placeholders —
+ * has no formula of its own to report, so it answers `undefined` and the cell
+ * is read from its cached `<v>`; a self-closing element was previously skipped
+ * by a pattern that insisted on `</f>`, which is why a follower used to look
+ * like a plain constant.
+ */
+function readCellFormula(body: string): string | undefined {
+  const element = /<f\b[^>]*?(?:\/>|>([\s\S]*?)<\/f>)/.exec(body)
+  if (!element) return undefined
+  const text = element[1]
+  if (text === undefined || text === '') return undefined
+  return `=${decodeXmlText(text)}`
 }
 
 async function readSharedStrings(source: EntrySource): Promise<readonly string[]> {

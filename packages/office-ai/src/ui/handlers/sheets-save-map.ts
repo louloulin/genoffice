@@ -56,6 +56,13 @@ export interface RendererSaveRequest {
   mode: 'save' | 'save-as'
   sessionId: string
   path?: string
+  /**
+   * The active sheet serialized as CSV text, sent on a plain `save` of a
+   * workbook that was opened from `.csv`/`.tsv`/`.txt` (Excel's "keep current
+   * format?" flow). The host writes this to the original file — the xlsx bytes
+   * it assembles always go to the staged working copy instead.
+   */
+  csvContent?: string
   edits?: RendererCellEdit[]
   bulkConstantFills?: ById<BulkConstantFill>[]
   structuralOps?: (ById<SheetStructuralOps['ops'][number]> & { sheetId: string })[]

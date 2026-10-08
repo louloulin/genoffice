@@ -32,6 +32,7 @@ import {
   readBasicWorkbook,
 } from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
 import type { ImportedXlsx } from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
+import { readDefinedNames, type DefinedNameEntry } from '@genoffice/xlsx-gateway/gateway/xlsx-defined-names'
 import { parseAddress } from '@genoffice/xlsx-gateway/domain/cell-address'
 import {
   blankXlsxBuffer,
@@ -51,6 +52,9 @@ const MAX_RANGE_CELLS = 100_000
 const MAX_TRANSFER_EDITS = 10_000_000
 /** Opened workbooks are LRU-capped: every save re-opens, so the map would otherwise grow per save. */
 const MAX_SESSIONS = 32
+
+/** The workbook index a spreadsheet package always carries. */
+const WORKBOOK_XML = 'xl/workbook.xml'
 
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
@@ -74,10 +78,12 @@ export interface SheetSession {
   sheetNames: Map<string, string>
   /** file sheet name → indexed worksheet. */
   sheets: Map<string, IndexedSheet>
-  /** Set when the workbook was opened from CSV; saving writes xlsx beside it. */
+  /** Set when the workbook was opened from CSV; saving writes CSV text there. */
   csvPath: string | null
   /** Package entry count of `source` (the renderer's `entryCount`). */
   entryCount: number
+  /** The workbook's modeled defined names, read at open (see toWorkbookFile). */
+  definedNames: DefinedNameEntry[]
   touchedAt: number
 }
 
@@ -133,8 +139,16 @@ export function registerSheetsHandlers(
     if (ext === 'csv' || ext === 'tsv' || ext === 'txt') {
       // CSV has no package to read: materialize a real xlsx so every later
       // save/merge/recalc path is the same code as a native workbook.
-      source = await sheetCsvToXlsxBuffer(decodeCsvBuffer(source), defaultSheetName(basename(path)))
+      const converted = await sheetCsvToXlsxBuffer(decodeCsvBuffer(source), defaultSheetName(basename(path)))
+      // The session's path must be a workbook, never the user's .csv. Save
+      // writes the assembled xlsx bytes to `session.path`, so keeping the CSV
+      // there replaced the user's data file with a ZIP archive — the same
+      // split the web-server original makes via newSnapshotPath(). The
+      // original path is remembered as `csvPath`: that is the file a plain
+      // save writes back, as CSV text.
       csvPath = path
+      const staged = workspace.stageBytes(`${basename(path, `.${ext}`)}.xlsx`, converted)
+      return buildSession(staged, basename(path), converted, csvPath)
     } else if (ext === 'xls') {
       throw new OfficeError('OFFICE_UNSUPPORTED', 'legacy .xls workbooks are not supported; save as .xlsx first')
     }
@@ -158,6 +172,7 @@ export function registerSheetsHandlers(
       sheets: imported.sheets,
       csvPath,
       entryCount: (await entrySource.paths()).length,
+      definedNames: imported.definedNames,
       touchedAt: Date.now(),
     }
     state.sessions.set(session.sessionId, session)
@@ -328,6 +343,25 @@ export function registerSheetsHandlers(
 
     const targetPath =
       req.mode === 'save-as' && typeof req.path === 'string' ? requirePath(req.path) : session.path
+
+    // A workbook opened from CSV keeps the user's file in CSV: the renderer
+    // ships the active sheet as `csvContent` after Excel's "keep current
+    // format?" prompt. Writing the assembled xlsx over the .csv destroys the
+    // file, and ignoring `csvContent` silently discards the edits — so fail
+    // closed rather than pretend the save landed. The xlsx always goes to
+    // `targetPath` (the staged working copy for a plain save), never to the
+    // CSV.
+    const writesCsv = session.csvPath !== null && req.mode !== 'save-as'
+    const csvPath = session.csvPath
+    if (writesCsv && csvPath !== null) {
+      if (typeof req.csvContent !== 'string') {
+        throw new OfficeError(
+          'OFFICE_BAD_INPUT',
+          'saving a CSV workbook needs csvContent — the renderer must serialize the active sheet',
+        )
+      }
+      workspace.writeBytes(csvPath, new TextEncoder().encode(req.csvContent))
+    }
     workspace.writeBytes(targetPath, mutation.buffer)
     if (req.editsTransferId) state.transfers.delete(req.editsTransferId)
 
@@ -335,6 +369,13 @@ export function registerSheetsHandlers(
     // base; re-read so a second save patches what was just written.
     const reopened = await openWorkbook(targetPath)
     reopened.name = basename(targetPath)
+    if (writesCsv && csvPath !== null) {
+      // Carry the CSV binding onto the re-read session: the user's file is
+      // still a .csv, so the next plain save must keep writing CSV text (and
+      // the title keeps showing the CSV name).
+      reopened.csvPath = csvPath
+      return { ok: true, path: csvPath, touchedEntries: [...mutation.touchedEntries] }
+    }
     return { ok: true, path: reopened.path, touchedEntries: [...mutation.touchedEntries] }
   }
 
@@ -454,13 +495,27 @@ export function registerSheetsHandlers(
 async function indexImported(source: Buffer): Promise<{
   sheets: Map<string, IndexedSheet>
   sheetNamesById: Record<string, string>
+  definedNames: DefinedNameEntry[]
 }> {
   const imported = await readBasicWorkbook(source)
   const sheets = new Map<string, IndexedSheet>()
   for (const sheet of imported.snapshot.sheets) {
     sheets.set(sheet.name, indexSheet(sheet, sheet.id))
   }
-  return { sheets, sheetNamesById: { ...imported.sheetNamesById } }
+  // Defined names must be read here, not defaulted to []. The renderer's save
+  // treats its name list as the complete truth, so a workbook whose names the
+  // session never reported loses every one of them on the first save. Hidden
+  // and _xlnm.* names are filtered inside readDefinedNames — the save path
+  // preserves them by rule, so the renderer never needs to model them.
+  const entrySource = await createBufferEntrySource(source)
+  const workbookXml = (await entrySource.has(WORKBOOK_XML))
+    ? await entrySource.readText(WORKBOOK_XML)
+    : ''
+  return {
+    sheets,
+    sheetNamesById: { ...imported.sheetNamesById },
+    definedNames: workbookXml ? readDefinedNames(workbookXml) : [],
+  }
 }
 
 function indexSheet(sheet: WorksheetState, id: string): IndexedSheet {
@@ -522,7 +577,7 @@ function workbookFileOf(session: SheetSession): Record<string, unknown> {
     styles: [],
     dxfStyles: [],
     visuals: [],
-    definedNames: [],
+    definedNames: session.definedNames,
     readOnly: false,
     ...(session.csvPath ? { csvPath: session.csvPath } : {}),
   }

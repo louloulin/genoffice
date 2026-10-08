@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import JSZip from 'jszip'
 import { readBasicWorkbook } from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
 import { startUiHost, type UiHostHandle } from '../src/ui/host'
 
@@ -73,6 +74,41 @@ function saveRequest(overrides: Record<string, unknown> = {}): Record<string, un
     ...overrides,
   }
 }
+
+describe('shared formulas in the read model', () => {
+  /** The real fixture with its first worksheet's sheetData replaced. */
+  async function fixtureWithSharedFormulas(): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(readFileSync(FIXTURE_XLSX))
+    const worksheetPath = Object.keys(zip.files).find((path) =>
+      /^xl\/worksheets\/[^/]+\.xml$/.test(path),
+    )
+    if (!worksheetPath) throw new Error('fixture has no worksheet part')
+    const xml = await zip.file(worksheetPath)!.async('string')
+    const patched = xml.replace(
+      /<sheetData\s*\/>|<sheetData>[\s\S]*?<\/sheetData>/,
+      '<sheetData><row r="1">' +
+        '<c r="A1"><f t="shared" ref="A1:B1" si="0">SUM(1,2)</f><v>3</v></c>' +
+        '<c r="B1"><f t="shared" si="0"/><v>3</v></c>' +
+        '</row></sheetData>',
+    )
+    expect(patched).not.toBe(xml)
+    zip.file(worksheetPath, patched)
+    return Buffer.from(await zip.generateAsync({ type: 'nodebuffer' }))
+  }
+
+  it('reads a shared master with its cached value and a follower by its value', async () => {
+    const imported = await readBasicWorkbook(await fixtureWithSharedFormulas())
+    const cells = Object.assign({}, ...imported.snapshot.sheets.map((sheet) => sheet.cells))
+
+    // Master: the formula is reported, and the cached value survives alongside
+    // it — value-only consumers (CSV export, CLI) used to see a blank cell.
+    expect(cells.A1).toMatchObject({ formula: '=SUM(1,2)', value: 3 })
+    // Follower: the `<f/>` placeholder carries no formula text of its own, so
+    // it reads as its cached value rather than a broken `=`.
+    expect(cells.B1?.value).toBe(3)
+    expect(cells.B1?.formula).toBeUndefined()
+  })
+})
 
 describe('sheets handlers (M2)', () => {
   it('opens an xlsx into the renderer WorkbookFile shape', async () => {
@@ -267,6 +303,44 @@ describe('sheets handlers (M2)', () => {
     expect(values).toContain('1:3')
   })
 
+  it('saves a csv workbook back as csv text, never as xlsx bytes', async () => {
+    await bootHost()
+    const csv = new Uint8Array(Buffer.from('name,qty\nwidget,3\n', 'utf8'))
+    const staged = host!.open('sheets', csv, { name: 'inventory.csv' })
+    const file = (await invoke('workbook:open-path', [staged.path])).body.result
+    // The session works on a staged workbook; the user's file stays CSV.
+    expect(file.path).not.toBe(staged.path)
+    expect(file.csvPath).toBe(staged.path)
+
+    // Without csvContent there is nothing to write back to the CSV — say so
+    // instead of silently leaving the user's edits unwritten.
+    const noContent = await invoke('workbook:save', [
+      { ...saveRequest(), sessionId: file.sessionId, mode: 'save' },
+    ])
+    expect(noContent.status).toBe(400)
+    expect(JSON.stringify(noContent.body)).toContain('csvContent')
+
+    const saved = await invoke('workbook:save', [
+      { ...saveRequest(), sessionId: file.sessionId, mode: 'save', csvContent: 'name,qty\nwidget,9\n' },
+    ])
+    expect(saved.status).toBe(200)
+    expect(saved.body.result.path).toBe(staged.path)
+
+    const onDisk = Buffer.from(host!.readFile(staged.path))
+    expect(onDisk.toString('utf8')).toBe('name,qty\nwidget,9\n')
+    // The ZIP signature is the whole bug: this used to land in the user's file.
+    expect(onDisk.subarray(0, 2).toString('latin1')).not.toBe('PK')
+
+    // The next save still writes CSV (not xlsx) to the same file — the session
+    // re-read after the first save carried the CSV binding forward.
+    const again = await invoke('workbook:save', [
+      { ...saveRequest(), sessionId: saved.body.result.sessionId ?? file.sessionId, mode: 'save', csvContent: 'name,qty\nwidget,11\n' },
+    ])
+    expect(again.status).toBe(200)
+    expect(again.body.result.path).toBe(staged.path)
+    expect(Buffer.from(host!.readFile(staged.path)).toString('utf8')).toBe('name,qty\nwidget,11\n')
+  })
+
   it('exports the renderer-supplied csv to a workspace path', async () => {
     await bootHost()
     const target = host!.context.workspace.stageBytes('out.csv', new Uint8Array())
@@ -280,6 +354,43 @@ describe('sheets handlers (M2)', () => {
       { fileName: 'out.csv', content: 'a,b\n', hasFormulas: false },
     ])
     expect(noTarget.body.result.canceled).toBe(true)
+  })
+
+  it('reports defined names at open so a later save cannot delete them', async () => {
+    await bootHost()
+    const staged = stagedFixture()
+    const file = (await invoke('workbook:open-path', [staged.path])).body.result
+
+    // Add a name through the declarative save, then reopen it.
+    const added = await invoke('workbook:save', [
+      {
+        ...saveRequest(),
+        sessionId: file.sessionId,
+        definedNamesState: { names: [{ name: 'TaxRate', formula: '0.2' }], preserveNames: [] },
+      },
+    ])
+    expect(added.status).toBe(200)
+
+    const reopened = (await invoke('workbook:open-path', [added.body.result.path])).body.result
+    expect(reopened.definedNames).toContainEqual(
+      expect.objectContaining({ name: 'TaxRate', formula: '0.2' }),
+    )
+
+    // The renderer's next save models exactly what it was shown. Every name it
+    // was not told about would be dropped here — the bug this guards.
+    const saved = await invoke('workbook:save', [
+      {
+        ...saveRequest(),
+        sessionId: reopened.sessionId,
+        definedNamesState: { names: reopened.definedNames, preserveNames: [] },
+      },
+    ])
+    expect(saved.status).toBe(200)
+
+    const final = (await invoke('workbook:open-path', [saved.body.result.path])).body.result
+    expect(final.definedNames).toContainEqual(
+      expect.objectContaining({ name: 'TaxRate', formula: '0.2' }),
+    )
   })
 
   it('closes a session so later reads 404', async () => {

@@ -90,6 +90,50 @@ export function applyDefinedNamesState(workbookXml: string, state: DefinedNamesS
   return `${xml.slice(0, at)}<definedNames>${additions}</definedNames>${xml.slice(at)}`
 }
 
+/**
+ * The modeled names currently in `workbook.xml` — the read counterpart of
+ * `applyDefinedNamesState`.
+ *
+ * An editor that opens a workbook without this cannot round-trip names: the
+ * declarative save treats its own name list as the complete truth, so every
+ * name the editor never showed is dropped from the file. Callers that skip the
+ * read must therefore never send a `DefinedNamesState` either.
+ *
+ * `_xlnm.*` built-ins and `hidden` names are excluded for the same reason
+ * `applyDefinedNamesState` keeps them: they are not user models, and feeding
+ * them back would put them in `state.names`, where `validateName` rejects the
+ * `_xlnm` prefix.
+ */
+export function readDefinedNames(workbookXml: string): DefinedNameEntry[] {
+  const section = /<definedNames\b[^>]*>([\s\S]*?)<\/definedNames>/.exec(workbookXml)
+  if (!section) return []
+  const inner = section[1] ?? ''
+  const entries: DefinedNameEntry[] = []
+  // Both shapes: a value-carrying element and the self-closing placeholder
+  // Excel writes for a name with no formula.
+  const element = /<definedName\b([^>]*)>([\s\S]*?)<\/definedName>|<definedName\b([^>]*)\/>/g
+  let match: RegExpExecArray | null
+  while ((match = element.exec(inner)) !== null) {
+    const attributes = match[1] ?? match[3] ?? ''
+    const rawName = /\bname="([^"]*)"/.exec(attributes)?.[1]
+    if (rawName === undefined) continue
+    const name = unescapeXml(rawName)
+    if (name.startsWith('_xlnm')) continue
+    if (/\bhidden="(?:1|true)"/.test(attributes)) continue
+    const formula = unescapeXml(match[2] ?? '')
+    // A self-closing element has no value; there is nothing for the editor to
+    // model, and re-saving it as an empty name would be a change.
+    if (formula === '') continue
+    const localSheetId = /\blocalSheetId="(\d+)"/.exec(attributes)?.[1]
+    entries.push({
+      name,
+      formula,
+      ...(localSheetId === undefined ? {} : { sheetIndex: Number(localSheetId) }),
+    })
+  }
+  return entries
+}
+
 function validateName(name: string): void {
   if (
     name.length === 0 ||
