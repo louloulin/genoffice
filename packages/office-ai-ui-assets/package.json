@@ -15,7 +15,6 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "node scripts/build-assets.mjs",
-    "build:all": "npm run build"
+    "build": "node scripts/build-assets.mjs"
   }
 }
