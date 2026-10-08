@@ -21,6 +21,7 @@ import {
   type CommandResultPayload,
   type Envelope,
 } from './envelope'
+import { setOpenParam } from '../open-param'
 
 export type { Envelope }
 
@@ -40,7 +41,7 @@ export interface MountEditorOptions {
   baseUrl: string
   /** `:docId` — identifies the document for comments/versions. Not the bytes. */
   docId: string
-  /** Workspace path the renderer opens (`?open=`). */
+  /** Workspace path the renderer opens (query `open`, or hash `open` for pdf). */
   open?: string
   /** CSS selector or element to mount the iframe into. */
   container: string | HTMLElement
@@ -299,7 +300,7 @@ export function buildEmbedUrl(options: Pick<MountEditorOptions, 'baseUrl' | 'app
   const pageBase = typeof document !== 'undefined' ? document.baseURI : undefined
   const url = pageBase ? new URL(relative, pageBase) : new URL(relative)
   url.searchParams.set('app', options.app)
-  if (options.open) url.searchParams.set('open', options.open)
+  if (options.open) setOpenParam(url, options.app, options.open)
   if (options.mode) url.searchParams.set('mode', options.mode)
   if (options.theme) url.searchParams.set('theme', options.theme)
   if (options.lang) url.searchParams.set('lang', options.lang)

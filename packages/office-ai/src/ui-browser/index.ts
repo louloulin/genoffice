@@ -8,6 +8,7 @@
  * plain `<script type="module">` with no bundler on the consumer's side.
  */
 export { mountEditor, buildEmbedUrl, ENVELOPE_VERSION } from './mount'
+export { setOpenParam } from '../open-param'
 export { isEnvelope } from './envelope'
 export type {
   MountedEditor,

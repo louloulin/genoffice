@@ -13,6 +13,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { OfficeError } from '../errors'
+import { setOpenParam } from '../open-param'
 import type { AiSettings } from '@genoffice/ai-provider'
 import { resolveAiHostSettings, type AiHostSettings } from './ai-settings'
 import { handleAiStream } from './ai-stream'
@@ -399,7 +400,7 @@ function resolveRendererFile(appDir: string, relativePath: string): string | nul
 // ----- binding modes ---------------------------------------------------------
 
 export interface StagedDocument {
-  /** Absolute path the workspace staged the bytes at (also the value passed to `?open=`). */
+  /** Absolute path the workspace staged the bytes at (also the value passed to `open`). */
   path: string
   /** Display name the renderer shows. */
   name: string
@@ -415,8 +416,8 @@ export interface UiHostHandle {
   context: UiHostContext
   /**
    * Stage bytes into the host workspace and return the renderer page URL that
-   * opens them (`/docs?open=<path>`). The docs renderer's `consume-pending-open`
-   * reads the `open` query param, so no host-side "pending" state is needed.
+   * opens them (`/docs?open=<path>`; the pdf renderer takes the path from the
+   * hash instead — see `setOpenParam`). No host-side "pending" state is needed.
    */
   open(app: UiApp, bytes: Uint8Array, options?: { name?: string }): StagedDocument
   /** Read a workspace path back as bytes (e.g. a document the renderer just saved). */
@@ -457,10 +458,12 @@ export async function startUiHost(options: StartUiHostOptions = {}): Promise<UiH
     open(app, bytes, options = {}) {
       const name = options.name ?? `${app}-document`
       const path = context.workspace.stageBytes(name, bytes)
+      const target = new URL(`${url}/${app}`)
+      setOpenParam(target, app, path)
       return {
         path,
         name,
-        url: `${url}/${app}?open=${encodeURIComponent(path)}`,
+        url: target.toString(),
       }
     },
     readFile(filePath) {
