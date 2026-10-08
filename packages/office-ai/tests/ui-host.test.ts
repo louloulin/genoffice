@@ -191,6 +191,18 @@ describe('startUiHost', () => {
     expect(response.headers.get('vary')).toBe('Origin')
   })
 
+  it('rejects a foreign Origin on /api/** with 403, not just a hidden ACAO', async () => {
+    // A "simple" cross-origin POST is sent without a preflight, so denying the
+    // readable response is not enough — the request itself must be refused.
+    const h = await bootHost()
+    const foreign = await fetch(`${h.url}/api/channels`, { headers: { origin: 'https://evil.example' } })
+    expect(foreign.status).toBe(403)
+    const own = await fetch(`${h.url}/api/channels`, {
+      headers: { origin: `http://127.0.0.1:${h.port}` },
+    })
+    expect(own.status).toBe(200)
+  })
+
   it('honours an explicit allowedOrigins entry', async () => {
     host = await startUiHost({
       assetsDir: bootAssetsRoot(),

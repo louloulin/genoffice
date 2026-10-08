@@ -203,6 +203,16 @@ export async function handleUiRequest(
     return { handled: true }
   }
 
+  // The privilege boundary rejects a foreign Origin outright, not merely a
+  // readable response: a "simple" cross-origin POST (text/plain, no preflight)
+  // is *sent* whatever CORS says, so suppressing ACAO alone would still let a
+  // foreign page drive file writes and AI billing. Same-origin and
+  // allowedOrigins pass; anything else (including 'null') is refused.
+  if (request.headers.origin !== undefined && allowedOrigin(request, ctx) === null) {
+    sendJson(response, 403, { error: { code: 'FORBIDDEN', message: 'origin not allowed' } })
+    return { handled: true }
+  }
+
   // /api/** is the privilege boundary. Loopback binding is the primary
   // isolation; an explicit token additionally gates every API request.
   if (ctx.token && !isAuthorizedRequest(url, request.headers, ctx.token)) {
