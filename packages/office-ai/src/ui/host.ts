@@ -21,7 +21,7 @@ import { createRegistry, type Registry } from './registry'
 import { SseHub } from './sse-hub'
 import { createAssetsResolver, type AssetsResolver, type UiApp } from './assets'
 import { createWorkspace, type PathAccess, type Workspace } from './workspace'
-import { createEmbedState, handleEmbed, registerSdkCommandHandlers, resolveFrameAncestors, type EmbedState } from './embed'
+import { createEmbedState, handleEmbed, registerSdkCommandHandlers, resolveFrameAncestors, escapeAttr, type EmbedState } from './embed'
 import { registerAppChannels } from './handlers/app-channels'
 import { createDocsState, registerDocsHandlers, type DocsHandlerState } from './handlers/docs'
 import { createSheetsState, registerSheetsHandlers, type SheetsHandlerState } from './handlers/sheets'
@@ -343,11 +343,13 @@ function serveAppStatic(
     if (isHtml) {
       const html = readFileSync(filePath, 'utf-8')
       const injectedSession = url.searchParams.get('session')
+      // Both values land inside a double-quoted attribute, and `session` is
+      // attacker-controlled: this route is served *before* the token gate (the
+      // gate covers /api/** only), so an unescaped `"` here injects script on
+      // the loopback origin — in a document that also carries the token meta.
       const tags =
-        (ctx.token
-          ? `\n<meta name="genoffice-token" content="${ctx.token.replace(/"/g, '&quot;')}">`
-          : '') +
-        (injectedSession ? `\n<meta name="genoffice-session" content="${injectedSession}">` : '')
+        (ctx.token ? `\n<meta name="genoffice-token" content="${escapeAttr(ctx.token)}">` : '') +
+        (injectedSession ? `\n<meta name="genoffice-session" content="${escapeAttr(injectedSession)}">` : '')
       response.writeHead(200, {
         'Content-Type': MIME_TYPES[ext] ?? 'text/html; charset=utf-8',
         // Token-injected HTML is a live-credential page: never cacheable.

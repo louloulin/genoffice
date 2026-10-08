@@ -30,7 +30,7 @@ import { EMBED_BRIDGE_SOURCE } from './bridge'
 import { buildEmbedHtml, mintEmbedSessionId, parseEmbedQuery } from './page'
 
 export { EMBED_BRIDGE_SOURCE, EMBED_BRIDGE_SCRIPT_PATH, EMBED_BRIDGE_VERSION } from './bridge'
-export { buildEmbedHtml, hardenRendererCsp, parseEmbedQuery } from './page'
+export { buildEmbedHtml, hardenRendererCsp, parseEmbedQuery, escapeAttr } from './page'
 export type { EmbedQuery } from './page'
 export { createEmbedState, registerSdkCommandHandlers, supportedSdkCommands } from './sdk-commands'
 export type { EmbedState } from './sdk-commands'

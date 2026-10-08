@@ -1740,16 +1740,30 @@ export function registerSlidesElementHandlers(registry: Registry, state: SlidesS
       ops?: unknown[]
       isolation?: 'atomic' | 'per_op'
     }
-    const path = typeof req.path === 'string' ? req.path : null
+    // The deck is resolved through the session binding, exactly like every
+    // other mutating channel (see legacySession above) — the renderer's own
+    // `ApplyTxnOp` carries no path and never could, so the session is the only
+    // authority. Trusting a renderer-supplied path let any client mutate
+    // another client's live model, and `slides:save` would then write it to
+    // disk. A path that *is* supplied is accepted only as an echo: it must
+    // match the deck this session opened.
+    const path = legacySessionPath(state, event)
     if (!path) {
       return {
         applied: false,
-        failures: [{ index: 0, error: 'slides:apply-txn requires { path }' }],
+        failures: [
+          { index: 0, error: 'slides:apply-txn has no open deck for this session — call slides:open-path first' },
+        ],
       }
     }
-    // A renderer that opened a deck and then sends apply-txn ops gets a
-    // "no live model" failure here unless it echoes back the exact path the
-    // open registered.
+    if (typeof req.path === 'string' && req.path && req.path !== path) {
+      return {
+        applied: false,
+        failures: [
+          { index: 0, error: 'path does not match the deck open in this session' },
+        ],
+      }
+    }
     const session = state.getSession(path)
     if (!session) {
       return {

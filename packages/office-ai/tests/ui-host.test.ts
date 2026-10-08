@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
+import { mkdtempSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createHostContext, startUiHost, type UiHostHandle } from '../src/ui/host'
 
 // In-repo checkout of the docs renderer (tier-3 resolution does not apply
@@ -15,12 +17,14 @@ let host: UiHostHandle | null = null
  * assetsDir is a root whose per-app subdirs are renderer dirs; the repo has
  * apps/docs/out/renderer instead, so build a tiny temp root with a symlink.
  */
-async function bootHost(): Promise<UiHostHandle> {
-  const { mkdtempSync, symlinkSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
+function bootAssetsRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'office-ai-ui-'))
   symlinkSync(DOCS_RENDERER_DIR, join(root, 'docs'), 'dir')
-  host = await startUiHost({ assetsDir: root })
+  return root
+}
+
+async function bootHost(): Promise<UiHostHandle> {
+  host = await startUiHost({ assetsDir: bootAssetsRoot() })
   return host
 }
 
@@ -139,6 +143,21 @@ describe('startUiHost', () => {
     const h = await bootHost()
     const response = await fetch(`${h.url}/docs/..%2f..%2fpackage.json`)
     expect(response.status).toBe(404)
+  })
+
+  it('escapes the reflected ?session= value instead of injecting it', async () => {
+    // App pages are served *before* the token gate, so an unescaped quote
+    // here is script injection on the loopback origin — in the same document
+    // that carries the token meta.
+    host = await startUiHost({ token: 'sekret', assetsDir: bootAssetsRoot() })
+    const payload = '"><script>fetch("/api/channels")</script>'
+    const html = await (await fetch(`${host.url}/docs?session=${encodeURIComponent(payload)}`)).text()
+
+    expect(html).not.toContain(payload)
+    expect(html).not.toContain('<script>fetch(')
+    // The value survives as data, not as markup (& < " escaped; > is inert
+    // inside a quoted attribute, which is why escapeAttr leaves it alone).
+    expect(html).toContain('&quot;>&lt;script>')
   })
 
   it('gates /api/** behind the token when one is configured', async () => {

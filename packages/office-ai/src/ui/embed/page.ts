@@ -205,7 +205,7 @@ export function buildEmbedHtml(options: BuildEmbedHtmlOptions): string {
   return html.replace(/<\/head>/i, (_match) => `${injection}</head>`)
 }
 
-function escapeAttr(value: string): string {
+export function escapeAttr(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 

@@ -58,10 +58,11 @@ afterEach(async () => {
 async function invoke(
   channel: string,
   args: unknown[] = [],
+  session = 'slides-session',
 ): Promise<{ status: number; body: { result?: any; error?: { code: string; message: string } } }> {
   const response = await fetch(`${host!.url}/api/ipc/${encodeURIComponent(channel)}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-ipc-session': 'slides-session' },
+    headers: { 'content-type': 'application/json', 'x-ipc-session': session },
     body: JSON.stringify({ args }),
   })
   return { status: response.status, body: await response.json() }
@@ -212,6 +213,35 @@ describe('slides handlers (M3)', () => {
     expect(pageText([result.slide], 0)).toContain('added-by-office-ai')
   })
 
+  it("refuses to reach another session's open deck through apply-txn or save", async () => {
+    await bootHost()
+    const { staged, opened } = await openFixture()
+    const before = (await invoke('slides:get-render-slides', [])).body.result
+
+    // A second client names the first client's deck. Its own session has no
+    // open deck, so there is nothing to mutate — regardless of the path it
+    // supplies.
+    const hijackTxn = await invoke(
+      'slides:apply-txn',
+      [{ path: opened.path, ops: [{ op: 'setHidden', target: { slide: 0 }, hidden: true }] }],
+      'intruder-session',
+    )
+    expect(hijackTxn.body.result.applied).toBe(false)
+    expect(hijackTxn.body.result.failures[0].error).toContain('slides:open-path')
+
+    // Same for the write path: the deck on disk must be untouched.
+    const bytesBefore = readFileSync(staged.path)
+    const hijackSave = await invoke('slides:save', [opened.path, null], 'intruder-session')
+    expect(hijackSave.body.result.ok).toBe(false)
+    expect(hijackSave.body.result.error).toContain('slides:open-path')
+    expect(readFileSync(staged.path).equals(bytesBefore)).toBe(true)
+
+    // And the owner still sees its deck unchanged, dirty flag intact.
+    const after = (await invoke('slides:get-render-slides', [])).body.result
+    expect(JSON.stringify(after)).toBe(JSON.stringify(before))
+    expect((await invoke('slides:is-dirty', [])).body.result).toBe(false)
+  })
+
   it('runs a transaction through slides:apply-txn and reports per-op failures', async () => {
     await bootHost()
     const { opened } = await openFixture()
@@ -222,11 +252,18 @@ describe('slides handlers (M3)', () => {
     expect(ok.body.result.applied).toBe(true)
     expect(ok.body.result.slides[0]).toMatchObject({ index: 0 })
 
-    const noModel = await invoke('slides:apply-txn', [
+    // The renderer's ApplyTxnOp carries no path, so the session is the only
+    // authority — an echo of the session's own path stays accepted.
+    const noPath = await invoke('slides:apply-txn', [
+      { ops: [{ op: 'setHidden', target: { slide: 1 }, hidden: true }] },
+    ])
+    expect(noPath.body.result.applied).toBe(true)
+
+    const otherPath = await invoke('slides:apply-txn', [
       { path: '/definitely/not/registered.pptx', ops: [{ op: 'setHidden', target: { slide: 0 } }] },
     ])
-    expect(noModel.body.result.applied).toBe(false)
-    expect(noModel.body.result.failures[0].error).toContain('slides:open-path')
+    expect(otherPath.body.result.applied).toBe(false)
+    expect(otherPath.body.result.failures[0].error).toContain('does not match')
 
     const badOp = await invoke('slides:apply-txn', [
       { path: opened.path, ops: [{ op: 'deleteElement', target: { slide: 0, el: 'does-not-exist' } }] },

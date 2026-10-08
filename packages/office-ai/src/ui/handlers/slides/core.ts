@@ -300,14 +300,18 @@ export function registerSlidesCoreHandlers(
   registry.registerHandle(
     'slides:save',
     async (event, _id?: unknown, path?: unknown, data?: unknown) => {
-      // The renderer's slidesApi.save() doesn't send the path — resolve it from
-      // the SSE session's current path (recorded on open-path). If the renderer
-      // DOES send a path, prefer that.
-      let resolvedPath: string | undefined
-      if (typeof path === 'string' && path) {
-        resolvedPath = path
-      } else {
-        resolvedPath = state.getCurrentPath(sessionIdOf(event))
+      // The session binding decides what gets written. The renderer's
+      // `save()` sends no arguments at all, so nothing legitimate is lost by
+      // dropping the preference for a renderer-supplied path — and preferring
+      // it let any client name another client's deck, overwrite it on disk and
+      // clear its dirty flag. A path that *is* supplied is accepted only as an
+      // echo: it must match the deck this session opened.
+      const resolvedPath = state.getCurrentPath(sessionIdOf(event))
+      if (typeof path === 'string' && path && path !== resolvedPath) {
+        return {
+          ok: false,
+          error: 'slides:save: path does not match the deck open in this session',
+        }
       }
       if (!resolvedPath) {
         /* No path AND no open-path session: there is nothing to serialise. The
