@@ -26,6 +26,7 @@ import { resolve, sep } from 'node:path'
 import type { UiHostContext } from '../host'
 import { MIME_TYPES } from '../mime'
 import { serveStaticFile } from '../static-serve'
+import { isAuthorizedRequest } from '../token-check'
 import { EMBED_BRIDGE_SOURCE } from './bridge'
 import { buildEmbedHtml, mintEmbedSessionId, parseEmbedQuery } from './page'
 
@@ -63,7 +64,6 @@ export function handleEmbed(
     response.writeHead(200, {
       'Content-Type': 'text/javascript; charset=utf-8',
       'Cache-Control': 'public, max-age=3600',
-      'Access-Control-Allow-Origin': '*',
     })
     response.end(EMBED_BRIDGE_SOURCE)
     return true
@@ -91,7 +91,7 @@ function serveEmbedPage(
   }
   // The wrapper carries the live credential, so it must never be cached — a
   // token rotation has to propagate to the next iframe load.
-  if (ctx.token && !isAuthorized(url, request, ctx.token)) {
+  if (ctx.token && !isAuthorizedRequest(url, request.headers, ctx.token)) {
     sendJson(response, 401, { error: { code: 'UNAUTHENTICATED', message: 'missing or invalid token' } })
     return true
   }
@@ -129,7 +129,6 @@ function serveEmbedPage(
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',
     'Content-Security-Policy': `frame-ancestors ${ctx.frameAncestors}`,
-    'Access-Control-Allow-Origin': '*',
   })
   response.end(request.method === 'HEAD' ? undefined : html)
   return true
@@ -202,14 +201,6 @@ export function resolveFrameAncestors(raw?: string): string {
   if (tokens.length === 1 && (tokens[0] === '*' || tokens[0] === "'none'")) return tokens[0]
   if (!tokens.every((token) => /^(?:'self'|https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?)$/.test(token))) return fallback
   return tokens.join(' ')
-}
-
-function isAuthorized(url: URL, request: IncomingMessage, token: string): boolean {
-  const bearer = request.headers.authorization
-  if (typeof bearer === 'string' && bearer.startsWith('Bearer ') && bearer.slice(7) === token) return true
-  if (url.searchParams.get('token') === token) return true
-  const headerToken = request.headers['x-genoffice-token']
-  return typeof headerToken === 'string' && headerToken === token
 }
 
 function extnameOf(filePath: string): string {

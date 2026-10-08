@@ -91,7 +91,6 @@ async function runStream(request: IncomingMessage, response: ServerResponse, ctx
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
-      'Access-Control-Allow-Origin': '*',
       'X-Request-Id': requestId,
     })
 

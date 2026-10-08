@@ -21,6 +21,7 @@
 /// so the wrapper sees every registration.
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -329,11 +330,25 @@ export interface BridgeServerOptions {
   nativeOnlyChannels?: Array<string | RegExp>
   bodyLimitBytes?: number
   log?: (message: string) => void
+  /**
+   * Credential required on `/api/ipc/**`. `undefined` (the default) mints a
+   * fresh random token; the string `''` disables the gate (tests only). The
+   * static `index.html` it serves carries the token in a `<meta>`, so the
+   * renderer picks it up with no code change.
+   */
+  token?: string
+  /**
+   * Extra origins allowed to read responses. Loopback origins that match the
+   * request's own `Host` are always allowed; `Access-Control-Allow-Origin` is
+   * never `*`.
+   */
+  allowedOrigins?: readonly string[]
 }
 
 export interface BridgeServer {
   port: number
   url: string
+  token: string
   close(): Promise<void>
 }
 
@@ -347,6 +362,97 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
   const body = JSON.stringify(payload)
   response.writeHead(status, { 'content-type': 'application/json' })
   response.end(body)
+}
+
+/**
+ * Constant-time credential compare. Digesting both sides first keeps
+ * `timingSafeEqual` from throwing on a length mismatch (which would itself
+ * leak the secret's length through timing).
+ */
+function tokenMatches(candidate: string, expected: string): boolean {
+  if (candidate.length === 0) return false
+  const a = createHash('sha256').update(candidate).digest()
+  const b = createHash('sha256').update(expected).digest()
+  return timingSafeEqual(a, b)
+}
+
+/** Bearer header, `?token=`, or `x-genoffice-token` — any one satisfies the gate. */
+function isAuthorizedRequest(
+  url: URL,
+  headers: IncomingMessage['headers'],
+  token: string,
+): boolean {
+  const bearer = headers.authorization
+  if (typeof bearer === 'string' && bearer.startsWith('Bearer ') && tokenMatches(bearer.slice(7), token)) {
+    return true
+  }
+  const query = url.searchParams.get('token')
+  if (query !== null && tokenMatches(query, token)) return true
+  const headerToken = headers['x-genoffice-token']
+  if (typeof headerToken === 'string' && tokenMatches(headerToken, token)) return true
+  return false
+}
+
+/** Host header must name the loopback interface — blocks DNS-rebinding attacks
+ * where an attacker domain resolves to 127.0.0.1 but keeps its own Host. */
+function isLoopbackHost(hostHeader: string | undefined): boolean {
+  if (typeof hostHeader !== 'string' || hostHeader === '') return false
+  let host = hostHeader
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']')
+    if (end === -1) return false
+    host = host.slice(1, end)
+  } else {
+    const colon = host.indexOf(':')
+    if (colon !== -1) host = host.slice(0, colon)
+  }
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost'
+}
+
+/** No `Origin` (curl, node, same-process) is fine; a foreign origin is not. A
+ * same-origin browser request matches the request's own `Host`. The host must
+ * be loopback, so a DNS-rebinding origin (whose Host is the attacker domain)
+ * is never reflected. */
+function isAllowedOrigin(request: IncomingMessage, allowedOrigins: readonly string[]): boolean {
+  const origin = request.headers.origin
+  if (origin === undefined) return true
+  if (origin === '' || origin === 'null') return false
+  const host = request.headers.host
+  if (!isLoopbackHost(host)) return false
+  if (allowedOrigins.includes(origin)) return true
+  return typeof host === 'string' && (origin === `http://${host}` || origin === `https://${host}`)
+}
+
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+}
+
+/** Insert the token meta as early as the document shape allows — after `</head>`,
+ * then `<head>`, then at the very front, so a headless fragment still works. */
+function injectTokenMeta(html: string, token: string): string {
+  const tag = `<meta name="genoffice-token" content="${escapeAttr(token)}">`
+  if (html.includes('</head>')) return html.replace('</head>', `${tag}</head>`)
+  if (html.includes('<head>')) return html.replace('<head>', `<head>${tag}`)
+  return tag + html
+}
+
+/** Reflect the caller's origin only when allowed; `*` is never sent, so a
+ * foreign page cannot read either the token meta or an API response. */
+function applyCors(
+  request: IncomingMessage,
+  response: ServerResponse,
+  allowedOrigins: readonly string[],
+): void {
+  const origin = request.headers.origin
+  if (typeof origin === 'string' && isAllowedOrigin(request, allowedOrigins)) {
+    response.setHeader('access-control-allow-origin', origin)
+    response.setHeader('vary', 'Origin')
+  }
+  response.setHeader(
+    'access-control-allow-headers',
+    'authorization, content-type, x-ipc-session, x-genoffice-token',
+  )
+  response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
 }
 
 function readBody(request: IncomingMessage, limitBytes: number): Promise<string> {
@@ -409,6 +515,9 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
   const nativeOnly = options.nativeOnlyChannels ?? []
   const hub = new SessionHub()
   const staticRoot = options.staticDir ? resolve(options.staticDir) : null
+  // `undefined` → mint a fresh secret; `''` → explicit opt-out (tests only).
+  const token = options.token ?? randomBytes(32).toString('hex')
+  const allowedOrigins = options.allowedOrigins ?? []
 
   const server = createServer((request, response) => {
     void handleRequest(request, response).catch((cause: unknown) => {
@@ -422,6 +531,13 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
 
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    applyCors(request, response, allowedOrigins)
+
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204)
+      response.end()
+      return
+    }
 
     if (url.pathname === '/api/ipc/health' && request.method === 'GET') {
       sendJson(response, 200, {
@@ -430,6 +546,33 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
         sessions: hub.sessionCount,
       })
       return
+    }
+
+    // The loopback bind is not a security boundary on its own: any web page can
+    // reach 127.0.0.1 and a DNS-rebinding page keeps its own Host. So `/api/ipc/**`
+    // is gated on a loopback Host, an allowed Origin, and the token — in that order.
+    if (url.pathname.startsWith('/api/ipc/')) {
+      if (!isLoopbackHost(request.headers.host)) {
+        sendJson(response, 403, {
+          error: { code: 'FORBIDDEN', message: 'bridge requests must target the loopback host' },
+        })
+        return
+      }
+      if (!isAllowedOrigin(request, allowedOrigins)) {
+        sendJson(response, 403, {
+          error: {
+            code: 'FORBIDDEN',
+            message: `origin not allowed: ${String(request.headers.origin)}`,
+          },
+        })
+        return
+      }
+      if (token && !isAuthorizedRequest(url, request.headers, token)) {
+        sendJson(response, 401, {
+          error: { code: 'UNAUTHENTICATED', message: 'missing or invalid bridge token' },
+        })
+        return
+      }
     }
 
     const invokeMatch = /^\/api\/ipc\/(.+)$/.exec(url.pathname)
@@ -539,9 +682,17 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
     const filePath = resolve(root, relative)
     if (filePath !== root && !filePath.startsWith(root + sep)) return false
     if (!existsSync(filePath) || !statSync(filePath).isFile()) return false
-    response.writeHead(200, {
-      'content-type': STATIC_MIME_TYPES[extname(filePath)] ?? 'application/octet-stream',
-    })
+    const contentType = STATIC_MIME_TYPES[extname(filePath)] ?? 'application/octet-stream'
+    // The web renderer reads `<meta name="genoffice-token">` (web-bridge.ts) and
+    // sends it as a Bearer on every invoke — injecting it here is what lets the
+    // bundled renderer work unchanged behind the new token gate.
+    if (token && contentType.startsWith('text/html')) {
+      const html = injectTokenMeta(readFileSync(filePath, 'utf8'), token)
+      response.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-store' })
+      response.end(html)
+      return true
+    }
+    response.writeHead(200, { 'content-type': contentType })
     createReadStream(filePath).pipe(response)
     return true
   }
@@ -555,6 +706,7 @@ export function createBridgeServer(options: BridgeServerOptions): Promise<Bridge
       resolvePromise({
         port,
         url: `http://127.0.0.1:${port}`,
+        token,
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
             server.close((cause) => (cause ? closeReject(cause) : closeResolve()))
@@ -572,10 +724,14 @@ export interface HttpIpcBridgeOptions {
   nativeOnlyChannels?: Array<string | RegExp>
   bodyLimitBytes?: number
   log?: (message: string) => void
+  /** See `BridgeServerOptions.token`. Omit to mint one. */
+  token?: string
+  allowedOrigins?: readonly string[]
 }
 
 export interface HttpIpcBridge {
   port: number
+  token: string
   close(): Promise<void>
 }
 

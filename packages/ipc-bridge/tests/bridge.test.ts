@@ -3,6 +3,7 @@
 /// contract is exercised exactly the way the web version drives it.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import http from 'node:http'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -134,6 +135,8 @@ describe('bridge server over real HTTP', () => {
       registry,
       port: 0,
       nativeOnlyChannels: [/^dialog:/, 'test:nope'],
+      // Gate off for these transport-focused cases; the gate has its own suite.
+      token: '',
     })
   })
 
@@ -263,7 +266,7 @@ describe('attachIpcMain wraps an electron-shaped ipcMain', () => {
     expect(ipcMain.handles.has('app:lang')).toBe(true)
     expect(registry.handlerFor('app:lang')).toBeDefined()
 
-    const server = await createBridgeServer({ registry, port: 0 })
+    const server = await createBridgeServer({ registry, port: 0, token: '' })
     const language = await fetch(invokeUrl(server.port, 'app:lang'), { method: 'POST', body: '{}' })
     expect(((await language.json()) as { result: string }).result).toBe('zh')
 
@@ -308,7 +311,7 @@ describe('attachIpcMain wraps an electron-shaped ipcMain', () => {
 describe('installHttpIpcBridge (the app one-liner)', () => {
   it('captures registrations made through the wrapped ipcMain and serves them over HTTP', async () => {
     const ipcMain = new FakeIpcMain()
-    const bridge = await installHttpIpcBridge({ ipcMain, port: 0 })
+    const bridge = await installHttpIpcBridge({ ipcMain, port: 0, token: '' })
     expect(bridge).not.toBeNull()
     ipcMain.handle('late:channel', (_event, value: unknown) => ({ got: value }))
     const response = await fetch(invokeUrl(bridge!.port, 'late:channel'), {
@@ -320,7 +323,7 @@ describe('installHttpIpcBridge (the app one-liner)', () => {
   })
 
   it('returns null instead of throwing when the port is already taken', async () => {
-    const first = await installHttpIpcBridge({ ipcMain: new FakeIpcMain(), port: 0 })
+    const first = await installHttpIpcBridge({ ipcMain: new FakeIpcMain(), port: 0, token: '' })
     const busy = await installHttpIpcBridge({
       ipcMain: new FakeIpcMain(),
       port: first!.port,
@@ -338,7 +341,7 @@ describe('static hosting (production web form)', () => {
   beforeAll(() => {
     staticDir = join(tmpdir(), `ipc-bridge-static-${Date.now()}`)
     mkdirSync(staticDir, { recursive: true })
-    writeFileSync(join(staticDir, 'index.html'), '<html><body>web-docs</body></html>')
+    writeFileSync(join(staticDir, 'index.html'), '<html><head></head><body>web-docs</body></html>')
     mkdirSync(join(staticDir, 'assets'))
     writeFileSync(join(staticDir, 'assets', 'app.js'), 'console.log(1)')
   })
@@ -353,10 +356,14 @@ describe('static hosting (production web form)', () => {
       registry: new IpcHandlerRegistry(),
       port: 0,
       staticDir,
+      token: 'static-secret',
     })
     const root = await fetch(`http://127.0.0.1:${server.port}/`)
     expect(root.headers.get('content-type')).toContain('text/html')
-    expect(await root.text()).toContain('web-docs')
+    const html = await root.text()
+    expect(html).toContain('web-docs')
+    // The renderer reads this meta and sends it as a Bearer — no renderer change.
+    expect(html).toContain('<meta name="genoffice-token" content="static-secret">')
     const asset = await fetch(`http://127.0.0.1:${server.port}/assets/app.js`)
     expect(asset.headers.get('content-type')).toContain('text/javascript')
   })
@@ -366,5 +373,110 @@ describe('static hosting (production web form)', () => {
       signal: AbortSignal.timeout(5_000),
     })
     expect(response.status).toBe(404)
+  })
+})
+
+describe('token + origin gate (loopback is not a boundary)', () => {
+  let server: BridgeServer
+
+  /** Raw http.request so forbidden-headers restrictions never apply. */
+  function rawRequest(
+    port: number,
+    path: string,
+    headers: Record<string, string> = {},
+  ): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const request = http.request(
+        { host: '127.0.0.1', port, path, method: 'POST', headers },
+        (response) => {
+          response.resume()
+          response.on('end', () =>
+            resolvePromise({ status: response.statusCode ?? 0, headers: response.headers }),
+          )
+        },
+      )
+      request.on('error', rejectPromise)
+      request.end('{}')
+    })
+  }
+
+  beforeAll(async () => {
+    const registry = new IpcHandlerRegistry()
+    registry.registerHandle('test:echo', (_event, value: unknown) => value)
+    server = await createBridgeServer({ registry, port: 0, token: 'bridge-secret' })
+  })
+
+  afterAll(async () => {
+    await server.close()
+  })
+
+  it('rejects an invoke with no token (401)', async () => {
+    const response = await fetch(invokeUrl(server.port, 'test:echo'), { method: 'POST', body: '{}' })
+    expect(response.status).toBe(401)
+  })
+
+  it('accepts the token by Bearer header or ?token=', async () => {
+    const viaQuery = await fetch(`${invokeUrl(server.port, 'test:echo')}?token=bridge-secret`, {
+      method: 'POST',
+      body: JSON.stringify({ args: ['ok'] }),
+    })
+    expect(viaQuery.status).toBe(200)
+    const viaHeader = await fetch(invokeUrl(server.port, 'test:echo'), {
+      method: 'POST',
+      headers: { authorization: 'Bearer bridge-secret' },
+      body: JSON.stringify({ args: ['ok'] }),
+    })
+    expect(viaHeader.status).toBe(200)
+  })
+
+  it('rejects a foreign Origin with 403 even when the token is valid', async () => {
+    const { status } = await rawRequest(server.port, '/api/ipc/test:echo', {
+      origin: 'https://evil.example',
+      authorization: 'Bearer bridge-secret',
+    })
+    expect(status).toBe(403)
+  })
+
+  it('rejects a non-loopback Host with 403 (DNS rebinding)', async () => {
+    const { status } = await rawRequest(server.port, '/api/ipc/test:echo', {
+      host: 'evil.example',
+      authorization: 'Bearer bridge-secret',
+    })
+    expect(status).toBe(403)
+  })
+
+  it('never answers with Access-Control-Allow-Origin: *', async () => {
+    const { headers } = await rawRequest(server.port, '/api/ipc/test:echo', {
+      origin: 'https://evil.example',
+      authorization: 'Bearer bridge-secret',
+    })
+    expect(headers['access-control-allow-origin']).toBeUndefined()
+  })
+
+  it('does not reflect a rebinding origin whose Host is the attacker domain', async () => {
+    // Host and Origin agree (`http://evil.example`), which is exactly the shape
+    // a rebinding page presents — the loopback-Host requirement must reject it.
+    const { headers } = await rawRequest(server.port, '/api/ipc/test:echo', {
+      host: 'evil.example',
+      origin: 'http://evil.example',
+      authorization: 'Bearer bridge-secret',
+    })
+    expect(headers['access-control-allow-origin']).toBeUndefined()
+  })
+
+  it('reflects the loopback origin and sets Vary: Origin', async () => {
+    const origin = `http://127.0.0.1:${server.port}`
+    const { status, headers } = await rawRequest(server.port, '/api/ipc/test:echo', {
+      origin,
+      authorization: 'Bearer bridge-secret',
+    })
+    expect(status).toBe(200)
+    expect(headers['access-control-allow-origin']).toBe(origin)
+    expect(headers['vary']).toBe('Origin')
+  })
+
+  it('keeps /api/ipc/health open', async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/ipc/health`)
+    expect(response.status).toBe(200)
   })
 })

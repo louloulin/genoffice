@@ -37,6 +37,7 @@ import { decodeTransportValue, encodeTransportValue } from './codec'
 import { ipcErrorStatus, sendIpcErrorPayload } from './ipc-errors'
 import { buildChannelsView } from './channels-view'
 import { MIME_TYPES } from './mime'
+import { isAuthorizedRequest } from './token-check'
 
 export interface UiHostContext {
   registry: Registry
@@ -57,6 +58,14 @@ export interface UiHostContext {
   ai: AiSettings
   /** When set, /api/** must carry it (Bearer header or ?token=). */
   token: string | null
+  /**
+   * CORS allowlist for cross-origin callers. Same-origin requests (Origin ===
+   * the request's own Host) are always reflected; `*` is never sent, so a
+   * cross-origin page can neither read responses nor steal the injected token.
+   */
+  allowedOrigins: readonly string[]
+  /** True when the host binds loopback only and must reject foreign Hosts. */
+  loopbackOnly: boolean
   apps: readonly UiApp[]
   basePath: string
   /** Validated `frame-ancestors` value sent with every `/embed/:docId` page. */
@@ -91,6 +100,17 @@ export interface CreateHostContextOptions {
    * `error` frame naming what is missing — never a 404.
    */
   ai?: AiHostSettings
+  /**
+   * Extra origins allowed to read this host's responses cross-origin. Same-
+   * origin is always allowed; `*` never is. Only needed when a genuinely
+   * cross-origin page (not the loopback-served renderer) must call `/api/**`.
+   */
+  allowedOrigins?: readonly string[]
+  /**
+   * Internal: set by `startUiHost` (which binds loopback only), never by
+   * `attachUi`. Rejects any request whose `Host` is not the loopback interface.
+   */
+  loopbackOnly?: boolean
 }
 
 export function createHostContext(options: CreateHostContextOptions = {}): UiHostContext {
@@ -107,6 +127,8 @@ export function createHostContext(options: CreateHostContextOptions = {}): UiHos
     embed: createEmbedState(),
     ai: resolveAiHostSettings(options.ai),
     token: options.token ?? null,
+    allowedOrigins: options.allowedOrigins ?? [],
+    loopbackOnly: options.loopbackOnly ?? false,
     apps: options.apps ?? ['docs', 'sheets', 'slides', 'pdf'],
     basePath,
     frameAncestors: resolveFrameAncestors(options.frameAncestors),
@@ -145,7 +167,19 @@ export async function handleUiRequest(
     }
   }
 
-  setCors(response)
+  // A loopback-only bind (startUiHost) must reject any Host that is not the
+  // loopback interface: a DNS-rebinding page reaches 127.0.0.1 with its own
+  // Host, and its Origin would otherwise match that Host and be reflected.
+  // A host-mounted server (attachUi) is deliberately exempt — it trusts its
+  // own front door and its operator's auth.
+  if (ctx.loopbackOnly && !isLoopbackHost(request.headers.host)) {
+    sendJson(response, 403, {
+      error: { code: 'FORBIDDEN', message: 'host must be the loopback interface' },
+    })
+    return { handled: true }
+  }
+
+  setCors(request, response, ctx)
 
   if (path === '/health' && (request.method === 'GET' || request.method === 'HEAD')) {
     sendJson(response, 200, { ok: true })
@@ -171,7 +205,7 @@ export async function handleUiRequest(
 
   // /api/** is the privilege boundary. Loopback binding is the primary
   // isolation; an explicit token additionally gates every API request.
-  if (ctx.token && !isAuthorized(url, request.headers, ctx.token)) {
+  if (ctx.token && !isAuthorizedRequest(url, request.headers, ctx.token)) {
     sendJson(response, 401, { error: { code: 'UNAUTHENTICATED', message: 'missing or invalid token' } })
     return { handled: true }
   }
@@ -188,7 +222,7 @@ export async function handleUiRequest(
       prefix: url.searchParams.get('prefix') ?? '',
       includeCounts: url.searchParams.get('counts') === '1',
     })
-    response.writeHead(view.status, { 'Content-Type': 'application/json', ...corsHeader() })
+    response.writeHead(view.status, { 'Content-Type': 'application/json', ...corsHeaders(request, ctx) })
     response.end(view.body)
     return { handled: true }
   }
@@ -207,7 +241,7 @@ export async function handleUiRequest(
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
-      ...corsHeader(),
+      ...corsHeaders(request, ctx),
     })
     response.write(': connected\n\n')
     ctx.sse.attach(session, response)
@@ -354,7 +388,7 @@ function serveAppStatic(
         'Content-Type': MIME_TYPES[ext] ?? 'text/html; charset=utf-8',
         // Token-injected HTML is a live-credential page: never cacheable.
         'Cache-Control': ctx.token ? 'no-store' : 'no-cache',
-        ...corsHeader(),
+        ...corsHeaders(request, ctx),
       })
       response.end(html.replace(/<\/head>/i, (match) => `${tags}${match}`))
       return Promise.resolve()
@@ -383,11 +417,11 @@ function serveAppStatic(
     return Promise.resolve()
   }
   const html = readFileSync(indexPath, 'utf-8')
-  const tags = ctx.token ? `\n<meta name="genoffice-token" content="${ctx.token.replace(/"/g, '&quot;')}">` : ''
+  const tags = ctx.token ? `\n<meta name="genoffice-token" content="${escapeAttr(ctx.token)}">` : ''
   response.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-cache',
-    ...corsHeader(),
+    ...corsHeaders(request, ctx),
   })
   response.end(html.replace(/<\/head>/i, (match) => `${tags}${match}`))
   return Promise.resolve()
@@ -436,7 +470,7 @@ export interface StartUiHostOptions extends CreateHostContextOptions {
 
 export async function startUiHost(options: StartUiHostOptions = {}): Promise<UiHostHandle> {
   const host = options.host ?? '127.0.0.1'
-  const context = createHostContext(options)
+  const context = createHostContext({ ...options, loopbackOnly: true })
   const server = createServer((request, response) => {
     void handleUiRequest(request, response, context).catch(() => {
       if (!response.headersSent) {
@@ -505,10 +539,17 @@ export function attachUi(
   >
   server.removeAllListeners('request')
   const ours = (request: IncomingMessage, response: ServerResponse): void => {
-    void handleUiRequest(request, response, context).then((result) => {
-      if (result.handled) return
-      for (const listener of existing) listener(request, response)
-    })
+    void handleUiRequest(request, response, context)
+      .then((result) => {
+        if (result.handled) return
+        for (const listener of existing) listener(request, response)
+      })
+      .catch(() => {
+        if (!response.headersSent) {
+          response.writeHead(500, { 'Content-Type': 'application/json' })
+        }
+        response.end(JSON.stringify({ error: { code: 'INTERNAL', message: 'internal host error' } }))
+      })
   }
   server.on('request', ours)
   return {
@@ -528,23 +569,50 @@ function normalizeBasePath(basePath: string): string {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
 }
 
-function setCors(response: ServerResponse): void {
-  response.setHeader('Access-Control-Allow-Origin', '*')
+/** Host header must name the loopback interface (blocks DNS-rebinding, where an
+ * attacker domain resolves to 127.0.0.1 but keeps its own Host). */
+function isLoopbackHost(hostHeader: string | undefined): boolean {
+  if (typeof hostHeader !== 'string' || hostHeader === '') return false
+  let host = hostHeader
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']')
+    if (end === -1) return false
+    host = host.slice(1, end)
+  } else {
+    const colon = host.indexOf(':')
+    if (colon !== -1) host = host.slice(0, colon)
+  }
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost'
+}
+
+/**
+ * The one origin to reflect, or null. `*` is never returned: the served HTML
+ * carries the live token, so a cross-origin page must never be able to read a
+ * response. Same-origin (Origin === this request's own authority) and
+ * explicitly allowed origins qualify.
+ */
+function allowedOrigin(request: IncomingMessage, ctx: UiHostContext): string | null {
+  const origin = request.headers.origin
+  if (typeof origin !== 'string' || origin === '' || origin === 'null') return null
+  if (ctx.allowedOrigins.includes(origin)) return origin
+  const host = request.headers.host
+  if (typeof host === 'string' && (origin === `http://${host}` || origin === `https://${host}`)) {
+    return origin
+  }
+  return null
+}
+
+function corsHeaders(request: IncomingMessage, ctx: UiHostContext): Record<string, string> {
+  const origin = allowedOrigin(request, ctx)
+  return origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {}
+}
+
+function setCors(request: IncomingMessage, response: ServerResponse, ctx: UiHostContext): void {
+  for (const [name, value] of Object.entries(corsHeaders(request, ctx))) {
+    response.setHeader(name, value)
+  }
   response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, x-ipc-session')
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-}
-
-function corsHeader(): Record<string, string> {
-  return { 'Access-Control-Allow-Origin': '*' }
-}
-
-function isAuthorized(url: URL, headers: IncomingMessage['headers'], token: string): boolean {
-  const bearer = headers.authorization
-  if (typeof bearer === 'string' && bearer.startsWith('Bearer ') && bearer.slice(7) === token) return true
-  if (url.searchParams.get('token') === token) return true
-  const headerToken = headers['x-genoffice-token']
-  if (typeof headerToken === 'string' && headerToken === token) return true
-  return false
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {

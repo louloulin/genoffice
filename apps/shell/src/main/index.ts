@@ -4484,6 +4484,10 @@ void installHttpIpcBridge({
   ipcMain,
   port: Number(process.env.SHELL_IPC_PORT) || 5299,
   staticDir: resolve(__dirname, '../renderer'),
+  // Loopback is not a security boundary: the served index.html carries this
+  // token as a <meta>, the web renderer reads it (web-bridge.ts) and sends it
+  // as a Bearer on every /api/ipc call. Omit the env var to mint one per run.
+  token: process.env.SHELL_IPC_TOKEN,
   // Every channel below now has a browser equivalent in the renderer
   // web-bridges (home/tabs overrides in shell, editor overrides in the docs /
   // sheets / slides / markdown tabs), so nothing is blocked over HTTP anymore.

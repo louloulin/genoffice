@@ -174,6 +174,51 @@ describe('startUiHost', () => {
     expect(viaHeader.status).toBe(200)
   })
 
+  it('never reflects a cross-origin Origin, so a foreign page cannot read the body', async () => {
+    const h = await bootHost()
+    const response = await fetch(`${h.url}/docs`, { headers: { origin: 'https://evil.example' } })
+    expect(response.status).toBe(200)
+    // The app page carries the token meta. With no ACAO the browser refuses to
+    // hand the body to the cross-origin reader — the token stays on the origin.
+    expect(response.headers.get('access-control-allow-origin')).toBeNull()
+  })
+
+  it('reflects the same origin and advertises Vary: Origin', async () => {
+    const h = await bootHost()
+    const own = `http://127.0.0.1:${h.port}`
+    const response = await fetch(`${h.url}/docs`, { headers: { origin: own } })
+    expect(response.headers.get('access-control-allow-origin')).toBe(own)
+    expect(response.headers.get('vary')).toBe('Origin')
+  })
+
+  it('honours an explicit allowedOrigins entry', async () => {
+    host = await startUiHost({
+      assetsDir: bootAssetsRoot(),
+      allowedOrigins: ['https://host.example'],
+    })
+    const response = await fetch(`${host.url}/docs`, { headers: { origin: 'https://host.example' } })
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://host.example')
+  })
+
+  it('rejects a non-loopback Host on a loopback bind (DNS rebinding)', async () => {
+    const h = await bootHost()
+    const http = await import('node:http')
+    const status = await new Promise<number>((resolvePromise, rejectPromise) => {
+      // fetch() forbids overriding Host, so drive a raw request whose Host names
+      // an attacker domain while the socket still lands on 127.0.0.1.
+      const request = http.request(
+        { host: '127.0.0.1', port: h.port, path: '/api/channels', headers: { host: 'evil.example' } },
+        (response) => {
+          response.resume()
+          response.on('end', () => resolvePromise(response.statusCode ?? 0))
+        },
+      )
+      request.on('error', rejectPromise)
+      request.end()
+    })
+    expect(status).toBe(403)
+  })
+
   it('exposes /api/channels with a namespace histogram on ?counts=1', async () => {
     const h = await bootHost()
     const view = (await (await fetch(`${h.url}/api/channels?counts=1`)).json()) as {

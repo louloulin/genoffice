@@ -100,10 +100,10 @@ export interface HttpIpcTransportOptions {
   /** Optional URL path prefix when the web server is reverse-proxied below a subpath. */
   pathPrefix?: string
   /**
-   * Bearer token for the auth gate. When the server is started with
-   * `WEB_TOKEN=…`, every IPC call must carry the same value — the server
-   * injects it into the served HTML as `window.__genofficeAuth`, and the
-   * renderer's web-bridge reads it from there and passes it here. The
+   * Bearer token for the auth gate. When the server requires one, every IPC
+   * call must carry the same value. Defaults to the token the server injected
+   * into the served HTML as `<meta name="genoffice-token">` — so a renderer
+   * served by the bridge authenticates with no per-bundle plumbing. The
    * transport sends it as `Authorization: Bearer …` for fetch requests and
    * as a `?token=…` query parameter for the EventSource stream (which the
    * browser API cannot carry custom headers on).
@@ -138,12 +138,25 @@ function readInjectedEmbedSession(): string | null {
   return value ? value : null
 }
 
+/**
+ * The auth token the server baked into this page, when it served one. Both the
+ * ipc-bridge static host and the web-server inject `<meta name="genoffice-token">`;
+ * reading it here is what lets a served renderer authenticate without any
+ * bundle-specific wiring. Absent in Electron and on unauthenticated boots.
+ */
+function readInjectedToken(): string | null {
+  if (typeof document === 'undefined') return null
+  const el = document.querySelector('meta[name="genoffice-token"]')
+  const value = el?.getAttribute('content')
+  return value ? value : null
+}
+
 export function createHttpIpcTransport(options: HttpIpcTransportOptions = {}): IpcTransport {
   const base = (options.baseUrl ?? '').replace(/\/+$/, '')
   const pathPrefix = (options.pathPrefix ?? '').replace(/^\/+|\/+$/g, '')
   const apiPrefix = pathPrefix ? `/${pathPrefix}` : ''
   const session = options.session ?? readInjectedEmbedSession() ?? createSessionId()
-  const token = options.token
+  const token = options.token ?? readInjectedToken() ?? undefined
   const pushHub = createPushHub(base, apiPrefix, session, token)
 
   async function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
