@@ -102,6 +102,16 @@ check('根 package.json 与 VERSION 一致', () => {
   return actual
 })
 
+check('office-ai-ui-assets 的版本与 VERSION 一致', () => {
+  // 资产按 app 名 + 编译产物与 office-ai 配对：混装不同 CalVer 会让 renderer
+  // 调用 host 没注册的通道，而这类故障只在别人的浏览器里表现为空白编辑器。
+  const actual = pkgVersion('packages/office-ai-ui-assets/package.json')
+  if (actual !== version) {
+    throw new Error(`是 "${actual}"，VERSION 是 "${version}" —— 用 node scripts/bump-version.mjs 同步`)
+  }
+  return actual
+})
+
 check('version.ts 的 WEB_SERVER_VERSION 与 VERSION 一致', () => {
   const src = read('apps/web-server/src/common/version.ts')
   const m = /WEB_SERVER_VERSION\s*=\s*'([^']+)'/.exec(src)

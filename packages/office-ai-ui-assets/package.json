@@ -1,0 +1,21 @@
+{
+  "name": "@genoffice/office-ai-ui-assets",
+  "version": "2026.10.06",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Compiled renderer bundles for @genoffice/office-ai's UI host (docs/sheets/slides/pdf). Consumed by assets.ts tier 2 — it ships no code, only the built apps/*/out/renderer directories.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "docs",
+    "sheets",
+    "slides",
+    "pdf"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node scripts/build-assets.mjs",
+    "build:all": "npm run build"
+  }
+}

@@ -46,6 +46,8 @@ jobs:
           - @genoffice/ipc-bridge
           - @genoffice/i18n
           - @genoffice/ui
+          - @genoffice/office-ai
+          - @genoffice/office-ai-ui-assets
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,6 +65,18 @@ jobs:
 
       - name: Build
         run: npm run build:all --workspaces --if-present
+
+      # office-ai and its asset package are the only two that publish build
+      # output rather than TypeScript source, so they build here instead of in
+      # `build:all` — that script does not exist in any workspace, and adding it
+      # would rebuild every app for every matrix leg.
+      - name: Build office-ai
+        if: matrix.package == '@genoffice/office-ai'
+        run: npm run build -w @genoffice/office-ai
+
+      - name: Stage office-ai UI assets
+        if: matrix.package == '@genoffice/office-ai-ui-assets'
+        run: npm run build:ui-assets
 
       - name: Typecheck
         run: npm run typecheck --workspaces --if-present

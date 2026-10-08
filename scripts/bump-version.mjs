@@ -128,6 +128,9 @@ const syncPoints = [
   // 必须与它逐字相等（tests/version-sot.test.ts 钉住这条），所以它是首要同步点。
   { path: 'apps/web-server/package.json', rewrite: (t) => rewritePackageJson(t, currentRaw, target, 'apps/web-server/package.json') },
   { path: 'package.json', rewrite: (t) => rewritePackageJson(t, currentRaw, target, 'package.json') },
+  // 与 office-ai 的资产按 app 名 + 编译产物配对，跨版本混装会让 renderer 调用
+  // host 没有的通道，所以它跟 CalVer 走，不跟 office-ai 的 0.1.0 走。
+  { path: 'packages/office-ai-ui-assets/package.json', rewrite: (t) => rewritePackageJson(t, currentRaw, target, 'packages/office-ai-ui-assets/package.json') },
 ]
 
 // ---------------------------------------------------------------- git

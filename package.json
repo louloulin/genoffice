@@ -58,6 +58,7 @@
     "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @genoffice/shell",
     "build:sdk": "npm run build -w @genoffice/web-sdk",
     "build:office-ai": "npm run build -w @genoffice/office-ai",
+    "build:ui-assets": "npm run build -w @genoffice/docs && npm run build -w @genoffice/sheets && npm run build -w @genoffice/slides && npm run build -w @genoffice/pdf && npm run build -w @genoffice/office-ai-ui-assets",
     "build:renderers": "node tools/build-web-renderers.mjs",
     "dev:web": "npm run build:sdk && npm run build:renderers && npm run dev -w @genoffice/web-server",
     "build:web": "npm run build:sdk && npm run build:renderers && npm run bundle -w @genoffice/web-server",

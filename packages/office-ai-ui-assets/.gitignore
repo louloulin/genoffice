@@ -1,0 +1,9 @@
+# The four app directories are build output copied in by scripts/build-assets.mjs,
+# never committed. Only package.json + scripts/ live in git.
+/docs/
+/sheets/
+/slides/
+/pdf/
+
+# npm pack artifacts
+*.tgz
