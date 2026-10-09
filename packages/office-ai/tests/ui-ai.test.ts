@@ -53,7 +53,7 @@ async function bootHost(options: StartUiHostOptions = {}): Promise<UiHostHandle>
   for (const app of ['docs', 'sheets', 'slides', 'pdf']) {
     symlinkSync(join(RENDERER_ROOT, app, 'out', 'renderer'), join(root, app), 'dir')
   }
-  host = await startUiHost({ assetsDir: root, ...options })
+  host = await startUiHost({ assetsDir: root, token: '', ...options })
   return host
 }
 

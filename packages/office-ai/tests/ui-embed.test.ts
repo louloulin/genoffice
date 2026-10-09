@@ -23,7 +23,7 @@ async function bootHost(options: { token?: string; frameAncestors?: string } = {
   for (const app of ['docs', 'sheets', 'slides', 'pdf']) {
     symlinkSync(join(RENDERER_ROOT, app, 'out', 'renderer'), join(root, app), 'dir')
   }
-  host = await startUiHost({ assetsDir: root, ...options })
+  host = await startUiHost({ assetsDir: root, token: '', ...options })
   return host
 }
 
@@ -167,7 +167,7 @@ describe('embed page (M4)', () => {
   it('falls back to an available app rather than serving one that is not installed', async () => {
     const root = mkdtempSync(join(tmpdir(), 'office-ai-embed-docs-'))
     symlinkSync(join(RENDERER_ROOT, 'docs', 'out', 'renderer'), join(root, 'docs'), 'dir')
-    host = await startUiHost({ assetsDir: root, apps: ['docs'] })
+    host = await startUiHost({ assetsDir: root, apps: ['docs'], token: '' })
     expect(readEmbedConfig(await (await get('/embed/a.docx?app=sheets')).text()).app).toBe('docs')
   })
 
@@ -364,8 +364,8 @@ describe('sdk:command dispatch (M4)', () => {
     for (const app of ['docs', 'sheets', 'slides', 'pdf']) {
       symlinkSync(join(RENDERER_ROOT, app, 'out', 'renderer'), join(root, app), 'dir')
     }
-    const first = await startUiHost({ assetsDir: root })
-    const second = await startUiHost({ assetsDir: root })
+    const first = await startUiHost({ assetsDir: root, token: '' })
+    const second = await startUiHost({ assetsDir: root, token: '' })
     try {
       const invoke = async (h: UiHostHandle, name: string, args: unknown, docId: string) => {
         const response = await fetch(`${h.url}/api/ipc/sdk%3Acommand`, {

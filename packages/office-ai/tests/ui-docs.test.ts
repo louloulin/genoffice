@@ -17,7 +17,7 @@ async function bootHost(): Promise<UiHostHandle> {
   const { tmpdir } = await import('node:os')
   const root = mkdtempSync(join(tmpdir(), 'office-ai-docs-'))
   symlinkSync(DOCS_RENDERER_DIR, join(root, 'docs'), 'dir')
-  host = await startUiHost({ assetsDir: root })
+  host = await startUiHost({ assetsDir: root, token: '' })
   return host
 }
 

@@ -120,6 +120,16 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
     try { return new URL('../' + relPath, document.baseURI).toString(); } catch (e) { /* fall through */ }
     return '/' + relPath;
   }
+  // The loopback host token, when the serving host injected one. Sent as
+  // x-genoffice-token on the fetch (a custom header the EventSource API cannot
+  // carry) and as ?token= on the SSE stream.
+  function readEmbedToken() {
+    try {
+      var m = document.querySelector('meta[name="genoffice-token"]');
+      var v = m ? m.getAttribute('content') : null;
+      return v || null;
+    } catch (e) { return null; }
+  }
   function post(name, payload) {
     try {
       // Carry any nonce on the OUTER envelope as well as the inner body: the
@@ -172,6 +182,8 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
     if (docId) envelope.docId = docId;
     var headers = { 'content-type': 'application/json' };
     if (sessionId) headers['x-ipc-session'] = sessionId;
+    var token = readEmbedToken();
+    if (token) headers['x-genoffice-token'] = token;
     fetchFn(apiUrl('api/ipc/' + encodeURIComponent(SDK_COMMAND_CHANNEL)), {
       method: 'POST',
       headers: headers,
@@ -262,7 +274,10 @@ export const EMBED_BRIDGE_SOURCE = `(function () {
     if (typeof EventSource === 'undefined') return;
     pushSubscribed = true;
     try {
-      var es = new EventSource(apiUrl('api/ipc/events') + '?session=' + encodeURIComponent(cfg.sessionId));
+      var esUrl = apiUrl('api/ipc/events') + '?session=' + encodeURIComponent(cfg.sessionId);
+      var token = readEmbedToken();
+      if (token) esUrl += '&token=' + encodeURIComponent(token);
+      var es = new EventSource(esUrl);
       es.onmessage = function (ev) {
         var frame;
         try { frame = JSON.parse(ev.data); } catch (e) { return; }

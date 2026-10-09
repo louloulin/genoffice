@@ -74,6 +74,17 @@ export interface UiHostContext {
 
 export interface CreateHostContextOptions {
   assetsDir?: string
+  /**
+   * Loopback API auth token.
+   *
+   * A loopback self-bind (`startUiHost`) mints a random one when this is
+   * omitted, so the host is authenticated by default with no configuration:
+   * the token is injected into every served page as
+   * `<meta name="genoffice-token">` and the renderer transports read it back.
+   * Pass `''` to disable the gate (tests, local e2e). An operator-mounted
+   * server (`attachUi`) trusts its own front door, so its token stays `null`
+   * unless the operator sets one.
+   */
   token?: string
   apps?: readonly UiApp[]
   basePath?: string
@@ -126,7 +137,7 @@ export function createHostContext(options: CreateHostContextOptions = {}): UiHos
     slides: createSlidesState(),
     embed: createEmbedState(),
     ai: resolveAiHostSettings(options.ai),
-    token: options.token ?? null,
+    token: options.token ?? (options.loopbackOnly ? randomBytes(32).toString('hex') : null),
     allowedOrigins: options.allowedOrigins ?? [],
     loopbackOnly: options.loopbackOnly ?? false,
     apps: options.apps ?? ['docs', 'sheets', 'slides', 'pdf'],
@@ -621,7 +632,10 @@ function setCors(request: IncomingMessage, response: ServerResponse, ctx: UiHost
   for (const [name, value] of Object.entries(corsHeaders(request, ctx))) {
     response.setHeader(name, value)
   }
-  response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, x-ipc-session')
+  response.setHeader(
+    'Access-Control-Allow-Headers',
+    'Authorization, Content-Type, x-ipc-session, x-genoffice-token',
+  )
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
 }
 

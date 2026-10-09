@@ -20,6 +20,15 @@ export interface WebTransportOptions {
   baseUrl: string
   /** API key for authentication (optional) */
   apiKey?: string | undefined
+  /**
+   * Loopback host token (optional). Sent as `x-genoffice-token`, a separate
+   * header from `apiKey`'s `Authorization`, so a self-bound office host that
+   * gates `/api/**` behind its own token still accepts the request while the
+   * provider apiKey travels unchanged. Defaults to the token the host injected
+   * into the served page as `<meta name="genoffice-token">`, so a loopback-
+   * served renderer authenticates with no per-bundle plumbing.
+   */
+  token?: string | undefined
   /** Request timeout in ms */
   timeout?: number | undefined
   /**
@@ -45,6 +54,20 @@ export function isWebEnvironment(): boolean {
 }
 
 /**
+ * The host auth token baked into this page, when the serving host injected one
+ * (`<meta name="genoffice-token">`). The self-bound office host and the
+ * ipc-bridge static host both inject it; reading it here is what lets a
+ * loopback-served renderer reach a token-gated `/api/ai/stream` with no
+ * bundle-specific wiring. Absent in Electron and on unauthenticated boots.
+ */
+function readInjectedToken(): string | undefined {
+  if (typeof document === 'undefined') return undefined
+  const el = document.querySelector('meta[name="genoffice-token"]')
+  const value = el?.getAttribute('content')
+  return value ? value : undefined
+}
+
+/**
  * 创建 Web Transport
  * 
  * 使用 HTTP POST 进行 IPC 调用
@@ -57,12 +80,16 @@ export function createWebTransport(options: WebTransportOptions): AgentTransport
   // does not exist. They stay on the options type for parity with the desktop
   // transport.
   const { baseUrl, apiKey, timeout = DEFAULT_TIMEOUT } = options
+  const token = options.token ?? readInjectedToken()
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`
+  }
+  if (token) {
+    headers['x-genoffice-token'] = token
   }
 
   return {

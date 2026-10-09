@@ -36,7 +36,7 @@ let host: UiHostHandle | null = null
 async function bootHost(): Promise<UiHostHandle> {
   const root = mkdtempSync(join(tmpdir(), 'office-ai-pdf-'))
   if (HAS_PDF_RENDERER) symlinkSync(PDF_RENDERER_DIR, join(root, 'pdf'), 'dir')
-  host = await startUiHost({ assetsDir: root })
+  host = await startUiHost({ assetsDir: root, token: '' })
   registerPdfHandlers(host.context.registry, host.context.workspace)
   return host
 }

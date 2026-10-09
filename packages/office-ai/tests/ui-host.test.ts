@@ -24,7 +24,9 @@ function bootAssetsRoot(): string {
 }
 
 async function bootHost(): Promise<UiHostHandle> {
-  host = await startUiHost({ assetsDir: bootAssetsRoot() })
+  // token: '' is the escape valve: these tests exercise static serving and
+  // routing, not the auth gate, which has its own cases below.
+  host = await startUiHost({ assetsDir: bootAssetsRoot(), token: '' })
   return host
 }
 
@@ -172,6 +174,22 @@ describe('startUiHost', () => {
       headers: { authorization: 'Bearer sekret' },
     })
     expect(viaHeader.status).toBe(200)
+  })
+
+  it('mints and injects a token on a loopback bind, so zero-config is gated', async () => {
+    // No token passed: startUiHost mints one. The served page carries it as a
+    // meta, the renderer reads it back, and /api/** is closed to everyone else.
+    host = await startUiHost({ assetsDir: bootAssetsRoot() })
+    const token = host.context.token
+    expect(typeof token).toBe('string')
+    expect(token).not.toBe('')
+    const html = await (await fetch(`${host.url}/docs`)).text()
+    expect(html).toContain(`<meta name="genoffice-token" content="${token}">`)
+    expect((await fetch(`${host.url}/api/channels`)).status).toBe(401)
+    const authed = await fetch(`${host.url}/api/channels`, {
+      headers: { 'x-genoffice-token': token as string },
+    })
+    expect(authed.status).toBe(200)
   })
 
   it('never reflects a cross-origin Origin, so a foreign page cannot read the body', async () => {
