@@ -39,15 +39,28 @@ export {
   AI_CUSTOM_FONT_MIN_PX,
   AI_FONT_BASE_PX,
   AI_FONT_SIZES,
+  AI_PANEL_PLACEMENTS,
   DEFAULT_AI_PANEL_PREFS,
   aiPanelFontPx,
   clampAiCustomFontSize,
   isAiFontSize,
+  isAiPanelPlacement,
   normalizeAiPanelPrefs,
   type AiFontSize,
+  type AiPanelPlacement,
   type AiPanelPrefs,
 } from './ai-panel-prefs'
-export { applyAiPanelPrefs, useAiPanelPrefs } from './ai-panel-prefs-store'
+export {
+  applyAiPanelPrefs,
+  initAiPanelPlacement,
+  registerAiPanelPrefsHost,
+  setAiPanelPlacement,
+  useAiPanelPlacement,
+  useAiPanelPrefs,
+} from './ai-panel-prefs-store'
+export { embedAiPanelPlacement, resolveAiPanelPlacement } from './ai-embed-config'
+export { AiFloatingBall, type AiFloatingBallProps } from './AiFloatingBall'
+export { AiPlacementToggle, type AiPlacementToggleProps } from './AiPlacementToggle'
 export {
   ColorPicker,
   THEME_COLORS,

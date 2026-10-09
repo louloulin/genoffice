@@ -6,7 +6,7 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
-import { AiPanel, GensparkMark } from './ai/AiPanel'
+import { AiPanel, DataflareMark } from './ai/AiPanel'
 import { TranslateTab } from './components-ribbon-translate-tab'
 import {
   TranslatePdfDialog,
@@ -19,7 +19,9 @@ import type {
   TranslateBatchUnitResult,
 } from '@genoffice/translation-core/document'
 import {
+  AiFloatingBall,
   IDLE_TRANSLATION_STATUS,
+  useAiPanelPlacement,
   useTranslationTabStatus,
   type TranslationScope,
   type TranslationTabSettings,
@@ -349,6 +351,7 @@ export default function App() {
   const [aiCollapsed, setAiCollapsed] = useState(
     () => localStorage.getItem('genoffice-pdf-show-ai') === '0',
   )
+  const aiPlacement = useAiPanelPlacement()
   useEffect(() => {
     localStorage.setItem('genoffice-pdf-show-ai', aiCollapsed ? '0' : '1')
   }, [aiCollapsed])
@@ -6250,7 +6253,7 @@ export default function App() {
         <div className="ribbon-body" data-ribbon-body="">
           {ribbonTab === 'home' && (
             <>
-              {/* ---- Genspark AI (first slot: entry + one-click AI actions, docs parity) ---- */}
+              {/* ---- Dataflare AI (first slot: entry + one-click AI actions, docs parity) ---- */}
               <div className="ribbon-group">
                 <div className="ribbon-group-items">
                   <button
@@ -6259,9 +6262,9 @@ export default function App() {
                     onClick={() => setAiCollapsed((v) => !v)}
                   >
                     <span className="rb-big-icon">
-                      <GensparkMark size={26} />
+                      <DataflareMark size={26} />
                     </span>
-                    <span>Genspark AI</span>
+                    <span>Dataflare AI</span>
                   </button>
                   <button
                     className="rb-big ai-entry"
@@ -6401,7 +6404,7 @@ export default function App() {
                   >
                     <span className="rb-big-icon">
                       <span className="ai-feature-icon" aria-hidden="true">
-                        <GensparkMark size={20} />
+                        <DataflareMark size={20} />
                       </span>
                     </span>
                     <span>{t('aiProcessNotesBtn')}</span>
@@ -6548,7 +6551,7 @@ export default function App() {
                   >
                     <span className="rb-big-icon">
                       <span className="ai-feature-icon" aria-hidden="true">
-                        <GensparkMark size={20} />
+                        <DataflareMark size={20} />
                       </span>
                     </span>
                     <span>{t('aiFillFormBtn')}</span>
@@ -6886,16 +6889,21 @@ export default function App() {
         {/* dock wrapper animates the width between panel and rail (docs-style 180ms ease);
             the panel stays mounted while collapsed so the chat history survives */}
         <div className={`ai-dock${aiCollapsed ? ' collapsed' : ''}`}>
-          {aiCollapsed && (
-            <button
-              className="ai-rail"
-              data-tip={t('aiOpenAssistant')}
-              aria-label={t('aiOpenAssistant')}
-              onClick={() => setAiCollapsed(false)}
-            >
-              <GensparkMark size={22} />
-            </button>
-          )}
+          {aiCollapsed &&
+            (aiPlacement === 'floating' ? (
+              <AiFloatingBall label={t('aiOpenAssistant')} onOpen={() => setAiCollapsed(false)}>
+                <DataflareMark size={22} />
+              </AiFloatingBall>
+            ) : (
+              <button
+                className="ai-rail"
+                data-tip={t('aiOpenAssistant')}
+                aria-label={t('aiOpenAssistant')}
+                onClick={() => setAiCollapsed(false)}
+              >
+                <DataflareMark size={22} />
+              </button>
+            ))}
           <AiPanel
             api={aiApi}
             filePath={filePath}

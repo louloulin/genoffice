@@ -88,6 +88,8 @@ export const th = {
   aiSwitchModelTitle: 'สลับโมเดล AI',
   aiNewChatTitle: 'การสนทนาใหม่',
   aiCollapseTitle: 'ยุบแผง',
+  aiPanelFloatTitle: 'สลับเป็นลูกบอลลอย',
+  aiPanelDockTitle: 'เทียบไว้ทางขวา',
   aiHistorySep: '—— ด้านบนคือการสนทนาก่อนหน้า ——',
   aiEmptyTitle: 'ให้ AI ช่วยคุณเขียนและแก้ไข',
   aiEmptyBody1: 'สามารถสั่งงานหรือถามคำถามได้โดยตรง',

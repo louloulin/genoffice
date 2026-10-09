@@ -8,6 +8,8 @@ export const zh = {
   aiModePlanHint: '先给出计划,确认后再执行',
   aiModeSwitchTitle: '工作模式',
   aiCollapsePanel: '收起面板',
+  aiPanelFloatTitle: '切换为悬浮球',
+  aiPanelDockTitle: '停靠到右侧',
   aiComposerPlaceholder: '让 AI 撰写或修改文档…',
   aiCopyReplyTitle: '复制回复',
   aiCreditsExhausted: '积分不足，请前往 genspark.ai 充值',

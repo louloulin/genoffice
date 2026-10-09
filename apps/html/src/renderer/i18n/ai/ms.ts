@@ -9,6 +9,8 @@ export const ms = {
   aiModePlanHint: 'Cadangkan pelan dahulu, laksana selepas disahkan',
   aiModeSwitchTitle: 'Mod kerja',
   aiCollapsePanel: 'Runtuhkan panel',
+  aiPanelFloatTitle: 'Tukar kepada bola terapung',
+  aiPanelDockTitle: 'Dok ke kanan',
   aiComposerPlaceholder: 'Minta AI menulis atau menyunting…',
   aiCopyReplyTitle: 'Salin balasan',
   aiCreditsExhausted: 'Kredit habis — tambah nilai di genspark.ai',

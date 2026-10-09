@@ -13,6 +13,12 @@ export type EditorMode = 'edit' | 'view' | 'comment'
 export type EditorTheme = 'light' | 'dark' | 'auto'
 export type EditorLang = 'zh-CN' | 'en-US' | 'ja-JP'
 export type EditorToolbar = 'full' | 'minimal' | 'none'
+/**
+ * Where the editor's AI chat panel sits: docked to the left or right edge, or
+ * collapsed to a floating ball that opens as an overlay card. An initial value
+ * only — an end user opening the same editor can change it.
+ */
+export type EditorAiPanel = 'left' | 'right' | 'floating'
 export type EditorApp = 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html'
 
 /**
@@ -67,6 +73,8 @@ export interface CreateEditorOptions {
   theme?: EditorTheme
   lang?: EditorLang
   toolbar?: EditorToolbar
+  /** AI chat panel placement inside the editor. Defaults to the editor's own. */
+  aiPanel?: EditorAiPanel
   /** Render-only flags; pass-through to the embed query string. */
   features?: Record<string, boolean | string | number>
 
@@ -788,6 +796,8 @@ export interface CreateEmbedNonceOptions {
   theme?: EditorTheme
   lang?: EditorLang
   toolbar?: EditorToolbar
+  /** AI chat panel placement inside the editor. Defaults to the editor's own. */
+  aiPanel?: EditorAiPanel
   features?: Record<string, boolean | string | number>
 
   /**

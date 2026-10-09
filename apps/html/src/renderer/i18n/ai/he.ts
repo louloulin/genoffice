@@ -9,6 +9,8 @@ export const he = {
   aiModePlanHint: 'הצג תחילה תוכנית, ובצע לאחר אישור',
   aiModeSwitchTitle: 'מצב עבודה',
   aiCollapsePanel: 'כווצו את החלונית',
+  aiPanelFloatTitle: 'מעבר לכדור צף',
+  aiPanelDockTitle: 'עגן לימין',
   aiComposerPlaceholder: 'בקשו מה-AI לכתוב או לערוך…',
   aiCopyReplyTitle: 'העתקת התשובה',
   aiCreditsExhausted: 'נגמרו הקרדיטים — טענו ב-genspark.ai',

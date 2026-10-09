@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  AiFloatingBall,
   Dropdown,
   FindPanel,
   type FindFocusRequest,
   type AiScopeQuoteData,
+  useAiPanelPlacement,
   useAutoSavePref,
   type FindPanelStrings,
   type FindTarget,
@@ -22,7 +24,7 @@ import { PreviewFrame, type PreviewFrameHandle } from './preview/PreviewFrame'
 import { instrumentForPreview } from './preview/instrument'
 import type { ComputedSnapshot, ElementRect, FromInspector } from './preview/inspector-protocol'
 import inspectorSource from './preview/inspector.js?raw'
-import { AiPanel, GensparkMark, type AiPreset, type HtmlAiDeps } from './ai/AiPanel'
+import { AiPanel, DataflareMark, type AiPreset, type HtmlAiDeps } from './ai/AiPanel'
 import { AiAskPopover, type AnchorRect, type AskMode } from './components/AiAskPopover'
 import {
   EDIT_QUEUE_MAX,
@@ -157,6 +159,7 @@ export default function App() {
   const [draftHtml, setDraftHtml] = useState<string | null>(null)
   const [historyState, setHistoryState] = useState({ undo: false, redo: false })
   const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('htmlapp.showAi') !== '0')
+  const aiPlacement = useAiPanelPlacement()
   const [aiPreset, setAiPreset] = useState<AiPreset | null>(null)
   const [editQueue, setEditQueue] = useState<EditQueueItem[]>([])
   const [askMode, setAskMode] = useState<AskMode | null>(null)
@@ -1691,16 +1694,21 @@ export default function App() {
 
       <div className="app-main">
         <div className={`ai-dock${aiOpen ? '' : ' collapsed'}`}>
-          {!aiOpen && (
-            <button
-              className="ai-rail"
-              data-tip={t('aiOpenAssistant')}
-              aria-label={t('aiOpenAssistant')}
-              onClick={() => setAiOpen(true)}
-            >
-              <GensparkMark size={18} />
-            </button>
-          )}
+          {!aiOpen &&
+            (aiPlacement === 'floating' ? (
+              <AiFloatingBall label={t('aiOpenAssistant')} onOpen={() => setAiOpen(true)}>
+                <DataflareMark size={22} />
+              </AiFloatingBall>
+            ) : (
+              <button
+                className="ai-rail"
+                data-tip={t('aiOpenAssistant')}
+                aria-label={t('aiOpenAssistant')}
+                onClick={() => setAiOpen(true)}
+              >
+                <DataflareMark size={18} />
+              </button>
+            ))}
           {/* stays mounted while collapsed: an in-flight run, its snapshots and the loop context survive */}
           <AiPanel
             deps={aiDeps}

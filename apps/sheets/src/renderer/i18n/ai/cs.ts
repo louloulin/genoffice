@@ -36,6 +36,8 @@ export const cs = {
   aiSetUp: 'Nastavit AI',
   aiNewChat: 'Nová konverzace',
   aiCollapsePanel: 'Sbalit panel AI',
+  aiPanelFloatTitle: 'Přepnout na plovoucí kouli',
+  aiPanelDockTitle: 'Připnout vpravo',
   aiHistorySep: '—— Předchozí konverzace ——',
   aiEmptyTitle: 'Zeptejte se AI na tento sešit',
   aiEmptyBodyLine1: 'Popište změnu nebo se zeptejte na data.',

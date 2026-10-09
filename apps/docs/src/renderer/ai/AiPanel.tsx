@@ -163,7 +163,7 @@ import { currentDocGeneration } from '../file-actions'
 import { createFilesSkill } from './files-skill'
 import { createAiTransport } from './transports'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
-import { Markdown } from '@genoffice/ui'
+import { AiFloatingBall, AiPlacementToggle, Markdown, useAiPanelPlacement } from '@genoffice/ui'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
 import {
   DEFAULT_CHAT_MODE,
@@ -702,6 +702,9 @@ export function AiPanel({
   const [panelWidth, setPanelWidth] = useState(() => clampPanelWidth(preferredWidthRef.current))
   const [resizing, setResizing] = useState(false)
   const asideRef = useRef<HTMLElement>(null)
+  // `right` / `floating` anchor the panel by its right edge, which flips the
+  // resizer's maths (see startResize)
+  const placement = useAiPanelPlacement()
 
   // The .ai-dock wrapper owns the animated width (Excel-parity 180ms slide);
   // it tracks the resizable panel width through this variable
@@ -2343,15 +2346,27 @@ export function AiPanel({
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
-  /** drag the panel's right edge to resize; panel is flush with the window's left edge */
+  /**
+   * Drag the divider to resize. The handle stays on the panel's inner edge, so
+   * the width is measured from whichever side the dock is anchored to: the
+   * dock's left edge when docked left, its right edge when docked right or
+   * floating (a floating card is pinned by `right`, so that edge is the fixed
+   * one). Both anchors are captured at pointer-down — the anchored edge does
+   * not move during the drag.
+   */
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     const resizer = e.currentTarget
+    const dockRect = (
+      resizer.closest('.ai-dock') as HTMLElement | null
+    )?.getBoundingClientRect()
+    const anchoredRight = placement !== 'left'
+    const anchor = anchoredRight ? (dockRect?.right ?? window.innerWidth) : (dockRect?.left ?? 0)
     setResizing(true)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     const onMove = (ev: PointerEvent) => {
-      const w = clampPanelWidth(ev.clientX)
+      const w = clampPanelWidth(anchoredRight ? anchor - ev.clientX : ev.clientX - anchor)
       preferredWidthRef.current = w
       setPanelWidth(w)
     }
@@ -2380,6 +2395,13 @@ export function AiPanel({
 
   // collapsed: rail only — after all hooks, so the instance and its state survive
   if (!open) {
+    if (placement === 'floating') {
+      return (
+        <AiFloatingBall label={t('appExpandAiPanel')} onOpen={() => onExpand?.()}>
+          <ProviderMark provider={settingsRef.current.provider} size={22} />
+        </AiFloatingBall>
+      )
+    }
     return (
       <button
         className="ai-rail"
@@ -2454,6 +2476,12 @@ export function AiPanel({
               <IconSidebarCollapse size={15} />
             </button>
           )}
+          {/* Last on purpose: every existing button keeps its position, so no
+              index-based lookup or muscle memory shifts. */}
+          <AiPlacementToggle
+            toFloatingLabel={t('aiPanelFloatTitle')}
+            toDockedLabel={t('aiPanelDockTitle')}
+          />
         </div>
       </div>
 

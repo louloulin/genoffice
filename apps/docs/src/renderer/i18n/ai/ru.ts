@@ -90,6 +90,8 @@ export const ru = {
   aiSwitchModelTitle: 'Сменить модель ИИ',
   aiNewChatTitle: 'Новый чат',
   aiCollapseTitle: 'Свернуть панель',
+  aiPanelFloatTitle: 'Переключить в плавающий шар',
+  aiPanelDockTitle: 'Закрепить справа',
   aiHistorySep: '—— Предыдущий разговор ——',
   aiEmptyTitle: 'Доверьте ИИ написание и редактирование',
   aiEmptyBody1: 'Дайте указание или просто задайте вопрос;',

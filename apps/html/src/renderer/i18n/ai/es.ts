@@ -9,6 +9,8 @@ export const es = {
   aiModePlanHint: 'Propone primero un plan y ejecútalo al confirmar',
   aiModeSwitchTitle: 'Modo de trabajo',
   aiCollapsePanel: 'Contraer panel',
+  aiPanelFloatTitle: 'Cambiar a burbuja flotante',
+  aiPanelDockTitle: 'Acoplar a la derecha',
   aiComposerPlaceholder: 'Pide a la IA escribir o editar…',
   aiCopyReplyTitle: 'Copiar respuesta',
   aiCreditsExhausted: 'Sin créditos — recarga en genspark.ai',

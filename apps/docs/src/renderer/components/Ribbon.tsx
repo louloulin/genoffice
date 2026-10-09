@@ -89,7 +89,7 @@ import {
 import { WRAP_OPTIONS } from './ContextMenu'
 import { CropDialog, CutoutDialog } from './PictureDialogs'
 import {
-  GensparkMark,
+  DataflareMark,
   IconAlignCenter,
   IconAlignJustify,
   IconAlignLeft,
@@ -2873,7 +2873,7 @@ function RibbonInner({
           </div>
         ) : tab === 'home' ? (
           <>
-            {/* ---- Genspark AI (first slot: entry + one-click AI actions) ---- */}
+            {/* ---- Dataflare AI (first slot: entry + one-click AI actions) ---- */}
             <div className="ribbon-group">
               <div className="ribbon-group-items">
                 <button
@@ -2882,9 +2882,9 @@ function RibbonInner({
                   onClick={onToggleAi}
                 >
                   <span className="rb-big-icon">
-                    <GensparkMark size={26} />
+                    <DataflareMark size={26} />
                   </span>
-                  <span>Genspark AI</span>
+                  <span>Dataflare AI</span>
                 </button>
                 <button
                   className="rb-big ai-entry"
@@ -3015,7 +3015,7 @@ function RibbonInner({
                   <span>{t('aiTranslateBtn')}</span>
                 </button>
               </div>
-              <div className="ribbon-group-label">Genspark AI</div>
+              <div className="ribbon-group-label">Dataflare AI</div>
             </div>
 
             <div className="ribbon-sep" />

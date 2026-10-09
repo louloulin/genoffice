@@ -35,6 +35,8 @@ export const pl = {
   aiSetUp: 'Skonfiguruj AI',
   aiNewChat: 'Nowa rozmowa',
   aiCollapsePanel: 'Zwiń panel AI',
+  aiPanelFloatTitle: 'Przełącz na pływającą kulkę',
+  aiPanelDockTitle: 'Zadokuj po prawej',
   aiHistorySep: '—— Wcześniejsza rozmowa ——',
   aiEmptyTitle: 'Zapytaj AI o ten skoroszyt',
   aiEmptyBodyLine1: 'Opisz zmianę lub zadaj pytanie o dane.',

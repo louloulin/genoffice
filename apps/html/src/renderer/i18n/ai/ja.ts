@@ -9,6 +9,8 @@ export const ja = {
   aiModePlanHint: '先に計画を提示し、確認後に実行します',
   aiModeSwitchTitle: '動作モード',
   aiCollapsePanel: 'パネルを折りたたむ',
+  aiPanelFloatTitle: 'フローティングボールに切り替え',
+  aiPanelDockTitle: '右側にドッキング',
   aiComposerPlaceholder: 'AI に執筆・編集を依頼…',
   aiCopyReplyTitle: '返信をコピー',
   aiCreditsExhausted: 'クレジット不足です。genspark.ai でチャージしてください',

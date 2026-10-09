@@ -90,6 +90,8 @@ export const pl = {
   aiSwitchModelTitle: 'Przełącz model AI',
   aiNewChatTitle: 'Nowa rozmowa',
   aiCollapseTitle: 'Zwiń panel',
+  aiPanelFloatTitle: 'Przełącz na pływającą kulkę',
+  aiPanelDockTitle: 'Zadokuj po prawej',
   aiHistorySep: '—— Wcześniejsza rozmowa ——',
   aiEmptyTitle: 'Pozwól AI pomóc Ci pisać i edytować',
   aiEmptyBody1: 'Wydaj polecenie lub po prostu zadaj pytanie;',

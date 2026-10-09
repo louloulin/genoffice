@@ -7,7 +7,7 @@ import {
 } from '@genoffice/ui'
 import { useI18n } from '../i18n/locale'
 import type { StringKey } from '../i18n/locale'
-import { GensparkMark } from '../ai/AiPanel'
+import { DataflareMark } from '../ai/AiPanel'
 import type { InsertKind, InsertOptions } from '../document/insert-presets'
 import {
   IconBullets,
@@ -280,9 +280,9 @@ export function Ribbon(p: Props) {
               onClick={p.onToggleAi}
             >
               <span className="rb-big-icon">
-                <GensparkMark size={26} />
+                <DataflareMark size={26} />
               </span>
-              <span>Genspark AI</span>
+              <span>Dataflare AI</span>
             </button>
             <button
               type="button"

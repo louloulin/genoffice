@@ -45,6 +45,8 @@ export const ko = {
   aiSwitchModel: 'AI 모델 전환',
   aiNewChat: '새 대화',
   aiCollapsePanel: '패널 접기',
+  aiPanelFloatTitle: '플로팅 볼로 전환',
+  aiPanelDockTitle: '오른쪽에 도킹',
   aiHistorySep: '—— 여기까지 이전 대화 ——',
   aiEmptyTitle: 'AI로 슬라이드 다듬기',
   aiEmptyBody1: '지시를 내리거나 바로 질문할 수 있습니다.',

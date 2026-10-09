@@ -90,6 +90,8 @@ export const ms = {
   aiSwitchModelTitle: 'Tukar model AI',
   aiNewChatTitle: 'Perbualan baharu',
   aiCollapseTitle: 'Runtuhkan panel',
+  aiPanelFloatTitle: 'Tukar kepada bola terapung',
+  aiPanelDockTitle: 'Dok ke kanan',
   aiHistorySep: '—— Perbualan terdahulu ——',
   aiEmptyTitle: 'Biarkan AI membantu anda menulis dan menyunting',
   aiEmptyBody1: 'Beri arahan atau terus ajukan soalan;',

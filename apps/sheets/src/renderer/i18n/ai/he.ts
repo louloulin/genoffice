@@ -35,6 +35,8 @@ export const he = {
   aiSetUp: 'הגדרת AI',
   aiNewChat: 'שיחה חדשה',
   aiCollapsePanel: 'כיווץ חלונית ה-AI',
+  aiPanelFloatTitle: 'מעבר לכדור צף',
+  aiPanelDockTitle: 'עגן לימין',
   aiHistorySep: '—— השיחה הקודמת ——',
   aiEmptyTitle: 'שאלו את ה-AI על חוברת עבודה זו',
   aiEmptyBodyLine1: 'תארו שינוי רצוי או שאלו על הנתונים.',

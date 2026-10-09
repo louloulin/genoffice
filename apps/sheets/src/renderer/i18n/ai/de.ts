@@ -37,6 +37,8 @@ export const de = {
   aiSetUp: 'KI einrichten',
   aiNewChat: 'Neue Unterhaltung',
   aiCollapsePanel: 'KI-Bereich einklappen',
+  aiPanelFloatTitle: 'Zum schwebenden Ball wechseln',
+  aiPanelDockTitle: 'Rechts andocken',
   aiHistorySep: '—— Frühere Unterhaltung ——',
   aiEmptyTitle: 'KI zu dieser Arbeitsmappe befragen',
   aiEmptyBodyLine1: 'Beschreiben Sie eine Änderung oder stellen Sie eine Frage zu den Daten.',

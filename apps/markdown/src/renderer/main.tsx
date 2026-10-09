@@ -10,13 +10,20 @@ import '@genoffice/ui/find-panel.css'
 import '@genoffice/ui/ribbon-collapse.css'
 import '@genoffice/ui/markdown.css'
 import '@genoffice/ui/ai-panel-prefs.css'
+import '@genoffice/ui/ai-panel-placement.css'
+import '@genoffice/ui/ai-floating-ball.css'
 import '@genoffice/ui/ai-scope-quote.css'
 import '@genoffice/ui/ai-composer.css'
 import '@genoffice/ui/ai-runtime.css'
 import '@genoffice/ui/ai-edit-queue.css'
 import 'katex/dist/katex.min.css'
 import './styles.css'
-import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import {
+  applyAiPanelPrefs,
+  initAiPanelPlacement,
+  installScreenTips,
+  registerAiPanelPrefsHost,
+} from '@genoffice/ui'
 
 installScreenTips()
 
@@ -38,6 +45,9 @@ void (async () => {
     .then(applyAiPanelPrefs)
     .catch(() => {})
   window.markdownApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
+  registerAiPanelPrefsHost(window.markdownApi)
+  // resolves the embed host's aiPanel meta over the shell pref before paint
+  initAiPanelPlacement()
   createRoot(document.getElementById('root')!).render(
     <LocaleProvider initial={lang}>
       <App />

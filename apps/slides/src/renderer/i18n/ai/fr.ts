@@ -45,6 +45,8 @@ export const fr = {
   aiSwitchModel: "Changer de modèle d'IA",
   aiNewChat: 'Nouvelle conversation',
   aiCollapsePanel: 'Réduire le panneau',
+  aiPanelFloatTitle: 'Passer en bulle flottante',
+  aiPanelDockTitle: 'Ancrer à droite',
   aiHistorySep: '—— conversation précédente ——',
   aiEmptyTitle: "Laissez l'IA peaufiner vos diapositives",
   aiEmptyBody1: 'Donnez des instructions ou posez simplement vos questions ;',

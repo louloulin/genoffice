@@ -25,7 +25,7 @@ import {
   BorderThickOuterIcon,
   BorderTopIcon,
   CaretIcon,
-  GensparkMark,
+  DataflareMark,
   RIBBON_GLYPH_ICONS,
   RedoIcon,
   SaveAsIcon,
@@ -2636,10 +2636,10 @@ function Ribbon({
           onClick={onAiToggle}
         >
           <span className="tool-icon-row">
-            <GensparkMark size={26} />
+            <DataflareMark size={26} />
           </span>
           <span>
-            <strong>Genspark AI</strong>
+            <strong>Dataflare AI</strong>
           </span>
         </button>
         <button

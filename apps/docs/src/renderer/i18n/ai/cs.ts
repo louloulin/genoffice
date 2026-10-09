@@ -91,6 +91,8 @@ export const cs = {
   aiSwitchModelTitle: 'Přepnout model AI',
   aiNewChatTitle: 'Nový chat',
   aiCollapseTitle: 'Sbalit panel',
+  aiPanelFloatTitle: 'Přepnout na plovoucí kouli',
+  aiPanelDockTitle: 'Připnout vpravo',
   aiHistorySep: '—— Předchozí konverzace ——',
   aiEmptyTitle: 'Nechte si od AI pomoci s psaním a úpravami',
   aiEmptyBody1: 'Zadejte pokyn nebo jen položte otázku;',

@@ -90,6 +90,8 @@ export const id = {
   aiSwitchModelTitle: 'Ganti model AI',
   aiNewChatTitle: 'Obrolan baru',
   aiCollapseTitle: 'Ciutkan panel',
+  aiPanelFloatTitle: 'Beralih ke bola melayang',
+  aiPanelDockTitle: 'Sematkan ke kanan',
   aiHistorySep: '—— Percakapan sebelumnya ——',
   aiEmptyTitle: 'Biarkan AI membantu Anda menulis dan mengedit',
   aiEmptyBody1: 'Berikan instruksi atau langsung ajukan pertanyaan;',

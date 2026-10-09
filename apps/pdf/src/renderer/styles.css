@@ -3249,6 +3249,8 @@ button {
   flex-shrink: 0;
   min-height: 0;
   overflow: hidden;
+  /* read by ai-panel-placement.css when the panel is docked right */
+  --ai-panel-divider: var(--border);
   border-right: 1px solid var(--border);
   background: var(--surface);
   font-family: var(--gs-font-sans);

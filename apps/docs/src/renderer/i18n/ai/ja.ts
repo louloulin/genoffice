@@ -89,6 +89,8 @@ export const ja = {
   aiSwitchModelTitle: 'AI モデルを切り替え',
   aiNewChatTitle: '新しいチャット',
   aiCollapseTitle: 'パネルを折りたたむ',
+  aiPanelFloatTitle: 'フローティングボールに切り替え',
+  aiPanelDockTitle: '右側にドッキング',
   aiHistorySep: '―― ここまでは過去の会話 ――',
   aiEmptyTitle: 'AI に文章の作成・編集を任せましょう',
   aiEmptyBody1: '指示を出すことも、そのまま質問することもできます。',

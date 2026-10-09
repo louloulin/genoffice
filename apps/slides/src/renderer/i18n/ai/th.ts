@@ -43,6 +43,8 @@ export const th = {
   aiSwitchModel: 'สลับโมเดล AI',
   aiNewChat: 'แชทใหม่',
   aiCollapsePanel: 'ยุบแผง',
+  aiPanelFloatTitle: 'สลับเป็นลูกบอลลอย',
+  aiPanelDockTitle: 'เทียบไว้ทางขวา',
   aiHistorySep: '—— ด้านบนคือการสนทนาก่อนหน้า ——',
   aiEmptyTitle: 'ให้ AI ช่วยขัดเกลาสไลด์ของคุณ',
   aiEmptyBody1: 'สั่งงานหรือถามคำถามได้โดยตรง',

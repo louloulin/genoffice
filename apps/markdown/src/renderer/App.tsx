@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useAutoSavePref } from '@genoffice/ui'
+import { AiFloatingBall, useAiPanelPlacement, useAutoSavePref } from '@genoffice/ui'
 import {
   pollUntilReady,
   runHeadlessRendererExport,
@@ -30,7 +30,7 @@ import { ToastHost } from './components/toast'
 import { TableMenu } from './components/TableMenu'
 import { FrontmatterPanel } from './components/FrontmatterPanel'
 import { AiAskPopover } from './components/AiAskPopover'
-import { AiPanel, GensparkMark, type AiPreset, type MarkdownAiDeps } from './ai/AiPanel'
+import { AiPanel, DataflareMark, type AiPreset, type MarkdownAiDeps } from './ai/AiPanel'
 import { EDIT_QUEUE_MAX, selectionForAnchor, type EditQueueItem } from './ai/edit-queue'
 import { addQueueAnchor, clearQueueAnchors, removeQueueAnchors } from './editor/aiQueueAnchors'
 import { DOCX_MAX_IMAGE_PX, exportDocxBytes } from './export/docxExport'
@@ -157,6 +157,7 @@ export default function App() {
   const [fmText, setFmText] = useState('')
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
   const [aiOpen, setAiOpen] = useState(() => localStorage.getItem('mdapp.showAi') !== '0')
+  const aiPlacement = useAiPanelPlacement()
   const [aiPreset, setAiPreset] = useState<AiPreset | null>(null)
   const [editQueue, setEditQueue] = useState<EditQueueItem[]>([])
   const editQueueRef = useRef(editQueue)
@@ -944,16 +945,21 @@ export default function App() {
       {status === 'loading' && <div className="center-note">{t('loading')}</div>}
       <div className="app-main" style={status === 'ready' ? undefined : { display: 'none' }}>
         <div className={`ai-dock${aiOpen ? '' : ' collapsed'}`}>
-          {!aiOpen && (
-            <button
-              className="ai-rail"
-              data-tip={t('aiOpenAssistant')}
-              aria-label={t('aiOpenAssistant')}
-              onClick={() => setAiOpen(true)}
-            >
-              <GensparkMark size={22} />
-            </button>
-          )}
+          {!aiOpen &&
+            (aiPlacement === 'floating' ? (
+              <AiFloatingBall label={t('aiOpenAssistant')} onOpen={() => setAiOpen(true)}>
+                <DataflareMark size={22} />
+              </AiFloatingBall>
+            ) : (
+              <button
+                className="ai-rail"
+                data-tip={t('aiOpenAssistant')}
+                aria-label={t('aiOpenAssistant')}
+                onClick={() => setAiOpen(true)}
+              >
+                <DataflareMark size={22} />
+              </button>
+            ))}
           {/* mounted only after the file is loaded so chat history resolves against the real path */}
           {status === 'ready' && (
             <AiPanel

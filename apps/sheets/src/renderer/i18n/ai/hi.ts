@@ -36,6 +36,8 @@ export const hi = {
   aiSetUp: 'AI सेट करें',
   aiNewChat: 'नई बातचीत',
   aiCollapsePanel: 'AI पैनल संक्षिप्त करें',
+  aiPanelFloatTitle: 'फ़्लोटिंग बॉल पर स्विच करें',
+  aiPanelDockTitle: 'दाईं ओर डॉक करें',
   aiHistorySep: '—— पिछली बातचीत ——',
   aiEmptyTitle: 'इस कार्यपुस्तिका के बारे में AI से पूछें',
   aiEmptyBodyLine1: 'कोई बदलाव बताएं या डेटा के बारे में पूछें।',

@@ -9,6 +9,8 @@ export const cs = {
   aiModePlanHint: 'Nejprve navrhne plán, provede po potvrzení',
   aiModeSwitchTitle: 'Pracovní režim',
   aiCollapsePanel: 'Sbalit panel',
+  aiPanelFloatTitle: 'Přepnout na plovoucí kouli',
+  aiPanelDockTitle: 'Připnout vpravo',
   aiComposerPlaceholder: 'Požádejte AI o napsání nebo úpravu dokumentu…',
   aiCopyReplyTitle: 'Kopírovat odpověď',
   aiCreditsExhausted: 'Došly kredity — dobijte na genspark.ai',

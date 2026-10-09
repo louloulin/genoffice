@@ -12,13 +12,20 @@ import '@genoffice/ui/dropdown.css'
 import '@genoffice/ui/ribbon-collapse.css'
 import '@genoffice/ui/markdown.css'
 import '@genoffice/ui/ai-panel-prefs.css'
+import '@genoffice/ui/ai-panel-placement.css'
+import '@genoffice/ui/ai-floating-ball.css'
 import '@genoffice/ui/ai-scope-quote.css'
 import '@genoffice/ui/ai-composer.css'
 import '@genoffice/ui/ai-runtime.css'
 import '@genoffice/ui/ai-edit-queue.css'
 import '@genoffice/ui/translation-ribbon.css'
 import './styles.css'
-import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import {
+  applyAiPanelPrefs,
+  initAiPanelPlacement,
+  installScreenTips,
+  registerAiPanelPrefsHost,
+} from '@genoffice/ui'
 
 installScreenTips()
 
@@ -93,8 +100,11 @@ function bootstrap(): void {
   window.slidesApi?.onLanguageChanged((next) => persistBootValue(LANG_KEY, next))
   // every startup IPC fires concurrently here — none of them gates createRoot
   if (mode !== 'audience') {
+    // resolves the embed host's aiPanel meta over the shell pref before paint
+    initAiPanelPlacement()
     void window.slidesApi?.getAiPanelPrefs?.().then(applyAiPanelPrefs).catch(() => {})
     window.slidesApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
+    registerAiPanelPrefsHost(window.slidesApi)
   }
   void calibrate(lang, theme)
   createRoot(document.getElementById('root')!).render(

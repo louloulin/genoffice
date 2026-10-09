@@ -9,6 +9,8 @@ export const nl = {
   aiModePlanHint: 'Stel eerst een plan voor en voer het uit na bevestiging',
   aiModeSwitchTitle: 'Werkmodus',
   aiCollapsePanel: 'Paneel inklappen',
+  aiPanelFloatTitle: 'Overschakelen naar zwevende ballon',
+  aiPanelDockTitle: 'Rechts vastzetten',
   aiComposerPlaceholder: 'Vraag AI te schrijven of bewerken…',
   aiCopyReplyTitle: 'Antwoord kopiëren',
   aiCreditsExhausted: 'Credits op — waardeer op via genspark.ai',

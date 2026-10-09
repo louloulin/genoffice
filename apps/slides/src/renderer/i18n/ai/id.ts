@@ -45,6 +45,8 @@ export const id = {
   aiSwitchModel: 'Ganti model AI',
   aiNewChat: 'Obrolan baru',
   aiCollapsePanel: 'Ciutkan panel',
+  aiPanelFloatTitle: 'Beralih ke bola melayang',
+  aiPanelDockTitle: 'Sematkan ke kanan',
   aiHistorySep: '—— percakapan sebelumnya ——',
   aiEmptyTitle: 'Biarkan AI menyempurnakan slide Anda',
   aiEmptyBody1: 'Berikan instruksi atau langsung ajukan pertanyaan;',

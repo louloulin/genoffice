@@ -35,6 +35,8 @@ export const zhTW = {
   aiSetUp: '設定 AI',
   aiNewChat: '新對話',
   aiCollapsePanel: '收合 AI 面板',
+  aiPanelFloatTitle: '切換為懸浮球',
+  aiPanelDockTitle: '停靠到右側',
   aiHistorySep: '—— 以上是歷史對話 ——',
   aiEmptyTitle: '向 AI 詢問這個活頁簿',
   aiEmptyBodyLine1: '描述想要的修改，或詢問資料。',

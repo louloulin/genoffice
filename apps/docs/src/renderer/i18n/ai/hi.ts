@@ -90,6 +90,8 @@ export const hi = {
   aiSwitchModelTitle: 'AI मॉडल बदलें',
   aiNewChatTitle: 'नई बातचीत',
   aiCollapseTitle: 'पैनल संक्षिप्त करें',
+  aiPanelFloatTitle: 'फ़्लोटिंग बॉल पर स्विच करें',
+  aiPanelDockTitle: 'दाईं ओर डॉक करें',
   aiHistorySep: '—— पिछली बातचीत ——',
   aiEmptyTitle: 'AI को लिखने और संपादित करने में आपकी मदद करने दें',
   aiEmptyBody1: 'निर्देश दें या सीधे प्रश्न पूछें;',

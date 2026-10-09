@@ -30,6 +30,12 @@ export type MountMode = 'edit' | 'view' | 'comment'
 export type MountTheme = 'light' | 'dark' | 'auto'
 export type MountLang = 'zh-CN' | 'en-US' | 'ja-JP'
 export type MountToolbar = 'full' | 'minimal' | 'none'
+/**
+ * Where the AI chat panel sits inside the embedded editor: docked to the left
+ * or right edge, or collapsed to a floating ball that opens as an overlay card.
+ * An initial value only — an end user opening the same editor can change it.
+ */
+export type MountAiPanel = 'left' | 'right' | 'floating'
 
 export interface MountEditorOptions {
   /** Which editor to load. */
@@ -51,6 +57,8 @@ export interface MountEditorOptions {
   lang?: MountLang
   toolbar?: MountToolbar
   title?: string
+  /** AI chat panel placement inside the editor. Defaults to the editor's own. */
+  aiPanel?: MountAiPanel
   /** Echoed back on `ready`; use it to tie the frame to this mount. */
   nonce?: string
   /** Only when the host was started with `startUiHost({token})`. */
@@ -306,6 +314,7 @@ export function buildEmbedUrl(options: Pick<MountEditorOptions, 'baseUrl' | 'app
   if (options.lang) url.searchParams.set('lang', options.lang)
   if (options.toolbar) url.searchParams.set('toolbar', options.toolbar)
   if (options.title) url.searchParams.set('title', options.title)
+  if (options.aiPanel) url.searchParams.set('aiPanel', options.aiPanel)
   if (options.nonce) url.searchParams.set('nonce', options.nonce)
   if (options.token) url.searchParams.set('token', options.token)
   return url.toString()

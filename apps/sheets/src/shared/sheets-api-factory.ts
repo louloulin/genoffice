@@ -119,6 +119,9 @@ export function createSheetsApi(t: IpcTransport, overrides: SheetsApiOverrides =
     getAiPanelPrefs() {
       return t.invoke('app:get-ai-panel-prefs')
     },
+    setAiPanelPrefs(patch) {
+      return t.invoke('app:set-ai-panel-prefs', patch)
+    },
     onAiPanelPrefsChanged(handler) {
       return t.on('app:ai-panel-prefs-changed', (prefs) => handler(prefs as Parameters<typeof handler>[0]))
     },

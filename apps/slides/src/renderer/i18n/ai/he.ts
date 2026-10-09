@@ -43,6 +43,8 @@ export const he = {
   aiSwitchModel: 'החלף מודל AI',
   aiNewChat: 'שיחה חדשה',
   aiCollapsePanel: 'כווץ את הלוח',
+  aiPanelFloatTitle: 'מעבר לכדור צף',
+  aiPanelDockTitle: 'עגן לימין',
   aiHistorySep: '—— שיחה קודמת ——',
   aiEmptyTitle: 'תן ל-AI ללטש את השקופיות שלך',
   aiEmptyBody1: 'אפשר לתת הוראות או פשוט לשאול שאלות;',

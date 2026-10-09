@@ -7,7 +7,7 @@
  * vocabulary must update both files.
  */
 
-import type { EditorApp, EditorLang, EditorMode, EditorTheme, EditorToolbar } from './types'
+import type { EditorAiPanel, EditorApp, EditorLang, EditorMode, EditorTheme, EditorToolbar } from './types'
 
 export interface EmbedUrlInput {
   host: string
@@ -18,6 +18,12 @@ export interface EmbedUrlInput {
   theme?: EditorTheme
   lang?: EditorLang
   toolbar?: EditorToolbar
+  /**
+   * Where the editor's AI chat panel sits (`left` | `right` | `floating`).
+   * Written as a first-class `?aiPanel=` param, not a `feat.*` flag — those are
+   * a dead pass-through neither embed parser reads.
+   */
+  aiPanel?: EditorAiPanel
   /**
    * Optional handshake nonce (URL-safe base64, 16 random bytes by
    * convention). When present, `buildEmbedUrl` writes `?nonce=…` so the
@@ -61,6 +67,7 @@ export function buildEmbedUrl(input: EmbedUrlInput): string {
   if (input.theme) params.set('theme', input.theme)
   if (input.lang) params.set('lang', input.lang)
   if (input.toolbar) params.set('toolbar', input.toolbar)
+  if (input.aiPanel) params.set('aiPanel', input.aiPanel)
   if (input.features) {
     for (const [k, v] of Object.entries(input.features)) {
       params.set(`feat.${k}`, String(v))

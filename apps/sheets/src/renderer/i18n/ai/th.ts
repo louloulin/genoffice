@@ -35,6 +35,8 @@ export const th = {
   aiSetUp: 'ตั้งค่า AI',
   aiNewChat: 'การสนทนาใหม่',
   aiCollapsePanel: 'ยุบแผง AI',
+  aiPanelFloatTitle: 'สลับเป็นลูกบอลลอย',
+  aiPanelDockTitle: 'เทียบไว้ทางขวา',
   aiHistorySep: '—— การสนทนาก่อนหน้า ——',
   aiEmptyTitle: 'ถาม AI เกี่ยวกับเวิร์กบุ๊กนี้',
   aiEmptyBodyLine1: 'อธิบายการเปลี่ยนแปลงที่ต้องการ หรือถามเกี่ยวกับข้อมูล',

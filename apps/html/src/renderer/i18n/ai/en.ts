@@ -9,6 +9,8 @@ export const en = {
   aiModePlanHint: 'Propose a plan first, execute after you confirm',
   aiModeSwitchTitle: 'Working mode',
   aiCollapsePanel: 'Collapse panel',
+  aiPanelFloatTitle: 'Switch to floating ball',
+  aiPanelDockTitle: 'Dock to the right',
   aiComposerPlaceholder: 'Ask AI to write or edit the document…',
   aiCopyReplyTitle: 'Copy reply',
   aiCreditsExhausted: 'Out of credits — top up at genspark.ai',

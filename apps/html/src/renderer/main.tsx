@@ -4,7 +4,12 @@ import App from './App'
 import { PresentView } from './PresentView'
 import { LocaleProvider } from './i18n/locale'
 import type { UiTheme } from '../shared/ipc'
-import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import {
+  applyAiPanelPrefs,
+  initAiPanelPlacement,
+  installScreenTips,
+  registerAiPanelPrefsHost,
+} from '@genoffice/ui'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/dropdown.css'
@@ -12,6 +17,8 @@ import '@genoffice/ui/find-panel.css'
 import '@genoffice/ui/color-picker.css'
 import '@genoffice/ui/ribbon-collapse.css'
 import '@genoffice/ui/ai-panel-prefs.css'
+import '@genoffice/ui/ai-panel-placement.css'
+import '@genoffice/ui/ai-floating-ball.css'
 import '@genoffice/ui/ai-scope-quote.css'
 import '@genoffice/ui/ai-composer.css'
 import '@genoffice/ui/ai-runtime.css'
@@ -39,6 +46,9 @@ void (async () => {
     .then(applyAiPanelPrefs)
     .catch(() => {})
   window.htmlApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
+  registerAiPanelPrefsHost(window.htmlApi)
+  // resolves the embed host's aiPanel meta over the shell pref before paint
+  initAiPanelPlacement()
   // a present tab/window (opened by Present → New tab) renders only its owner's preview
   const params = new URLSearchParams(location.search)
   const present = params.has('present')

@@ -36,6 +36,8 @@ export const pt = {
   aiSetUp: 'Configurar IA',
   aiNewChat: 'Nova conversa',
   aiCollapsePanel: 'Recolher painel de IA',
+  aiPanelFloatTitle: 'Mudar para bolha flutuante',
+  aiPanelDockTitle: 'Ancorar à direita',
   aiHistorySep: '—— Conversa anterior ——',
   aiEmptyTitle: 'Pergunte à IA sobre esta pasta de trabalho',
   aiEmptyBodyLine1: 'Descreva uma alteração ou pergunte sobre os dados.',

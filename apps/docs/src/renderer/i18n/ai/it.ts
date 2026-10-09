@@ -92,6 +92,8 @@ export const it = {
   aiSwitchModelTitle: 'Cambia modello IA',
   aiNewChatTitle: 'Nuova conversazione',
   aiCollapseTitle: 'Comprimi pannello',
+  aiPanelFloatTitle: 'Passa alla bolla fluttuante',
+  aiPanelDockTitle: 'Aggancia a destra',
   aiHistorySep: '—— Conversazione precedente ——',
   aiEmptyTitle: "Lascia che l'IA ti aiuti a scrivere e modificare",
   aiEmptyBody1: "Dai un'istruzione o fai semplicemente una domanda;",

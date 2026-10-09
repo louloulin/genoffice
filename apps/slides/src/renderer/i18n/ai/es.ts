@@ -45,6 +45,8 @@ export const es = {
   aiSwitchModel: 'Cambiar de modelo de IA',
   aiNewChat: 'Nueva conversación',
   aiCollapsePanel: 'Contraer panel',
+  aiPanelFloatTitle: 'Cambiar a burbuja flotante',
+  aiPanelDockTitle: 'Acoplar a la derecha',
   aiHistorySep: '—— conversación anterior ——',
   aiEmptyTitle: 'Deja que la IA pula tus diapositivas',
   aiEmptyBody1: 'Da instrucciones o simplemente haz preguntas;',

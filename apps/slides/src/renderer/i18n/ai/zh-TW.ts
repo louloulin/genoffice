@@ -29,6 +29,8 @@ export const zhTW = {
   aiSwitchModel: '切換 AI 模型',
   aiNewChat: '新對話',
   aiCollapsePanel: '收合面板',
+  aiPanelFloatTitle: '切換為懸浮球',
+  aiPanelDockTitle: '停靠到右側',
   aiHistorySep: '—— 以上是歷史對話 ——',
   aiEmptyTitle: '讓 AI 幫你打磨投影片',
   aiEmptyBody1: '可以下達指令,也可以直接提問;',

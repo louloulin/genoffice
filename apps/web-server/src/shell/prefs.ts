@@ -16,10 +16,12 @@ import { registerHandle, READ_PREF_SCOPE } from '../common/index'
 
 type AutoSaveDefault = { on: boolean; updatedAt: number }
 type AiFontSize = 'default' | 'large' | 'xlarge' | 'custom'
+type AiPanelPlacement = 'left' | 'right' | 'floating'
 type AiPanelPrefs = {
   fontSize: AiFontSize
   customFontSize: number
   spellcheck: boolean
+  placement: AiPanelPlacement
 }
 
 const DEFAULT_AUTO_SAVE: AutoSaveDefault = { on: false, updatedAt: 0 }
@@ -27,6 +29,7 @@ const DEFAULT_AI_PANEL_PREFS: AiPanelPrefs = {
   fontSize: 'default',
   customFontSize: 14,
   spellcheck: true,
+  placement: 'right',
 }
 
 function isAutoSaveDefault(value: unknown): value is AutoSaveDefault {
@@ -41,6 +44,7 @@ function isAiPanelPrefs(value: unknown): value is AiPanelPrefs {
   if (v.fontSize !== 'default' && v.fontSize !== 'large' && v.fontSize !== 'xlarge' && v.fontSize !== 'custom') return false
   if (typeof v.customFontSize !== 'number') return false
   if (typeof v.spellcheck !== 'boolean') return false
+  if (v.placement !== 'left' && v.placement !== 'right' && v.placement !== 'floating') return false
   return true
 }
 

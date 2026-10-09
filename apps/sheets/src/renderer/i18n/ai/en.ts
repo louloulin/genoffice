@@ -36,6 +36,8 @@ export const en = {
   aiSetUp: 'Set up AI',
   aiNewChat: 'New conversation',
   aiCollapsePanel: 'Collapse AI panel',
+  aiPanelFloatTitle: 'Switch to floating ball',
+  aiPanelDockTitle: 'Dock to the right',
   aiHistorySep: '—— Earlier conversation ——',
   aiEmptyTitle: 'Ask AI about this workbook',
   aiEmptyBodyLine1: 'Describe a change or ask about the data.',

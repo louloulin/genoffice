@@ -45,6 +45,8 @@ export const ru = {
   aiSwitchModel: 'Сменить модель ИИ',
   aiNewChat: 'Новый чат',
   aiCollapsePanel: 'Свернуть панель',
+  aiPanelFloatTitle: 'Переключить в плавающий шар',
+  aiPanelDockTitle: 'Закрепить справа',
   aiHistorySep: '—— выше — предыдущий диалог ——',
   aiEmptyTitle: 'Доверьте ИИ доработку ваших слайдов',
   aiEmptyBody1: 'Давайте указания или просто задавайте вопросы;',

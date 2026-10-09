@@ -146,6 +146,8 @@ export function createHtmlApi(t: IpcTransport, overrides: HtmlApiOverrides = {})
     onAutoSaveDefaultChanged: (handler) =>
       t.on(HTML_CHANNELS.autoSaveDefaultChanged, (value) => handler(value as AutoSaveDefault)),
     getAiPanelPrefs: () => t.invoke(HTML_CHANNELS.getAiPanelPrefs) as Promise<AiPanelPrefs>,
+    setAiPanelPrefs: (patch) =>
+      t.invoke(HTML_CHANNELS.setAiPanelPrefs, patch) as Promise<AiPanelPrefs>,
     onAiPanelPrefsChanged: (handler) =>
       t.on(HTML_CHANNELS.aiPanelPrefsChanged, (prefs) => handler(prefs as AiPanelPrefs)),
     onChromePressed: (handler) => t.on('app:chrome-pressed', () => handler()),

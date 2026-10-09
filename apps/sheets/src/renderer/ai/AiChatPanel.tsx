@@ -9,7 +9,7 @@ import {
   type ComposerModeOption,
   type MentionEntry,
 } from '@genoffice/ui'
-import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
+import { AiComposer, AiFloatingBall, AiPlacementToggle, AiScopeQuote, AiTypingIndicator, useAiPanelPlacement, type AiScopeQuoteData } from '@genoffice/ui'
 import { AiRunHeader, AiToolTimeline, AiChangeSummary, AiErrorRecovery } from '@genoffice/ui'
 import { TranslationStoragePanel } from '@genoffice/ui'
 import { toChatChangePlan, defaultXlsxPreviewRenderer } from './xlsx-change-plan'
@@ -531,6 +531,9 @@ export function AiChatPanel({
   // gets the clamped display width. Deriving the display width from the
   // preference means a transiently small window never permanently shrinks the panel.
   const preferredWidthRef = useRef<number | null>(null)
+  // `right` / `floating` anchor the panel by its right edge, which flips the
+  // resizer's maths (see startResize)
+  const placement = useAiPanelPlacement()
 
   // Restore the persisted panel width (the grid column tracks --copilot-width on .sheet-body)
   useEffect(() => {
@@ -566,19 +569,28 @@ export function AiChatPanel({
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
-  /** Drag the right edge to resize: the panel is flush with the window's left edge, so width = clientX; the grid transition is disabled while dragging */
+  /**
+   * Drag the divider to resize. The handle sits on the panel's inner edge, so
+   * the width is measured from the edge the panel is anchored to: its left edge
+   * when docked left, its right edge when docked right or floating (the card is
+   * pinned by `right`). The anchor is captured at pointer-down and does not move
+   * during the drag. The grid transition is disabled while dragging.
+   */
   const startResize = (e: React.PointerEvent<HTMLDivElement>): void => {
     e.preventDefault()
     const area = asideRef.current?.closest('.sheet-body') as HTMLElement | null
     if (!area) return
     const resizer = e.currentTarget
+    const panelRect = asideRef.current?.getBoundingClientRect()
+    const anchoredRight = placement !== 'left'
+    const anchor = anchoredRight ? (panelRect?.right ?? window.innerWidth) : (panelRect?.left ?? 0)
     setResizing(true)
     area.style.transition = 'none'
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     let width = 0
     const onMove = (ev: PointerEvent): void => {
-      width = clampPanelWidth(ev.clientX)
+      width = clampPanelWidth(anchoredRight ? anchor - ev.clientX : ev.clientX - anchor)
       preferredWidthRef.current = width
       area.style.setProperty('--copilot-width', `${width}px`)
     }
@@ -657,14 +669,20 @@ export function AiChatPanel({
   if (!isOpen) {
     return (
       <aside className="copilot collapsed">
-        <button
-          className="expand-copilot"
-          onClick={onExpand}
-          data-tip={t('aiOpenAssistant')}
-          aria-label={t('aiOpenAssistant')}
-        >
-          <ProviderMark provider={provider} size={22} />
-        </button>
+        {placement === 'floating' ? (
+          <AiFloatingBall label={t('aiOpenAssistant')} onOpen={onExpand}>
+            <ProviderMark provider={provider} size={22} />
+          </AiFloatingBall>
+        ) : (
+          <button
+            className="expand-copilot"
+            onClick={onExpand}
+            data-tip={t('aiOpenAssistant')}
+            aria-label={t('aiOpenAssistant')}
+          >
+            <ProviderMark provider={provider} size={22} />
+          </button>
+        )}
       </aside>
     )
   }
@@ -765,6 +783,12 @@ export function AiChatPanel({
           >
             <IconCollapse size={15} />
           </button>
+          {/* Last on purpose: every existing button keeps its position, so no
+              index-based lookup or muscle memory shifts. */}
+          <AiPlacementToggle
+            toFloatingLabel={t('aiPanelFloatTitle')}
+            toDockedLabel={t('aiPanelDockTitle')}
+          />
         </div>
       </header>
 

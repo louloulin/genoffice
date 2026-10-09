@@ -8,7 +8,7 @@ import {
   aiPanelFontPx,
   clampAiCustomFontSize,
 } from '@genoffice/ui'
-import type { AiFontSize, AiPanelPrefs } from '@genoffice/ui'
+import type { AiFontSize, AiPanelPlacement, AiPanelPrefs } from '@genoffice/ui'
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   MAX_MAX_OUTPUT_TOKENS,
@@ -95,6 +95,12 @@ const AI_FONT_SIZE_OPTIONS = [
   { value: 'xlarge', labelKey: 'aiFontSizeXLarge' },
   { value: 'custom', labelKey: 'aiFontSizeCustom' },
 ] as const satisfies readonly { value: AiFontSize; labelKey: StringKey }[]
+
+const AI_PANEL_PLACEMENT_OPTIONS = [
+  { value: 'left', labelKey: 'aiPanelPlacementLeft' },
+  { value: 'right', labelKey: 'aiPanelPlacementRight' },
+  { value: 'floating', labelKey: 'aiPanelPlacementFloating' },
+] as const satisfies readonly { value: AiPanelPlacement; labelKey: StringKey }[]
 
 const CHANNEL_OPTIONS = [
   { value: 'stable', labelKey: 'channelStable' },
@@ -4180,6 +4186,24 @@ export function SettingsModal({
                           : { fontSize },
                       )
                     }}
+                  />
+                </div>
+                <div className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <div className="set-field-label">{t('setAiPanelPlacement')}</div>
+                      <div className="set-field-desc">{t('setAiPanelPlacementDesc')}</div>
+                    </div>
+                  </div>
+                  <Dropdown
+                    className="set-dd"
+                    value={aiPrefs.placement}
+                    ariaLabel={t('setAiPanelPlacement')}
+                    options={AI_PANEL_PLACEMENT_OPTIONS.map((opt) => ({
+                      value: opt.value,
+                      label: t(opt.labelKey),
+                    }))}
+                    onPick={(v) => updateAiPrefs({ placement: v as AiPanelPlacement })}
                   />
                 </div>
                 <div className="set-field">

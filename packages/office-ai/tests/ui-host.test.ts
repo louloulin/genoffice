@@ -66,7 +66,12 @@ describe('startUiHost', () => {
     const theme = await invoke('app:get-theme')
     expect(theme.body.result).toBe('light')
     const prefs = await invoke('app:get-ai-panel-prefs')
-    expect(prefs.body.result).toEqual({ fontSize: 'default', customFontSize: 14, spellcheck: true })
+    expect(prefs.body.result).toEqual({
+      fontSize: 'default',
+      customFontSize: 14,
+      spellcheck: true,
+      placement: 'right',
+    })
   })
 
   it('answers boot-critical stubs with renderer-expected shapes', async () => {

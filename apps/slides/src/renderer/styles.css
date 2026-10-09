@@ -1529,6 +1529,8 @@ body.vib .slide-list {
   display: flex;
   flex-direction: column;
   background: var(--surface);
+  /* read by ai-panel-placement.css when the panel is docked right */
+  --ai-panel-divider: var(--border);
   border-right: 1px solid var(--border);
   box-shadow: var(--slides-shadow-copilot);
   font-family: var(--gs-font-sans);
@@ -5460,7 +5462,7 @@ body.vib .slide-list {
 }
 
 /* the brand mark uses currentColor and keeps the button's ink, not the blue */
-.stage-ai-btn svg.genspark-mark {
+.stage-ai-btn svg.dataflare-mark {
   color: var(--slides-stagebar-ink);
 }
 

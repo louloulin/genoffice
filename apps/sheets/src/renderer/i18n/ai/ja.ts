@@ -35,6 +35,8 @@ export const ja = {
   aiSetUp: 'AI を設定',
   aiNewChat: '新しい会話',
   aiCollapsePanel: 'AI パネルを折りたたむ',
+  aiPanelFloatTitle: 'フローティングボールに切り替え',
+  aiPanelDockTitle: '右側にドッキング',
   aiHistorySep: '—— ここまでが過去の会話 ——',
   aiEmptyTitle: 'このブックについて AI に質問',
   aiEmptyBodyLine1: '行いたい変更を説明するか、データについて質問してください。',

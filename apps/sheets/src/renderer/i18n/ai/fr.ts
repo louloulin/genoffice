@@ -37,6 +37,8 @@ export const fr = {
   aiSetUp: "Configurer l'IA",
   aiNewChat: 'Nouvelle conversation',
   aiCollapsePanel: 'Réduire le volet IA',
+  aiPanelFloatTitle: 'Passer en bulle flottante',
+  aiPanelDockTitle: 'Ancrer à droite',
   aiHistorySep: '—— Conversation précédente ——',
   aiEmptyTitle: "Interroger l'IA sur ce classeur",
   aiEmptyBodyLine1: 'Décrivez une modification ou posez une question sur les données.',

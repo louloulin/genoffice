@@ -36,6 +36,8 @@ export const ms = {
   aiSetUp: 'Sediakan AI',
   aiNewChat: 'Perbualan baharu',
   aiCollapsePanel: 'Runtuhkan panel AI',
+  aiPanelFloatTitle: 'Tukar kepada bola terapung',
+  aiPanelDockTitle: 'Dok ke kanan',
   aiHistorySep: '—— Perbualan terdahulu ——',
   aiEmptyTitle: 'Tanya AI tentang buku kerja ini',
   aiEmptyBodyLine1: 'Terangkan perubahan yang diingini atau tanya tentang data.',

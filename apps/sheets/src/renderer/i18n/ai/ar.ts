@@ -35,6 +35,8 @@ export const ar = {
   aiSetUp: 'إعداد الذكاء الاصطناعي',
   aiNewChat: 'محادثة جديدة',
   aiCollapsePanel: 'طي لوحة الذكاء الاصطناعي',
+  aiPanelFloatTitle: 'التبديل إلى الكرة العائمة',
+  aiPanelDockTitle: 'إرساء إلى اليمين',
   aiHistorySep: '—— المحادثة السابقة ——',
   aiEmptyTitle: 'اسأل الذكاء الاصطناعي عن هذا المصنف',
   aiEmptyBodyLine1: 'صِف التغيير المطلوب أو اسأل عن البيانات.',

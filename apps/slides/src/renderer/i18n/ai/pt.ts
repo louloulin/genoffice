@@ -45,6 +45,8 @@ export const pt = {
   aiSwitchModel: 'Trocar modelo de IA',
   aiNewChat: 'Nova conversa',
   aiCollapsePanel: 'Recolher painel',
+  aiPanelFloatTitle: 'Mudar para bolha flutuante',
+  aiPanelDockTitle: 'Ancorar à direita',
   aiHistorySep: '—— conversa anterior ——',
   aiEmptyTitle: 'Deixe a IA aprimorar seus slides',
   aiEmptyBody1: 'Dê instruções ou simplesmente faça perguntas;',

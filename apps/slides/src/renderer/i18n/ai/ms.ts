@@ -45,6 +45,8 @@ export const ms = {
   aiSwitchModel: 'Tukar model AI',
   aiNewChat: 'Sembang baharu',
   aiCollapsePanel: 'Runtuhkan panel',
+  aiPanelFloatTitle: 'Tukar kepada bola terapung',
+  aiPanelDockTitle: 'Dok ke kanan',
   aiHistorySep: '—— perbualan terdahulu ——',
   aiEmptyTitle: 'Biarkan AI memperhalus slaid anda',
   aiEmptyBody1: 'Beri arahan atau terus bertanya;',

@@ -37,6 +37,8 @@ export const es = {
   aiSetUp: 'Configurar IA',
   aiNewChat: 'Nueva conversación',
   aiCollapsePanel: 'Contraer el panel de IA',
+  aiPanelFloatTitle: 'Cambiar a burbuja flotante',
+  aiPanelDockTitle: 'Acoplar a la derecha',
   aiHistorySep: '—— Conversación anterior ——',
   aiEmptyTitle: 'Pregunta a la IA sobre este libro',
   aiEmptyBodyLine1: 'Describe un cambio o pregunta sobre los datos.',

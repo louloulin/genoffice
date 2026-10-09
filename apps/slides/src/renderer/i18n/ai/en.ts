@@ -45,6 +45,8 @@ export const en = {
   aiSwitchModel: 'Switch AI model',
   aiNewChat: 'New chat',
   aiCollapsePanel: 'Collapse panel',
+  aiPanelFloatTitle: 'Switch to floating ball',
+  aiPanelDockTitle: 'Dock to the right',
   aiHistorySep: '—— earlier conversation ——',
   aiEmptyTitle: 'Let AI polish your slides',
   aiEmptyBody1: 'Give instructions or just ask questions;',

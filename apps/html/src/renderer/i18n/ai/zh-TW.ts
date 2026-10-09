@@ -9,6 +9,8 @@ export const zhTW = {
   aiModePlanHint: '先提出計畫,確認後再執行',
   aiModeSwitchTitle: '工作模式',
   aiCollapsePanel: '收合面板',
+  aiPanelFloatTitle: '切換為懸浮球',
+  aiPanelDockTitle: '停靠到右側',
   aiComposerPlaceholder: '讓 AI 撰寫或修改文件…',
   aiCopyReplyTitle: '複製回覆',
   aiCreditsExhausted: '點數不足，請前往 genspark.ai 儲值',

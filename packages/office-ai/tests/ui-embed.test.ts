@@ -216,6 +216,7 @@ describe('embed query + CSP helpers', () => {
       toolbar: 'minimal',
       title: 'Q3',
       nonce: null,
+      aiPanel: null,
     })
   })
 

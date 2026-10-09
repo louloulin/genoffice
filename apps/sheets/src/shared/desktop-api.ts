@@ -2557,6 +2557,8 @@ export interface DesktopApi {
   onAutoSaveDefaultChanged(handler: (value: AutoSaveDefault) => void): () => void
   /** AI panel text size + chat-input spellcheck (Settings → General in the shell) */
   getAiPanelPrefs(): Promise<AiPanelPrefs>
+  /** write a subset back — the panel header's dock/floating switch, not only Settings */
+  setAiPanelPrefs(patch: Partial<AiPanelPrefs>): Promise<AiPanelPrefs>
   onAiPanelPrefsChanged(handler: (prefs: AiPanelPrefs) => void): () => void
   /**
    * the user pressed the shell chrome (tab strip) or started dragging the

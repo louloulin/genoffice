@@ -91,6 +91,8 @@ export const de = {
   aiSwitchModelTitle: 'KI-Modell wechseln',
   aiNewChatTitle: 'Neuer Chat',
   aiCollapseTitle: 'Bereich einklappen',
+  aiPanelFloatTitle: 'Zum schwebenden Ball wechseln',
+  aiPanelDockTitle: 'Rechts andocken',
   aiHistorySep: '—— Bisherige Unterhaltung ——',
   aiEmptyTitle: 'Lassen Sie sich von der KI beim Schreiben und Bearbeiten helfen',
   aiEmptyBody1: 'Geben Sie eine Anweisung oder stellen Sie einfach eine Frage;',

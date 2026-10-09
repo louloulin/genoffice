@@ -36,6 +36,8 @@ export const ru = {
   aiSetUp: 'Настроить ИИ',
   aiNewChat: 'Новый диалог',
   aiCollapsePanel: 'Свернуть панель ИИ',
+  aiPanelFloatTitle: 'Переключить в плавающий шар',
+  aiPanelDockTitle: 'Закрепить справа',
   aiHistorySep: '—— Предыдущий диалог ——',
   aiEmptyTitle: 'Спросите ИИ об этой книге',
   aiEmptyBodyLine1: 'Опишите нужное изменение или задайте вопрос о данных.',

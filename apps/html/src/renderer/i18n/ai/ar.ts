@@ -9,6 +9,8 @@ export const ar = {
   aiModePlanHint: 'اقترح خطة أولاً ثم نفّذها بعد التأكيد',
   aiModeSwitchTitle: 'وضع العمل',
   aiCollapsePanel: 'طي اللوحة',
+  aiPanelFloatTitle: 'التبديل إلى الكرة العائمة',
+  aiPanelDockTitle: 'إرساء إلى اليمين',
   aiComposerPlaceholder: 'اطلب من الذكاء الاصطناعي الكتابة أو التعديل…',
   aiCopyReplyTitle: 'نسخ الرد',
   aiCreditsExhausted: 'نفدت الأرصدة — أعد الشحن على genspark.ai',

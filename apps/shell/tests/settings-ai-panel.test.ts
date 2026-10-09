@@ -36,51 +36,59 @@ async function click(button: HTMLButtonElement): Promise<void> {
   })
 }
 
+/** Mounts the modal and opens its General section — where every AI panel field lives. */
+async function openGeneral(): Promise<void> {
+  await act(async () => {
+    root.render(
+      createElement(
+        LocaleProvider,
+        { initial: 'en' },
+        createElement(SettingsModal, {
+          status: null,
+          loggingOut: false,
+          loginWaiting: false,
+          loginUrl: null,
+          urlCopied: false,
+          onOpenLoginUrl: vi.fn(),
+          onCopyLoginUrl: vi.fn(),
+          onClose: vi.fn(),
+          onLogin: vi.fn(),
+          onLogout: vi.fn(),
+        }),
+      ),
+    )
+    await Promise.resolve()
+  })
+  const general = Array.from(host.querySelectorAll<HTMLButtonElement>('.set-nav-item')).find(
+    (button) => button.textContent?.includes('General'),
+  )
+  await click(general!)
+}
+
+function stubHomeApi(saved: AiPanelPrefs, setAiPanelPrefs: ReturnType<typeof vi.fn>): HomeApi {
+  return {
+    getTheme: async () => 'system',
+    getDefaultSaveDir: async () => '',
+    getAnalyticsEnabled: async () => true,
+    setAnalyticsEnabled: async () => true,
+    getAiPanelPrefs: async () => saved,
+    setAiPanelPrefs,
+    getUpdateChannel: async () => 'stable',
+    getAppVersion: async () => '1.0.0',
+    githubStars: async () => null,
+  } as unknown as HomeApi
+}
+
 describe('Settings AI panel preferences', () => {
   it('shows the saved spellcheck state and persists the toggle as a patch', async () => {
-    let saved: AiPanelPrefs = { fontSize: 'large', customFontSize: 14, spellcheck: false }
+    let saved: AiPanelPrefs = { fontSize: 'large', customFontSize: 14, spellcheck: false, placement: 'right' }
     const setAiPanelPrefs = vi.fn(async (patch: Partial<AiPanelPrefs>) => {
       saved = { ...saved, ...patch }
       return saved
     })
-    window.aiOffice = {
-      getTheme: async () => 'system',
-      getDefaultSaveDir: async () => '',
-      getAnalyticsEnabled: async () => true,
-      setAnalyticsEnabled: async () => true,
-      getAiPanelPrefs: async () => saved,
-      setAiPanelPrefs,
-      getUpdateChannel: async () => 'stable',
-      getAppVersion: async () => '1.0.0',
-      githubStars: async () => null,
-    } as unknown as HomeApi
+    window.aiOffice = stubHomeApi(saved, setAiPanelPrefs)
 
-    await act(async () => {
-      root.render(
-        createElement(
-          LocaleProvider,
-          { initial: 'en' },
-          createElement(SettingsModal, {
-            status: null,
-            loggingOut: false,
-            loginWaiting: false,
-            loginUrl: null,
-            urlCopied: false,
-            onOpenLoginUrl: vi.fn(),
-            onCopyLoginUrl: vi.fn(),
-            onClose: vi.fn(),
-            onLogin: vi.fn(),
-            onLogout: vi.fn(),
-          }),
-        ),
-      )
-      await Promise.resolve()
-    })
-
-    const general = Array.from(host.querySelectorAll<HTMLButtonElement>('.set-nav-item')).find(
-      (button) => button.textContent?.includes('General'),
-    )
-    await click(general!)
+    await openGeneral()
 
     const spellcheck = host.querySelector<HTMLButtonElement>(
       '.set-switch[aria-label="Spell check in AI chat"]',
@@ -95,48 +103,13 @@ describe('Settings AI panel preferences', () => {
   })
 
   it('shows a px input for the custom size and persists in-range values as typed', async () => {
-    let saved: AiPanelPrefs = { fontSize: 'custom', customFontSize: 20, spellcheck: true }
+    let saved: AiPanelPrefs = { fontSize: 'custom', customFontSize: 20, spellcheck: true, placement: 'right' }
     const setAiPanelPrefs = vi.fn(async (patch: Partial<AiPanelPrefs>) => {
       saved = { ...saved, ...patch }
       return saved
     })
-    window.aiOffice = {
-      getTheme: async () => 'system',
-      getDefaultSaveDir: async () => '',
-      getAnalyticsEnabled: async () => true,
-      setAnalyticsEnabled: async () => true,
-      getAiPanelPrefs: async () => saved,
-      setAiPanelPrefs,
-      getUpdateChannel: async () => 'stable',
-      getAppVersion: async () => '1.0.0',
-      githubStars: async () => null,
-    } as unknown as HomeApi
-
-    await act(async () => {
-      root.render(
-        createElement(
-          LocaleProvider,
-          { initial: 'en' },
-          createElement(SettingsModal, {
-            status: null,
-            loggingOut: false,
-            loginWaiting: false,
-            loginUrl: null,
-            urlCopied: false,
-            onOpenLoginUrl: vi.fn(),
-            onCopyLoginUrl: vi.fn(),
-            onClose: vi.fn(),
-            onLogin: vi.fn(),
-            onLogout: vi.fn(),
-          }),
-        ),
-      )
-      await Promise.resolve()
-    })
-    const general = Array.from(host.querySelectorAll<HTMLButtonElement>('.set-nav-item')).find(
-      (button) => button.textContent?.includes('General'),
-    )
-    await click(general!)
+    window.aiOffice = stubHomeApi(saved, setAiPanelPrefs)
+    await openGeneral()
 
     const input = host.querySelector<HTMLInputElement>('.set-num-input')
     expect(input?.value).toBe('20')
@@ -165,5 +138,31 @@ describe('Settings AI panel preferences', () => {
     })
     expect(setAiPanelPrefs).toHaveBeenLastCalledWith({ customFontSize: 32 })
     expect(input?.value).toBe('32')
+  })
+
+  it('shows the saved placement and persists a pick as a placement-only patch', async () => {
+    let saved: AiPanelPrefs = { fontSize: 'default', customFontSize: 14, spellcheck: true, placement: 'left' }
+    const setAiPanelPrefs = vi.fn(async (patch: Partial<AiPanelPrefs>) => {
+      saved = { ...saved, ...patch }
+      return saved
+    })
+    window.aiOffice = stubHomeApi(saved, setAiPanelPrefs)
+    await openGeneral()
+
+    const trigger = host.querySelector<HTMLButtonElement>('.gs-dd-btn[aria-label="AI panel position"]')
+    expect(trigger?.dataset.value).toBe('left')
+
+    await click(trigger!)
+    const floating = host.querySelector<HTMLButtonElement>('.gs-dd-item[aria-label="Floating ball"]')
+    expect(floating?.getAttribute('aria-selected')).toBe('false')
+
+    // A placement switch must not drag the unrelated fields along with it —
+    // the renderer re-docks on the whole object, so a stray key would show up
+    // as an unintended settings change.
+    await click(floating!)
+    expect(setAiPanelPrefs).toHaveBeenLastCalledWith({ placement: 'floating' })
+    expect(host.querySelector('.gs-dd-btn[aria-label="AI panel position"]')?.dataset.value).toBe(
+      'floating',
+    )
   })
 })

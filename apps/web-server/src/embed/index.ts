@@ -134,6 +134,12 @@ interface EmbedQuery {
    * server-side validated, not just client-side echoed. See sdk1.md §11.27.
    */
   sessionId: string | null
+  /**
+   * Where the host wants the AI chat panel: `left` | `right` | `floating`.
+   * Passed through verbatim (null when absent) and validated in the renderer by
+   * `isAiPanelPlacement` — an unrecognised value is simply ignored there.
+   */
+  aiPanel: string | null
 }
 
 function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
@@ -167,6 +173,7 @@ function parseEmbedQuery(url: URL): EmbedQuery | { error: string } {
     title: url.searchParams.get('title'),
     nonce: url.searchParams.get('nonce'),
     sessionId: url.searchParams.get('sessionId'),
+    aiPanel: url.searchParams.get('aiPanel'),
   }
 }
 
@@ -428,6 +435,7 @@ export function buildEmbedHtml(appIndexPath: string, q: EmbedQuery, docId: strin
     toolbar: q.toolbar ?? 'full',
     title: q.title ?? null,
     sessionId,
+    aiPanel: q.aiPanel ?? null,
   }
   const configTag = `\n<meta name="genoffice-embed-config" content="${escapeAttr(JSON.stringify(embedConfig))}">`
   const sessionTag = `\n<meta name="genoffice-session" content="${sessionId}">`

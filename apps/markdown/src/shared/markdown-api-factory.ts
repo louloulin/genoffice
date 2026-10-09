@@ -134,6 +134,7 @@ export function createMarkdownApi(
     onAutoSaveDefaultChanged: (handler) =>
       t.on(MARKDOWN_CHANNELS.autoSaveDefaultChanged, (value) => handler(value as AutoSaveDefault)),
     getAiPanelPrefs: () => t.invoke(MARKDOWN_CHANNELS.getAiPanelPrefs),
+    setAiPanelPrefs: (patch) => t.invoke(MARKDOWN_CHANNELS.setAiPanelPrefs, patch),
     onAiPanelPrefsChanged: (handler) =>
       t.on(MARKDOWN_CHANNELS.aiPanelPrefsChanged, (prefs) => handler(prefs as AiPanelPrefs)),
     onChromePressed: (handler) => t.on('app:chrome-pressed', () => handler()),

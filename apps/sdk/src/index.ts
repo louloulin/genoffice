@@ -18,6 +18,7 @@ export type { EmbedSession, EmbedSessionOptions } from './file/embed'
 export { ENVELOPE_VERSION, isEnvelope } from './envelope'
 export type {
   CreateEditorOptions,
+  EditorAiPanel,
   EditorApp,
   EditorCommands,
   EditorError,

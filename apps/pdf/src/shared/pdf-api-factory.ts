@@ -82,6 +82,7 @@ export function createPdfApi(t: IpcTransport, overrides: PdfApiOverrides = {}): 
     onThemeChanged: (handler) =>
       t.on(PDF_CHANNELS.themeChanged, (theme) => handler(theme as UiTheme)),
     getAiPanelPrefs: () => t.invoke('app:get-ai-panel-prefs'),
+    setAiPanelPrefs: (patch) => t.invoke('app:set-ai-panel-prefs', patch),
     onAiPanelPrefsChanged: (handler) =>
       t.on('app:ai-panel-prefs-changed', (prefs) =>
         handler(prefs as Parameters<typeof handler>[0]),

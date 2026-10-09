@@ -46,6 +46,8 @@ export const de = {
   aiSwitchModel: 'KI-Modell wechseln',
   aiNewChat: 'Neuer Chat',
   aiCollapsePanel: 'Bereich einklappen',
+  aiPanelFloatTitle: 'Zum schwebenden Ball wechseln',
+  aiPanelDockTitle: 'Rechts andocken',
   aiHistorySep: '—— bisheriger Verlauf ——',
   aiEmptyTitle: 'Lassen Sie die KI Ihre Folien verfeinern',
   aiEmptyBody1: 'Geben Sie Anweisungen oder stellen Sie einfach Fragen;',

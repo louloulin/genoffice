@@ -9,6 +9,8 @@ export const ru = {
   aiModePlanHint: 'Сначала предложить план, выполнить после подтверждения',
   aiModeSwitchTitle: 'Режим работы',
   aiCollapsePanel: 'Свернуть панель',
+  aiPanelFloatTitle: 'Переключить в плавающий шар',
+  aiPanelDockTitle: 'Закрепить справа',
   aiComposerPlaceholder: 'Попросите ИИ написать или изменить…',
   aiCopyReplyTitle: 'Копировать ответ',
   aiCreditsExhausted: 'Кредиты закончились — пополните на genspark.ai',

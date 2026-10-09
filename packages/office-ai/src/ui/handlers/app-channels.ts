@@ -12,7 +12,13 @@ import { OfficeError } from '../../errors'
 
 type AutoSaveDefault = { on: boolean; updatedAt: number }
 type AiFontSize = 'default' | 'large' | 'xlarge' | 'custom'
-type AiPanelPrefs = { fontSize: AiFontSize; customFontSize: number; spellcheck: boolean }
+type AiPanelPlacement = 'left' | 'right' | 'floating'
+type AiPanelPrefs = {
+  fontSize: AiFontSize
+  customFontSize: number
+  spellcheck: boolean
+  placement: AiPanelPlacement
+}
 
 export interface AppChannelState {
   language: string
@@ -25,7 +31,7 @@ const DEFAULT_STATE: AppChannelState = {
   language: 'zh',
   theme: 'light',
   autoSave: { on: false, updatedAt: 0 },
-  aiPanel: { fontSize: 'default', customFontSize: 14, spellcheck: true },
+  aiPanel: { fontSize: 'default', customFontSize: 14, spellcheck: true, placement: 'right' },
 }
 
 function notConfigured(channel: string): never {
@@ -94,6 +100,9 @@ export function registerAppChannels(
     if (!patch || typeof patch !== 'object') return { ok: false, error: 'invalid AiPanelPrefs payload' }
     const next = { ...state.aiPanel, ...(patch as Partial<AiPanelPrefs>) }
     if (!['default', 'large', 'xlarge', 'custom'].includes(next.fontSize)) {
+      return { ok: false, error: 'invalid AiPanelPrefs payload' }
+    }
+    if (!['left', 'right', 'floating'].includes(next.placement)) {
       return { ok: false, error: 'invalid AiPanelPrefs payload' }
     }
     state.aiPanel = next

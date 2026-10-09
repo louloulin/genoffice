@@ -171,6 +171,28 @@ describe('handleEmbed', () => {
     expect(mod.EMBED_BRIDGE_SCRIPT_PATH).toBe('/embed/static/bridge.js')
   })
 
+  it('carries the embedder\'s aiPanel request into the embed config', async () => {
+    const handleEmbed = await loadHandler()
+    const configOf = (url: string): Record<string, unknown> => {
+      const resp = fakeResponse()
+      handleEmbed(getRequest(), resp.res, new URL(url))
+      expect(resp.status()).toBe(200)
+      const body = resp.chunks.join('')
+      const cfgMatch = body.match(/<meta name="genoffice-embed-config" content="([^"]+)">/)
+      expect(cfgMatch).not.toBeNull()
+      return JSON.parse(cfgMatch![1]!.replace(/&quot;/g, '"')) as Record<string, unknown>
+    }
+
+    // The renderer reads this key through resolveAiPanelPlacement(); an absent
+    // value must stay null so a standalone (non-embed) load keeps its own default
+    // rather than being pinned to whatever this server happened to receive.
+    expect(configOf('http://x/embed/doc_abc?token=t&app=docs&aiPanel=floating').aiPanel).toBe(
+      'floating',
+    )
+    expect(configOf('http://x/embed/doc_abc?token=t&app=docs&aiPanel=left').aiPanel).toBe('left')
+    expect(configOf('http://x/embed/doc_abc?token=t&app=docs').aiPanel).toBeNull()
+  })
+
   // The "503 when no app is built" path is covered by the docs-not-built
   // smoke check (the resolveAppIndex candidate walk returns null when no
   // out/ directory exists). Mocking node:fs requires resetModules + doMock

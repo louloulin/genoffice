@@ -87,6 +87,8 @@ export const zh = {
   aiSwitchModelTitle: '切换 AI 模型',
   aiNewChatTitle: '新对话',
   aiCollapseTitle: '收起面板',
+  aiPanelFloatTitle: '切换为悬浮球',
+  aiPanelDockTitle: '停靠到右侧',
   aiHistorySep: '—— 以上是历史对话 ——',
   aiEmptyTitle: '让 AI 帮你写作和修改',
   aiEmptyBody1: '可以下达指令,也可以直接提问;',

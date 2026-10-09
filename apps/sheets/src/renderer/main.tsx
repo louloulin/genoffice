@@ -1,6 +1,11 @@
 import ReactDOM from 'react-dom/client'
 import { htmlLang, LANGS, type Lang } from '@genoffice/i18n'
-import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import {
+  applyAiPanelPrefs,
+  initAiPanelPlacement,
+  installScreenTips,
+  registerAiPanelPrefsHost,
+} from '@genoffice/ui'
 
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
@@ -9,6 +14,8 @@ import '@genoffice/ui/dropdown.css'
 import '@genoffice/ui/ribbon-collapse.css'
 import '@genoffice/ui/markdown.css'
 import '@genoffice/ui/ai-panel-prefs.css'
+import '@genoffice/ui/ai-panel-placement.css'
+import '@genoffice/ui/ai-floating-ball.css'
 import '@genoffice/ui/ai-scope-quote.css'
 import '@genoffice/ui/ai-composer.css'
 import '@genoffice/ui/ai-runtime.css'
@@ -97,6 +104,9 @@ function bootstrap(): void {
   setModuleLang(lang)
   document.documentElement.lang = htmlLang(lang)
   applyTheme(theme)
+  // resolves the embed host's aiPanel meta over the shell pref; runs before
+  // render so an embed host with no `window.desktopApi` bridge still gets it
+  initAiPanelPlacement()
   // runtime switches mirror into the boot cache; applyTheme stays the single
   // theme applier (LocaleProvider handles its own language updates)
   window.desktopApi?.onThemeChanged((next) => {
@@ -107,6 +117,7 @@ function bootstrap(): void {
   // every startup IPC fires concurrently here — none of them gates first paint
   window.desktopApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
   void window.desktopApi?.getAiPanelPrefs?.().then(applyAiPanelPrefs).catch(() => {})
+  registerAiPanelPrefsHost(window.desktopApi)
   void calibrate(lang, theme)
   // Univer measures with canvas fillText, which never triggers @font-face
   // downloads — fonts still gate Univer's first skeleton, but they now load

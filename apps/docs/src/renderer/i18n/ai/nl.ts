@@ -91,6 +91,8 @@ export const nl = {
   aiSwitchModelTitle: 'AI-model wisselen',
   aiNewChatTitle: 'Nieuw gesprek',
   aiCollapseTitle: 'Paneel samenvouwen',
+  aiPanelFloatTitle: 'Overschakelen naar zwevende ballon',
+  aiPanelDockTitle: 'Rechts vastzetten',
   aiHistorySep: '—— Eerder gesprek ——',
   aiEmptyTitle: 'Laat AI je helpen met schrijven en bewerken',
   aiEmptyBody1: 'Geef een instructie of stel gewoon een vraag;',

@@ -44,6 +44,8 @@ export const pl = {
   aiSwitchModel: 'Zmień model AI',
   aiNewChat: 'Nowy czat',
   aiCollapsePanel: 'Zwiń panel',
+  aiPanelFloatTitle: 'Przełącz na pływającą kulkę',
+  aiPanelDockTitle: 'Zadokuj po prawej',
   aiHistorySep: '—— wcześniejsza rozmowa ——',
   aiEmptyTitle: 'Pozwól AI dopracować twoje slajdy',
   aiEmptyBody1: 'Wydawaj polecenia lub po prostu zadawaj pytania;',

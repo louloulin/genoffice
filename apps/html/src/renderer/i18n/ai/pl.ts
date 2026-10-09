@@ -9,6 +9,8 @@ export const pl = {
   aiModePlanHint: 'Najpierw przedstaw plan, wykonaj po potwierdzeniu',
   aiModeSwitchTitle: 'Tryb pracy',
   aiCollapsePanel: 'Zwiń panel',
+  aiPanelFloatTitle: 'Przełącz na pływającą kulkę',
+  aiPanelDockTitle: 'Zadokuj po prawej',
   aiComposerPlaceholder: 'Poproś AI o napisanie lub edycję…',
   aiCopyReplyTitle: 'Kopiuj odpowiedź',
   aiCreditsExhausted: 'Brak kredytów — doładuj na genspark.ai',

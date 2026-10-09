@@ -118,6 +118,7 @@ export function createDesktopApi(t: IpcTransport, overrides: DesktopApiOverrides
         handler(value as Parameters<typeof handler>[0]),
       ),
     getAiPanelPrefs: () => t.invoke('app:get-ai-panel-prefs'),
+    setAiPanelPrefs: (patch) => t.invoke('app:set-ai-panel-prefs', patch),
     onAiPanelPrefsChanged: (handler) =>
       t.on('app:ai-panel-prefs-changed', (prefs) =>
         handler(prefs as Parameters<typeof handler>[0]),

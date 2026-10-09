@@ -1,0 +1,53 @@
+/*
+ * AI floating ball — the collapsed form of `data-ai-placement="floating"`.
+ *
+ * Behaviour lives in AiFloatingBall.tsx; this sheet only paints it. The ball is
+ * `position: fixed`, so it must not sit under a transformed ancestor — it does
+ * not, because in floating mode the wrapping dock is `display: contents`
+ * (ai-panel-placement.css).
+ *
+ * Colours come from packages/ui/src/tokens.css so the ball follows light/dark/
+ * system without a per-app override; the accent (which is per-app) only tints
+ * the hover ring, so it degrades to the neutral border on its own.
+ */
+
+.ai-floating-ball {
+  position: fixed;
+  z-index: 601;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-menu);
+  cursor: grab;
+  /* Pointer drags need the browser to stop panning/selecting, not ours to fight. */
+  touch-action: none;
+  user-select: none;
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.ai-floating-ball:hover {
+  border-color: var(--accent, var(--color-border-strong));
+  box-shadow: var(--shadow-btn-hover);
+}
+
+.ai-floating-ball:focus-visible {
+  outline: 2px solid var(--accent, var(--text));
+  outline-offset: 2px;
+}
+
+.ai-floating-ball:active {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-floating-ball {
+    transition: none;
+  }
+}

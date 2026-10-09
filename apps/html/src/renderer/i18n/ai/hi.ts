@@ -9,6 +9,8 @@ export const hi = {
   aiModePlanHint: 'पहले योजना दें, पुष्टि के बाद लागू करें',
   aiModeSwitchTitle: 'कार्य मोड',
   aiCollapsePanel: 'पैनल संक्षिप्त करें',
+  aiPanelFloatTitle: 'फ़्लोटिंग बॉल पर स्विच करें',
+  aiPanelDockTitle: 'दाईं ओर डॉक करें',
   aiComposerPlaceholder: 'AI से लिखने या संपादित करने को कहें…',
   aiCopyReplyTitle: 'जवाब कॉपी करें',
   aiCreditsExhausted: 'क्रेडिट समाप्त — genspark.ai पर रिचार्ज करें',

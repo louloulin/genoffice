@@ -18,5 +18,6 @@ export type {
   MountTheme,
   MountLang,
   MountToolbar,
+  MountAiPanel,
 } from './mount'
 export type { Envelope } from './envelope'

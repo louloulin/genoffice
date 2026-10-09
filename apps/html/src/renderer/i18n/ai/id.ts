@@ -9,6 +9,8 @@ export const id = {
   aiModePlanHint: 'Ajukan rencana dulu, jalankan setelah dikonfirmasi',
   aiModeSwitchTitle: 'Mode kerja',
   aiCollapsePanel: 'Ciutkan panel',
+  aiPanelFloatTitle: 'Beralih ke bola melayang',
+  aiPanelDockTitle: 'Sematkan ke kanan',
   aiComposerPlaceholder: 'Minta AI menulis atau mengedit…',
   aiCopyReplyTitle: 'Salin balasan',
   aiCreditsExhausted: 'Kredit habis — isi ulang di genspark.ai',

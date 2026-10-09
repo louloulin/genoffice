@@ -35,6 +35,8 @@ export const id = {
   aiSetUp: 'Siapkan AI',
   aiNewChat: 'Percakapan baru',
   aiCollapsePanel: 'Ciutkan panel AI',
+  aiPanelFloatTitle: 'Beralih ke bola melayang',
+  aiPanelDockTitle: 'Sematkan ke kanan',
   aiHistorySep: '—— Percakapan sebelumnya ——',
   aiEmptyTitle: 'Tanyakan kepada AI tentang buku kerja ini',
   aiEmptyBodyLine1: 'Jelaskan perubahan yang diinginkan atau tanyakan tentang datanya.',

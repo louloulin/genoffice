@@ -10,6 +10,8 @@ import '@genoffice/ui/dropdown.css'
 import '@genoffice/ui/ribbon-collapse.css'
 import '@genoffice/ui/markdown.css'
 import '@genoffice/ui/ai-panel-prefs.css'
+import '@genoffice/ui/ai-panel-placement.css'
+import '@genoffice/ui/ai-floating-ball.css'
 import '@genoffice/ui/ai-scope-quote.css'
 import '@genoffice/ui/ai-composer.css'
 import '@genoffice/ui/ai-runtime.css'
@@ -17,7 +19,12 @@ import '@genoffice/ui/ai-edit-queue.css'
 import '@genoffice/ui/translation-ribbon.css'
 import './styles.css'
 import './fonts/fonts.css'
-import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import {
+  applyAiPanelPrefs,
+  initAiPanelPlacement,
+  installScreenTips,
+  registerAiPanelPrefsHost,
+} from '@genoffice/ui'
 import { setAltChunkHtmlConverter } from '@genoffice/docx-engine'
 
 installScreenTips()
@@ -73,6 +80,9 @@ function bootstrap(): void {
   setModuleLang(lang)
   document.documentElement.lang = htmlLang(lang)
   applyTheme(theme)
+  // resolves the embed host's aiPanel meta over the shell pref; runs before
+  // render so an embed host with no `window.desktop` bridge still gets it
+  initAiPanelPlacement()
   root.render(
     <LocaleProvider initial={lang}>
       <App />
@@ -89,6 +99,7 @@ function bootstrap(): void {
   // behind another (prefs used to wait for the language/theme round-trips)
   window.desktop?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
   void window.desktop?.getAiPanelPrefs?.().then(applyAiPanelPrefs).catch(() => {})
+  registerAiPanelPrefsHost(window.desktop)
   void calibrate(lang, theme)
 }
 

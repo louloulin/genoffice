@@ -37,6 +37,8 @@ export const nl = {
   aiSetUp: 'AI instellen',
   aiNewChat: 'Nieuw gesprek',
   aiCollapsePanel: 'AI-paneel samenvouwen',
+  aiPanelFloatTitle: 'Overschakelen naar zwevende ballon',
+  aiPanelDockTitle: 'Rechts vastzetten',
   aiHistorySep: '—— Eerder gesprek ——',
   aiEmptyTitle: 'Stel de AI een vraag over deze werkmap',
   aiEmptyBodyLine1: 'Beschrijf een wijziging of stel een vraag over de gegevens.',

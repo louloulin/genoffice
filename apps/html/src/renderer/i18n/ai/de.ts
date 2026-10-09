@@ -9,6 +9,8 @@ export const de = {
   aiModePlanHint: 'Erst einen Plan vorschlagen, nach Bestätigung ausführen',
   aiModeSwitchTitle: 'Arbeitsmodus',
   aiCollapsePanel: 'Panel einklappen',
+  aiPanelFloatTitle: 'Zum schwebenden Ball wechseln',
+  aiPanelDockTitle: 'Rechts andocken',
   aiComposerPlaceholder: 'KI schreiben oder bearbeiten lassen…',
   aiCopyReplyTitle: 'Antwort kopieren',
   aiCreditsExhausted: 'Guthaben aufgebraucht — bei genspark.ai aufladen',

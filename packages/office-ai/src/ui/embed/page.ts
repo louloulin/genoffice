@@ -30,6 +30,12 @@ export interface EmbedQuery {
   toolbar: string | null
   title: string | null
   nonce: string | null
+  /**
+   * Where the host wants the AI chat panel: `left` | `right` | `floating`.
+   * Passed through verbatim (null when absent) and validated in the renderer by
+   * `isAiPanelPlacement` — an unrecognised value is simply ignored there.
+   */
+  aiPanel: string | null
 }
 
 export type EmbedQueryResult =
@@ -77,6 +83,7 @@ export function parseEmbedQuery(url: URL, available: readonly EmbedApp[]): Embed
       toolbar: url.searchParams.get('toolbar'),
       title: url.searchParams.get('title'),
       nonce: url.searchParams.get('nonce'),
+      aiPanel: url.searchParams.get('aiPanel'),
     },
   }
 }
@@ -189,6 +196,7 @@ export function buildEmbedHtml(options: BuildEmbedHtmlOptions): string {
     toolbar: query.toolbar ?? 'full',
     title: query.title ?? null,
     sessionId,
+    aiPanel: query.aiPanel ?? null,
   }
 
   const injection =

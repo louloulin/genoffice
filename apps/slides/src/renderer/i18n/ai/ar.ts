@@ -43,6 +43,8 @@ export const ar = {
   aiSwitchModel: 'تبديل نموذج الذكاء الاصطناعي',
   aiNewChat: 'محادثة جديدة',
   aiCollapsePanel: 'طي اللوحة',
+  aiPanelFloatTitle: 'التبديل إلى الكرة العائمة',
+  aiPanelDockTitle: 'إرساء إلى اليمين',
   aiHistorySep: '—— ما سبق محادثة سابقة ——',
   aiEmptyTitle: 'دع الذكاء الاصطناعي يصقل شرائحك',
   aiEmptyBody1: 'يمكنك إعطاء تعليمات أو طرح الأسئلة مباشرة؛',

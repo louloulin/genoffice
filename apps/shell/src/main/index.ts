@@ -429,6 +429,7 @@ function currentAiPanelPrefs(): AiPanelPrefs {
     fontSize: saved.aiPanelFontSize,
     customFontSize: saved.aiPanelCustomFontSize,
     spellcheck: saved.aiPanelSpellcheck,
+    placement: saved.aiPanelPlacement,
   })
   return cachedAiPanelPrefs
 }
@@ -3263,10 +3264,10 @@ function registerHomeIpc(): void {
     return persistAnalyticsPreference(enabled)
   })
 
-  ipcMain.handle(HOME_CHANNELS.getAiPanelPrefs, (): AiPanelPrefs => currentAiPanelPrefs())
-  ipcMain.handle('app:get-ai-panel-prefs', (): AiPanelPrefs => currentAiPanelPrefs())
-
-  ipcMain.handle(HOME_CHANNELS.setAiPanelPrefs, (_event, patch: unknown): AiPanelPrefs => {
+  // Shared by the settings window's channel and the editor windows' one: the AI
+  // panel header carries its own dock/floating switch, so writing a preference
+  // is no longer exclusive to the settings window.
+  const applyAiPanelPatch = (patch: unknown): AiPanelPrefs => {
     const prev = currentAiPanelPrefs()
     const raw =
       patch !== null && typeof patch === 'object' ? (patch as Record<string, unknown>) : {}
@@ -3275,6 +3276,7 @@ function registerHomeIpc(): void {
       fontSize: 'fontSize' in raw ? raw.fontSize : prev.fontSize,
       customFontSize: 'customFontSize' in raw ? raw.customFontSize : prev.customFontSize,
       spellcheck: 'spellcheck' in raw ? raw.spellcheck : prev.spellcheck,
+      placement: 'placement' in raw ? raw.placement : prev.placement,
     })
     if (sameAiPanelPrefs(next, prev)) return prev
     cachedAiPanelPrefs = next
@@ -3282,10 +3284,21 @@ function registerHomeIpc(): void {
       aiPanelFontSize: next.fontSize,
       aiPanelCustomFontSize: next.customFontSize,
       aiPanelSpellcheck: next.spellcheck,
+      aiPanelPlacement: next.placement,
     })
     for (const wc of webContents.getAllWebContents()) wc.send('app:ai-panel-prefs-changed', next)
     return next
-  })
+  }
+
+  ipcMain.handle(HOME_CHANNELS.getAiPanelPrefs, (): AiPanelPrefs => currentAiPanelPrefs())
+  ipcMain.handle('app:get-ai-panel-prefs', (): AiPanelPrefs => currentAiPanelPrefs())
+
+  ipcMain.handle(HOME_CHANNELS.setAiPanelPrefs, (_event, patch: unknown): AiPanelPrefs =>
+    applyAiPanelPatch(patch),
+  )
+  ipcMain.handle('app:set-ai-panel-prefs', (_event, patch: unknown): AiPanelPrefs =>
+    applyAiPanelPatch(patch),
+  )
 
   // effective folder where new/untitled files land; the editor mains resolve
   // the same setting themselves (configuredDefaultSaveDir via docs' defaultSaveDir)

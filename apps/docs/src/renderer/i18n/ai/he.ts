@@ -88,6 +88,8 @@ export const he = {
   aiSwitchModelTitle: 'החלפת מודל AI',
   aiNewChatTitle: 'שיחה חדשה',
   aiCollapseTitle: 'כיווץ החלונית',
+  aiPanelFloatTitle: 'מעבר לכדור צף',
+  aiPanelDockTitle: 'עגן לימין',
   aiHistorySep: '—— שיחה קודמת ——',
   aiEmptyTitle: 'תנו ל-AI לעזור לכם לכתוב ולערוך',
   aiEmptyBody1: 'אפשר לתת הוראה או פשוט לשאול שאלה;',

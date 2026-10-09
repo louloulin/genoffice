@@ -9,6 +9,8 @@ export const th = {
   aiModePlanHint: 'เสนอแผนก่อน แล้วดำเนินการเมื่อยืนยัน',
   aiModeSwitchTitle: 'โหมดการทำงาน',
   aiCollapsePanel: 'ยุบแผง',
+  aiPanelFloatTitle: 'สลับเป็นลูกบอลลอย',
+  aiPanelDockTitle: 'เทียบไว้ทางขวา',
   aiComposerPlaceholder: 'ให้ AI เขียนหรือแก้ไขเอกสาร…',
   aiCopyReplyTitle: 'คัดลอกคำตอบ',
   aiCreditsExhausted: 'เครดิตหมด — เติมได้ที่ genspark.ai',

@@ -45,6 +45,8 @@ export const nl = {
   aiSwitchModel: 'AI-model wisselen',
   aiNewChat: 'Nieuwe chat',
   aiCollapsePanel: 'Paneel samenvouwen',
+  aiPanelFloatTitle: 'Overschakelen naar zwevende ballon',
+  aiPanelDockTitle: 'Rechts vastzetten',
   aiHistorySep: '—— eerder gesprek ——',
   aiEmptyTitle: "Laat AI uw dia's verfijnen",
   aiEmptyBody1: 'Geef instructies of stel gewoon vragen;',

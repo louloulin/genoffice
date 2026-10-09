@@ -45,6 +45,8 @@ export const hi = {
   aiSwitchModel: 'AI मॉडल बदलें',
   aiNewChat: 'नई चैट',
   aiCollapsePanel: 'पैनल संक्षिप्त करें',
+  aiPanelFloatTitle: 'फ़्लोटिंग बॉल पर स्विच करें',
+  aiPanelDockTitle: 'दाईं ओर डॉक करें',
   aiHistorySep: '—— पिछली बातचीत ——',
   aiEmptyTitle: 'AI से अपनी स्लाइडों को निखारें',
   aiEmptyBody1: 'निर्देश दें या कुछ भी पूछें;',

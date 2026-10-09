@@ -1,0 +1,153 @@
+/*
+ * AI panel placement — one stylesheet for all six renderers.
+ *
+ * Every rule is gated on `html[data-ai-placement]`, which ai-panel-prefs-store.ts
+ * mirrors from the effective preference (see ai-embed-config.ts for the
+ * embedder's override). The attribute — not a class on the dock — is the
+ * switch, so one rule set serves docs, sheets, slides, html, markdown and pdf
+ * without a line of per-app JavaScript beyond the attribute itself.
+ *
+ * Specificity: this sheet is imported *before* each app's styles.css, so it
+ * cannot win on order. The `html[data-ai-placement=…]` prefix plus a
+ * `> .ai-dock` descendant step gives (0,3,1), which beats every app-local
+ * `.ai-dock` / `.ai-panel` / `.copilot` rule (0,1,0).
+ *
+ * Two local variables let each app keep its own divider colour (they are not
+ * interchangeable: docs/html/markdown use --color-border-strong, slides/pdf
+ * --border, sheets --color-border-default, and every rail uses --border):
+ *   --ai-panel-divider  panel's visible edge   (default --color-border-strong)
+ *   --ai-rail-divider   collapsed rail's edge  (default --border)
+ * Only apps that differ from the default set them, next to the rule they win.
+ */
+
+/* ---------------------------------------------------------------- right dock */
+
+/* Flex apps: send the dock to the end of the row. `.app-content` is pulled to
+ * the front rather than only bumping the dock, so markdown's three children
+ * (dock, outline, content) still read [outline][content][dock]. */
+html[data-ai-placement='right'] .app-main > .ai-dock {
+  order: 2;
+}
+
+html[data-ai-placement='right'] .app-main > .app-content {
+  order: 1;
+}
+
+/* The panel's divider moves to its left edge. `border-right: 0` first so the
+ * two declarations never both paint (a double hairline). */
+html[data-ai-placement='right'] .ai-dock .ai-panel,
+html[data-ai-placement='right'] .ai-dock .copilot {
+  border-right: 0;
+  border-left: 1px solid var(--ai-panel-divider, var(--color-border-strong));
+}
+
+/* Collapsed rail: same flip, its own token. */
+html[data-ai-placement='right'] .ai-dock .ai-rail {
+  border-right: 0;
+  border-left: 1px solid var(--ai-rail-divider, var(--border));
+}
+
+/* Drag handle follows the divider to the panel's left edge. */
+html[data-ai-placement='right'] .ai-dock .ai-panel-resizer {
+  right: auto;
+  left: 0;
+}
+
+/* Sheets is a grid, not a flex row: `order` alone would leave the panel in the
+ * wide column, so the column widths and the order both flip. */
+html[data-ai-placement='right'] .sheet-body {
+  grid-template-columns: minmax(0, 1fr) var(--copilot-width, 360px);
+}
+
+html[data-ai-placement='right'] .sheet-body > .copilot {
+  order: 2;
+}
+
+html[data-ai-placement='right'] .sheet-body > .sheet-main {
+  order: 1;
+}
+
+/* Collapsed sheets rail. Needs (0,3,1) to outrank the app's own
+ * `.app-shell.copilot-collapsed .sheet-body`. */
+html[data-ai-placement='right'] .app-shell.copilot-collapsed .sheet-body {
+  grid-template-columns: minmax(0, 1fr) 34px;
+}
+
+html[data-ai-placement='right'] .sheet-body .copilot {
+  border-right: 0;
+  border-left: 1px solid var(--ai-panel-divider, var(--color-border-default));
+}
+
+html[data-ai-placement='right'] .sheet-body .ai-panel-resizer {
+  right: auto;
+  left: 0;
+}
+
+/* -------------------------------------------------------------- floating ball */
+
+/* Floating: the dock (or sheets' panel) leaves the layout entirely and becomes
+ * an overlay card pinned to the bottom-right. `.app-content` / `.sheet-main`
+ * then fill the window on their own — no spacer is needed because the element
+ * is out of flow.
+ *
+ * Ancestors (`#root`, `body`, `.app`, `.app-main`) carry no transform/filter/
+ * will-change, so `fixed` resolves against the viewport, as intended. */
+html[data-ai-placement='floating'] .app-main > .ai-dock,
+html[data-ai-placement='floating'] .sheet-body > .copilot {
+  position: fixed;
+  z-index: 600;
+}
+
+html[data-ai-placement='floating'] .ai-dock:not(.collapsed) {
+  right: 16px;
+  bottom: 16px;
+  left: auto;
+  top: auto;
+  width: var(--ai-panel-width, 380px);
+  height: min(72vh, 720px);
+  overflow: hidden;
+  border-radius: var(--radius-12);
+  box-shadow: var(--shadow-menu);
+  transition: none;
+}
+
+/* The card carries its own edge, so the in-flow divider is dropped. */
+html[data-ai-placement='floating'] .ai-dock:not(.collapsed) .ai-panel,
+html[data-ai-placement='floating'] .ai-dock:not(.collapsed) .copilot {
+  border-right: 0;
+  border-left: 0;
+}
+
+/* Collapsed: the dock collapses to nothing so the ball inside can position
+ * itself against the viewport (see AiFloatingBall.tsx). */
+html[data-ai-placement='floating'] .ai-dock.collapsed,
+html[data-ai-placement='floating'] .sheet-body > .copilot.collapsed {
+  display: contents;
+}
+
+/* Sheets in floating mode never keeps a panel column: expanded it is a fixed
+ * overlay, collapsed its wrapper is `display: contents`. Two selectors because
+ * the app's collapsed rule `.app-shell.copilot-collapsed .sheet-body` (0,3,0)
+ * outranks a bare `html[…] .sheet-body` (0,2,1). */
+html[data-ai-placement='floating'] .sheet-body,
+html[data-ai-placement='floating'] .app-shell.copilot-collapsed .sheet-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-ai-placement='floating'] .sheet-body > .copilot:not(.collapsed) {
+  right: 16px;
+  bottom: 16px;
+  left: auto;
+  top: auto;
+  width: var(--copilot-width, 380px);
+  height: min(72vh, 720px);
+  overflow: hidden;
+  border-radius: var(--radius-12);
+  box-shadow: var(--shadow-menu);
+  transition: none;
+}
+
+html[data-ai-placement='floating'] .sheet-body > .copilot:not(.collapsed) .ai-panel-resizer {
+  right: auto;
+  left: 0;
+}
