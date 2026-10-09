@@ -39,8 +39,8 @@
 //
 // 退出码：0 成功；1 用法错 / 版本号非法 / 版本号倒退 / git 状态不干净 / tag 已存在。
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
+import { resolve, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { nextVersion, compareVersions, isValidVersion } from './lib/calver.mjs'
@@ -68,6 +68,7 @@ const wantTag = flag('--tag')
 
 if (flag('--help') || flag('-h')) {
   log(c.bold, '用法: node scripts/bump-version.mjs [--set <CalVer>] [--tag] [--dry-run]')
+  log(c.dim, '      node scripts/bump-version.mjs --align-matrix <SemVer> [--dry-run]')
   process.exit(0)
 }
 if (opt('--set') === null && argv.includes('--set')) die('--set 后面缺版本号')
@@ -83,6 +84,105 @@ function readVersionFile() {
     if (t && !t.startsWith('#')) return t
   }
   return ''
+}
+
+// ------------------------------------------------------ 发布矩阵对齐（--align-matrix）
+
+/**
+ * `--align-matrix <SemVer>`：把 release.yml 发布矩阵里每个包的 version 对齐到
+ * 给定版本（tag 去掉 `v` 之后的值）。
+ *
+ * # 治的病
+ *
+ * 与 VERSION 漂移同源：tag 是这次发布的唯一真相，但各包 `package.json` 里的号是
+ * 另一回事，二者之间原本没有任何东西会失败。release.yml 在 Test 之后、Publish
+ * 之前直接 `npm publish`，于是发出去的要么被 registry 以「版本已存在」拒绝，要么
+ * 把一个和本次 tag 对不上的号永久留在 npm 上。
+ *
+ * # 名单从哪来
+ *
+ * 这里不另存一份矩阵 —— 矩阵就在 `.github/workflows/release.yml` 里，本脚本读它。
+ * 两份清单各自漂移，正是这条链路最初的病。
+ */
+function readReleaseMatrix() {
+  const text = readText('.github/workflows/release.yml')
+  const start = text.indexOf('matrix:')
+  const end = text.indexOf('steps:', start)
+  if (start < 0 || end < 0) {
+    throw new Error('release.yml 里找不到 matrix / steps 段，无法取出发布矩阵')
+  }
+  const names = []
+  for (const line of text.slice(start, end).split('\n')) {
+    const m = /^\s*-\s+(@genoffice\/[a-z0-9-]+)\s*$/.exec(line)
+    if (m) names.push(m[1])
+  }
+  if (names.length === 0) throw new Error('release.yml 的矩阵里没解析出任何 @genoffice/* 包名')
+  return names
+}
+
+/** 在 apps/*、packages/*、docs 里按 `name` 找到那个包的 package.json。 */
+function findWorkspacePackage(name) {
+  const candidates = []
+  for (const dir of ['apps', 'packages']) {
+    const base = resolve(ROOT, dir)
+    if (!existsSync(base)) continue
+    for (const entry of readdirSync(base)) candidates.push(resolve(base, entry, 'package.json'))
+  }
+  candidates.push(resolve(ROOT, 'docs', 'package.json'))
+  const nameRe = new RegExp(`"name"\\s*:\\s*"${name.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}"`)
+  for (const pkg of candidates) {
+    if (!existsSync(pkg)) continue
+    const text = readFileSync(pkg, 'utf8')
+    if (nameRe.test(text)) return { path: relative(ROOT, pkg), text }
+  }
+  throw new Error(`workspace 里没有名为 ${name} 的包`)
+}
+
+// 少数版本号是「编译进产物」的常量，npm 从 `package.json` 读不到它们，只能与某个
+// 包的 version 保持一致（见 bridge.ts 里的注释）。对齐包版本时一并改，否则发出去的
+// bridge 在自己 `ready` 事件里报的版本会和包版本对不上，而没有任何东西会失败。
+const versionMirrors = [
+  {
+    path: 'packages/office-ai/src/ui/embed/bridge.ts',
+    re: /(OFFICE_AI_UI_VERSION\s*=\s*)'([^']*)'/,
+    of: '@genoffice/office-ai',
+  },
+]
+
+const alignIdx = argv.indexOf('--align-matrix')
+if (alignIdx >= 0) {
+  const want = argv[alignIdx + 1]
+  if (!want || want.startsWith('--')) die('--align-matrix 后面缺版本号')
+  // npm 只认 SemVer；tag 去掉 v 之后必须仍是合法 SemVer，否则 registry 会拒收。
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(want)) {
+    die(`--align-matrix 的值不是合法 SemVer: "${want}"`)
+  }
+
+  const names = readReleaseMatrix()
+  const staged = []
+  for (const name of names) {
+    const { path, text } = findWorkspacePackage(name)
+    const m = /"version"\s*:\s*"([^"]*)"/.exec(text)
+    if (!m) die(`${path} 没有 version 字段`)
+    if (m[1] === want) continue
+    staged.push({ path, after: rewritePackageJson(text, m[1], want, path) })
+    log(c.blue, `  ${dryRun ? '将改' : '已改'} ${path}  ${m[1]} → ${want}`)
+  }
+  for (const mirror of versionMirrors) {
+    if (!names.includes(mirror.of)) continue
+    const before = readText(mirror.path)
+    const found = mirror.re.exec(before)
+    if (!found) die(`${mirror.path}: 找不到与 ${mirror.of} 对应的版本常量`)
+    if (found[2] === want) continue
+    staged.push({
+      path: mirror.path,
+      after: before.slice(0, found.index) + `${found[1]}'${want}'` + before.slice(found.index + found[0].length),
+    })
+    log(c.blue, `  ${dryRun ? '将改' : '已改'} ${mirror.path}  ${found[2]} → ${want}`)
+  }
+  if (!dryRun) for (const { path, after } of staged) writeFileSync(resolve(ROOT, path), after)
+  log(c.green, `\n✓ 发布矩阵 ${names.length} 个包，${staged.length} 处版本已对齐到 ${want}`)
+  process.exit(0)
 }
 
 if (!existsSync(resolve(ROOT, 'VERSION'))) die('VERSION 文件不存在')
