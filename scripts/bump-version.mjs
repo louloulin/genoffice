@@ -113,7 +113,7 @@ function readReleaseMatrix() {
   }
   const names = []
   for (const line of text.slice(start, end).split('\n')) {
-    const m = /^\s*-\s+(@genoffice\/[a-z0-9-]+)\s*$/.exec(line)
+    const m = /^\s*-\s+'?(@genoffice\/[a-z0-9-]+)'?\s*$/.exec(line)
     if (m) names.push(m[1])
   }
   if (names.length === 0) throw new Error('release.yml 的矩阵里没解析出任何 @genoffice/* 包名')

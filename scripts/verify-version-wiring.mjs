@@ -16,7 +16,9 @@
  *
  * # 判据
  *
- * 静态跨文件检查：VERSION → 两个 package.json → version.ts 常量，四者逐字相等。
+ * 静态跨文件检查：VERSION → 两个 package.json → version.ts 常量，四者逐字相等；
+ * 并覆盖发版这条链本身 —— office-ai 编译进产物的版本常量与包版本一致、web-sdk 是
+ * 合法 SemVer、release.yml 先对齐矩阵版本再 publish。
  * 断任何一段的失败形态都是静默的（不报错，只是对外报告了一个不对的号），
  * 所以它值得一个门禁。
  *
@@ -149,6 +151,49 @@ check('release 脚本不再收手填版本号', () => {
   }
   mustHave(rel, 'VERSION', 'scripts/release-web.mjs')
   return '版本号来自 VERSION 文件，不再手填'
+})
+
+check('office-ai 的 bridge 版本常量与包版本一致', () => {
+  // bridge.ts 把版本编译进产物（published office-ai tarball 够不到 web-server 的
+  // version.ts），只能与包版本手动保持一致。发版对齐时二者必须一起走，否则发出去的
+  // bridge 在自己的 ready 事件里报一个与包对不上的版本。
+  const pkg = pkgVersion('packages/office-ai/package.json')
+  const src = read('packages/office-ai/src/ui/embed/bridge.ts')
+  const m = /OFFICE_AI_UI_VERSION\s*=\s*'([^']*)'/.exec(src)
+  if (!m) throw new Error('bridge.ts 里找不到 OFFICE_AI_UI_VERSION 常量')
+  if (m[1] !== pkg) {
+    throw new Error(`bridge.ts 是 "${m[1]}"，packages/office-ai/package.json 是 "${pkg}" —— 发布时二者必须一致`)
+  }
+  return m[1]
+})
+
+check('web-sdk 版本是合法 SemVer', () => {
+  // apps/sdk 是唯一一个手工维护版本号的发布包（0.9.0-beta.1）。release.yml 发版时
+  // 把它对齐到 tag，而 tag 去掉 v 之后必须是 SemVer —— 本仓其它地方用的 CalVer
+  // （2026.10.06）带前导零，npm registry 会直接拒收。没有这个门，谁把它改成 CalVer
+  // 都要等到 `npm publish` 才在 CI 上炸。
+  const actual = pkgVersion('apps/sdk/package.json')
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(actual)) {
+    throw new Error(`apps/sdk/package.json 的版本 "${actual}" 不是合法 SemVer，npm publish 会拒收`)
+  }
+  return actual
+})
+
+check('release.yml 先对齐矩阵版本、再发布', () => {
+  // 发版链路本身也要接线：tag → 矩阵各包版本 → publish。断了这一段，打的是
+  // v0.1.0-beta，发出去的却还是 package.json 里的旧号 —— 与 VERSION 漂移同病。
+  const yml = read('.github/workflows/release.yml')
+  // web-sdk 必须在矩阵里，否则它既不上 npm、也不会被对齐 —— 那个 0.9.0-beta.1
+  // 就永远是它对外报的版本。（条目可能带引号：`@` 起头是 YAML 保留指示符。）
+  if (!/^\s*-\s*'?@genoffice\/web-sdk'?\s*$/m.test(yml)) {
+    throw new Error('.github/workflows/release.yml 的矩阵里没有 @genoffice/web-sdk')
+  }
+  const alignAt = yml.indexOf('--align-matrix')
+  const publishAt = yml.indexOf('npm publish')
+  if (alignAt < 0) throw new Error('release.yml 没有版本对齐步骤（scripts/bump-version.mjs --align-matrix）')
+  if (publishAt < 0) throw new Error('release.yml 里找不到 npm publish 步骤')
+  if (alignAt > publishAt) throw new Error('版本对齐排在 npm publish 之后 —— 发出去的还是旧号')
+  return 'tag → 矩阵包版本 → publish 顺序成立'
 })
 
 const failed = checks.filter((c) => !c.ok)

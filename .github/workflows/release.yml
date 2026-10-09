@@ -7,7 +7,7 @@ name: Release
 # Pipeline:
 #   1. build everything (build:all)
 #   2. typecheck + test gates
-#   3. tag-derived version numbers propagate into package.json via `npm version`
+#   3. align every matrix package to the tag (scripts/bump-version.mjs --align-matrix)
 #   4. publish to npm (idempotent: --access public)
 #   5. build + push docker images
 
@@ -34,20 +34,20 @@ jobs:
       fail-fast: false
       matrix:
         package:
-          - @genoffice/web-sdk
-          - @genoffice/ai-provider
-          - @genoffice/docx-engine
-          - @genoffice/pptx-engine
-          - @genoffice/xlsx-gateway
-          - @genoffice/file-parse
-          - @genoffice/file-management
-          - @genoffice/agent-core
-          - @genoffice/translation-core
-          - @genoffice/ipc-bridge
-          - @genoffice/i18n
-          - @genoffice/ui
-          - @genoffice/office-ai
-          - @genoffice/office-ai-ui-assets
+          - '@genoffice/web-sdk'
+          - '@genoffice/ai-provider'
+          - '@genoffice/docx-engine'
+          - '@genoffice/pptx-engine'
+          - '@genoffice/xlsx-gateway'
+          - '@genoffice/file-parse'
+          - '@genoffice/file-management'
+          - '@genoffice/agent-core'
+          - '@genoffice/translation-core'
+          - '@genoffice/ipc-bridge'
+          - '@genoffice/i18n'
+          - '@genoffice/ui'
+          - '@genoffice/office-ai'
+          - '@genoffice/office-ai-ui-assets'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,13 +66,19 @@ jobs:
       - name: Build
         run: npm run build:all --workspaces --if-present
 
-      # office-ai and its asset package are the only two that publish build
-      # output rather than TypeScript source, so they build here instead of in
-      # `build:all` — that script does not exist in any workspace, and adding it
-      # would rebuild every app for every matrix leg.
+      # office-ai, its asset package and the web SDK are the only three that
+      # publish build output rather than TypeScript source, so they build here
+      # instead of in `build:all` — that script does not exist in any workspace,
+      # and adding it would rebuild every app for every matrix leg.
       - name: Build office-ai
         if: matrix.package == '@genoffice/office-ai'
         run: npm run build -w @genoffice/office-ai
+
+      # The SDK ships `dist/`, which is gitignored — skip this and the tarball
+      # is empty and `npm publish` still "succeeds".
+      - name: Build web-sdk
+        if: matrix.package == '@genoffice/web-sdk'
+        run: npm run build -w @genoffice/web-sdk
 
       - name: Stage office-ai UI assets
         if: matrix.package == '@genoffice/office-ai-ui-assets'
@@ -83,6 +89,17 @@ jobs:
 
       - name: Test
         run: npm test --workspaces --if-present -- --reporter=dot
+
+      # The tag is the release's only truth, but each package.json carries its
+      # own version and nothing used to connect the two — the same drift
+      # bump-version.mjs documents for VERSION. Publishing without this either
+      # gets rejected by the registry as "version already exists" or leaves a
+      # number on npm that matches no tag. Aligns every matrix package plus the
+      # bridge's baked version constant to the tag.
+      - name: Align version to the release tag
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          node scripts/bump-version.mjs --align-matrix "${tag#v}"
 
       - name: Publish
         run: npm publish --workspace=${{ matrix.package }} --access public --provenance
